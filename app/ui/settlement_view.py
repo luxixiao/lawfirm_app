@@ -516,10 +516,12 @@ class SettlementView(QWidget):
                 if bold:
                     item.setFont(QFont(item.font().family(), item.font().pointSize(), QFont.Weight.Bold))
                 self.r_table.setItem(r, c, item)
-            # 备注显示在首行
+            # 备注显示在首行（多行）
             if r == 0:
                 item = QTableWidgetItem(note)
                 if note:
                     item.setForeground(Qt.GlobalColor.gray)
                 self.r_table.setItem(r, 4, item)
+        if note:
+            self.r_table.resizeRowToContents(0)
         self.r_summary.setText(f"{name}（{st['staff_type']}）· {year}年{month}月结算表预览（共{len(rows)}行，确认后导出）")

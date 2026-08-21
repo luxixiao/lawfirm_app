@@ -47,17 +47,34 @@ def _month_total(st: Dict, month: int, keys) -> float:
 
 
 def report_note(st: Dict, month: int) -> str:
-    """备注（收回以前应收款/退款 > 0 时自动生成）"""
+    """备注（简称+金额，每条一行；涉及非本月的数据全部说明）"""
     m = st["months"]
     notes = []
+    # 本月收回/退款
     if m[month]["rec_cur_year"] > 0.01:
-        notes.append(f"本月收回本年应收款{m[month]['rec_cur_year']:,.2f}元")
+        notes.append(f"收本年{m[month]['rec_cur_year']:,.2f}元")
     if m[month]["rec_prev_year"] > 0.01:
-        notes.append(f"本月收回上年应收款{m[month]['rec_prev_year']:,.2f}元")
-    if m[month]["rec_refund_cur"] < -0.01 or m[month]["rec_refund_prev"] < -0.01:
-        refund = -(m[month]["rec_refund_cur"] + m[month]["rec_refund_prev"])
-        notes.append(f"本月退款{refund:,.2f}元")
-    return "；".join(notes)
+        notes.append(f"收上年{m[month]['rec_prev_year']:,.2f}元")
+    if m[month]["rec_refund_cur"] < -0.01:
+        notes.append(f"退本年{abs(m[month]['rec_refund_cur']):,.2f}元")
+    if m[month]["rec_refund_prev"] < -0.01:
+        notes.append(f"退上年{abs(m[month]['rec_refund_prev']):,.2f}元")
+    # 本年累计（跨月/跨年说明）
+    cum_prev_year = sum(m[mo]["rec_prev_year"] for mo in range(1, month + 1))
+    cum_refund_prev = sum(m[mo]["rec_refund_prev"] for mo in range(1, month + 1))
+    if cum_prev_year > 0.01:
+        notes.append(f"累计收上年{cum_prev_year:,.2f}元")
+    if cum_refund_prev < -0.01:
+        notes.append(f"累计退上年{abs(cum_refund_prev):,.2f}元")
+    # 红冲（涉及非本月开票）
+    if m[month]["inv_red_cur"] < -0.01:
+        notes.append(f"红冲本年{abs(m[month]['inv_red_cur']):,.2f}元")
+    if m[month]["inv_red_prev"] < -0.01:
+        notes.append(f"红冲上年{abs(m[month]['inv_red_prev']):,.2f}元")
+    cum_red_prev = sum(m[mo]["inv_red_prev"] for mo in range(1, month + 1))
+    if cum_red_prev < -0.01:
+        notes.append(f"累计红冲上年{abs(cum_red_prev):,.2f}元")
+    return "\n".join(notes)
 
 
 def build_report_rows(st: Dict, year: int, month: int) -> list:
@@ -153,10 +170,12 @@ def _write_sheet(ws, person: str, st: Dict, year: int, month: int) -> None:
             for j in (3, 4):
                 ws.cell(r, j).font = BOLD
 
-    # 备注
+    # 备注（多行）
     note = report_note(st, month)
     if note:
-        ws.cell(3, 5, note)
+        c = ws.cell(3, 5, note)
+        c.alignment = Alignment(wrap_text=True, vertical="center")
+        ws.row_dimensions[3].height = 60
 
     # 列宽
     for j, w in enumerate([5, 24, 13, 13, 40], 1):
