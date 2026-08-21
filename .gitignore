@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+.venv/
+# 运行时数据(Seafile同步, 不进git)
+data/

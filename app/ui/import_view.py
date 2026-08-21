@@ -1,0 +1,157 @@
+"""导入页：选文件 → 自动识别类型与账期 → 导入"""
+from __future__ import annotations
+
+import re
+
+from PySide6.QtWidgets import (
+    QFileDialog, QHBoxLayout, QLabel, QMessageBox, QPlainTextEdit,
+    QPushButton, QVBoxLayout, QWidget,
+)
+
+from app.importer.importer import (
+    import_expense_file, import_invoice_file, import_ledger_file,
+)
+from app.importer.staff_import import parse_staff_file
+from app.db import get_conn
+
+
+def guess_period(filename: str) -> str | None:
+    """从文件名解析账期：2025.1 / 2025-01 / 202501 / 2025年1月 → 2025-01"""
+    m = re.search(r"(\d{4})\s*[.\-年]\s*(\d{1,2})", filename)
+    if m:
+        return f"{int(m.group(1)):04d}-{int(m.group(2)):02d}"
+    m = re.search(r"(\d{4})(\d{1,2})", filename)
+    if m and int(m.group(2)) <= 12:
+        return f"{int(m.group(1)):04d}-{int(m.group(2)):02d}"
+    return None
+
+
+def guess_type(filename: str) -> str:
+    """从文件名识别类型：invoice/ledger/expense/staff"""
+    if "费用" in filename or "支出" in filename:
+        return "expense"
+    if "销项" in filename or "开票" in filename:
+        return "invoice"
+    if "职工" in filename or "花名册" in filename or "清单" in filename:
+        return "staff"
+    if "台账" in filename:
+        return "ledger"
+    return "ledger"
+
+
+class ImportView(QWidget):
+    def __init__(self) -> None:
+        super().__init__()
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(24, 20, 24, 20)
+        lay.setSpacing(12)
+
+        t = QLabel("导入")
+        t.setObjectName("pageTitle")
+        lay.addWidget(t)
+        h = QLabel("选择台账文件，系统自动识别类型与账期。导入顺序：职工清单 → 销项 → 发票台账 → 费用台账。")
+        h.setObjectName("pageHint")
+        lay.addWidget(h)
+
+        btns = QHBoxLayout()
+        self.btn_file = QPushButton("选择文件导入")
+        self.btn_file.setObjectName("primary")
+        self.btn_file.clicked.connect(self.import_file)
+        self.btn_folder = QPushButton("选择文件夹批量导入")
+        self.btn_folder.clicked.connect(self.import_folder)
+        btns.addWidget(self.btn_file)
+        btns.addWidget(self.btn_folder)
+        btns.addStretch()
+        lay.addLayout(btns)
+
+        self.log = QPlainTextEdit()
+        self.log.setReadOnly(True)
+        self.log.setPlaceholderText("导入日志…")
+        lay.addWidget(self.log, 1)
+
+    def _log(self, msg: str) -> None:
+        self.log.appendPlainText(msg)
+
+    # ---- 单文件 ----
+    def import_file(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self, "选择台账文件", "", "Excel 文件 (*.xls *.xlsx *.xlsm)"
+        )
+        if path:
+            self._do_import(path)
+
+    # ---- 文件夹批量 ----
+    def import_folder(self) -> None:
+        folder = QFileDialog.getExistingDirectory(self, "选择台账文件夹")
+        if not folder:
+            return
+        import glob, os
+        files = sorted(glob.glob(os.path.join(folder, "*.xls*")))
+        if not files:
+            QMessageBox.information(self, "提示", "该文件夹没有 Excel 文件")
+            return
+        ok, fail = 0, 0
+        for f in files:
+            try:
+                self._do_import(f, quiet=True)
+                ok += 1
+            except Exception as e:  # noqa: BLE001
+                self._log(f"✗ {os.path.basename(f)}: {e}")
+                fail += 1
+        self._log(f"批量导入完成: 成功 {ok}，失败 {fail}")
+        QMessageBox.information(self, "批量导入", f"成功 {ok} 个，失败 {fail} 个（详见日志）")
+
+    # ---- 执行 ----
+    def _do_import(self, path: str, quiet: bool = False) -> None:
+        fname = path.replace("\\", "/").split("/")[-1]
+        ftype = guess_type(fname)
+        period = guess_period(fname)
+        try:
+            if ftype == "staff":
+                staff, _ = parse_staff_file(path)
+                conn = get_conn()
+                try:
+                    from datetime import datetime
+                    cur = conn.execute(
+                        "INSERT INTO import_batch (batch_type, period, file_name, imported_at) VALUES (?,?,?,?)",
+                        ("staff", "0000", fname, datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+                    )
+                    batch_id = cur.lastrowid
+                    n_new, n_upd = 0, 0
+                    for name, stype, note in staff:
+                        stype = stype or "聘用"
+                        r = conn.execute("SELECT id FROM staff WHERE name=?", (name,)).fetchone()
+                        if r:
+                            conn.execute("UPDATE staff SET staff_type=?, note=?, is_active=1 WHERE id=?", (stype, note, r["id"]))
+                            n_upd += 1
+                        else:
+                            conn.execute(
+                                "INSERT INTO staff (name, staff_type, is_active, note, source, import_batch_id) VALUES (?,?,1,?,?,?)",
+                                (name, stype, note, "import", batch_id),
+                            )
+                            n_new += 1
+                    conn.commit()
+                    msg = f"✓ 职工花名册: 新增 {n_new}，更新 {n_upd}"
+                finally:
+                    conn.close()
+            else:
+                if not period:
+                    raise Exception("无法从文件名识别账期（如 2025.1 / 202501），请把文件命名为类似「2025.1台账.xlsx」")
+                if ftype == "invoice":
+                    r = import_invoice_file(path, period)
+                    msg = f"✓ 销项文档 {period}: {r['count']} 张发票"
+                elif ftype == "ledger":
+                    r = import_ledger_file(path, period)
+                    msg = (f"✓ 发票台账 {period}: {r['invoice_count']} 张发票, "
+                           f"{r['prepayment_count']} 条预收款")
+                else:
+                    r = import_expense_file(path, period)
+                    msg = f"✓ 费用台账 {period}: {r['count']} 条费用"
+        except Exception as e:  # noqa: BLE001
+            self._log(f"✗ {fname}: {e}")
+            if not quiet:
+                QMessageBox.warning(self, "导入失败", str(e))
+            return
+        self._log(msg)
+        if not quiet:
+            QMessageBox.information(self, "导入成功", msg)
