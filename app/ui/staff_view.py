@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (
     QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
+from qfluentwidgets import (SubtitleLabel, CaptionLabel, PrimaryPushButton, PushButton)
 from app.db import get_conn
 from app.importer.staff_import import ImportError_, parse_staff_file
 
@@ -20,8 +21,7 @@ class StaffView(QWidget):
         lay.setContentsMargins(24, 20, 24, 20)
         lay.setSpacing(12)
 
-        title = QLabel("员工管理")
-        title.setObjectName("pageTitle")
+        title = SubtitleLabel("员工管理")
         lay.addWidget(title)
         hint = QLabel("职工花名册（基础数据）：台账导入时校验经办人是否在此名单中。")
         hint.setObjectName("pageHint")

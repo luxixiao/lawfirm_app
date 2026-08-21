@@ -1,10 +1,12 @@
-"""主窗口：Notion-like 布局 + 左侧导航 + 页面栈"""
+"""主窗口：QFluentWidgets FluentWindow（Fluent Design 导航 + 页面栈）"""
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import (
-    QHBoxLayout, QLabel, QListWidget, QListWidgetItem,
-    QMainWindow, QStackedWidget, QVBoxLayout, QWidget,
+from PySide6.QtWidgets import QWidget, QVBoxLayout, QLabel
+
+from qfluentwidgets import (
+    FluentIcon, FluentWindow, InfoBar, InfoBarPosition, NavigationItemPosition,
+    SubtitleLabel, BodyLabel,
 )
 
 from app.db import get_conn
@@ -18,79 +20,20 @@ from app.ui.prepayment_view import PrepaymentView
 from app.ui.refund_view import RefundView
 from app.ui.snapshot_view import SnapshotView
 from app.ui.staff_view import StaffView
-from app.ui.style import QSS
-
-# 侧边栏导航项（图标 + 名称）
-NAV_ITEMS = [
-    ("📥 导入", "import"),
-    ("🧾 发票收款总表", "invoice"),
-    ("👥 经办人发票收款总表", "handler_all"),
-    ("🙋 经办人发票收款表", "handler_one"),
-    ("💰 预收款", "prepayment"),
-    ("↩️ 退款", "refund"),
-    ("✍️ 手动补录", "manual"),
-    ("🧑‍💼 员工管理", "staff"),
-    ("📸 快照", "snapshot"),
-    ("📋 导入记录", "batch"),
-]
 
 
-def _placeholder(title: str) -> QWidget:
-    """占位页面"""
-    w = QWidget()
-    lay = QVBoxLayout(w)
-    lbl = QLabel(title)
-    lbl.setObjectName("pageTitle")
-    hint = QLabel("该模块开发中，敬请期待。")
-    hint.setObjectName("pageHint")
-    lay.addWidget(lbl)
-    lay.addWidget(hint)
-    lay.addStretch()
-    return w
-
-
-class MainWindow(QMainWindow):
+class MainWindow(FluentWindow):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("律所开票收款统计")
-        self.resize(1280, 800)
-        self.setStyleSheet(QSS)
-        self._build_ui()
+        self.resize(1280, 820)
+        # Windows 10 无 Mica 材质，自动降级普通背景
+        self.setMicaEffectEnabled(False)
 
-    def _build_ui(self) -> None:
-        central = QWidget()
-        root = QHBoxLayout(central)
-        root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(0)
+        self._build_pages()
+        self._build_navigation()
 
-        # ---- 左侧导航 ----
-        sidebar = QWidget()
-        sidebar.setObjectName("sidebar")
-        sidebar.setFixedWidth(200)
-        s_lay = QVBoxLayout(sidebar)
-        s_lay.setContentsMargins(0, 0, 0, 0)
-        s_lay.setSpacing(0)
-
-        title = QLabel("📊 律所开票收款")
-        title.setObjectName("app_title")
-        s_lay.addWidget(title)
-        sub = QLabel("浙江震天律师事务所")
-        sub.setObjectName("app_sub")
-        s_lay.addWidget(sub)
-
-        self.nav = QListWidget()
-        for label, key in NAV_ITEMS:
-            item = QListWidgetItem(label)
-            item.setData(Qt.ItemDataRole.UserRole, key)
-            self.nav.addItem(item)
-        self.nav.currentRowChanged.connect(self._on_nav)
-        s_lay.addWidget(self.nav)
-        s_lay.addStretch()
-
-        # ---- 右侧页面栈 ----
-        self.pages = QStackedWidget()
-        self.pages.setObjectName("pageArea")
-
+    def _build_pages(self) -> None:
         self.page_import = ImportView()
         self.page_invoice = InvoiceCollectView()
         self.page_handler_all = HandlerCollectView()
@@ -102,54 +45,54 @@ class MainWindow(QMainWindow):
         self.page_snapshot = SnapshotView()
         self.page_batch = BatchView()
 
-        for p in (self.page_import, self.page_invoice, self.page_handler_all,
-                  self.page_handler_one, self.page_prepayment, self.page_refund,
-                  self.page_manual, self.page_staff, self.page_snapshot, self.page_batch):
-            self.pages.addWidget(p)
+    def _build_navigation(self) -> None:
+        nav = [
+            ("import", self.page_import, FluentIcon.DOWNLOAD, "导入"),
+            ("invoice", self.page_invoice, FluentIcon.TILES, "发票收款总表"),
+            ("handler_all", self.page_handler_all, FluentIcon.PEOPLE, "经办人收款总表"),
+            ("handler_one", self.page_handler_one, FluentIcon.LABEL, "经办人收款表"),
+            ("prepayment", self.page_prepayment, FluentIcon.SAVE, "预收款"),
+            ("refund", self.page_refund, FluentIcon.CANCEL, "退款"),
+            ("manual", self.page_manual, FluentIcon.EDIT, "手动补录"),
+            ("staff", self.page_staff, FluentIcon.LIBRARY, "员工管理"),
+            ("snapshot", self.page_snapshot, FluentIcon.CAMERA, "快照"),
+            ("batch", self.page_batch, FluentIcon.HISTORY, "导入记录"),
+        ]
+        for key, page, icon, text in nav:
+            page.setObjectName(key)
+            self.addSubInterface(page, icon, text, NavigationItemPosition.TOP)
+        self.navigationInterface.setCurrentItem("import")
 
-        root.addWidget(sidebar)
-        root.addWidget(self.pages, 1)
-        self.setCentralWidget(central)
-
-        self.nav.setCurrentRow(0)
-
-    def showEvent(self, event) -> None:  # noqa: N802
-        super().showEvent(event)
-        # 初始化引导：花名册为空时提示
-        if not self.staff_ready():
-            from PySide6.QtWidgets import QMessageBox
-            QMessageBox.information(
-                self, "初始化",
-                "首次使用请先在「员工管理」导入职工花名册（模板：职工清单.xlsx），\n"
-                "完成初始化后才能导入台账。",
-            )
-            self.nav.setCurrentRow(7)
-
-    def _on_nav(self, row: int) -> None:
-        self.pages.setCurrentIndex(max(row, 0))
-        page = self.pages.currentWidget()
-        if hasattr(page, "refresh"):
+    # ---- 对外接口 ----
+    def go_to_page(self, key: str) -> None:
+        """切换到指定页面并刷新"""
+        self.navigationInterface.setCurrentItem(key)
+        page = self.navigationInterface.widget(key)
+        if page and hasattr(page, "refresh"):
             page.refresh()
 
-    def go_to_page(self, key: str) -> None:
-        """按 key 切换到指定页面（如 'manual'）"""
-        for i in range(self.nav.count()):
-            if self.nav.item(i).data(Qt.ItemDataRole.UserRole) == key:
-                self.nav.setCurrentRow(i)
-                return
+    def show_info(self, message: str, success: bool = True) -> None:
+        """Fluent 风格通知条"""
+        InfoBar.success(message, parent=self, position=InfoBarPosition.TOP_RIGHT, duration=3000) if success \
+            else InfoBar.error(message, parent=self, position=InfoBarPosition.TOP_RIGHT, duration=4000)
 
-    # ---- 供其他模块调用 ----
     def staff_ready(self) -> bool:
-        """花名册是否已初始化（staff 表非空）"""
         conn = get_conn()
         try:
-            n = conn.execute("SELECT COUNT(*) FROM staff").fetchone()[0]
-            return n > 0
+            return conn.execute("SELECT COUNT(*) FROM staff").fetchone()[0] > 0
         finally:
             conn.close()
 
+    def showEvent(self, event) -> None:  # noqa: N802
+        super().showEvent(event)
+        if not self.staff_ready():
+            InfoBar.warning(
+                "首次使用请先在「员工管理」导入职工花名册（模板：职工清单.xlsx），完成初始化后才能导入台账。",
+                parent=self, position=InfoBarPosition.TOP, duration=8000,
+            )
+            self.navigationInterface.setCurrentItem("staff")
+
     def closeEvent(self, event) -> None:  # noqa: N802
-        """退出时 checkpoint，保证 WAL 合并回主库（同步软件前）"""
         from app.db import checkpoint
         checkpoint()
         super().closeEvent(event)

@@ -8,6 +8,7 @@ from PySide6.QtWidgets import (
     QPushButton, QVBoxLayout, QWidget,
 )
 
+from qfluentwidgets import (SubtitleLabel, CaptionLabel, PrimaryPushButton, PushButton)
 from app.importer.importer import (
     import_expense_file, import_invoice_file, import_ledger_file,
 )
@@ -46,11 +47,10 @@ class ImportView(QWidget):
         lay.setContentsMargins(24, 20, 24, 20)
         lay.setSpacing(12)
 
-        t = QLabel("导入")
-        t.setObjectName("pageTitle")
+        t = SubtitleLabel("导入")
         lay.addWidget(t)
         h = QLabel("选择台账文件，系统自动识别类型与账期。导入顺序：职工清单 → 销项 → 发票台账 → 费用台账。")
-        h.setObjectName("pageHint")
+        h.setStyleSheet("color:#8A8886;")
         lay.addWidget(h)
 
         btns = QHBoxLayout()

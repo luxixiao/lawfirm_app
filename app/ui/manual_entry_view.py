@@ -7,6 +7,7 @@ from PySide6.QtWidgets import (
     QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
+from qfluentwidgets import (SubtitleLabel, CaptionLabel, PrimaryPushButton, PushButton)
 from app.db import get_conn
 from app.importer.parse_handler import parse_handler_column
 
@@ -18,11 +19,10 @@ class ManualEntryView(QWidget):
         lay.setContentsMargins(24, 20, 24, 20)
         lay.setSpacing(10)
 
-        t = QLabel("手动补录")
-        t.setObjectName("pageTitle")
+        t = SubtitleLabel("手动补录")
         lay.addWidget(t)
         h = QLabel("补录历史发票 / 收款 / 退款（如跨年红冲原票）。补录数据与导入数据同模型计算。")
-        h.setObjectName("pageHint")
+        h.setStyleSheet("color:#8A8886;")
         lay.addWidget(h)
 
         btns = QHBoxLayout()
