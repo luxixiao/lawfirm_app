@@ -41,6 +41,11 @@ class SettlementView(QWidget):
         for y in range(cur, cur - 3, -1):
             self.year.addItem(f"{y}年", userData=y)
         self.year.currentIndexChanged.connect(lambda *_: self._reload_persons())
+        # 默认选中最近有数据的年份（避免默认年无数据导致经办人为空）
+        for i in range(self.year.count()):
+            if self.year.itemData(i) == self._latest_data_year():
+                self.year.setCurrentIndex(i)
+                break
         bar.addWidget(self.year)
 
         bar.addWidget(CaptionLabel("经办人"))
@@ -58,6 +63,23 @@ class SettlementView(QWidget):
         bar.addWidget(self.month)
         bar.addStretch()
         lay.addLayout(bar)
+        # 下拉列表显式样式：白底黑字 + 选中高亮（避免 qfluentwidgets 主题影响不可见）
+        COMBO_QSS = """
+        QComboBox { background: #FFFFFF; border: 1px solid #DADAD7; border-radius: 6px;
+                    padding: 5px 10px; min-height: 18px; }
+        QComboBox::drop-down { border: none; width: 22px; }
+        QComboBox QAbstractItemView {
+            background: #FFFFFF; color: #37352F;
+            selection-background-color: #E9E9E7; selection-color: #37352F;
+            border: 1px solid #DADAD7; outline: none;
+        }
+        QComboBox QAbstractItemView::item { padding: 6px 10px; min-height: 22px; }
+        """
+        for c in (self.year, self.person, self.month):
+            c.setStyleSheet(COMBO_QSS)
+            v = c.view()
+            if v is not None:
+                v.setMinimumWidth(180)
 
         # ---- 结算总表表格（项目 × 月）----
         self.table = QTableWidget(0, 14)
@@ -90,6 +112,15 @@ class SettlementView(QWidget):
         self._reload_persons()
 
     # ---- 人员列表 ----
+    @staticmethod
+    def _latest_data_year() -> int:
+        """最近一个有数据的年份（从今年往前找）"""
+        cur = datetime.now().year
+        for y in range(cur, cur - 4, -1):
+            if build_settlement(y):
+                return y
+        return cur
+
     def _reload_persons(self) -> None:
         year = self.year.currentData() or datetime.now().year
         data = build_settlement(year)
