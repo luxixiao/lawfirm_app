@@ -1,6 +1,7 @@
 """手动补录：发票 / 收款 / 退款（source='manual'，参与全部计算，可按来源筛选）"""
 from __future__ import annotations
 
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QComboBox, QDateEdit, QDialog, QDialogButtonBox, QDoubleSpinBox, QFormLayout,
     QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPushButton, QTabWidget,
@@ -86,11 +87,18 @@ class ManualEntryView(QWidget):
                 tbl.setItem(r, c, QTableWidgetItem(
                     "" if v is None else (f"{v:,.2f}" if isinstance(v, float) else str(v))))
 
-    # ---- 添加发票 ----
+    # ---- 添加发票（含收款信息）----
     def add_invoice(self) -> None:
+        from PySide6.QtWidgets import (QDoubleSpinBox, QTableWidgetItem, QVBoxLayout,
+                                       QFormLayout, QDialogButtonBox, QDateEdit)
+        from PySide6.QtCore import QDate
+
         dlg = QDialog(self)
         dlg.setWindowTitle("添加发票（手动补录）")
-        form = QFormLayout(dlg)
+        dlg.resize(560, 620)
+        lay = QVBoxLayout(dlg)
+
+        form = QFormLayout()
         no_edit = QLineEdit(); date_edit = QLineEdit(); buyer_edit = QLineEdit()
         amt = QDoubleSpinBox(); amt.setRange(-99999999, 99999999); amt.setDecimals(2)
         handler_edit = QLineEdit(); handler_edit.setPlaceholderText("如：张三4000、李四5000（红字填正数即可）")
@@ -101,9 +109,75 @@ class ManualEntryView(QWidget):
         form.addRow("价税合计", amt)
         form.addRow("经办人及金额", handler_edit)
         form.addRow("案号", case_edit)
+        lay.addLayout(form)
+
+        # ---- 收款信息（可多笔，可选）----
+        from qfluentwidgets import SubtitleLabel, CaptionLabel
+        rec_title = SubtitleLabel("收款信息（可选，可多笔）")
+        lay.addWidget(rec_title)
+        rec_hint = CaptionLabel("全额收款填一笔（金额=开票金额）；部分收款可分多笔。红字发票无需填收款（走退款）。")
+        rec_hint.setStyleSheet("color:#8A8886;")
+        lay.addWidget(rec_hint)
+
+        rec_table = QTableWidget(0, 2)
+        rec_table.setHorizontalHeaderLabels(["收款金额", "收款日期(YYYY-MM)"])
+        rec_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        rec_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        rec_table.verticalHeader().setVisible(False)
+        rec_table.horizontalHeader().setStretchLastSection(True)
+        lay.addWidget(rec_table, 1)
+
+        rec_btns = QHBoxLayout()
+        btn_add_rec = PushButton("添加收款")
+        btn_del_rec = PushButton("删除所选")
+        rec_btns.addWidget(btn_add_rec)
+        rec_btns.addWidget(btn_del_rec)
+        rec_btns.addStretch()
+        lay.addLayout(rec_btns)
+
+        def add_receipt():
+            """弹窗输入一笔收款（金额+日期）"""
+            sub = QDialog(dlg)
+            sub.setWindowTitle("添加收款")
+            f2 = QFormLayout(sub)
+            s_amt = QDoubleSpinBox(); s_amt.setRange(0.01, 99999999); s_amt.setDecimals(2)
+            s_date = QDateEdit(); s_date.setCalendarPopup(True); s_date.setDisplayFormat("yyyy-MM")
+            s_date.setDate(QDate.currentDate())
+            f2.addRow("收款金额", s_amt)
+            f2.addRow("收款日期(月)", s_date)
+            btns2 = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+            btns2.accepted.connect(sub.accept); btns2.rejected.connect(sub.reject)
+            f2.addRow(btns2)
+            if sub.exec() != QDialog.DialogCode.Accepted:
+                return
+            r = rec_table.rowCount()
+            rec_table.insertRow(r)
+            amt_item = QTableWidgetItem(f"{s_amt.value():,.2f}")
+            amt_item.setData(Qt.ItemDataRole.UserRole, round(s_amt.value(), 2))
+            date_item = QTableWidgetItem(s_date.date().toString("yyyy-MM"))
+            rec_table.setItem(r, 0, amt_item)
+            rec_table.setItem(r, 1, date_item)
+
+        def del_receipt():
+            row = rec_table.currentRow()
+            if row >= 0:
+                rec_table.removeRow(row)
+            else:
+                QMessageBox.information(dlg, "提示", "请先选择要删除的收款行")
+
+        btn_add_rec.clicked.connect(add_receipt)
+        btn_del_rec.clicked.connect(del_receipt)
+
+        # 红字发票提示：收款走退款
+        def on_total_changed():
+            rec_hint.setText("红字发票（价税合计为负）收款走「退款」页确认，无需在此填收款。" if amt.value() < 0
+                             else "全额收款填一笔（金额=开票金额）；部分收款可分多笔。")
+        amt.valueChanged.connect(on_total_changed)
+
         btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         btns.accepted.connect(dlg.accept); btns.rejected.connect(dlg.reject)
-        form.addRow(btns)
+        lay.addWidget(btns)
+
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
         no = no_edit.text().strip()
@@ -111,6 +185,20 @@ class ManualEntryView(QWidget):
             QMessageBox.warning(self, "提示", "发票号码不能为空"); return
         total = amt.value()
         handlers = parse_handler_column(handler_edit.text(), total, no) if handler_edit.text().strip() else []
+
+        # 收集收款记录
+        receipts = []
+        for r in range(rec_table.rowCount()):
+            a_item = rec_table.item(r, 0)
+            d_item = rec_table.item(r, 1)
+            if a_item and d_item:
+                receipts.append((a_item.data(Qt.ItemDataRole.UserRole), d_item.text()))
+        if total > 0:
+            sum_rec = sum(a for a, _ in receipts)
+            if sum_rec > total + 0.01:
+                QMessageBox.warning(self, "提示", f"收款合计({sum_rec:,.2f})超过开票金额({total:,.2f})")
+                return
+
         conn = get_conn()
         try:
             if conn.execute("SELECT 1 FROM invoice WHERE invoice_no=?", (no,)).fetchone():
@@ -123,6 +211,12 @@ class ManualEntryView(QWidget):
                 conn.execute(
                     "INSERT INTO charge_detail (invoice_no, person_name, billing_amount, source) VALUES (?,?,?,?)",
                     (no, name, amount, "manual"),
+                )
+            # 同时写入收款记录（source='manual'）
+            for amount, ym in receipts:
+                conn.execute(
+                    "INSERT INTO collection (invoice_no, amount, receipt_date, source, note) VALUES (?,?,?,?,?)",
+                    (no, amount, ym, "manual", "手动补录"),
                 )
             conn.commit()
         except Exception as e:  # noqa: BLE001
