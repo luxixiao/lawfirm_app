@@ -90,7 +90,8 @@ def _new_st(conn, name: str) -> Dict:
 def _empty_month() -> Dict[str, float]:
     return {k: 0.0 for k in (
         "rec_open_cur", "rec_cur_year", "rec_prev_year", "rec_refund_cur", "rec_refund_prev",
-        "inv_open_received", "inv_open_uncollected", "inv_red_cur", "inv_red_prev", "income",
+        "inv_open_received", "inv_open_uncollected", "inv_red_cur", "inv_red_prev",
+        "inv_total", "income",
     )}
 
 
@@ -147,7 +148,8 @@ def _compute(conn, year: int, person: str | None) -> Dict:
                 st = result.setdefault(name, _new_st(conn, name))
                 m = st["months"][rec_month]
                 if rec_year == inv_year and rec_month == inv_month:
-                    m["rec_open_cur"] += val          # ①本月开收（⑥在开票循环统一计算）
+                    m["rec_open_cur"] += val          # ①本月开收
+                    m["inv_open_received"] += val     # ⑥本月开收（=①）
                 elif rec_year == year and inv_year == year and rec_month > inv_month:
                     m["rec_cur_year"] += val          # ②收本年
                 elif inv_year < year:
@@ -171,9 +173,9 @@ def _compute(conn, year: int, person: str | None) -> Dict:
                 m["inv_open_uncollected"] += uncollected   # ⑦本月未收
                 st["uncollected_month"][inv_month] += uncollected  # 四·本月
                 st["_uncollected_acc"] += uncollected            # 四·合计（存量累计）
-            # ⑥本月开收 = 本月开票且已收（含期外预收），保证 ⑥+⑦ = 本月开票总额
-            received = round(billing - max(uncollected, 0.0), 2)
-            m["inv_open_received"] += received
+            # ⑥本月开收 = 本月开票且本月收（在收款循环中累加，与①相等）
+            # 本月开票总额（三小计独立计算，含预收票）
+            m["inv_total"] += billing
 
     # ============ 红字发票（三⑧⑨）============
     reds = conn.execute(
@@ -206,6 +208,7 @@ def _compute(conn, year: int, person: str | None) -> Dict:
             st = result.setdefault(name, _new_st(conn, name))
             m = st["months"][red_month]
             val = cd["billing_amount"]  # 负数
+            m["inv_total"] += val            # 三小计含红冲
             if orig_year is not None and orig_year < year:
                 m["inv_red_prev"] += val     # ⑨红冲上年
             else:
@@ -258,7 +261,7 @@ def _compute(conn, year: int, person: str | None) -> Dict:
             inv_net = (m["inv_open_received"] + m["inv_open_uncollected"]
                        + m["inv_red_cur"] + m["inv_red_prev"])          # 三小计（净）
             if st["staff_type"] == "合伙":
-                m["income"] = round(inv_net, 2)
+                m["income"] = round(m["inv_total"], 2)   # 本月开票净额（含预收票）
             elif st["staff_type"] in ("聘用", "兼职"):
                 m["income"] = round(rec_net, 2)
             else:

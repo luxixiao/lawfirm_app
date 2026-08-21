@@ -41,11 +41,6 @@ class SettlementView(QWidget):
         for y in range(cur, cur - 3, -1):
             self.year.addItem(f"{y}年", userData=y)
         self.year.currentIndexChanged.connect(lambda *_: self._reload_persons())
-        # 默认选中最近有数据的年份（避免默认年无数据导致经办人为空）
-        for i in range(self.year.count()):
-            if self.year.itemData(i) == self._latest_data_year():
-                self.year.setCurrentIndex(i)
-                break
         bar.addWidget(self.year)
 
         bar.addWidget(CaptionLabel("经办人"))
@@ -109,6 +104,13 @@ class SettlementView(QWidget):
         self.log.setPlaceholderText("生成日志…")
         lay.addWidget(self.log)
 
+        # 默认选中最近有数据的年份（避免默认年无数据导致经办人为空）
+        self.year.blockSignals(True)
+        for i in range(self.year.count()):
+            if self.year.itemData(i) == self._latest_data_year():
+                self.year.setCurrentIndex(i)
+                break
+        self.year.blockSignals(False)
         self._reload_persons()
 
     # ---- 人员列表 ----
@@ -194,9 +196,8 @@ class SettlementView(QWidget):
                            ("rec_prev_year", "3.收上年"), ("rec_refund_cur", "4.退本年"),
                            ("rec_refund_prev", "5.退上年")]:
             rows.append(row(label, [round(m[mo_][key], 2) for mo_ in range(1, 13)], True))
-        # 三
-        inv_keys = ["inv_open_received", "inv_open_uncollected", "inv_red_cur", "inv_red_prev"]
-        rows.append(row("三、本月开具发票金额", [round(sum(m[mo_][k] for k in inv_keys), 2) for mo_ in range(1, 13)], True))
+        # 三（小计 = 本月开票总额，独立计算，含预收票）
+        rows.append(row("三、本月开具发票金额", [round(m[mo_]["inv_total"], 2) for mo_ in range(1, 13)], True))
         for key, label in [("inv_open_received", "1.本月开收"), ("inv_open_uncollected", "2.本月未收"),
                            ("inv_red_cur", "3.红冲本年"), ("inv_red_prev", "4.红冲上年")]:
             rows.append(row(label, [round(m[mo_][key], 2) for mo_ in range(1, 13)], True))

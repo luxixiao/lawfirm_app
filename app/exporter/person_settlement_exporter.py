@@ -86,9 +86,10 @@ def export_one(st: Dict, person: str, path: str | Path, year: int) -> Path:
     put(r, "4", "退本年", _row_values(st, months, "rec_refund_cur")); r += 1
     put(r, "5", "退上年", _row_values(st, months, "rec_refund_prev")); r += 1
 
-    # 三、本月开具发票金额
-    inv_keys = ["inv_open_received", "inv_open_uncollected", "inv_red_cur", "inv_red_prev"]
-    put(r, "三", "本月开具发票金额", _subtotal(st, months, inv_keys), bold=True); r += 1
+    # 三、本月开具发票金额（三小计 = 本月开票总额，独立计算，含预收票）
+    inv_total_vals = [round(m[mo]["inv_total"], 2) for mo in months]
+    inv_total_vals.append(round(sum(inv_total_vals), 2))
+    put(r, "三", "本月开具发票金额", inv_total_vals, bold=True); r += 1
     put(r, "1", "本月开收", _row_values(st, months, "inv_open_received")); r += 1
     put(r, "2", "本月未收", _row_values(st, months, "inv_open_uncollected")); r += 1
     put(r, "3", "红冲本年", _row_values(st, months, "inv_red_cur")); r += 1
