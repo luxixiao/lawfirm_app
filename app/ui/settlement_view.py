@@ -423,9 +423,10 @@ class SettlementView(QWidget):
     # ---- 月度结算表 Tab（预览 + 导出）----
     def _build_report_tab(self) -> QWidget:
         w = QWidget()
-        v = QVBoxLayout(w)
+        v = QVBoxLayout()
         v.setContentsMargins(8, 10, 8, 10)
         v.setSpacing(10)
+        w.setLayout(v)
         bar = QHBoxLayout()
         bar.setSpacing(8)
         bar.addWidget(CaptionLabel("年份"))
@@ -464,11 +465,13 @@ class SettlementView(QWidget):
         """
         for c in (self.r_year, self.r_month, self.r_person):
             c.setStyleSheet(COMBO_QSS)
-        self.r_table = QTableWidget(0, 4)
-        self.r_table.setHorizontalHeaderLabels(["序号", "项目", "本期", "本年累计"])
+        self.r_table = QTableWidget(0, 5)
+        self.r_table.setHorizontalHeaderLabels(["序号", "项目", "本期", "本年累计", "备注"])
         self.r_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.r_table.verticalHeader().setVisible(False)
         self.r_table.horizontalHeader().setStretchLastSection(True)
+        for c, wd in enumerate([40, 200, 95, 95, 300]):
+            self.r_table.setColumnWidth(c, wd)
         v.addWidget(self.r_table, 1)
         bbar = QHBoxLayout()
         self.btn_report = PushButton("导出月度结算表…")
@@ -499,7 +502,9 @@ class SettlementView(QWidget):
             self.r_table.setRowCount(0)
             self.r_summary.setText(f"{name} 在 {year} 年无数据")
             return
+        from app.exporter.settlement_report_exporter import report_note
         rows = build_report_rows(st, year, month)
+        note = report_note(st, month)
         self.r_table.setRowCount(len(rows))
         from PySide6.QtGui import QFont
         for r, (seq, nm, cur, total, bold) in enumerate(rows):
@@ -511,4 +516,10 @@ class SettlementView(QWidget):
                 if bold:
                     item.setFont(QFont(item.font().family(), item.font().pointSize(), QFont.Weight.Bold))
                 self.r_table.setItem(r, c, item)
+            # 备注显示在首行
+            if r == 0:
+                item = QTableWidgetItem(note)
+                if note:
+                    item.setForeground(Qt.GlobalColor.gray)
+                self.r_table.setItem(r, 4, item)
         self.r_summary.setText(f"{name}（{st['staff_type']}）· {year}年{month}月结算表预览（共{len(rows)}行，确认后导出）")
