@@ -77,15 +77,18 @@ class ManualEntryView(QWidget):
         return t
 
     def refresh(self) -> None:
+        from collections import defaultdict
         conn = get_conn()
         try:
-            # 字段顺序与表格列一致：开票日期|发票号码|购方名称|价税合计|经办人|案号
+            # 字段顺序与表格列一致：开票日期|发票号码|购方名称|价税合计|经办人(含金额)|案号
             invs = conn.execute(
-                """SELECT i.invoice_date, i.invoice_no, i.buyer, i.total_amount,
-                          (SELECT group_concat(cd.person_name, '、') FROM charge_detail cd
-                           WHERE cd.invoice_no = i.invoice_no) AS handlers,
-                          i.case_no
-                   FROM invoice i WHERE i.source='manual' ORDER BY i.invoice_date"""
+                "SELECT i.invoice_date, i.invoice_no, i.buyer, i.total_amount, i.case_no "
+                "FROM invoice i WHERE i.source='manual' ORDER BY i.invoice_date"
+            ).fetchall()
+            cds = conn.execute(
+                "SELECT cd.invoice_no, cd.person_name, cd.billing_amount "
+                "FROM charge_detail cd JOIN invoice i ON cd.invoice_no=i.invoice_no "
+                "WHERE i.source='manual' ORDER BY cd.invoice_no, cd.id"
             ).fetchall()
             cols = conn.execute(
                 "SELECT invoice_no, amount, receipt_date, note FROM collection WHERE source='manual' ORDER BY receipt_date"
@@ -93,7 +96,19 @@ class ManualEntryView(QWidget):
             refs = conn.execute("SELECT red_invoice_no, refund_amount, refund_date FROM refund ORDER BY refund_date").fetchall()
         finally:
             conn.close()
-        self._fill(self.tab_invoices, invs, 6)
+
+        # 组装经办人列（姓名+金额，如"张三2000李四3000"）
+        handlers_map = defaultdict(list)
+        for cd in cds:
+            handlers_map[cd["invoice_no"]].append(cd)
+        rows = []
+        for inv in invs:
+            parts = []
+            for cd in handlers_map.get(inv["invoice_no"], []):
+                parts.append(f"{cd['person_name']}{cd['billing_amount']:g}")
+            rows.append([inv["invoice_date"], inv["invoice_no"], inv["buyer"],
+                         inv["total_amount"], "".join(parts), inv["case_no"]])
+        self._fill(self.tab_invoices, rows, 6)
         self._fill(self.tab_collections, cols, 4)
         self._fill(self.tab_refunds, refs, 3)
         self._load_pending()
