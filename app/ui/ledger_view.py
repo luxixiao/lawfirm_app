@@ -1,0 +1,363 @@
+"""台账数据管理：查看/修改所有导入文档（发票/收款/费用/员工），修改记录带手动备注"""
+from __future__ import annotations
+
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import (
+    QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFormLayout, QHBoxLayout,
+    QLabel, QLineEdit, QMessageBox, QTableWidget, QTableWidgetItem, QTabWidget,
+    QVBoxLayout, QWidget,
+)
+
+from qfluentwidgets import (CaptionLabel, PushButton, SubtitleLabel)
+
+from app.db import get_conn
+from app.engine.change_log import log_change, log_changes, fetch_log
+from app.importer.parse_handler import parse_handler_column
+
+
+def _note_input(parent: QWidget) -> QLineEdit:
+    e = QLineEdit()
+    e.setPlaceholderText("可选：填写本次修改的原因说明（记录在修改记录中）")
+    return e
+
+
+class LedgerView(QWidget):
+    def __init__(self) -> None:
+        super().__init__()
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(28, 24, 28, 20)
+        lay.setSpacing(12)
+
+        t = SubtitleLabel("台账数据")
+        lay.addWidget(t)
+        h = CaptionLabel("查看并修改所有导入/补录的台账数据；任何修改都会记录（含手动备注），修改后以新数据参与全部计算。")
+        h.setStyleSheet("color:#8A8886;")
+        lay.addWidget(h)
+
+        self.tabs = QTabWidget()
+        self.tab_invoice = self._make_table(["开票日期", "发票号码", "购方名称", "价税合计", "经办人", "案号", "来源"],
+                                            [1, 2, 3, 4, 5, 6])
+        self.tab_collection = self._make_table(["发票号码", "收款金额", "收款日期", "备注", "来源"], [1, 2, 3])
+        self.tab_expense = self._make_table(["账期", "经办人", "费用类型", "金额", "凭证号"], [0, 1, 2, 3])
+        self.tab_staff = self._make_table(["姓名", "员工类型", "是否在职"], [0, 1, 2])
+        self.tab_log = self._make_table(["时间", "表", "记录", "字段", "旧值", "新值", "备注"], [], readonly=True)
+        self.tabs.addTab(self.tab_invoice, "发票")
+        self.tabs.addTab(self.tab_collection, "收款")
+        self.tabs.addTab(self.tab_expense, "费用")
+        self.tabs.addTab(self.tab_staff, "员工")
+        self.tabs.addTab(self.tab_log, "修改记录")
+        lay.addWidget(self.tabs, 1)
+
+        btns = QHBoxLayout()
+        self.btn_edit = PushButton("编辑所选")
+        self.btn_edit.clicked.connect(self.edit_selected)
+        self.btn_refresh = PushButton("刷新")
+        self.btn_refresh.clicked.connect(self.refresh)
+        self.lbl = CaptionLabel("双击也可编辑")
+        self.lbl.setStyleSheet("color:#8A8886;")
+        btns.addWidget(self.btn_edit)
+        btns.addWidget(self.btn_refresh)
+        btns.addStretch()
+        btns.addWidget(self.lbl)
+        lay.addLayout(btns)
+
+        for tb in (self.tab_invoice, self.tab_collection, self.tab_expense, self.tab_staff):
+            tb.cellDoubleClicked.connect(lambda *_: self.edit_selected())
+        self.refresh()
+
+    def showEvent(self, event) -> None:  # noqa: N802
+        super().showEvent(event)
+        self.refresh()
+
+    def _make_table(self, cols: list, edit_cols: list, *, readonly: bool = False) -> QTableWidget:
+        tb = QTableWidget(0, len(cols))
+        tb.setHorizontalHeaderLabels(cols)
+        tb.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        tb.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        tb.verticalHeader().setVisible(False)
+        tb.horizontalHeader().setStretchLastSection(True)
+        tb._edit_cols = edit_cols
+        tb._readonly = readonly
+        return tb
+
+    def _fill(self, tb: QTableWidget, rows, meta_key: str) -> None:
+        tb.setRowCount(0)
+        tb.setRowCount(len(rows))
+        setattr(self, f"_meta_{meta_key}", {})
+        meta = getattr(self, f"_meta_{meta_key}")
+        for r, row in enumerate(rows):
+            for c, v in enumerate(row[:-1]):
+                item = QTableWidgetItem("" if v is None else (f"{v:,.2f}" if isinstance(v, float) else str(v)))
+                if isinstance(v, float):
+                    item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                tb.setItem(r, c, item)
+            meta[r] = row[-1]
+
+    # ---- 加载 ----
+    def refresh(self) -> None:
+        conn = get_conn()
+        try:
+            invs = conn.execute(
+                """SELECT i.invoice_date, i.invoice_no, i.buyer, i.total_amount,
+                          (SELECT group_concat(cd.person_name || printf('%.2f', cd.billing_amount), ' ')
+                           FROM charge_detail cd WHERE cd.invoice_no = i.invoice_no) AS handlers,
+                          i.case_no, i.source, i.invoice_no AS key
+                   FROM invoice i ORDER BY i.invoice_date, i.invoice_no"""
+            ).fetchall()
+            cols = conn.execute(
+                "SELECT invoice_no, amount, receipt_date, note, source, id AS key FROM collection ORDER BY receipt_date"
+            ).fetchall()
+            exps = conn.execute(
+                "SELECT period, actual_handler, expense_type, expense_amount, ticket_no, id AS key "
+                "FROM expense_ledger ORDER BY period, id"
+            ).fetchall()
+            staffs = conn.execute(
+                "SELECT name, staff_type, is_active, id AS key FROM staff ORDER BY name"
+            ).fetchall()
+            logs = conn.execute(
+                "SELECT created_at, table_name, record_id, field, old_value, new_value, note "
+                "FROM change_log ORDER BY id DESC LIMIT 500"
+            ).fetchall()
+        finally:
+            conn.close()
+        self._fill(self.tab_invoice, invs, "invoice")
+        self._fill(self.tab_collection, cols, "collection")
+        self._fill(self.tab_expense, exps, "expense")
+        self._fill(self.tab_staff, staffs, "staff")
+        self._fill(self.tab_log, logs, "log")
+
+    # ---- 编辑 ----
+    def edit_selected(self) -> None:
+        tb = self.tabs.currentWidget()
+        if getattr(tb, "_readonly", False):
+            QMessageBox.information(self, "提示", "修改记录为只读（修改时自动生成）")
+            return
+        row = tb.currentRow()
+        if row < 0:
+            QMessageBox.information(self, "提示", "请先选择一行（或双击）")
+            return
+        if tb is self.tab_invoice:
+            self._edit_invoice(row)
+        elif tb is self.tab_collection:
+            self._edit_collection(row)
+        elif tb is self.tab_expense:
+            self._edit_expense(row)
+        elif tb is self.tab_staff:
+            self._edit_staff(row)
+
+    # ---- 发票 ----
+    def _edit_invoice(self, row: int) -> None:
+        key = self._meta_invoice[row]
+        conn = get_conn()
+        try:
+            inv = conn.execute("SELECT * FROM invoice WHERE invoice_no=?", (key,)).fetchone()
+            cds = conn.execute(
+                "SELECT person_name, billing_amount FROM charge_detail WHERE invoice_no=? ORDER BY id", (key,)
+            ).fetchall()
+        finally:
+            conn.close()
+        if inv is None:
+            return
+        parts = [f"{cd['person_name']}{abs(cd['billing_amount']):g}" for cd in cds]
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle(f"编辑发票：{key}")
+        dlg.resize(460, 360)
+        form = QFormLayout(dlg)
+        date_edit = QLineEdit(inv["invoice_date"] or "")
+        buyer_edit = QLineEdit(inv["buyer"] or "")
+        amt = QDoubleSpinBox(); amt.setRange(-99999999, 99999999); amt.setDecimals(2); amt.setValue(inv["total_amount"])
+        handler_edit = QLineEdit("、".join(parts))
+        handler_edit.setPlaceholderText("如：张三4000、李四5000")
+        case_edit = QLineEdit(inv["case_no"] or "")
+        note_edit = _note_input(self)
+        form.addRow("开票日期", date_edit)
+        form.addRow("购方名称", buyer_edit)
+        form.addRow("价税合计", amt)
+        form.addRow("经办人及金额", handler_edit)
+        form.addRow("案号", case_edit)
+        form.addRow("修改备注", note_edit)
+        btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        btns.accepted.connect(dlg.accept); btns.rejected.connect(dlg.reject)
+        form.addRow(btns)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        total = amt.value()
+        note = note_edit.text().strip()
+        new_handlers = parse_handler_column(handler_edit.text(), total, key) if handler_edit.text().strip() else []
+        conn = get_conn()
+        try:
+            changes = []
+            for f, o, n in [("invoice_date", inv["invoice_date"], date_edit.text().strip() or None),
+                            ("buyer", inv["buyer"], buyer_edit.text().strip()),
+                            ("total_amount", inv["total_amount"], total),
+                            ("case_no", inv["case_no"], case_edit.text().strip())]:
+                if str(o or "") != str(n or ""):
+                    changes.append((f, o, n))
+            conn.execute(
+                "UPDATE invoice SET invoice_date=?, buyer=?, total_amount=?, case_no=? WHERE invoice_no=?",
+                (date_edit.text().strip() or None, buyer_edit.text().strip(), total,
+                 case_edit.text().strip(), key),
+            )
+            # 经办人重建（比较旧列表）
+            old_handlers = [(cd["person_name"], cd["billing_amount"]) for cd in cds]
+            if sorted(str(x) for x in old_handlers) != sorted(str(x) for x in new_handlers):
+                changes.append(("charge_detail", ";".join(map(str, old_handlers)), ";".join(map(str, new_handlers))))
+                conn.execute("DELETE FROM charge_detail WHERE invoice_no=?", (key,))
+                for name, amount in new_handlers:
+                    conn.execute(
+                        "INSERT INTO charge_detail (invoice_no, person_name, billing_amount, source) VALUES (?,?,?,?)",
+                        (key, name, amount, inv["source"]),
+                    )
+            log_changes(conn, "invoice", key, changes, note)
+            conn.commit()
+        except Exception as e:  # noqa: BLE001
+            conn.rollback(); QMessageBox.critical(self, "失败", str(e)); return
+        finally:
+            conn.close()
+        self.refresh()
+        QMessageBox.information(self, "已保存", f"发票 {key} 已修改，修改已记录")
+
+    # ---- 收款 ----
+    def _edit_collection(self, row: int) -> None:
+        cid = self._meta_collection[row]
+        conn = get_conn()
+        try:
+            rec = conn.execute("SELECT * FROM collection WHERE id=?", (cid,)).fetchone()
+        finally:
+            conn.close()
+        if rec is None:
+            return
+        dlg = QDialog(self)
+        dlg.setWindowTitle(f"编辑收款 #{cid}")
+        form = QFormLayout(dlg)
+        amt = QDoubleSpinBox(); amt.setRange(-99999999, 99999999); amt.setDecimals(2); amt.setValue(rec["amount"])
+        date_edit = QLineEdit(rec["receipt_date"] or "")
+        note_edit = QLineEdit(rec["note"] or "")
+        rnote = _note_input(self)
+        form.addRow("收款金额", amt)
+        form.addRow("收款日期(YYYY-MM)", date_edit)
+        form.addRow("备注", note_edit)
+        form.addRow("修改备注", rnote)
+        btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        btns.accepted.connect(dlg.accept); btns.rejected.connect(dlg.reject)
+        form.addRow(btns)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        conn = get_conn()
+        try:
+            changes = []
+            for f, o, n in [("amount", rec["amount"], amt.value()),
+                            ("receipt_date", rec["receipt_date"], date_edit.text().strip() or None),
+                            ("note", rec["note"], note_edit.text().strip())]:
+                if str(o or "") != str(n or ""):
+                    changes.append((f, o, n))
+            if not changes:
+                conn.close(); return
+            conn.execute("UPDATE collection SET amount=?, receipt_date=?, note=? WHERE id=?",
+                         (amt.value(), date_edit.text().strip() or None, note_edit.text().strip(), cid))
+            log_changes(conn, "collection", str(cid), changes, rnote.text().strip())
+            conn.commit()
+        except Exception as e:  # noqa: BLE001
+            conn.rollback(); QMessageBox.critical(self, "失败", str(e)); return
+        finally:
+            conn.close()
+        self.refresh()
+
+    # ---- 费用 ----
+    def _edit_expense(self, row: int) -> None:
+        eid = self._meta_expense[row]
+        conn = get_conn()
+        try:
+            e = conn.execute("SELECT * FROM expense_ledger WHERE id=?", (eid,)).fetchone()
+        finally:
+            conn.close()
+        if e is None:
+            return
+        dlg = QDialog(self)
+        dlg.setWindowTitle(f"编辑费用 #{eid}")
+        form = QFormLayout(dlg)
+        type_edit = QLineEdit(e["expense_type"] or "")
+        amt = QDoubleSpinBox(); amt.setRange(-99999999, 99999999); amt.setDecimals(2); amt.setValue(e["expense_amount"] or 0)
+        handler_edit = QLineEdit(e["actual_handler"] or "")
+        rnote = _note_input(self)
+        form.addRow("费用类型", type_edit)
+        form.addRow("金额", amt)
+        form.addRow("经办人", handler_edit)
+        form.addRow("修改备注", rnote)
+        btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        btns.accepted.connect(dlg.accept); btns.rejected.connect(dlg.reject)
+        form.addRow(btns)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        conn = get_conn()
+        try:
+            changes = []
+            for f, o, n in [("expense_type", e["expense_type"], type_edit.text().strip()),
+                            ("expense_amount", e["expense_amount"], amt.value()),
+                            ("actual_handler", e["actual_handler"], handler_edit.text().strip())]:
+                if str(o or "") != str(n or ""):
+                    changes.append((f, o, n))
+            if not changes:
+                conn.close(); return
+            conn.execute("UPDATE expense_ledger SET expense_type=?, expense_amount=?, actual_handler=? WHERE id=?",
+                         (type_edit.text().strip(), amt.value(), handler_edit.text().strip(), eid))
+            log_changes(conn, "expense_ledger", str(eid), changes, rnote.text().strip())
+            conn.commit()
+        except Exception as e:  # noqa: BLE001
+            conn.rollback(); QMessageBox.critical(self, "失败", str(e)); return
+        finally:
+            conn.close()
+        self.refresh()
+
+    # ---- 员工 ----
+    def _edit_staff(self, row: int) -> None:
+        sid = self._meta_staff[row]
+        conn = get_conn()
+        try:
+            s = conn.execute("SELECT * FROM staff WHERE id=?", (sid,)).fetchone()
+        finally:
+            conn.close()
+        if s is None:
+            return
+        dlg = QDialog(self)
+        dlg.setWindowTitle(f"编辑员工：{s['name']}")
+        form = QFormLayout(dlg)
+        type_combo = QComboBox()
+        for t in ["合伙", "聘用", "兼职", "其他"]:
+            type_combo.addItem(t, userData=t)
+        idx = max(0, [type_combo.itemText(i) for i in range(type_combo.count())].index(
+            (s["staff_type"] or "其他") if (s["staff_type"] or "其他") in [type_combo.itemText(i) for i in range(type_combo.count())] else "其他"))
+        type_combo.setCurrentIndex(idx)
+        active_combo = QComboBox()
+        active_combo.addItem("在职", userData=1)
+        active_combo.addItem("离职", userData=0)
+        active_combo.setCurrentIndex(0 if s["is_active"] else 1)
+        rnote = _note_input(self)
+        form.addRow("员工类型", type_combo)
+        form.addRow("状态", active_combo)
+        form.addRow("修改备注", rnote)
+        btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        btns.accepted.connect(dlg.accept); btns.rejected.connect(dlg.reject)
+        form.addRow(btns)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        conn = get_conn()
+        try:
+            changes = []
+            for f, o, n in [("staff_type", s["staff_type"], type_combo.currentData()),
+                            ("is_active", s["is_active"], active_combo.currentData())]:
+                if str(o or "") != str(n or ""):
+                    changes.append((f, o, n))
+            if not changes:
+                conn.close(); return
+            conn.execute("UPDATE staff SET staff_type=?, is_active=? WHERE id=?",
+                         (type_combo.currentData(), active_combo.currentData(), sid))
+            log_changes(conn, "staff", s["name"], changes, rnote.text().strip())
+            conn.commit()
+        except Exception as e:  # noqa: BLE001
+            conn.rollback(); QMessageBox.critical(self, "失败", str(e)); return
+        finally:
+            conn.close()
+        self.refresh()

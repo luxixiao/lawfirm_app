@@ -144,6 +144,19 @@ CREATE INDEX IF NOT EXISTS idx_charge_invoice ON charge_detail(invoice_no);
 CREATE INDEX IF NOT EXISTS idx_collection_inv ON collection(invoice_no);
 CREATE INDEX IF NOT EXISTS idx_refund_red     ON refund(red_invoice_no);
 CREATE INDEX IF NOT EXISTS idx_batch_type     ON import_batch(batch_type, period);
+
+-- 数据修改记录（含手动备注）
+CREATE TABLE IF NOT EXISTS change_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    table_name TEXT NOT NULL,
+    record_id  TEXT NOT NULL,
+    field      TEXT NOT NULL,
+    old_value  TEXT,
+    new_value  TEXT,
+    note       TEXT DEFAULT '',
+    created_at TEXT DEFAULT (datetime('now','localtime'))
+);
+CREATE INDEX IF NOT EXISTS idx_changelog_record ON change_log(table_name, record_id);
 """
 
 

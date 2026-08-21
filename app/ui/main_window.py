@@ -15,6 +15,7 @@ from app.ui.handler_collect_view import HandlerCollectView
 from app.ui.handler_filter_view import HandlerFilterView
 from app.ui.import_view import ImportView
 from app.ui.invoice_collect_view import InvoiceCollectView
+from app.ui.ledger_view import LedgerView
 from app.ui.manual_entry_view import ManualEntryView
 from app.ui.prepayment_view import PrepaymentView
 from app.ui.refund_view import RefundView
@@ -44,6 +45,7 @@ class MainWindow(FluentWindow):
         self.page_prepayment = PrepaymentView()
         self.page_refund = RefundView()
         self.page_manual = ManualEntryView()
+        self.page_ledger = LedgerView()
         self.page_settlement = SettlementView()
         self.page_staff = StaffView()
         self.page_snapshot = SnapshotView()
@@ -52,7 +54,8 @@ class MainWindow(FluentWindow):
             "import": self.page_import, "invoice": self.page_invoice,
             "handler_all": self.page_handler_all, "handler_one": self.page_handler_one,
             "prepayment": self.page_prepayment, "refund": self.page_refund,
-            "manual": self.page_manual, "settlement": self.page_settlement,
+            "manual": self.page_manual, "ledger": self.page_ledger,
+            "settlement": self.page_settlement,
             "staff": self.page_staff,
             "snapshot": self.page_snapshot, "batch": self.page_batch,
         }
@@ -66,6 +69,7 @@ class MainWindow(FluentWindow):
             ("prepayment", self.page_prepayment, FluentIcon.SAVE, "预收款"),
             ("refund", self.page_refund, FluentIcon.CANCEL, "退款"),
             ("manual", self.page_manual, FluentIcon.EDIT, "手动补录"),
+            ("ledger", self.page_ledger, FluentIcon.MENU, "台账数据"),
             ("settlement", self.page_settlement, FluentIcon.DOCUMENT, "个人结算总表"),
             ("staff", self.page_staff, FluentIcon.LIBRARY, "员工管理"),
             ("snapshot", self.page_snapshot, FluentIcon.CAMERA, "快照"),
