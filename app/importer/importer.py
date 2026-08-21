@@ -270,6 +270,15 @@ def import_expense_file(path: str, period: str) -> Dict:
                 f"经办人不在职工花名册中（请先在员工管理中添加）: {', '.join(sorted(set(missing)))}"
             )
 
+        # 费用类型校验：不在维护名单（费用归类）中的类型 → 报错
+        from app.engine.expense_cat import check_unknown
+        etypes = [it["expense_type"] for it in items if it.get("expense_type")]
+        unknown = check_unknown(conn, etypes)
+        if unknown:
+            raise ImportError_(
+                f"费用类型不在维护名单中（请先到「台账数据→费用归类」添加或归类）: {', '.join(sorted(set(unknown)))}"
+            )
+
         _drop_active_batch(conn, "expense", period)
         archive = _archive_file(path, "expense", period)
         batch_id = _new_batch(conn, "expense", period, Path(path).name, archive, "")

@@ -157,6 +157,13 @@ CREATE TABLE IF NOT EXISTS change_log (
     created_at TEXT DEFAULT (datetime('now','localtime'))
 );
 CREATE INDEX IF NOT EXISTS idx_changelog_record ON change_log(table_name, record_id);
+
+-- 费用类型维护（全集 + 归类：报酬发放/住房公积金/保险费/汽油费/其他）
+CREATE TABLE IF NOT EXISTS expense_cat (
+    expense_type TEXT PRIMARY KEY,
+    category     TEXT NOT NULL DEFAULT '其他',
+    created_at   TEXT DEFAULT (datetime('now','localtime'))
+);
 """
 
 
@@ -175,6 +182,10 @@ def init_db() -> None:
     conn = get_conn()
     try:
         conn.executescript(SCHEMA)
+        # 迁移：staff 加入职月份
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(staff)")]
+        if "hire_month" not in cols:
+            conn.execute("ALTER TABLE staff ADD COLUMN hire_month TEXT DEFAULT ''")
         conn.commit()
     finally:
         conn.close()

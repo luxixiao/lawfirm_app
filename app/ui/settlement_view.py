@@ -98,11 +98,14 @@ class SettlementView(QWidget):
         self.btn_selected.clicked.connect(self.gen_selected)
         self.btn_report = PushButton("导出月度结算表…")
         self.btn_report.clicked.connect(self.gen_report)
+        self.btn_staff_income = PushButton("导出年度聘用结算表…")
+        self.btn_staff_income.clicked.connect(self.gen_staff_income)
         self.lbl_summary = CaptionLabel("")
         self.lbl_summary.setStyleSheet("color:#8A8886;")
         bottom.addWidget(self.btn_all)
         bottom.addWidget(self.btn_selected)
         bottom.addWidget(self.btn_report)
+        bottom.addWidget(self.btn_staff_income)
         bottom.addStretch()
         bottom.addWidget(self.lbl_summary)
         lay.addLayout(bottom)
@@ -534,3 +537,40 @@ class SettlementView(QWidget):
         for r in note_rows:
             self.r_table.resizeRowToContents(r)
         self.r_summary.setText(f"{name}（{st['staff_type']}）· {year}年{month}月结算表预览（共{len(rows)}行，确认后导出）")
+
+    # ---- 导出年度聘用律师业务收入结算表 ----
+    def gen_staff_income(self) -> None:
+        from pathlib import Path
+        from PySide6.QtWidgets import QDialog, QDialogButtonBox, QSpinBox
+        year = self.year.currentData() or datetime.now().year
+        dlg = QDialog(self)
+        dlg.setWindowTitle("导出年度聘用结算表")
+        form = QVBoxLayout(dlg)
+        mbar = QHBoxLayout()
+        mbar.addWidget(CaptionLabel("截至月份"))
+        month_spin = QSpinBox()
+        month_spin.setRange(1, 12)
+        month_spin.setValue(min(datetime.now().month, 12))
+        mbar.addWidget(month_spin)
+        mbar.addStretch()
+        form.addLayout(mbar)
+        btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        btns.accepted.connect(dlg.accept); btns.rejected.connect(dlg.reject)
+        form.addWidget(btns)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        month_to = month_spin.value()
+        out = self._choose_dir()
+        if not out:
+            return
+        from app.exporter.staff_income_exporter import export_staff_income
+        self.log.clear()
+        self.log.appendPlainText(f"正在生成 {year}年度聘用律师业务收入结算表（1~{month_to}月）…")
+        try:
+            f = export_staff_income(Path(out) / f"{year}年度业务收入结算表（聘用律师）.xlsx", year, month_to)
+        except Exception as e:  # noqa: BLE001
+            self.log.appendPlainText(f"✗ 生成失败: {e}")
+            QMessageBox.critical(self, "生成失败", str(e))
+            return
+        self.log.appendPlainText(f"✓ {f}")
+        QMessageBox.information(self, "生成完成", f"已生成：{f}")

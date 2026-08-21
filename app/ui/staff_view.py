@@ -41,11 +41,12 @@ class StaffView(QWidget):
         btns.addStretch()
         lay.addLayout(btns)
 
-        self.table = QTableWidget(0, 4)
-        self.table.setHorizontalHeaderLabels(["姓名", "类型", "状态", "备注"])
+        self.table = QTableWidget(0, 5)
+        self.table.setHorizontalHeaderLabels(["姓名", "类型", "状态", "入职月份", "备注"])
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.horizontalHeader().setStretchLastSection(True)
+        self.table.cellDoubleClicked.connect(lambda *_: self.edit_selected())
         lay.addWidget(self.table)
 
         self.refresh()
@@ -60,7 +61,7 @@ class StaffView(QWidget):
         conn = get_conn()
         try:
             rows = conn.execute(
-                "SELECT name, staff_type, is_active, note, source FROM staff ORDER BY is_active DESC, name"
+                "SELECT name, staff_type, is_active, hire_month, note, source FROM staff ORDER BY is_active DESC, name"
             ).fetchall()
         finally:
             conn.close()
@@ -72,7 +73,8 @@ class StaffView(QWidget):
             item = QTableWidgetItem(status)
             item.setForeground(Qt.GlobalColor.gray if not row["is_active"] else Qt.GlobalColor.black)
             self.table.setItem(r, 2, item)
-            self.table.setItem(r, 3, QTableWidgetItem(row["note"] or ""))
+            self.table.setItem(r, 3, QTableWidgetItem(row["hire_month"] or ""))
+            self.table.setItem(r, 4, QTableWidgetItem(row["note"] or ""))
 
     # ---- 动作 ----
     def import_staff(self) -> None:
@@ -130,8 +132,11 @@ class StaffView(QWidget):
         type_combo = QComboBox()
         type_combo.addItems(["合伙", "聘用", "兼职", "挂靠"])
         note_edit = QLineEdit()
+        hire_edit = QLineEdit()
+        hire_edit.setPlaceholderText("如 2025-04，留空=始终在名单")
         form.addRow("姓名", name_edit)
         form.addRow("类型", type_combo)
+        form.addRow("入职月份", hire_edit)
         form.addRow("备注", note_edit)
         btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         btns.accepted.connect(dlg.accept)
@@ -146,10 +151,62 @@ class StaffView(QWidget):
         conn = get_conn()
         try:
             conn.execute(
-                "INSERT OR IGNORE INTO staff (name, staff_type, is_active, note, source) VALUES (?,?,1,?,?)",
-                (name, type_combo.currentText(), note_edit.text().strip(), "manual"),
+                "INSERT OR IGNORE INTO staff (name, staff_type, is_active, hire_month, note, source) VALUES (?,?,1,?,?,?)",
+                (name, type_combo.currentText(), hire_edit.text().strip(), note_edit.text().strip(), "manual"),
             )
             conn.commit()
+        finally:
+            conn.close()
+        self.refresh()
+
+    def edit_selected(self) -> None:
+        """编辑选中员工：类型/入职月份/备注"""
+        from PySide6.QtWidgets import QDialog, QLineEdit, QComboBox, QDialogButtonBox, QFormLayout
+        row = self.table.currentRow()
+        if row < 0:
+            QMessageBox.information(self, "提示", "请先选择一名职工（或双击）")
+            return
+        name = self.table.item(row, 0).text()
+        conn = get_conn()
+        try:
+            s = conn.execute("SELECT * FROM staff WHERE name=?", (name,)).fetchone()
+        finally:
+            conn.close()
+        if s is None:
+            return
+        dlg = QDialog(self)
+        dlg.setWindowTitle(f"编辑员工：{name}")
+        form = QFormLayout(dlg)
+        type_combo = QComboBox()
+        for t in ["合伙", "聘用", "兼职", "挂靠", "其他"]:
+            type_combo.addItem(t, userData=t)
+        type_combo.setCurrentText(s["staff_type"] or "聘用")
+        hire_edit = QLineEdit(s["hire_month"] or "")
+        hire_edit.setPlaceholderText("如 2025-04，留空=始终在名单")
+        note_edit = QLineEdit(s["note"] or "")
+        form.addRow("类型", type_combo)
+        form.addRow("入职月份", hire_edit)
+        form.addRow("备注", note_edit)
+        btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        btns.accepted.connect(dlg.accept); btns.rejected.connect(dlg.reject)
+        form.addRow(btns)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        conn = get_conn()
+        try:
+            from app.engine.change_log import log_changes
+            changes = []
+            for f, o, n in [("staff_type", s["staff_type"], type_combo.currentData()),
+                            ("hire_month", s["hire_month"], hire_edit.text().strip() or ""),
+                            ("note", s["note"], note_edit.text().strip())]:
+                if str(o or "") != str(n or ""):
+                    changes.append((f, o, n))
+            if changes:
+                conn.execute("UPDATE staff SET staff_type=?, hire_month=?, note=? WHERE name=?",
+                             (type_combo.currentData(), hire_edit.text().strip() or "",
+                              note_edit.text().strip(), name))
+                log_changes(conn, "staff", name, changes, "员工信息维护")
+                conn.commit()
         finally:
             conn.close()
         self.refresh()

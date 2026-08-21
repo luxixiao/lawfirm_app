@@ -4,14 +4,16 @@ from __future__ import annotations
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFormLayout, QHBoxLayout,
-    QLabel, QLineEdit, QMessageBox, QTableWidget, QTableWidgetItem, QTabWidget,
-    QVBoxLayout, QWidget,
+    QLabel, QLineEdit, QMessageBox, QPlainTextEdit, QTableWidget, QTableWidgetItem,
+    QTabWidget, QVBoxLayout, QWidget,
 )
 
 from qfluentwidgets import (CaptionLabel, PushButton, SubtitleLabel)
 
 from app.db import get_conn
 from app.engine.change_log import log_change, log_changes, fetch_log
+from app.engine.expense_cat import (CATEGORIES, add_type, ensure_types, get_by_category,
+                                    set_category, sync_from_ledger)
 from app.importer.parse_handler import parse_handler_column
 
 
@@ -45,6 +47,7 @@ class LedgerView(QWidget):
         self.tabs.addTab(self.tab_collection, "收款")
         self.tabs.addTab(self.tab_expense, "费用")
         self.tabs.addTab(self.tab_staff, "员工")
+        self.tabs.addTab(self._build_cat_tab(), "费用归类")
         self.tabs.addTab(self.tab_log, "修改记录")
         lay.addWidget(self.tabs, 1)
 
@@ -60,6 +63,12 @@ class LedgerView(QWidget):
         btns.addStretch()
         btns.addWidget(self.lbl)
         lay.addLayout(btns)
+
+        self.log = QPlainTextEdit()
+        self.log.setReadOnly(True)
+        self.log.setMaximumHeight(90)
+        self.log.setPlaceholderText("操作日志…")
+        lay.addWidget(self.log)
 
         for tb in (self.tab_invoice, self.tab_collection, self.tab_expense, self.tab_staff):
             tb.cellDoubleClicked.connect(lambda *_: self.edit_selected())
@@ -125,6 +134,7 @@ class LedgerView(QWidget):
         self._fill(self.tab_expense, exps, "expense")
         self._fill(self.tab_staff, staffs, "staff")
         self._fill(self.tab_log, logs, "log")
+        self._load_cat()
 
     # ---- 编辑 ----
     def edit_selected(self) -> None:
@@ -361,3 +371,94 @@ class LedgerView(QWidget):
         finally:
             conn.close()
         self.refresh()
+
+    # ---- 费用归类 Tab（类型全集 + 归类维护 + 新增）----
+    def _build_cat_tab(self) -> QWidget:
+        w = QWidget()
+        v = QVBoxLayout(w)
+        v.setContentsMargins(8, 10, 8, 10)
+        v.setSpacing(8)
+        self.cat_table = QTableWidget(0, 3)
+        self.cat_table.setHorizontalHeaderLabels(["费用类型", "归类", "说明"])
+        self.cat_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.cat_table.verticalHeader().setVisible(False)
+        self.cat_table.horizontalHeader().setStretchLastSection(True)
+        self.cat_table.setColumnWidth(0, 200)
+        self.cat_table.setColumnWidth(1, 130)
+        v.addWidget(self.cat_table, 1)
+        bar = QHBoxLayout()
+        bar.addWidget(CaptionLabel("新增类型"))
+        self.cat_new = QLineEdit()
+        self.cat_new.setPlaceholderText("费用类型名称")
+        self.cat_new.setMaximumWidth(200)
+        bar.addWidget(self.cat_new)
+        self.cat_new_combo = QComboBox()
+        for c in CATEGORIES:
+            self.cat_new_combo.addItem(c, userData=c)
+        bar.addWidget(self.cat_new_combo)
+        btn_add = PushButton("添加")
+        btn_add.clicked.connect(self._cat_add)
+        bar.addWidget(btn_add)
+        bar.addStretch()
+        v.addLayout(bar)
+        return w
+
+    def _load_cat(self) -> None:
+        sync_from_ledger()
+        conn = get_conn()
+        try:
+            rows = conn.execute("SELECT expense_type, category FROM expense_cat ORDER BY category, expense_type").fetchall()
+        finally:
+            conn.close()
+        self.cat_table.setRowCount(0)
+        self.cat_table.setRowCount(len(rows))
+        for r, row in enumerate(rows):
+            t_item = QTableWidgetItem(row["expense_type"])
+            t_item.setData(Qt.ItemDataRole.UserRole, row["expense_type"])
+            self.cat_table.setItem(r, 0, t_item)
+            combo = QComboBox()
+            for c in CATEGORIES:
+                combo.addItem(c, userData=c)
+            combo.setCurrentText(row["category"] or "其他")
+            combo.currentIndexChanged.connect(
+                lambda *_, row=r, etype=row["expense_type"]: self._cat_change(row, etype))
+            self.cat_table.setCellWidget(r, 1, combo)
+            # 说明：该归类当前包含的类型
+            types = get_by_category(row["category"])
+            self.cat_table.setItem(r, 2, QTableWidgetItem("、".join(types)))
+        self.cat_table.setRowHeight(r, 34)
+
+    def _cat_change(self, row: int, etype: str) -> None:
+        combo = self.cat_table.cellWidget(row, 1)
+        if combo is None:
+            return
+        new_cat = combo.currentData()
+        conn = get_conn()
+        try:
+            old_cat = conn.execute("SELECT category FROM expense_cat WHERE expense_type=?", (etype,)).fetchone()
+            old = old_cat["category"] if old_cat else "其他"
+            if old == new_cat:
+                return
+            set_category(etype, new_cat)
+            log_change(conn, "expense_cat", etype, "category", old, new_cat, "费用归类调整")
+            conn.commit()
+        finally:
+            conn.close()
+        # 刷新说明列
+        for i in range(self.cat_table.rowCount()):
+            combo_i = self.cat_table.cellWidget(i, 1)
+            if combo_i and combo_i.currentData() == new_cat:
+                types = get_by_category(new_cat)
+                self.cat_table.setItem(i, 2, QTableWidgetItem("、".join(types)))
+        self.log.appendPlainText(f"✓ 费用类型 {etype} 归入「{new_cat}」")
+
+    def _cat_add(self) -> None:
+        name = self.cat_new.text().strip()
+        if not name:
+            QMessageBox.information(self, "提示", "请输入费用类型名称")
+            return
+        cat = self.cat_new_combo.currentData()
+        add_type(name, cat)
+        self.cat_new.clear()
+        self._load_cat()
+        self.log.appendPlainText(f"✓ 已新增费用类型 {name}（归入「{cat}」）")
