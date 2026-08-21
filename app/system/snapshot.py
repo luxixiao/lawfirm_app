@@ -14,7 +14,7 @@ MAX_AUTO = 20  # 自动快照最多保留数量
 def save_snapshot(name: str, note: str = "", auto: bool = False) -> int:
     """保存当前数据为快照（先 checkpoint 保证 db 单一文件），返回快照 id"""
     checkpoint()
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")  # 毫秒级，避免目录撞名
     dest_dir = SNAP_ROOT / ts
     dest_dir.mkdir(parents=True, exist_ok=True)
     dest = dest_dir / "lawfirm.db"

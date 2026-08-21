@@ -18,27 +18,21 @@ from app.ui.prepayment_view import PrepaymentView
 from app.ui.refund_view import RefundView
 from app.ui.snapshot_view import SnapshotView
 from app.ui.staff_view import StaffView
+from app.ui.style import QSS
 
-QSS = """
-QMainWindow, QWidget { background: #FFFFFF; color: #37352F; font-size: 13px; }
-#sidebar { background: #F7F7F5; border-right: 1px solid #EBEBE8; }
-#sidebar QLabel#app_title { color: #37352F; font-size: 15px; font-weight: 600; padding: 16px 16px 8px 16px; }
-#sidebar QListWidget { background: transparent; border: none; outline: none; padding: 4px 8px; }
-#sidebar QListWidget::item { padding: 8px 12px; border-radius: 6px; color: #37352F; margin: 1px 0; }
-#sidebar QListWidget::item:hover { background: #EFEFEC; }
-#sidebar QListWidget::item:selected { background: #E9E9E7; color: #37352F; font-weight: 500; }
-#pageArea { background: #FFFFFF; }
-#pageTitle { font-size: 18px; font-weight: 600; padding: 20px 24px 4px 24px; }
-#pageHint { color: #787774; padding: 0 24px; }
-#placeholder { color: #B3B1AD; font-size: 14px; padding: 40px; }
-QPushButton { background: #F1F1EF; border: 1px solid #DADAD7; border-radius: 6px; padding: 6px 14px; color: #37352F; }
-QPushButton:hover { background: #E9E9E7; }
-QPushButton#primary { background: #37352F; color: #FFFFFF; border: none; }
-QPushButton#primary:hover { background: #4F4D49; }
-QTableWidget { gridline-color: #EEEEEC; border: 1px solid #EBEBE8; border-radius: 6px; }
-QHeaderView::section { background: #F7F7F5; color: #787774; border: none; border-bottom: 1px solid #EBEBE8; padding: 6px 8px; font-weight: 500; }
-QTableWidget::item { padding: 4px 8px; }
-"""
+# 侧边栏导航项（图标 + 名称）
+NAV_ITEMS = [
+    ("📥 导入", "import"),
+    ("🧾 发票收款总表", "invoice"),
+    ("👥 经办人发票收款总表", "handler_all"),
+    ("🙋 经办人发票收款表", "handler_one"),
+    ("💰 预收款", "prepayment"),
+    ("↩️ 退款", "refund"),
+    ("✍️ 手动补录", "manual"),
+    ("🧑‍💼 员工管理", "staff"),
+    ("📸 快照", "snapshot"),
+    ("📋 导入记录", "batch"),
+]
 
 
 def _placeholder(title: str) -> QWidget:
@@ -80,21 +74,12 @@ class MainWindow(QMainWindow):
         title = QLabel("📊 律所开票收款")
         title.setObjectName("app_title")
         s_lay.addWidget(title)
+        sub = QLabel("浙江震天律师事务所")
+        sub.setObjectName("app_sub")
+        s_lay.addWidget(sub)
 
         self.nav = QListWidget()
-        self._nav_items = [
-            ("导入", "import"),
-            ("发票收款总表", "invoice"),
-            ("经办人发票收款总表", "handler_all"),
-            ("经办人发票收款表", "handler_one"),
-            ("预收款", "prepayment"),
-            ("退款", "refund"),
-            ("手动补录", "manual"),
-            ("员工管理", "staff"),
-            ("快照", "snapshot"),
-            ("导入记录", "batch"),
-        ]
-        for label, key in self._nav_items:
+        for label, key in NAV_ITEMS:
             item = QListWidgetItem(label)
             item.setData(Qt.ItemDataRole.UserRole, key)
             self.nav.addItem(item)
@@ -145,6 +130,13 @@ class MainWindow(QMainWindow):
         page = self.pages.currentWidget()
         if hasattr(page, "refresh"):
             page.refresh()
+
+    def go_to_page(self, key: str) -> None:
+        """按 key 切换到指定页面（如 'manual'）"""
+        for i in range(self.nav.count()):
+            if self.nav.item(i).data(Qt.ItemDataRole.UserRole) == key:
+                self.nav.setCurrentRow(i)
+                return
 
     # ---- 供其他模块调用 ----
     def staff_ready(self) -> bool:

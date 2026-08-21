@@ -45,9 +45,11 @@ class InvoiceCollectView(BaseTableView):
         row = self.table.rowAt(pos.y())
         if row < 0:
             return
-        no = self._meta[row]["invoice_no"]
+        meta = self._meta_at(row)
+        if not meta:
+            return
         menu = QMenu(self)
         act = menu.addAction("查看红冲信息")
         chosen = menu.exec(self.table.viewport().mapToGlobal(pos))
         if chosen == act:
-            show_red_relation(self, no)
+            show_red_relation(self, meta["invoice_no"])

@@ -69,7 +69,9 @@ class HandlerFilterView(BaseTableView):
         row = self.table.rowAt(pos.y())
         if row < 0:
             return
-        meta = self._meta[row]
+        meta = self._meta_at(row)
+        if not meta:
+            return
         menu = QMenu(self)
         a1 = menu.addAction("查看红冲信息")
         a2 = menu.addAction("查看其他经办人金额")

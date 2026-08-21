@@ -1,6 +1,8 @@
-"""退款确认：红字发票判定 + 手动确认退款（可多次、可部分）"""
+"""退款确认：红字发票判定 + 手动确认退款（可多次、可部分）+ 待补录提示"""
 from __future__ import annotations
 
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QDateEdit, QDialog, QDialogButtonBox, QDoubleSpinBox, QFormLayout, QHBoxLayout,
     QLabel, QMessageBox, QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
@@ -17,6 +19,9 @@ STATUS_TEXT = {
     "need_refund": "需退款",
 }
 
+WARN_BG = QColor("#FFF8E6")   # 待补录行底色（淡黄）
+WARN_BG_SEL = QColor("#FDF1D1")
+
 
 class RefundView(QWidget):
     def __init__(self) -> None:
@@ -31,6 +36,26 @@ class RefundView(QWidget):
         h = QLabel("红字发票退款确认。手动填写退款金额与日期，可多次确认（部分退款）。")
         h.setObjectName("pageHint")
         lay.addWidget(h)
+
+        # ---- 待补录警告横幅 ----
+        self.banner = QWidget()
+        self.banner.setStyleSheet(
+            "QWidget#banner { background:#FFF8E6; border:1px solid #F0DFA8; border-radius:8px; }"
+            "QLabel { color:#7A5C00; font-weight:600; }"
+            "QPushButton { background:#7A5C00; color:white; border:none; border-radius:6px; padding:5px 14px; }"
+            "QPushButton:hover { background:#8F6D00; }"
+        )
+        self.banner.setObjectName("banner")
+        b_lay = QHBoxLayout(self.banner)
+        b_lay.setContentsMargins(12, 8, 12, 8)
+        self.banner_lbl = QLabel("")
+        self.btn_pending = QPushButton("查看待补录明细 →")
+        self.btn_pending.clicked.connect(self.show_pending)
+        b_lay.addWidget(self.banner_lbl)
+        b_lay.addStretch()
+        b_lay.addWidget(self.btn_pending)
+        self.banner.hide()
+        lay.addWidget(self.banner)
 
         btns = QHBoxLayout()
         self.btn_add = QPushButton("确认退款")
@@ -68,6 +93,7 @@ class RefundView(QWidget):
         rows = evaluate_red_invoices()
         self.table.setRowCount(len(rows))
         self._meta = {}
+        pending = 0
         for r, item in enumerate(rows):
             no = item["red_invoice_no"]
             done = refunded.get(no, 0.0)
@@ -77,9 +103,66 @@ class RefundView(QWidget):
                     item["orig_invoice_date"] or "—", STATUS_TEXT.get(item["status"], item["status"]),
                     done, remain]
             for c, v in enumerate(vals):
-                self.table.setItem(r, c, QTableWidgetItem(
-                    "" if v is None else (f"{v:,.2f}" if isinstance(v, float) else str(v))))
+                cell = QTableWidgetItem(
+                    "" if v is None else (f"{v:,.2f}" if isinstance(v, float) else str(v)))
+                if isinstance(v, float) and v < 0:
+                    cell.setForeground(QColor("#C0392B"))
+                if item["status"] == "orig_missing":
+                    cell.setBackground(WARN_BG)
+                    if c == 4:
+                        cell.setForeground(QColor("#7A5C00"))
+                self.table.setItem(r, c, cell)
             self._meta[r] = item
+            if item["status"] == "orig_missing":
+                pending += 1
+
+        # 待补录横幅
+        if pending:
+            self.banner_lbl.setText(f"⚠️ 有 {pending} 张红字发票的原正数发票未导入，"
+                                    f"需先手动补录历史数据（补录后自动判定退款）")
+            self.banner.show()
+        else:
+            self.banner.hide()
+
+    # ---- 待补录明细 ----
+    def show_pending(self) -> None:
+        """列出所有待补录（原票未导入）的红字发票，并可跳转手动补录"""
+        pending = [m for m in self._meta.values() if m["status"] == "orig_missing"]
+        if not pending:
+            QMessageBox.information(self, "提示", "没有待补录的红字发票")
+            return
+        dlg = QDialog(self)
+        dlg.setWindowTitle("待补录历史数据")
+        dlg.resize(720, 380)
+        lay = QVBoxLayout(dlg)
+        tip = QLabel("以下红字发票的原正数发票不在已导入数据中（跨年/无期初文档）。\n"
+                     "请在「手动补录」中添加原正数发票（及收款情况），补录后回到本页自动更新判定。")
+        tip.setStyleSheet("color:#7A5C00; background:#FFF8E6; border:1px solid #F0DFA8;"
+                          "border-radius:8px; padding:10px;")
+        tip.setWordWrap(True)
+        lay.addWidget(tip)
+        tbl = QTableWidget(len(pending), 5)
+        tbl.setHorizontalHeaderLabels(["红字发票", "红字金额", "原票号码", "应退金额", "状态"])
+        tbl.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        tbl.verticalHeader().setVisible(False)
+        tbl.horizontalHeader().setStretchLastSection(True)
+        for r, m in enumerate(pending):
+            vals = [m["red_invoice_no"], m["red_amount"], m["orig_invoice_no"] or "—",
+                    m["refund_amount"], STATUS_TEXT["orig_missing"]]
+            for c, v in enumerate(vals):
+                cell = QTableWidgetItem("" if v is None else (f"{v:,.2f}" if isinstance(v, float) else str(v)))
+                if c == 2:
+                    cell.setForeground(QColor("#C0392B"))  # 缺失的原票号标红
+                tbl.setItem(r, c, cell)
+        lay.addWidget(tbl)
+        btns = QDialogButtonBox()
+        go = btns.addButton("去手动补录原票", QDialogButtonBox.ButtonRole.AcceptRole)
+        btns.addButton("关闭", QDialogButtonBox.ButtonRole.RejectRole)
+        lay.addWidget(btns)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            win = self.window()
+            if hasattr(win, "go_to_page"):
+                win.go_to_page("manual")
 
     # ---- 确认退款 ----
     def add_refund(self) -> None:

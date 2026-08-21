@@ -31,12 +31,13 @@ def _staff_names(conn) -> set:
 
 
 def _archive_file(src: str, batch_type: str, period: str) -> str:
-    """复制原始文件到存档目录，返回相对路径"""
+    """复制原始文件到存档目录，返回相对路径（源已在存档目录则跳过，避免自复制）"""
     src = Path(src)
     dest_dir = ARCHIVE_ROOT / batch_type / period
     dest_dir.mkdir(parents=True, exist_ok=True)
     dest = dest_dir / src.name
-    shutil.copy2(src, dest)
+    if src.resolve() != dest.resolve():
+        shutil.copy2(src, dest)
     return str(dest.relative_to(ARCHIVE_ROOT.parent.parent.parent))
 
 

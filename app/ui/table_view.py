@@ -76,17 +76,21 @@ class BaseTableView(QWidget):
         self._render()
 
     def _render(self) -> None:
+        self.table.setSortingEnabled(False)
         self.table.setRowCount(len(self._rows))
         for r, row in enumerate(self._rows):
             for c, val in enumerate(row):
                 item = QTableWidgetItem(self._fmt(val))
-                if isinstance(val, (int, float)) and val < 0:
-                    item.setForeground(RED)
-                elif isinstance(val, float) and val > 0 and c in self._green_cols():
-                    item.setForeground(GREEN)
-                if c == 0:
-                    item.setData(Qt.ItemDataRole.UserRole, r)
+                if isinstance(val, (int, float)):
+                    item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                    if val < 0:
+                        item.setForeground(RED)
+                    elif val > 0 and c in self._green_cols():
+                        item.setForeground(GREEN)
+                item.setData(Qt.ItemDataRole.UserRole, self._meta.get(r))
                 self.table.setItem(r, c, item)
+            self.table.setRowHeight(r, 32)
+        self.table.setSortingEnabled(True)
         self.lbl_summary.setText(f"共 {len(self._rows)} 行")
 
     @staticmethod
@@ -96,6 +100,11 @@ class BaseTableView(QWidget):
         if isinstance(v, float):
             return f"{v:,.2f}"
         return str(v)
+
+    def _meta_at(self, row: int):
+        """取某行的元数据（排序后仍正确）"""
+        item = self.table.item(row, 0)
+        return item.data(Qt.ItemDataRole.UserRole) if item else None
 
     def _green_cols(self) -> set:
         return set()
