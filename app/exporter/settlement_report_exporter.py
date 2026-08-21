@@ -46,6 +46,77 @@ def _month_total(st: Dict, month: int, keys) -> float:
     return round(sum(st["months"][month][k] for k in keys), 2)
 
 
+def report_note(st: Dict, month: int) -> str:
+    """备注（收回以前应收款/退款 > 0 时自动生成）"""
+    m = st["months"]
+    notes = []
+    if m[month]["rec_cur_year"] > 0.01:
+        notes.append(f"本月收回本年应收款{m[month]['rec_cur_year']:,.2f}元")
+    if m[month]["rec_prev_year"] > 0.01:
+        notes.append(f"本月收回上年应收款{m[month]['rec_prev_year']:,.2f}元")
+    if m[month]["rec_refund_cur"] < -0.01 or m[month]["rec_refund_prev"] < -0.01:
+        refund = -(m[month]["rec_refund_cur"] + m[month]["rec_refund_prev"])
+        notes.append(f"本月退款{refund:,.2f}元")
+    return "；".join(notes)
+
+
+def build_report_rows(st: Dict, year: int, month: int) -> list:
+    """结算表行数据：[(seq, name, cur, total, bold), ...]（预览与导出共用）"""
+    m = st["months"]
+    months = list(range(1, 13))
+    cum = lambda vals12: round(sum(vals12[:month]), 2)  # noqa: E731
+    rows = []
+
+    def row(seq, name, cur, total, bold=False):
+        rows.append([seq, name, None if cur is None else round(cur, 2),
+                     None if total is None else round(total, 2), bold])
+
+    # 一、上年结余结转
+    row("一", "上年结余结转", None, None)
+    # 二、本月收款金额
+    rec_keys = ["rec_open_cur", "rec_cur_year", "rec_prev_year", "rec_refund_cur", "rec_refund_prev"]
+    cur2 = _month_total(st, month, rec_keys)
+    tot2 = round(sum(_month_total(st, mo, rec_keys) for mo in months[:month]), 2)
+    row("二", "本月收款金额", cur2, tot2, bold=True)
+    row("1", "本月开票本月收款", m[month]["rec_open_cur"],
+        cum([m[mo]["rec_open_cur"] for mo in months]))
+    row("2", "收回以前应收款", round(m[month]["rec_cur_year"] + m[month]["rec_prev_year"], 2),
+        cum([m[mo]["rec_cur_year"] + m[mo]["rec_prev_year"] for mo in months]))
+    # 三、本月开具发票金额
+    cur3 = m[month]["inv_total"]
+    tot3 = round(sum(m[mo]["inv_total"] for mo in months[:month]), 2)
+    row("三", "本月开具发票金额", cur3, tot3, bold=True)
+    row("1", "本月开票已收款", m[month]["inv_open_received"],
+        cum([m[mo]["inv_open_received"] for mo in months]))
+    row("2", "本月开票未收款", m[month]["inv_open_uncollected"],
+        cum([m[mo]["inv_open_uncollected"] for mo in months]))
+    # 四、未收款金额
+    row("四", "未收款金额", st["uncollected_month"][month], st["uncollected_total"], bold=True)
+    # 五、业务收入
+    row("五", "业务收入", m[month]["income"], cum([m[mo]["income"] for mo in months]), bold=True)
+    # 六、减：分成报酬及费用（排除折旧/银行结息/城建税及附加——模板口径）
+    _EXCLUDE = ("折旧", "银行结息", "城建税", "教育附加")
+    exp = {t: v for t, v in st["expenses"].items() if not any(k in t for k in _EXCLUDE)}
+    cur6 = round(sum(exp.get(t, {}).get(month, 0.0) for t in exp), 2)
+    tot6 = round(sum(exp.get(t, {}).get(mo, 0.0) for t in exp for mo in months[:month]), 2)
+    row("六", "减：分成报酬及费用", cur6, tot6, bold=True)
+    _EXP_ORDER = ["分成报酬", "合办人员报酬", "社保", "刷卡汽油费", "发票报销", "停车费",
+                  "高温费", "旅游费", "行政工资", "行政年终奖", "实习工资", "公积金"]
+    exp_types = sorted(exp.keys(), key=lambda t: (_EXP_ORDER.index(t) if t in _EXP_ORDER else 99, t))
+    for i, etype in enumerate(exp_types, 1):
+        row(str(i), etype, exp[etype].get(month, 0.0), cum([exp[etype].get(mo, 0.0) for mo in months]))
+    # 七、减：税金及会费
+    tax_cur = _tax(max(cur3, 0.0))
+    tax_tot = _tax(max(tot3, 0.0))
+    row("七", "减：税金及会费", round(tax_cur, 2), round(tax_tot, 2), bold=True)
+    row("1", "增值税、城建及附加", tax_cur, tax_tot)
+    row("2", "抵扣进项", None, None)
+    # 结余
+    row("", "结余", round(cur5 := m[month]["income"] - cur6 - tax_cur, 2),
+        round(tot5 := cum([m[mo]["income"] for mo in months]) - tot6 - tax_tot, 2), bold=True)
+    return rows
+
+
 def _write_sheet(ws, person: str, st: Dict, year: int, month: int) -> None:
     m = st["months"]
     months = list(range(1, 13))
@@ -65,16 +136,12 @@ def _write_sheet(ws, person: str, st: Dict, year: int, month: int) -> None:
         c.alignment = CENTER
         c.border = BORDER
 
-    # 各月累计
-    def cum(vals12):
-        return round(sum(vals12[:month]), 2)
-
-    def row(seq, name, cur, total, bold=False, indent=""):
+    for seq, name, cur, total, bold in build_report_rows(st, year, month):
         r = ws.max_row + 1
         ws.cell(r, 1, seq).alignment = CENTER
-        ws.cell(r, 2, indent + name).alignment = Alignment(horizontal="left", vertical="center")
-        c3 = ws.cell(r, 3, None if cur is None else round(cur, 2))
-        c4 = ws.cell(r, 4, None if total is None else round(total, 2))
+        ws.cell(r, 2, name).alignment = Alignment(horizontal="left", vertical="center")
+        c3 = ws.cell(r, 3, cur)
+        c4 = ws.cell(r, 4, total)
         for c in (c3, c4):
             if c.value is not None:
                 c.number_format = "#,##0.00"
@@ -85,76 +152,11 @@ def _write_sheet(ws, person: str, st: Dict, year: int, month: int) -> None:
             ws.cell(r, 2).font = BOLD
             for j in (3, 4):
                 ws.cell(r, j).font = BOLD
-        return r
 
-    # 一、上年结余结转
-    row("一", "上年结余结转", None, None)
-
-    # 二、本月收款金额
-    rec_keys = ["rec_open_cur", "rec_cur_year", "rec_prev_year", "rec_refund_cur", "rec_refund_prev"]
-    cur2 = _month_total(st, month, rec_keys)
-    tot2 = round(sum(_month_total(st, mo, rec_keys) for mo in months[:month]), 2)
-    row("二", "本月收款金额", cur2, tot2, bold=True)
-    row("1", "本月开票本月收款", m[month]["rec_open_cur"],
-        cum([m[mo]["rec_open_cur"] for mo in months]))
-    row("2", "收回以前应收款", round(m[month]["rec_cur_year"] + m[month]["rec_prev_year"], 2),
-        cum([m[mo]["rec_cur_year"] + m[mo]["rec_prev_year"] for mo in months]))
-
-    # 三、本月开具发票金额
-    inv_keys = ["inv_open_received", "inv_open_uncollected", "inv_red_cur", "inv_red_prev"]
-    cur3 = _month_total(st, month, ["inv_total"])
-    tot3 = round(sum(m[mo]["inv_total"] for mo in months[:month]), 2)
-    row("三", "本月开具发票金额", cur3, tot3, bold=True)
-    row("1", "本月开票已收款", m[month]["inv_open_received"],
-        cum([m[mo]["inv_open_received"] for mo in months]))
-    row("2", "本月开票未收款", m[month]["inv_open_uncollected"],
-        cum([m[mo]["inv_open_uncollected"] for mo in months]))
-
-    # 四、未收款金额
-    cur4 = st["uncollected_month"][month]
-    tot4 = st["uncollected_total"]
-    row("四", "未收款金额", cur4, tot4, bold=True)
-
-    # 五、业务收入
-    cur5 = m[month]["income"]
-    tot5 = cum([m[mo]["income"] for mo in months])
-    row("五", "业务收入", cur5, tot5, bold=True)
-
-    # 六、减：分成报酬及费用（排除折旧/银行结息/城建税及附加——模板口径）
-    _EXCLUDE = ("折旧", "银行结息", "城建税", "教育附加")
-    exp = {t: v for t, v in st["expenses"].items() if not any(k in t for k in _EXCLUDE)}
-    cur6 = round(sum(exp.get(t, {}).get(month, 0.0) for t in exp), 2)
-    tot6 = round(sum(exp.get(t, {}).get(mo, 0.0) for t in exp for mo in months[:month]), 2)
-    row("六", "减：分成报酬及费用", cur6, tot6, bold=True)
-    # 费用类型按模板固定顺序排列，其余按拼音追加
-    _EXP_ORDER = ["分成报酬", "合办人员报酬", "社保", "刷卡汽油费", "发票报销", "停车费",
-                  "高温费", "旅游费", "行政工资", "行政年终奖", "实习工资", "公积金"]
-    exp_types = sorted(exp.keys(), key=lambda t: (_EXP_ORDER.index(t) if t in _EXP_ORDER else 99, t))
-    for i, etype in enumerate(exp_types, 1):
-        row(str(i), etype, exp[etype].get(month, 0.0),
-            cum([exp[etype].get(mo, 0.0) for mo in months]))
-
-    # 七、减：税金及会费
-    tax_cur = _tax(max(cur3, 0.0))
-    tax_tot = _tax(max(tot3, 0.0))
-    row("七", "减：税金及会费", round(tax_cur + 0.0, 2), round(tax_tot + 0.0, 2), bold=True)
-    row("1", "增值税、城建及附加", tax_cur, tax_tot)
-    row("2", "抵扣进项", None, None)
-
-    # 结余
-    row("", "结余", round(cur5 - cur6 - tax_cur, 2), round(tot5 - tot6 - tax_tot, 2), bold=True)
-
-    # 备注（收回以前应收款 > 0 自动生成）
-    notes = []
-    if m[month]["rec_cur_year"] > 0.01:
-        notes.append(f"本月收回本年应收款{m[month]['rec_cur_year']:,.2f}元")
-    if m[month]["rec_prev_year"] > 0.01:
-        notes.append(f"本月收回上年应收款{m[month]['rec_prev_year']:,.2f}元")
-    if m[month]["rec_refund_cur"] < -0.01 or m[month]["rec_refund_prev"] < -0.01:
-        refund = -(m[month]["rec_refund_cur"] + m[month]["rec_refund_prev"])
-        notes.append(f"本月退款{refund:,.2f}元")
-    if notes:
-        ws.cell(3, 5, "；".join(notes))
+    # 备注
+    note = report_note(st, month)
+    if note:
+        ws.cell(3, 5, note)
 
     # 列宽
     for j, w in enumerate([5, 24, 13, 13, 40], 1):

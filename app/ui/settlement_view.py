@@ -7,7 +7,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QHBoxLayout,
     QLabel, QListWidget, QListWidgetItem, QMessageBox, QPlainTextEdit,
-    QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
+    QTabWidget, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
 from qfluentwidgets import (CaptionLabel, PrimaryPushButton, PushButton, SubtitleLabel)
@@ -22,9 +22,15 @@ MONTH_LABELS = ["1月", "2月", "3月", "4月", "5月", "6月",
 class SettlementView(QWidget):
     def __init__(self) -> None:
         super().__init__()
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(28, 24, 28, 20)
-        lay.setSpacing(12)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(20, 16, 20, 16)
+        self.tabs = QTabWidget()
+        outer.addWidget(self.tabs)
+        self.tab_personal = QWidget()
+        self._lay_p = QVBoxLayout(self.tab_personal)
+        self._lay_p.setContentsMargins(8, 10, 8, 10)
+        self._lay_p.setSpacing(12)
+        lay = self._lay_p
 
         t = SubtitleLabel("个人结算总表")
         lay.addWidget(t)
@@ -116,6 +122,11 @@ class SettlementView(QWidget):
         self.year.blockSignals(False)
         self._reload_persons()
 
+        # ---- 外层 Tab：个人结算总表 / 月度结算表 ----
+        self.tabs.addTab(self.tab_personal, "个人结算总表")
+        self.tabs.addTab(self._build_report_tab(), "月度结算表")
+        self.tabs.currentChanged.connect(lambda *_: self.refresh_report())
+
     # ---- 人员列表 ----
     @staticmethod
     def _latest_data_year() -> int:
@@ -132,8 +143,13 @@ class SettlementView(QWidget):
         self._person_names = sorted(data.keys())
         self.person.clear()
         self.person.addItem("请选择经办人", userData=None)
+        if hasattr(self, "r_person"):
+            self.r_person.clear()
+            self.r_person.addItem("请选择经办人", userData=None)
         for name in self._person_names:
             self.person.addItem(name, userData=name)
+            if hasattr(self, "r_person"):
+                self.r_person.addItem(name, userData=name)
 
     def showEvent(self, event) -> None:  # noqa: N802
         super().showEvent(event)
@@ -403,3 +419,96 @@ class SettlementView(QWidget):
             return
         self.log.appendPlainText(f"✓ {f}")
         QMessageBox.information(self, "生成完成", f"已生成：{f}")
+
+    # ---- 月度结算表 Tab（预览 + 导出）----
+    def _build_report_tab(self) -> QWidget:
+        w = QWidget()
+        v = QVBoxLayout(w)
+        v.setContentsMargins(8, 10, 8, 10)
+        v.setSpacing(10)
+        bar = QHBoxLayout()
+        bar.setSpacing(8)
+        bar.addWidget(CaptionLabel("年份"))
+        self.r_year = QComboBox()
+        cur = datetime.now().year
+        for y in range(cur, cur - 3, -1):
+            self.r_year.addItem(f"{y}年", userData=y)
+        for i in range(self.r_year.count()):
+            if self.r_year.itemData(i) == self._latest_data_year():
+                self.r_year.setCurrentIndex(i)
+                break
+        self.r_year.currentIndexChanged.connect(lambda *_: self._reload_persons())
+        bar.addWidget(self.r_year)
+        bar.addWidget(CaptionLabel("月份"))
+        self.r_month = QComboBox()
+        for mo in range(1, 13):
+            self.r_month.addItem(f"{mo}月", userData=mo)
+        self.r_month.currentIndexChanged.connect(lambda *_: self.refresh_report())
+        bar.addWidget(self.r_month)
+        bar.addWidget(CaptionLabel("经办人"))
+        self.r_person = QComboBox()
+        self.r_person.setMinimumWidth(150)
+        self.r_person.currentIndexChanged.connect(lambda *_: self.refresh_report())
+        bar.addWidget(self.r_person)
+        bar.addStretch()
+        v.addLayout(bar)
+        self._reload_persons()  # 填充 r_person（r_year 已设默认）
+        COMBO_QSS = """
+        QComboBox { background: #FFFFFF; border: 1px solid #DADAD7; border-radius: 6px;
+                    padding: 5px 10px; min-height: 18px; }
+        QComboBox QAbstractItemView {
+            background: #FFFFFF; color: #37352F;
+            selection-background-color: #E9E9E7; selection-color: #37352F;
+            border: 1px solid #DADAD7; outline: none;
+        }
+        """
+        for c in (self.r_year, self.r_month, self.r_person):
+            c.setStyleSheet(COMBO_QSS)
+        self.r_table = QTableWidget(0, 4)
+        self.r_table.setHorizontalHeaderLabels(["序号", "项目", "本期", "本年累计"])
+        self.r_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.r_table.verticalHeader().setVisible(False)
+        self.r_table.horizontalHeader().setStretchLastSection(True)
+        v.addWidget(self.r_table, 1)
+        bbar = QHBoxLayout()
+        self.btn_report = PushButton("导出月度结算表…")
+        self.btn_report.clicked.connect(self.gen_report)
+        self.r_summary = CaptionLabel("")
+        self.r_summary.setStyleSheet("color:#8A8886;")
+        bbar.addWidget(self.btn_report)
+        bbar.addStretch()
+        bbar.addWidget(self.r_summary)
+        v.addLayout(bbar)
+        return w
+
+    def refresh_report(self) -> None:
+        """月度结算表预览：选中经办人 + 月份 → 表格显示其结算表"""
+        from app.exporter.settlement_report_exporter import build_report_rows
+        if not hasattr(self, "r_table"):
+            return
+        year = self.r_year.currentData() or datetime.now().year
+        month = self.r_month.currentData() or 1
+        name = self.r_person.currentData()
+        if not name:
+            self.r_table.setRowCount(0)
+            self.r_summary.setText("请选择经办人")
+            return
+        data = build_settlement(year, person=name)
+        st = data.get(name)
+        if st is None:
+            self.r_table.setRowCount(0)
+            self.r_summary.setText(f"{name} 在 {year} 年无数据")
+            return
+        rows = build_report_rows(st, year, month)
+        self.r_table.setRowCount(len(rows))
+        from PySide6.QtGui import QFont
+        for r, (seq, nm, cur, total, bold) in enumerate(rows):
+            cells = [seq, nm, cur, total]
+            for c, val in enumerate(cells):
+                item = QTableWidgetItem("" if val is None else (f"{val:,.2f}" if isinstance(val, float) else str(val)))
+                if isinstance(val, float):
+                    item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                if bold:
+                    item.setFont(QFont(item.font().family(), item.font().pointSize(), QFont.Weight.Bold))
+                self.r_table.setItem(r, c, item)
+        self.r_summary.setText(f"{name}（{st['staff_type']}）· {year}年{month}月结算表预览（共{len(rows)}行，确认后导出）")
