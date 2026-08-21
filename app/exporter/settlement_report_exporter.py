@@ -46,11 +46,10 @@ def _month_total(st: Dict, month: int, keys) -> float:
     return round(sum(st["months"][month][k] for k in keys), 2)
 
 
-def report_note(st: Dict, month: int) -> str:
-    """备注（完整文字，每条一行；涉及非本月的数据全部说明）"""
+def report_note_rec(st: Dict, month: int) -> str:
+    """收款类备注（写在「二、本月收款金额」行）"""
     m = st["months"]
     notes = []
-    # 本月收回/退款
     if m[month]["rec_cur_year"] > 0.01:
         notes.append(f"本月收回本年应收款{m[month]['rec_cur_year']:,.2f}元")
     if m[month]["rec_prev_year"] > 0.01:
@@ -59,14 +58,19 @@ def report_note(st: Dict, month: int) -> str:
         notes.append(f"本月退本年应收款{abs(m[month]['rec_refund_cur']):,.2f}元")
     if m[month]["rec_refund_prev"] < -0.01:
         notes.append(f"本月退上年应收款{abs(m[month]['rec_refund_prev']):,.2f}元")
-    # 本年累计（跨月/跨年说明）
     cum_prev_year = sum(m[mo]["rec_prev_year"] for mo in range(1, month + 1))
     cum_refund_prev = sum(m[mo]["rec_refund_prev"] for mo in range(1, month + 1))
     if cum_prev_year > 0.01:
         notes.append(f"本年累计收回上年应收款{cum_prev_year:,.2f}元")
     if cum_refund_prev < -0.01:
         notes.append(f"本年累计退上年应收款{abs(cum_refund_prev):,.2f}元")
-    # 红冲（涉及非本月开票）
+    return "\n".join(notes)
+
+
+def report_note_inv(st: Dict, month: int) -> str:
+    """开票类备注（写在「三、本月开具发票金额」行）"""
+    m = st["months"]
+    notes = []
     if m[month]["inv_red_cur"] < -0.01:
         notes.append(f"本月红冲本年{abs(m[month]['inv_red_cur']):,.2f}元")
     if m[month]["inv_red_prev"] < -0.01:
@@ -169,13 +173,19 @@ def _write_sheet(ws, person: str, st: Dict, year: int, month: int) -> None:
             ws.cell(r, 2).font = BOLD
             for j in (3, 4):
                 ws.cell(r, j).font = BOLD
-
-    # 备注（多行）
-    note = report_note(st, month)
-    if note:
-        c = ws.cell(3, 5, note)
-        c.alignment = Alignment(wrap_text=True, vertical="center")
-        ws.row_dimensions[3].height = 60
+        # 备注按类别写在对应行（二收款 / 三开票）
+        if name == "本月收款金额":
+            note = report_note_rec(st, month)
+            if note:
+                c = ws.cell(r, 5, note)
+                c.alignment = Alignment(wrap_text=True, vertical="center")
+                ws.row_dimensions[r].height = max(ws.row_dimensions[r].height or 0, 50)
+        elif name == "本月开具发票金额":
+            note = report_note_inv(st, month)
+            if note:
+                c = ws.cell(r, 5, note)
+                c.alignment = Alignment(wrap_text=True, vertical="center")
+                ws.row_dimensions[r].height = max(ws.row_dimensions[r].height or 0, 50)
 
     # 列宽
     for j, w in enumerate([5, 24, 13, 13, 40], 1):

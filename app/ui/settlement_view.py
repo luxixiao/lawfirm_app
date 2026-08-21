@@ -502,11 +502,11 @@ class SettlementView(QWidget):
             self.r_table.setRowCount(0)
             self.r_summary.setText(f"{name} 在 {year} 年无数据")
             return
-        from app.exporter.settlement_report_exporter import report_note
+        from app.exporter.settlement_report_exporter import report_note_rec, report_note_inv
         rows = build_report_rows(st, year, month)
-        note = report_note(st, month)
         self.r_table.setRowCount(len(rows))
         from PySide6.QtGui import QFont
+        note_rows = []
         for r, (seq, nm, cur, total, bold) in enumerate(rows):
             cells = [seq, nm, cur, total]
             for c, val in enumerate(cells):
@@ -516,12 +516,21 @@ class SettlementView(QWidget):
                 if bold:
                     item.setFont(QFont(item.font().family(), item.font().pointSize(), QFont.Weight.Bold))
                 self.r_table.setItem(r, c, item)
-            # 备注显示在首行（多行）
-            if r == 0:
-                item = QTableWidgetItem(note)
+            # 备注按类别写在对应行（二收款 / 三开票）
+            if nm == "本月收款金额":
+                note = report_note_rec(st, month)
                 if note:
-                    item.setForeground(Qt.GlobalColor.gray)
-                self.r_table.setItem(r, 4, item)
-        if note:
-            self.r_table.resizeRowToContents(0)
+                    it = QTableWidgetItem(note)
+                    it.setForeground(Qt.GlobalColor.gray)
+                    self.r_table.setItem(r, 4, it)
+                    note_rows.append(r)
+            elif nm == "本月开具发票金额":
+                note = report_note_inv(st, month)
+                if note:
+                    it = QTableWidgetItem(note)
+                    it.setForeground(Qt.GlobalColor.gray)
+                    self.r_table.setItem(r, 4, it)
+                    note_rows.append(r)
+        for r in note_rows:
+            self.r_table.resizeRowToContents(r)
         self.r_summary.setText(f"{name}（{st['staff_type']}）· {year}年{month}月结算表预览（共{len(rows)}行，确认后导出）")
