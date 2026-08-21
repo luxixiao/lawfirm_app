@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (
     QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
-from qfluentwidgets import (CaptionLabel, ComboBox, PrimaryPushButton, PushButton, SubtitleLabel)
+from qfluentwidgets import (CaptionLabel, PrimaryPushButton, PushButton, SubtitleLabel)
 
 from app.engine.person_settlement import build_settlement
 from app.exporter.person_settlement_exporter import export_all, export_one
@@ -36,7 +36,7 @@ class SettlementView(QWidget):
         bar = QHBoxLayout()
         bar.setSpacing(8)
         bar.addWidget(CaptionLabel("年份"))
-        self.year = ComboBox()
+        self.year = QComboBox()
         cur = datetime.now().year
         for y in range(cur, cur - 3, -1):
             self.year.addItem(f"{y}年", userData=y)
@@ -44,13 +44,13 @@ class SettlementView(QWidget):
         bar.addWidget(self.year)
 
         bar.addWidget(CaptionLabel("经办人"))
-        self.person = ComboBox()
+        self.person = QComboBox()
         self.person.setMinimumWidth(150)
         self.person.currentIndexChanged.connect(lambda *_: self.refresh())
         bar.addWidget(self.person)
 
         bar.addWidget(CaptionLabel("月份"))
-        self.month = ComboBox()
+        self.month = QComboBox()
         self.month.addItem("全部月份", userData=0)
         for mo in range(1, 13):
             self.month.addItem(f"{mo}月", userData=mo)
