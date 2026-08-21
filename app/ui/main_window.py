@@ -29,6 +29,8 @@ class MainWindow(FluentWindow):
         self.resize(1280, 820)
         # Windows 10 无 Mica 材质，自动降级普通背景
         self.setMicaEffectEnabled(False)
+        # 禁用页面切换动画（保证 setCurrentWidget 即时生效，跳转可靠）
+        self.stackedWidget.setAnimationEnabled(False)
 
         self._build_pages()
         self._build_navigation()
@@ -44,6 +46,13 @@ class MainWindow(FluentWindow):
         self.page_staff = StaffView()
         self.page_snapshot = SnapshotView()
         self.page_batch = BatchView()
+        self._pages = {
+            "import": self.page_import, "invoice": self.page_invoice,
+            "handler_all": self.page_handler_all, "handler_one": self.page_handler_one,
+            "prepayment": self.page_prepayment, "refund": self.page_refund,
+            "manual": self.page_manual, "staff": self.page_staff,
+            "snapshot": self.page_snapshot, "batch": self.page_batch,
+        }
 
     def _build_navigation(self) -> None:
         nav = [
@@ -60,6 +69,7 @@ class MainWindow(FluentWindow):
         ]
         for key, page, icon, text in nav:
             page.setObjectName(key)
+            # routeKey = objectName，addSubInterface 返回 NavigationTreeWidget 对象
             self.addSubInterface(page, icon, text, NavigationItemPosition.TOP)
         self.navigationInterface.setCurrentItem("import")
 
@@ -69,11 +79,13 @@ class MainWindow(FluentWindow):
 
     # ---- 对外接口 ----
     def go_to_page(self, key: str) -> None:
-        """切换到指定页面并刷新"""
+        """切换到指定页面并刷新（key 为页面 objectName，即 routeKey）"""
         self.navigationInterface.setCurrentItem(key)
-        page = self.navigationInterface.widget(key)
-        if page and hasattr(page, "refresh"):
-            page.refresh()
+        page = self._pages.get(key)
+        if page is not None:
+            self.stackedWidget.setCurrentWidget(page)
+            if hasattr(page, "refresh"):
+                page.refresh()
 
     def show_info(self, message: str, success: bool = True) -> None:
         """Fluent 风格通知条"""
