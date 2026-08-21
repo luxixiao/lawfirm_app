@@ -86,6 +86,8 @@ class BaseTableView(QWidget):
         total_cols = self._total_cols()
         # 合计行存在时禁用排序，保证合计行固定底部
         self.table.setSortingEnabled(False)
+        # 先清空所有旧行（收缩时保留行内容不被清，必须先 setRowCount(0)）
+        self.table.setRowCount(0)
         self.table.setRowCount(len(self._rows) + (1 if total_cols else 0))
         for r, row in enumerate(self._rows):
             for c, val in enumerate(row):
