@@ -312,8 +312,9 @@ class ManualEntryView(QWidget):
             conn.execute("DELETE FROM charge_detail WHERE invoice_no=?", (no,))
             for name, amount in handlers:
                 conn.execute(
-                    "INSERT INTO charge_detail (invoice_no, person_name, billing_amount, source) VALUES (?,?,?,?)",
-                    (no, name, amount, "manual"),
+                    "INSERT INTO charge_detail (invoice_no, person_name, billing_amount, source, person_type) VALUES (?,?,?,?,?)",
+                    (no, name, amount, "manual",
+                                norm_type(staff_type_of(conn, name))),
                 )
             # 收款：重建（仅 manual 来源；导入来源收款不受影响）
             conn.execute("DELETE FROM collection WHERE invoice_no=? AND source='manual'", (no,))
@@ -474,8 +475,9 @@ class ManualEntryView(QWidget):
             )
             for name, amount in handlers:
                 conn.execute(
-                    "INSERT INTO charge_detail (invoice_no, person_name, billing_amount, source) VALUES (?,?,?,?)",
-                    (no, name, amount, "manual"),
+                    "INSERT INTO charge_detail (invoice_no, person_name, billing_amount, source, person_type) VALUES (?,?,?,?,?)",
+                    (no, name, amount, "manual",
+                                norm_type(staff_type_of(conn, name))),
                 )
             # 同时写入收款记录（source='manual'）
             for amount, ym in receipts:

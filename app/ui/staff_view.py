@@ -192,6 +192,16 @@ class StaffView(QWidget):
         form.addRow(btns)
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
+        # 人员类型修改二次确认（防误操作）
+        new_type = type_combo.currentData()
+        if (s["staff_type"] or "") != new_type:
+            ret = QMessageBox.question(
+                self, "确认修改类型",
+                f"将 {name} 的人员类型从「{s['staff_type']}」改为「{new_type}」？\n"
+                f"注意：类型只作默认身份，历史数据的身份不受影响；如身份不符请到「台账数据」修改。",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+            if ret != QMessageBox.StandardButton.Yes:
+                return
         conn = get_conn()
         try:
             from app.engine.change_log import log_changes

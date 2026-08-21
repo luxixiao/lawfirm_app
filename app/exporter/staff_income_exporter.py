@@ -35,9 +35,10 @@ COLS = [("报酬发放", "报酬发放"), ("住房公积金", "住房公积金")
 
 def _staff_employees(conn, year: int, month: int) -> list:
     """聘用/兼职（视同聘用）且在职的员工；入职月份晚于当前月则排除（按姓名）"""
+    # 离职不影响：不按 is_active 过滤，只要该月有数据/在名单即纳入（hire_month 过滤入职）
     rows = conn.execute(
         "SELECT name, hire_month FROM staff "
-        "WHERE (staff_type LIKE '%聘用%' OR staff_type LIKE '%兼职%') AND is_active=1 ORDER BY name"
+        "WHERE staff_type LIKE '%聘用%' OR staff_type LIKE '%兼职%' ORDER BY name"
     ).fetchall()
     cur = f"{year}-{month:02d}"
     out = []

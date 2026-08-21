@@ -202,8 +202,9 @@ def import_ledger_file(path: str, period: str) -> Dict:
                 ).fetchone()
                 if not r:
                     conn.execute(
-                        "INSERT INTO charge_detail (invoice_no, person_name, billing_amount, source, import_batch_id) VALUES (?,?,?,?,?)",
-                        (no, name, amount, "import", batch_id),
+                        "INSERT INTO charge_detail (invoice_no, person_name, billing_amount, source, import_batch_id, person_type) VALUES (?,?,?,?,?,?)",
+                        (no, name, amount, "import", batch_id,
+                         norm_type(staff_type_of(conn, name))),
                     )
             # 收款明细：先删该发票 import 旧记录（以最新台账为准），再插入
             conn.execute("DELETE FROM collection WHERE invoice_no=? AND source='import'", (no,))
@@ -286,12 +287,12 @@ def import_expense_file(path: str, period: str) -> Dict:
             conn.execute(
                 """INSERT INTO expense_ledger (period, seq, exp_date, name, ticket_no, handler, actual_handler,
                    expense_amount, tax_amount, book_amount, expense_type, voucher_no, subject1, subject2,
-                   source, import_batch_id)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                   source, import_batch_id, person_type)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (it["period"], it["seq"], it["exp_date"], it["name"], it["ticket_no"],
                  it["handler"], it["actual_handler"], it["expense_amount"], it["tax_amount"],
                  it["book_amount"], it["expense_type"], it["voucher_no"], it["subject1"], it["subject2"],
-                 "import", batch_id),
+                 "import", batch_id, norm_type(staff_type_of(conn, it["actual_handler"]))),
             )
         conn.commit()
     except Exception:

@@ -186,6 +186,11 @@ def init_db() -> None:
         cols = [r[1] for r in conn.execute("PRAGMA table_info(staff)")]
         if "hire_month" not in cols:
             conn.execute("ALTER TABLE staff ADD COLUMN hire_month TEXT DEFAULT ''")
+        # 迁移：数据行身份字段（合伙/聘用/兼职）
+        for tbl in ("charge_detail", "expense_ledger"):
+            cols = [r[1] for r in conn.execute(f"PRAGMA table_info({tbl})")]
+            if "person_type" not in cols:
+                conn.execute(f"ALTER TABLE {tbl} ADD COLUMN person_type TEXT DEFAULT ''")
         conn.commit()
     finally:
         conn.close()

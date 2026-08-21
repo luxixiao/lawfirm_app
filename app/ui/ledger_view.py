@@ -37,10 +37,10 @@ class LedgerView(QWidget):
         lay.addWidget(h)
 
         self.tabs = QTabWidget()
-        self.tab_invoice = self._make_table(["开票日期", "发票号码", "购方名称", "价税合计", "经办人", "案号", "来源"],
-                                            [1, 2, 3, 4, 5, 6])
+        self.tab_invoice = self._make_table(["开票日期", "发票号码", "购方名称", "价税合计", "经办人", "身份", "案号", "来源"],
+                                            [1, 2, 3, 4, 5, 6, 7])
         self.tab_collection = self._make_table(["发票号码", "收款金额", "收款日期", "备注", "来源"], [1, 2, 3])
-        self.tab_expense = self._make_table(["账期", "经办人", "费用类型", "金额", "凭证号"], [0, 1, 2, 3])
+        self.tab_expense = self._make_table(["账期", "经办人", "费用类型", "金额", "凭证号", "身份"], [0, 1, 2, 3, 5])
         self.tab_staff = self._make_table(["姓名", "员工类型", "是否在职"], [0, 1, 2])
         self.tab_log = self._make_table(["时间", "表", "记录", "字段", "旧值", "新值", "备注"], [], readonly=True)
         self.tabs.addTab(self.tab_invoice, "发票")
@@ -54,11 +54,14 @@ class LedgerView(QWidget):
         btns = QHBoxLayout()
         self.btn_edit = PushButton("编辑所选")
         self.btn_edit.clicked.connect(self.edit_selected)
+        self.btn_batch_type = PushButton("批量设身份…")
+        self.btn_batch_type.clicked.connect(self.batch_set_type)
         self.btn_refresh = PushButton("刷新")
         self.btn_refresh.clicked.connect(self.refresh)
         self.lbl = CaptionLabel("双击也可编辑")
         self.lbl.setStyleSheet("color:#8A8886;")
         btns.addWidget(self.btn_edit)
+        btns.addWidget(self.btn_batch_type)
         btns.addWidget(self.btn_refresh)
         btns.addStretch()
         btns.addWidget(self.lbl)
@@ -110,6 +113,8 @@ class LedgerView(QWidget):
                 """SELECT i.invoice_date, i.invoice_no, i.buyer, i.total_amount,
                           (SELECT group_concat(cd.person_name || printf('%.2f', cd.billing_amount), ' ')
                            FROM charge_detail cd WHERE cd.invoice_no = i.invoice_no) AS handlers,
+                          (SELECT group_concat(cd.person_name || ':' || CASE cd.person_type WHEN '' THEN '未标' ELSE cd.person_type END, ' ')
+                           FROM charge_detail cd WHERE cd.invoice_no = i.invoice_no) AS htypes,
                           i.case_no, i.source, i.invoice_no AS key
                    FROM invoice i ORDER BY i.invoice_date, i.invoice_no"""
             ).fetchall()
@@ -117,7 +122,7 @@ class LedgerView(QWidget):
                 "SELECT invoice_no, amount, receipt_date, note, source, id AS key FROM collection ORDER BY receipt_date"
             ).fetchall()
             exps = conn.execute(
-                "SELECT period, actual_handler, expense_type, expense_amount, ticket_no, id AS key "
+                "SELECT period, actual_handler, expense_type, expense_amount, ticket_no, person_type, id AS key "
                 "FROM expense_ledger ORDER BY period, id"
             ).fetchall()
             staffs = conn.execute(
@@ -129,9 +134,19 @@ class LedgerView(QWidget):
             ).fetchall()
         finally:
             conn.close()
-        self._fill(self.tab_invoice, invs, "invoice")
+        inv_display = []
+        for r in invs:
+            r2 = [r["invoice_date"], r["invoice_no"], r["buyer"], r["total_amount"],
+                  r["handlers"], r["htypes"], r["case_no"], r["source"], r["key"]]
+            inv_display.append(r2)
+        self._fill(self.tab_invoice, inv_display, "invoice")
         self._fill(self.tab_collection, cols, "collection")
-        self._fill(self.tab_expense, exps, "expense")
+        exp_display = []
+        for r in exps:
+            r2 = [r["period"], r["actual_handler"], r["expense_type"], r["expense_amount"],
+                  r["ticket_no"], r["person_type"] or "未标", r["key"]]
+            exp_display.append(r2)
+        self._fill(self.tab_expense, exp_display, "expense")
         self._fill(self.tab_staff, staffs, "staff")
         self._fill(self.tab_log, logs, "log")
         self._load_cat()
@@ -292,9 +307,14 @@ class LedgerView(QWidget):
         amt = QDoubleSpinBox(); amt.setRange(-99999999, 99999999); amt.setDecimals(2); amt.setValue(e["expense_amount"] or 0)
         handler_edit = QLineEdit(e["actual_handler"] or "")
         rnote = _note_input(self)
+        type_combo2 = QComboBox()
+        for t in ["合伙", "聘用", "兼职", "未标"]:
+            type_combo2.addItem(t, userData=t)
+        type_combo2.setCurrentText(e["person_type"] or "未标")
         form.addRow("费用类型", type_edit)
         form.addRow("金额", amt)
         form.addRow("经办人", handler_edit)
+        form.addRow("身份", type_combo2)
         form.addRow("修改备注", rnote)
         btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         btns.accepted.connect(dlg.accept); btns.rejected.connect(dlg.reject)
@@ -306,13 +326,15 @@ class LedgerView(QWidget):
             changes = []
             for f, o, n in [("expense_type", e["expense_type"], type_edit.text().strip()),
                             ("expense_amount", e["expense_amount"], amt.value()),
-                            ("actual_handler", e["actual_handler"], handler_edit.text().strip())]:
+                            ("actual_handler", e["actual_handler"], handler_edit.text().strip()),
+                            ("person_type", e["person_type"] or "未标", type_combo2.currentData())]:
                 if str(o or "") != str(n or ""):
                     changes.append((f, o, n))
             if not changes:
                 conn.close(); return
-            conn.execute("UPDATE expense_ledger SET expense_type=?, expense_amount=?, actual_handler=? WHERE id=?",
-                         (type_edit.text().strip(), amt.value(), handler_edit.text().strip(), eid))
+            conn.execute("UPDATE expense_ledger SET expense_type=?, expense_amount=?, actual_handler=?, person_type=? WHERE id=?",
+                         (type_edit.text().strip(), amt.value(), handler_edit.text().strip(),
+                          type_combo2.currentData(), eid))
             log_changes(conn, "expense_ledger", str(eid), changes, rnote.text().strip())
             conn.commit()
         except Exception as e:  # noqa: BLE001
@@ -462,3 +484,49 @@ class LedgerView(QWidget):
         self.cat_new.clear()
         self._load_cat()
         self.log.appendPlainText(f"✓ 已新增费用类型 {name}（归入「{cat}」）")
+
+    # ---- 批量设身份（发票/费用 Tab）----
+    def batch_set_type(self) -> None:
+        tb = self.tabs.currentWidget()
+        if tb not in (self.tab_invoice, self.tab_expense):
+            QMessageBox.information(self, "提示", "请在「发票」或「费用」Tab 使用批量设身份")
+            return
+        rows = tb.selectionModel().selectedRows()
+        if not rows:
+            QMessageBox.information(self, "提示", "请先选中要设置身份的行（可多选）")
+            return
+        dlg = QDialog(self)
+        dlg.setWindowTitle("批量设置身份")
+        form = QFormLayout(dlg)
+        combo = QComboBox()
+        for t in ["合伙", "聘用", "兼职", "未标"]:
+            combo.addItem(t, userData=t)
+        form.addRow("身份", combo)
+        btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        btns.accepted.connect(dlg.accept); btns.rejected.connect(dlg.reject)
+        form.addRow(btns)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        ptype = combo.currentData()
+        conn = get_conn()
+        try:
+            n = 0
+            for idx in rows:
+                r = idx.row()
+                if tb is self.tab_expense:
+                    eid = self._meta_expense[r]
+                    conn.execute("UPDATE expense_ledger SET person_type=? WHERE id=?", (ptype, eid))
+                    log_change(conn, "expense_ledger", str(eid), "person_type", None, ptype, "批量设身份")
+                else:
+                    key = self._meta_invoice[r]
+                    conn.execute("UPDATE charge_detail SET person_type=? WHERE invoice_no=?", (ptype, key))
+                    log_change(conn, "charge_detail", key, "person_type", None, ptype, "批量设身份")
+                n += 1
+            conn.commit()
+        except Exception as e:  # noqa: BLE001
+            conn.rollback(); QMessageBox.critical(self, "失败", str(e)); return
+        finally:
+            conn.close()
+        self.refresh()
+        self.log.appendPlainText(f"✓ 已为 {n} 条数据设置身份「{ptype}」")
+        QMessageBox.information(self, "完成", f"已为 {n} 条数据设置身份「{ptype}」")

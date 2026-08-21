@@ -222,29 +222,67 @@ def _write_sheet(ws, person: str, st: Dict, year: int, month: int) -> None:
     ws.page_margins = PageMargins(left=0.25, right=0.25, top=0.3, bottom=0.3)
 
 
+def _empty_st() -> Dict:
+    return {
+        "staff_type": "其他",
+        "months": {mo: {k: 0.0 for k in (
+            "rec_open_cur", "rec_cur_year", "rec_prev_year", "rec_refund_cur",
+            "rec_refund_prev", "inv_open_received", "inv_open_uncollected",
+            "inv_red_cur", "inv_red_prev", "inv_total", "income")} for mo in range(1, 13)},
+        "uncollected_month": {mo: 0.0 for mo in range(1, 13)},
+        "uncollected_total": 0.0,
+        "expenses": {},
+    }
+
+
+def _has_data(st: Dict, month: int) -> bool:
+    """该月或累计有数据"""
+    m = st["months"][month]
+    vals = [m[k] for k in ("rec_open_cur", "rec_cur_year", "rec_prev_year",
+                           "rec_refund_cur", "rec_refund_prev", "inv_open_received",
+                           "inv_open_uncollected", "inv_red_cur", "inv_red_prev", "income")]
+    if any(abs(v) > 0.01 for v in vals):
+        return True
+    if st["uncollected_month"].get(month, 0) > 0.01:
+        return True
+    if sum(st["expenses"].get(t, {}).get(month, 0.0) for t in st["expenses"]) > 0.01:
+        return True
+    return False
+
+
 def export_report(out_path: str | Path, year: int, month: int, persons: list[str]) -> Path:
-    """生成月度结算表（多 sheet），persons 为要导出的员工名单（含"公共费用"）"""
-    data = build_settlement(year)
+    """生成月度结算表（多 sheet）。
+
+    - persons 为姓名列表（含"公共费用"）
+    - 每人按身份拆：X合伙 / X聘用 / X兼职（该身份有数据才出）+ X汇总（合并）
+    """
+    data_all = build_settlement(year)
     wb = openpyxl.Workbook()
     wb.remove(wb.active)
     for person in persons:
-        # 模板 sheet 名为"公共费用"，引擎中费用经办人为"公共"
-        st = data.get(person)
-        if st is None and person == "公共费用":
-            st = data.get("公共")
-        if st is None:
-            st = {
-                "staff_type": "其他",
-                "months": {mo: {k: 0.0 for k in (
-                    "rec_open_cur", "rec_cur_year", "rec_prev_year", "rec_refund_cur",
-                    "rec_refund_prev", "inv_open_received", "inv_open_uncollected",
-                    "inv_red_cur", "inv_red_prev", "inv_total", "income")} for mo in range(1, 13)},
-                "uncollected_month": {mo: 0.0 for mo in range(1, 13)},
-                "uncollected_total": 0.0,
-                "expenses": {},
-            }
-        ws = wb.create_sheet(title=person)
-        _write_sheet(ws, person, st, year, month)
+        if person == "公共费用":
+            st = data_all.get("公共") or _empty_st()
+            ws = wb.create_sheet(title="公共费用")
+            _write_sheet(ws, "公共费用", st, year, month)
+            continue
+        # 各身份 sheet
+        any_data = False
+        for ptype in ("合伙", "聘用", "兼职"):
+            st = build_settlement(year, person=person, person_type=ptype).get(person)
+            if st is not None and _has_data(st, month):
+                ws = wb.create_sheet(title=f"{person}{ptype}")
+                _write_sheet(ws, person, st, year, month)
+                any_data = True
+        # 汇总 sheet（合并所有身份）
+        st_all = data_all.get(person)
+        if st_all is not None and _has_data(st_all, month):
+            ws = wb.create_sheet(title=f"{person}汇总")
+            _write_sheet(ws, person, st_all, year, month)
+            any_data = True
+        if not any_data:
+            # 无数据也出一个汇总空表（保持名单完整）
+            ws = wb.create_sheet(title=f"{person}汇总")
+            _write_sheet(ws, person, _empty_st(), year, month)
     out = Path(out_path)
     out.parent.mkdir(parents=True, exist_ok=True)
     wb.save(out)

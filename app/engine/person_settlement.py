@@ -42,7 +42,13 @@ def _year_of(ym: str) -> int:
     return int(ym.split("-")[0]) if ym else 0
 
 
-def _staff_type(conn, name: str) -> str:
+def _staff_type(conn, name: str, override: str | None = None) -> str:
+    if override:
+        return override
+    return _staff_type_orig(conn, name)
+
+
+def _staff_type_orig(conn, name: str) -> str:
     r = conn.execute("SELECT staff_type FROM staff WHERE name=? AND is_active=1", (name,)).fetchone()
     if not r:
         return "其他"
@@ -56,9 +62,10 @@ def _staff_type(conn, name: str) -> str:
     return "其他"
 
 
-def build_settlement(year: int, person: str | None = None) -> Dict:
+def build_settlement(year: int, person: str | None = None, person_type: str | None = None) -> Dict:
     """计算个人结算总表数据
 
+    person_type: 按身份过滤（合伙/聘用/兼职，None=全部=汇总口径）
     Returns:
         {person: {
             'staff_type': 合伙|聘用|兼职|其他,
@@ -70,15 +77,15 @@ def build_settlement(year: int, person: str | None = None) -> Dict:
     """
     conn = get_conn()
     try:
-        return _compute(conn, year, person)
+        return _compute(conn, year, person, person_type)
     finally:
         conn.close()
 
 
-def _new_st(conn, name: str) -> Dict:
-    """标准人员结构"""
+def _new_st(conn, name: str, override: str | None = None) -> Dict:
+    """标准人员结构（override=身份，优先于人员类型）"""
     return {
-        "staff_type": _staff_type(conn, name),
+        "staff_type": _staff_type(conn, name, override),
         "months": {m: _empty_month() for m in MONTHS},
         "uncollected_month": {m: 0.0 for m in MONTHS},
         "uncollected_total": 0.0,
@@ -95,41 +102,51 @@ def _empty_month() -> Dict[str, float]:
     )}
 
 
-def _compute(conn, year: int, person: str | None) -> Dict:
+def _compute(conn, year: int, person: str | None, person_type: str | None = None) -> Dict:
     result: Dict[str, Dict] = {}
     person_filter = (person,) if person else None
+    pt_filter = (" AND person_type=?" if person_type else "")
 
     # ============ 收款分摊（按经办人）============
     # 发票维度：开票信息 + 收款记录（正数发票才有收款分摊）
+    _inv_where, _inv_params = "1=1", []
+    if person:
+        _inv_where += """ AND EXISTS (SELECT 1 FROM charge_detail cd
+                       WHERE cd.invoice_no = i.invoice_no AND cd.person_name = ?)"""
+        _inv_params.append(person)
+    if person_type:
+        _inv_where += """ AND EXISTS (SELECT 1 FROM charge_detail cd
+                       WHERE cd.invoice_no = i.invoice_no AND cd.person_type = ?)"""
+        _inv_params.append(person_type)
     invoices = conn.execute(
-        """SELECT i.invoice_no, i.invoice_date, i.total_amount, i.orig_invoice_no
-           FROM invoice i WHERE i.total_amount >= 0 ORDER BY i.invoice_date, i.invoice_no"""
-    ).fetchall() if not person_filter else conn.execute(
-        """SELECT i.invoice_no, i.invoice_date, i.total_amount, i.orig_invoice_no
-           FROM invoice i
-           WHERE i.total_amount >= 0 AND EXISTS (
-               SELECT 1 FROM charge_detail cd WHERE cd.invoice_no = i.invoice_no AND cd.person_name = ?
-           ) ORDER BY i.invoice_date, i.invoice_no""", person_filter
+        f"""SELECT i.invoice_no, i.invoice_date, i.total_amount, i.orig_invoice_no
+            FROM invoice i WHERE i.total_amount >= 0 AND {_inv_where}
+            ORDER BY i.invoice_date, i.invoice_no""", _inv_params
     ).fetchall()
 
     receipts_by_inv: Dict[str, List] = {}
     # ---- 红字发票查询 + 红冲映射（未收冲减用）----
+    _rd_where, _rd_params = "1=1", []
+    if person:
+        _rd_where += """ AND EXISTS (SELECT 1 FROM charge_detail cd
+                       WHERE cd.invoice_no = i.invoice_no AND cd.person_name = ?)"""
+        _rd_params.append(person)
+    if person_type:
+        _rd_where += """ AND EXISTS (SELECT 1 FROM charge_detail cd
+                       WHERE cd.invoice_no = i.invoice_no AND cd.person_type = ?)"""
+        _rd_params.append(person_type)
     reds = conn.execute(
-        """SELECT i.invoice_no, i.invoice_date, i.total_amount, i.orig_invoice_no
-           FROM invoice i WHERE i.total_amount < 0 ORDER BY i.invoice_date"""
-    ).fetchall() if not person_filter else conn.execute(
-        """SELECT i.invoice_no, i.invoice_date, i.total_amount, i.orig_invoice_no
-           FROM invoice i WHERE i.total_amount < 0 AND EXISTS (
-               SELECT 1 FROM charge_detail cd WHERE cd.invoice_no = i.invoice_no AND cd.person_name = ?)""",
-        person_filter,
+        f"""SELECT i.invoice_no, i.invoice_date, i.total_amount, i.orig_invoice_no
+            FROM invoice i WHERE i.total_amount < 0 AND {_rd_where}
+            ORDER BY i.invoice_date""", _rd_params
     ).fetchall()
     red_by_orig: Dict[str, Dict[str, float]] = {}
     for red in reds:
         if _year_of(red["invoice_date"]) != year or not red["orig_invoice_no"]:
             continue
         cds_r = conn.execute(
-            "SELECT person_name, billing_amount FROM charge_detail WHERE invoice_no=? ORDER BY id",
-            (red["invoice_no"],),
+            "SELECT person_name, billing_amount FROM charge_detail WHERE invoice_no=?" + pt_filter + " ORDER BY id",
+            (red["invoice_no"],) + ((person_type,) if person_type else ()),
         ).fetchall()
         for cd_r in cds_r:
             red_by_orig.setdefault(red["orig_invoice_no"], {})[cd_r["person_name"]] = abs(cd_r["billing_amount"])
@@ -144,8 +161,8 @@ def _compute(conn, year: int, person: str | None) -> Dict:
     cds_by_inv: Dict[str, List] = {}
     for inv in invoices:
         cds_by_inv[inv["invoice_no"]] = conn.execute(
-            "SELECT person_name, billing_amount FROM charge_detail WHERE invoice_no=? ORDER BY id",
-            (inv["invoice_no"],),
+            "SELECT person_name, billing_amount FROM charge_detail WHERE invoice_no=?" + pt_filter + " ORDER BY id",
+            (inv["invoice_no"],) + ((person_type,) if person_type else ()),
         ).fetchall()
 
     for inv in invoices:
@@ -166,7 +183,7 @@ def _compute(conn, year: int, person: str | None) -> Dict:
             for name, val in got.items():
                 if val == 0:
                     continue
-                st = result.setdefault(name, _new_st(conn, name))
+                st = result.setdefault(name, _new_st(conn, name, person_type))
                 m = st["months"][rec_month]
                 if rec_year == inv_year and rec_month == inv_month:
                     pass  # ①由开票循环统一计算（=本月开票已收，含预收）
@@ -184,7 +201,7 @@ def _compute(conn, year: int, person: str | None) -> Dict:
                 continue
             name = cd["person_name"]
             billing = cd["billing_amount"]
-            st = result.setdefault(name, _new_st(conn, name))
+            st = result.setdefault(name, _new_st(conn, name, person_type))
             m = st["months"][inv_month]
             # 已收部分（该经办人在此票上的分摊累计已收，含期外预收）
             got_total = sum(_allocated_total(remaining, cds, name, receipts_by_inv.get(no, [])))
@@ -209,8 +226,8 @@ def _compute(conn, year: int, person: str | None) -> Dict:
         if red_year != year:
             continue  # 只统计本年红冲
         cds = conn.execute(
-            "SELECT person_name, billing_amount FROM charge_detail WHERE invoice_no=? ORDER BY id",
-            (red["invoice_no"],),
+            "SELECT person_name, billing_amount FROM charge_detail WHERE invoice_no=?" + pt_filter + " ORDER BY id",
+            (red["invoice_no"],) + ((person_type,) if person_type else ()),
         ).fetchall()
         if not cds:
             continue
@@ -223,7 +240,7 @@ def _compute(conn, year: int, person: str | None) -> Dict:
                 orig_month = _month_of(oi["invoice_date"])
         for cd in cds:
             name = cd["person_name"]
-            st = result.setdefault(name, _new_st(conn, name))
+            st = result.setdefault(name, _new_st(conn, name, person_type))
             m = st["months"][red_month]
             val = cd["billing_amount"]  # 负数
             m["inv_total"] += val            # 三小计含红冲
@@ -242,7 +259,8 @@ def _compute(conn, year: int, person: str | None) -> Dict:
         if red is None:
             continue
         cds = conn.execute(
-            "SELECT person_name, billing_amount FROM charge_detail WHERE invoice_no=? ORDER BY id", (red_no,)
+            "SELECT person_name, billing_amount FROM charge_detail WHERE invoice_no=?" + pt_filter + " ORDER BY id",
+            (red_no,) + ((person_type,) if person_type else ()),
         ).fetchall()
         if not cds:
             continue
@@ -263,7 +281,7 @@ def _compute(conn, year: int, person: str | None) -> Dict:
             if person and name != person:
                 continue
             share = ref["refund_amount"] * abs(cd["billing_amount"]) / total_abs
-            st = result.setdefault(name, _new_st(conn, name))
+            st = result.setdefault(name, _new_st(conn, name, person_type))
             m = st["months"][refund_month]
             if orig_year is not None and orig_year < year:
                 m["rec_refund_prev"] -= share     # ⑤退上年（负数）
@@ -295,9 +313,12 @@ def _compute(conn, year: int, person: str | None) -> Dict:
     # ============ 费用（六，逐类）============
     exp_rows = conn.execute(
         "SELECT period, actual_handler, expense_type, expense_amount FROM expense_ledger"
+        + (" WHERE person_type=?" if person_type else ""),
+        ((person_type,) if person_type else ()),
     ).fetchall() if not person_filter else conn.execute(
-        "SELECT period, actual_handler, expense_type, expense_amount FROM expense_ledger WHERE actual_handler=?",
-        person_filter,
+        "SELECT period, actual_handler, expense_type, expense_amount FROM expense_ledger WHERE actual_handler=?"
+        + (" AND person_type=?" if person_type else ""),
+        person_filter + ((person_type,) if person_type else ()),
     ).fetchall()
     for er in exp_rows:
         name = er["actual_handler"]
