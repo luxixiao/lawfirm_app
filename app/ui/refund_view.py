@@ -103,10 +103,16 @@ class RefundView(QWidget):
             no = item["red_invoice_no"]
             done = refunded.get(no, 0.0)
             refundable = abs(item["red_amount"])
-            remain = max(refundable - done, 0.0)
+            # 剩余应退：仅"需退款"状态计算；不退款/未判定显示 "—"（不产生应退义务）
+            if item["status"] == "need_refund":
+                remain = max(refundable - done, 0.0)
+                remain_display = f"{remain:,.2f}"
+            else:
+                remain = 0.0
+                remain_display = "—"
             vals = [no, item["red_amount"], item["orig_invoice_no"] or "—",
                     item["orig_invoice_date"] or "—", STATUS_TEXT.get(item["status"], item["status"]),
-                    done, remain]
+                    done, remain_display]
             for c, v in enumerate(vals):
                 cell = QTableWidgetItem(
                     "" if v is None else (f"{v:,.2f}" if isinstance(v, float) else str(v)))
@@ -117,6 +123,7 @@ class RefundView(QWidget):
                     if c == 4:
                         cell.setForeground(QColor("#7A5C00"))
                 self.table.setItem(r, c, cell)
+            item["_remain"] = remain
             self._meta[r] = item
             if item["status"] == "orig_missing":
                 pending += 1
@@ -192,6 +199,16 @@ class RefundView(QWidget):
             return
         item = self._meta[row]
         no = item["red_invoice_no"]
+        # 仅"需退款"状态可确认退款；其他状态（不退款/未判定）禁止
+        if item["status"] != "need_refund":
+            tip = {
+                "same_month": "原票当月开具，系统判定不退款",
+                "orig_uncollected": "原票未收款，系统判定不退款",
+                "orig_missing": "原票未导入，请先补录原票后再判定",
+                "no_orig": "未关联原票，无法判定",
+            }.get(item["status"], "该发票不满足退款条件")
+            QMessageBox.information(self, "无法确认退款", f"发票 {no}：{tip}")
+            return
 
         dlg = QDialog(self)
         dlg.setWindowTitle(f"确认退款：{no}")
