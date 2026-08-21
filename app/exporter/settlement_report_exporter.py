@@ -19,6 +19,8 @@ from typing import Dict
 import openpyxl
 from openpyxl.styles import Alignment, Border, Font, Side
 from openpyxl.utils import get_column_letter
+from openpyxl.worksheet.page import PageMargins
+from openpyxl.worksheet.properties import PageSetupProperties
 
 from app.engine.person_settlement import build_settlement
 
@@ -187,9 +189,37 @@ def _write_sheet(ws, person: str, st: Dict, year: int, month: int) -> None:
                 c.alignment = Alignment(wrap_text=True, vertical="center")
                 ws.row_dimensions[r].height = max(ws.row_dimensions[r].height or 0, 50)
 
-    # 列宽
-    for j, w in enumerate([5, 24, 13, 13, 40], 1):
-        ws.column_dimensions[get_column_letter(j)].width = w
+    # ---- 自动列宽（按内容，汉字计 2 字符）----
+    def _char_w(text: str) -> int:
+        return sum(2 if ord(ch) > 127 else 1 for ch in str(text or ""))
+
+    # A 列序号固定窄宽；E 列备注保底 28（无备注时也美观）
+    ws.column_dimensions["A"].width = 6
+    ws.column_dimensions["E"].width = 28
+    for col_idx in (2, 3, 4):
+        maxw = 0
+        for row in ws.iter_rows(min_col=col_idx, max_col=col_idx):
+            for cell in row:
+                if cell.value is None:
+                    continue
+                lines = str(cell.value).split("\n")
+                maxw = max(maxw, max(_char_w(line) for line in lines))
+        ws.column_dimensions[get_column_letter(col_idx)].width = min(maxw + 2, 48)
+    # E 列备注若内容更长则扩展
+    maxw_e = 0
+    for row in ws.iter_rows(min_col=5, max_col=5):
+        for cell in row:
+            if cell.value is None:
+                continue
+            maxw_e = max(maxw_e, max(_char_w(line) for line in str(cell.value).split("\n")))
+    ws.column_dimensions["E"].width = min(max(28, maxw_e + 2), 60)
+
+    # ---- 打印设置：每个 sheet 打印在一页 ----
+    ws.page_setup.orientation = "portrait"
+    ws.page_setup.fitToWidth = 1
+    ws.page_setup.fitToHeight = 1
+    ws.sheet_properties.pageSetUpPr = PageSetupProperties(fitToPage=True)
+    ws.page_margins = PageMargins(left=0.25, right=0.25, top=0.3, bottom=0.3)
 
 
 def export_report(out_path: str | Path, year: int, month: int, persons: list[str]) -> Path:
