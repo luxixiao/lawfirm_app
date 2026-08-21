@@ -155,10 +155,25 @@ class RefundView(QWidget):
                     cell.setForeground(QColor("#C0392B"))  # 缺失的原票号标红
                 tbl.setItem(r, c, cell)
         lay.addWidget(tbl)
-        btns = QDialogButtonBox()
-        go = btns.addButton("去手动补录原票", QDialogButtonBox.ButtonRole.AcceptRole)
-        btns.addButton("关闭", QDialogButtonBox.ButtonRole.RejectRole)
-        lay.addWidget(btns)
+        # 按钮（用普通 PushButton + clicked 信号，不用 QDialogButtonBox 自动映射）
+        btn_row = QHBoxLayout()
+        from qfluentwidgets import PrimaryPushButton, PushButton
+        go_btn = PrimaryPushButton("去手动补录原票")
+        close_btn = PushButton("关闭")
+        btn_row.addStretch()
+        btn_row.addWidget(close_btn)
+        btn_row.addWidget(go_btn)
+        lay.addLayout(btn_row)
+
+        def go_manual():
+            dlg.done(QDialog.DialogCode.Accepted)
+            win = self.window()
+            if hasattr(win, "go_to_page"):
+                win.go_to_page("manual")
+
+        go_btn.clicked.connect(go_manual)
+        close_btn.clicked.connect(dlg.reject)
+
         if dlg.exec() == QDialog.DialogCode.Accepted:
             win = self.window()
             if hasattr(win, "go_to_page"):
