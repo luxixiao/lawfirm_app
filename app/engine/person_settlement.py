@@ -148,7 +148,7 @@ def _compute(conn, year: int, person: str | None) -> Dict:
                 st = result.setdefault(name, _new_st(conn, name))
                 m = st["months"][rec_month]
                 if rec_year == inv_year and rec_month == inv_month:
-                    m["rec_open_cur"] += val          # ①本月开收（本月开且本月收）
+                    pass  # ①由开票循环统一计算（=本月开票已收，含预收）
                 elif rec_year == year and inv_year == year and rec_month > inv_month:
                     m["rec_cur_year"] += val          # ②收本年
                 elif inv_year < year:
@@ -172,9 +172,10 @@ def _compute(conn, year: int, person: str | None) -> Dict:
                 m["inv_open_uncollected"] += uncollected   # ⑦本月未收
                 st["uncollected_month"][inv_month] += uncollected  # 四·本月
                 st["_uncollected_acc"] += uncollected            # 四·合计（存量累计）
-            # ⑥本月开收 = 本月开票且已收款（含当月收款与以前月份预收款）
+            # ①/⑥本月开收 = 本月开票且已收款（含当月收款与以前月份预收款）
             received = round(billing - max(uncollected, 0.0), 2)
-            m["inv_open_received"] += received
+            m["rec_open_cur"] += received          # ①
+            m["inv_open_received"] += received     # ⑥
             # 本月开票总额（三小计独立计算，含预收票）
             m["inv_total"] += billing
 
