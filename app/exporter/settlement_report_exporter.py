@@ -47,33 +47,33 @@ def _month_total(st: Dict, month: int, keys) -> float:
 
 
 def report_note(st: Dict, month: int) -> str:
-    """备注（简称+金额，每条一行；涉及非本月的数据全部说明）"""
+    """备注（完整文字，每条一行；涉及非本月的数据全部说明）"""
     m = st["months"]
     notes = []
     # 本月收回/退款
     if m[month]["rec_cur_year"] > 0.01:
-        notes.append(f"收本年{m[month]['rec_cur_year']:,.2f}元")
+        notes.append(f"本月收回本年应收款{m[month]['rec_cur_year']:,.2f}元")
     if m[month]["rec_prev_year"] > 0.01:
-        notes.append(f"收上年{m[month]['rec_prev_year']:,.2f}元")
+        notes.append(f"本月收回上年应收款{m[month]['rec_prev_year']:,.2f}元")
     if m[month]["rec_refund_cur"] < -0.01:
-        notes.append(f"退本年{abs(m[month]['rec_refund_cur']):,.2f}元")
+        notes.append(f"本月退本年应收款{abs(m[month]['rec_refund_cur']):,.2f}元")
     if m[month]["rec_refund_prev"] < -0.01:
-        notes.append(f"退上年{abs(m[month]['rec_refund_prev']):,.2f}元")
+        notes.append(f"本月退上年应收款{abs(m[month]['rec_refund_prev']):,.2f}元")
     # 本年累计（跨月/跨年说明）
     cum_prev_year = sum(m[mo]["rec_prev_year"] for mo in range(1, month + 1))
     cum_refund_prev = sum(m[mo]["rec_refund_prev"] for mo in range(1, month + 1))
     if cum_prev_year > 0.01:
-        notes.append(f"累计收上年{cum_prev_year:,.2f}元")
+        notes.append(f"本年累计收回上年应收款{cum_prev_year:,.2f}元")
     if cum_refund_prev < -0.01:
-        notes.append(f"累计退上年{abs(cum_refund_prev):,.2f}元")
+        notes.append(f"本年累计退上年应收款{abs(cum_refund_prev):,.2f}元")
     # 红冲（涉及非本月开票）
     if m[month]["inv_red_cur"] < -0.01:
-        notes.append(f"红冲本年{abs(m[month]['inv_red_cur']):,.2f}元")
+        notes.append(f"本月红冲本年{abs(m[month]['inv_red_cur']):,.2f}元")
     if m[month]["inv_red_prev"] < -0.01:
-        notes.append(f"红冲上年{abs(m[month]['inv_red_prev']):,.2f}元")
+        notes.append(f"本月红冲上年{abs(m[month]['inv_red_prev']):,.2f}元")
     cum_red_prev = sum(m[mo]["inv_red_prev"] for mo in range(1, month + 1))
     if cum_red_prev < -0.01:
-        notes.append(f"累计红冲上年{abs(cum_red_prev):,.2f}元")
+        notes.append(f"本年累计红冲上年{abs(cum_red_prev):,.2f}元")
     return "\n".join(notes)
 
 
