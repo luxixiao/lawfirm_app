@@ -499,7 +499,7 @@ class ManualEntryView(QWidget):
         conn = get_conn()
         try:
             for r in conn.execute("SELECT invoice_no, buyer FROM invoice WHERE total_amount>=0 ORDER BY invoice_date"):
-                combo.addItem(f"{r['invoice_no']} {r['buyer'][:12]}", r["invoice_no"])
+                combo.addItem(f"{r['invoice_no']} {r['buyer'][:12]}", userData=r["invoice_no"])
         finally:
             conn.close()
         amt = QDoubleSpinBox(); amt.setRange(0.01, 99999999); amt.setDecimals(2)
@@ -534,7 +534,7 @@ class ManualEntryView(QWidget):
         conn = get_conn()
         try:
             for r in conn.execute("SELECT invoice_no, orig_invoice_no FROM invoice WHERE total_amount<0 ORDER BY invoice_date"):
-                combo.addItem(f"{r['invoice_no']} 原票:{r['orig_invoice_no']}", r["invoice_no"])
+                combo.addItem(f"{r['invoice_no']} 原票:{r['orig_invoice_no']}", userData=r["invoice_no"])
         finally:
             conn.close()
         amt = QDoubleSpinBox(); amt.setRange(0.01, 99999999); amt.setDecimals(2)

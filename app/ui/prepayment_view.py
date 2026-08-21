@@ -115,7 +115,7 @@ class PrepaymentView(QWidget):
             for c in cands:
                 combo.addItem(
                     f"{c['invoice_date']} {c['invoice_no']} {c['buyer'][:14]} {c['total_amount']:,.2f}",
-                    c["invoice_no"],
+                    userData=c["invoice_no"],
                 )
         finally:
             conn.close()

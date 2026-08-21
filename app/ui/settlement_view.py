@@ -32,7 +32,7 @@ class SettlementView(QWidget):
         self.year = ComboBox()
         cur = datetime.now().year
         for y in range(cur, cur - 3, -1):
-            self.year.addItem(f"{y}年", y)
+            self.year.addItem(f"{y}年", userData=y)
         self.year.setCurrentIndex(0)
         bar.addWidget(self.year)
 
@@ -58,9 +58,9 @@ class SettlementView(QWidget):
     def _reload_persons(self) -> None:
         data = build_settlement(datetime.now().year)
         self.person.clear()
-        self.person.addItem("请选择员工", None)
+        self.person.addItem("请选择员工", userData=None)
         for name in sorted(data.keys()):
-            self.person.addItem(name, name)
+            self.person.addItem(name, userData=name)
 
     def showEvent(self, event) -> None:  # noqa: N802
         super().showEvent(event)

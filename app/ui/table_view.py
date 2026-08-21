@@ -150,16 +150,16 @@ def make_filter_widgets(parent: QWidget, filters: QHBoxLayout,
     from qfluentwidgets import CaptionLabel
     filters.addWidget(CaptionLabel("开票月份"))
     month = ComboBox()
-    month.addItem("全部月份", "")
+    month.addItem("全部月份", userData="")
     for m in _month_options():
-        month.addItem(m, m)
+        month.addItem(m, userData=m)
     month.currentIndexChanged.connect(on_change)
 
     filters.addWidget(CaptionLabel("来源"))
     src = ComboBox()
-    src.addItem("全部", "")
-    src.addItem("台账导入", "import")
-    src.addItem("手动补录", "manual")
+    src.addItem("全部", userData="")
+    src.addItem("台账导入", userData="import")
+    src.addItem("手动补录", userData="manual")
     src.currentIndexChanged.connect(on_change)
 
     filters.addWidget(CaptionLabel("购方"))

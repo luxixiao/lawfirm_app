@@ -28,11 +28,11 @@ class HandlerCollectView(BaseTableView):
         # 经办人下拉
         lbl = QLabel("经办人")
         self.person = QComboBox()
-        self.person.addItem("全部经办人", "")
+        self.person.addItem("全部经办人", userData="")
         conn = get_conn()
         try:
             for r in conn.execute("SELECT DISTINCT person_name FROM charge_detail ORDER BY person_name"):
-                self.person.addItem(r["person_name"], r["person_name"])
+                self.person.addItem(r["person_name"], userData=r["person_name"])
         finally:
             conn.close()
         self.person.currentIndexChanged.connect(lambda *_: self.refresh())

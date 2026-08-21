@@ -25,21 +25,21 @@ class HandlerFilterView(BaseTableView):
         self.filters.addWidget(QLabel("经办人"))
         self.person = QComboBox()
         self.person.setMinimumWidth(140)
-        self.person.addItem("请选择经办人", None)
+        self.person.addItem("请选择经办人", userData=None)
         conn = get_conn()
         try:
             for r in conn.execute("SELECT DISTINCT person_name FROM charge_detail ORDER BY person_name"):
-                self.person.addItem(r["person_name"], r["person_name"])
+                self.person.addItem(r["person_name"], userData=r["person_name"])
         finally:
             conn.close()
         self.person.currentIndexChanged.connect(lambda *_: self.refresh())
         self.filters.addWidget(self.person)
         self.filters.addWidget(QLabel("开票月份"))
         self.month = QComboBox()
-        self.month.addItem("全部月份", "")
+        self.month.addItem("全部月份", userData="")
         from app.ui.table_view import _month_options
         for m in _month_options():
-            self.month.addItem(m, m)
+            self.month.addItem(m, userData=m)
         self.month.currentIndexChanged.connect(lambda *_: self.refresh())
         self.filters.addWidget(self.month)
         self.filters.addStretch()
