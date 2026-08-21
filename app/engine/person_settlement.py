@@ -113,6 +113,27 @@ def _compute(conn, year: int, person: str | None) -> Dict:
     ).fetchall()
 
     receipts_by_inv: Dict[str, List] = {}
+    # ---- 红字发票查询 + 红冲映射（未收冲减用）----
+    reds = conn.execute(
+        """SELECT i.invoice_no, i.invoice_date, i.total_amount, i.orig_invoice_no
+           FROM invoice i WHERE i.total_amount < 0 ORDER BY i.invoice_date"""
+    ).fetchall() if not person_filter else conn.execute(
+        """SELECT i.invoice_no, i.invoice_date, i.total_amount, i.orig_invoice_no
+           FROM invoice i WHERE i.total_amount < 0 AND EXISTS (
+               SELECT 1 FROM charge_detail cd WHERE cd.invoice_no = i.invoice_no AND cd.person_name = ?)""",
+        person_filter,
+    ).fetchall()
+    red_by_orig: Dict[str, Dict[str, float]] = {}
+    for red in reds:
+        if _year_of(red["invoice_date"]) != year or not red["orig_invoice_no"]:
+            continue
+        cds_r = conn.execute(
+            "SELECT person_name, billing_amount FROM charge_detail WHERE invoice_no=? ORDER BY id",
+            (red["invoice_no"],),
+        ).fetchall()
+        for cd_r in cds_r:
+            red_by_orig.setdefault(red["orig_invoice_no"], {})[cd_r["person_name"]] = abs(cd_r["billing_amount"])
+
     for inv in invoices:
         receipts_by_inv[inv["invoice_no"]] = conn.execute(
             "SELECT amount, receipt_date FROM collection WHERE invoice_no=? ORDER BY id",
@@ -167,7 +188,9 @@ def _compute(conn, year: int, person: str | None) -> Dict:
             m = st["months"][inv_month]
             # 已收部分（该经办人在此票上的分摊累计已收，含期外预收）
             got_total = sum(_allocated_total(remaining, cds, name, receipts_by_inv.get(no, [])))
-            uncollected = round(billing - got_total, 2)
+            # 被红冲的原票：按经办人冲减开票金额（红冲后作废，未收清零）
+            red_cut = red_by_orig.get(no, {}).get(name, 0.0)
+            uncollected = round(max(billing - red_cut, 0.0) - got_total, 2)
             if uncollected > 0.01:
                 m["inv_open_uncollected"] += uncollected   # ⑦本月未收
                 st["uncollected_month"][inv_month] += uncollected  # 四·本月
@@ -180,15 +203,6 @@ def _compute(conn, year: int, person: str | None) -> Dict:
             m["inv_total"] += billing
 
     # ============ 红字发票（三⑧⑨）============
-    reds = conn.execute(
-        """SELECT i.invoice_no, i.invoice_date, i.total_amount, i.orig_invoice_no
-           FROM invoice i WHERE i.total_amount < 0 ORDER BY i.invoice_date"""
-    ).fetchall() if not person_filter else conn.execute(
-        """SELECT i.invoice_no, i.invoice_date, i.total_amount, i.orig_invoice_no
-           FROM invoice i WHERE i.total_amount < 0 AND EXISTS (
-               SELECT 1 FROM charge_detail cd WHERE cd.invoice_no = i.invoice_no AND cd.person_name = ?)""",
-        person_filter,
-    ).fetchall()
     for red in reds:
         red_year, red_month = _year_of(red["invoice_date"]), _month_of(red["invoice_date"])
         if red_year != year:
@@ -199,12 +213,13 @@ def _compute(conn, year: int, person: str | None) -> Dict:
         ).fetchall()
         if not cds:
             continue
-        # 原票年份
-        orig_year = None
+        # 原票年份/月份
+        orig_year, orig_month = None, None
         if red["orig_invoice_no"]:
             oi = conn.execute("SELECT invoice_date FROM invoice WHERE invoice_no=?", (red["orig_invoice_no"],)).fetchone()
             if oi:
                 orig_year = _year_of(oi["invoice_date"])
+                orig_month = _month_of(oi["invoice_date"])
         for cd in cds:
             name = cd["person_name"]
             st = result.setdefault(name, _new_st(conn, name))
@@ -213,8 +228,8 @@ def _compute(conn, year: int, person: str | None) -> Dict:
             m["inv_total"] += val            # 三小计含红冲
             if orig_year is not None and orig_year < year:
                 m["inv_red_prev"] += val     # ⑨红冲上年
-            else:
-                m["inv_red_cur"] += val      # ⑧红冲本年（含原票本年/无原票）
+            elif orig_year == year and orig_month is not None and orig_month < red_month:
+                m["inv_red_cur"] += val      # ⑧红冲本年（原票本年以前月份，不含同月）
 
     # ============ 退款（二④⑤，按红字经办人比例分摊）============
     refunds = conn.execute(
