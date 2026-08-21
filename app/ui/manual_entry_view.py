@@ -79,9 +79,13 @@ class ManualEntryView(QWidget):
     def refresh(self) -> None:
         conn = get_conn()
         try:
+            # 字段顺序与表格列一致：开票日期|发票号码|购方名称|价税合计|经办人|案号
             invs = conn.execute(
-                "SELECT invoice_no, invoice_date, buyer, total_amount, case_no FROM invoice "
-                "WHERE source='manual' ORDER BY invoice_date"
+                """SELECT i.invoice_date, i.invoice_no, i.buyer, i.total_amount,
+                          (SELECT group_concat(cd.person_name, '、') FROM charge_detail cd
+                           WHERE cd.invoice_no = i.invoice_no) AS handlers,
+                          i.case_no
+                   FROM invoice i WHERE i.source='manual' ORDER BY i.invoice_date"""
             ).fetchall()
             cols = conn.execute(
                 "SELECT invoice_no, amount, receipt_date, note FROM collection WHERE source='manual' ORDER BY receipt_date"
@@ -89,7 +93,7 @@ class ManualEntryView(QWidget):
             refs = conn.execute("SELECT red_invoice_no, refund_amount, refund_date FROM refund ORDER BY refund_date").fetchall()
         finally:
             conn.close()
-        self._fill(self.tab_invoices, invs, 5)
+        self._fill(self.tab_invoices, invs, 6)
         self._fill(self.tab_collections, cols, 4)
         self._fill(self.tab_refunds, refs, 3)
         self._load_pending()
