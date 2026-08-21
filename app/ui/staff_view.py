@@ -50,6 +50,11 @@ class StaffView(QWidget):
 
         self.refresh()
 
+    def showEvent(self, event) -> None:  # noqa: N802
+        """切换到本页时自动刷新数据"""
+        super().showEvent(event)
+        self.refresh()
+
     # ---- 数据 ----
     def refresh(self) -> None:
         conn = get_conn()

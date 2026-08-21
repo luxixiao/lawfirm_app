@@ -46,6 +46,11 @@ class SnapshotView(QWidget):
 
         self.refresh()
 
+    def showEvent(self, event) -> None:  # noqa: N802
+        """切换到本页时自动刷新数据"""
+        super().showEvent(event)
+        self.refresh()
+
     def refresh(self) -> None:
         snaps = list_snapshots()
         self.table.setRowCount(len(snaps))

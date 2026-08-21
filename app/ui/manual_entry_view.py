@@ -1,7 +1,7 @@
 """手动补录：发票 / 收款 / 退款（source='manual'，参与全部计算，可按来源筛选）"""
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QDate
 from PySide6.QtWidgets import (
     QComboBox, QDateEdit, QDialog, QDialogButtonBox, QDoubleSpinBox, QFormLayout,
     QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPushButton, QTabWidget,
@@ -29,14 +29,16 @@ class ManualEntryView(QWidget):
         btns = QHBoxLayout()
         self.btn_invoice = QPushButton("添加发票")
         self.btn_invoice.clicked.connect(self.add_invoice)
+        self.btn_edit = QPushButton("编辑所选补录发票")
+        self.btn_edit.setObjectName("primary")
+        self.btn_edit.clicked.connect(self.edit_invoice)
         self.btn_collection = QPushButton("添加收款")
         self.btn_collection.clicked.connect(self.add_collection)
         self.btn_refund = QPushButton("添加退款")
         self.btn_refund.clicked.connect(self.add_refund)
         self.btn_prefill = QPushButton("补录待补录原票")
-        self.btn_prefill.setObjectName("primary")
         self.btn_prefill.clicked.connect(self.add_pending_orig)
-        for b in (self.btn_invoice, self.btn_collection, self.btn_refund, self.btn_prefill):
+        for b in (self.btn_invoice, self.btn_edit, self.btn_collection, self.btn_refund, self.btn_prefill):
             btns.addWidget(b)
         btns.addStretch()
         lay.addLayout(btns)
@@ -50,8 +52,15 @@ class ManualEntryView(QWidget):
         self.tabs.addTab(self.tab_invoices, "补录发票")
         self.tabs.addTab(self.tab_collections, "补录收款")
         self.tabs.addTab(self.tab_refunds, "补录退款")
+        # 双击已补录发票 → 编辑
+        self.tab_invoices.cellDoubleClicked.connect(lambda *_: self.edit_invoice())
         lay.addWidget(self.tabs, 1)
 
+        self.refresh()
+
+    def showEvent(self, event) -> None:  # noqa: N802
+        """切换到本页时自动刷新数据"""
+        super().showEvent(event)
         self.refresh()
 
     def _make_tab(self, kind: str) -> QTableWidget:
@@ -147,6 +156,160 @@ class ManualEntryView(QWidget):
             "handler": "、".join(parts),
             "case": inv["case_no"],
         })
+
+    # ---- 编辑已补录发票（含收款）----
+    def edit_invoice(self) -> None:
+        row = self.tab_invoices.currentRow()
+        if row < 0:
+            QMessageBox.information(self, "提示", "请先在「补录发票」列表中选择一行（或双击）")
+            return
+        no_item = self.tab_invoices.item(row, 1)
+        if not no_item:
+            return
+        no = no_item.text().strip()
+
+        conn = get_conn()
+        try:
+            inv = conn.execute("SELECT * FROM invoice WHERE invoice_no=?", (no,)).fetchone()
+            cds = conn.execute(
+                "SELECT person_name, billing_amount FROM charge_detail WHERE invoice_no=? ORDER BY id", (no,)
+            ).fetchall()
+            recs = conn.execute(
+                "SELECT amount, receipt_date FROM collection WHERE invoice_no=? AND source='manual' ORDER BY id", (no,)
+            ).fetchall()
+        finally:
+            conn.close()
+        if inv is None:
+            return
+        # 经办人文本（负数转正，红字补录场景）
+        parts = [f"{cd['person_name']}{abs(cd['billing_amount']):g}" for cd in cds]
+
+        from PySide6.QtWidgets import (QDoubleSpinBox, QTableWidgetItem, QVBoxLayout,
+                                       QFormLayout, QDialogButtonBox)
+        dlg = QDialog(self)
+        dlg.setWindowTitle(f"编辑补录发票：{no}")
+        dlg.resize(560, 620)
+        lay = QVBoxLayout(dlg)
+
+        form = QFormLayout()
+        no_lbl = QLabel(no)
+        date_edit = QLineEdit(inv["invoice_date"] or "")
+        buyer_edit = QLineEdit(inv["buyer"] or "")
+        amt = QDoubleSpinBox(); amt.setRange(-99999999, 99999999); amt.setDecimals(2)
+        amt.setValue(inv["total_amount"])
+        handler_edit = QLineEdit("、".join(parts))
+        handler_edit.setPlaceholderText("如：张三4000、李四5000")
+        case_edit = QLineEdit(inv["case_no"] or "")
+        form.addRow("发票号码", no_lbl)
+        form.addRow("开票日期(YYYY-MM-DD)", date_edit)
+        form.addRow("购方名称", buyer_edit)
+        form.addRow("价税合计", amt)
+        form.addRow("经办人及金额", handler_edit)
+        form.addRow("案号", case_edit)
+        lay.addLayout(form)
+
+        rec_title = SubtitleLabel("收款信息（保存后按下列记录重建）")
+        lay.addWidget(rec_title)
+        rec_table = QTableWidget(0, 2)
+        rec_table.setHorizontalHeaderLabels(["收款金额", "收款日期(YYYY-MM)"])
+        rec_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        rec_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        rec_table.verticalHeader().setVisible(False)
+        rec_table.horizontalHeader().setStretchLastSection(True)
+        for r_, (a, d) in enumerate(recs):
+            rec_table.insertRow(r_)
+            ai = QTableWidgetItem(f"{a:,.2f}")
+            ai.setData(Qt.ItemDataRole.UserRole, round(a, 2))
+            rec_table.setItem(r_, 0, ai)
+            rec_table.setItem(r_, 1, QTableWidgetItem(d))
+        lay.addWidget(rec_table, 1)
+
+        rec_btns = QHBoxLayout()
+        btn_add = PushButton("添加收款")
+        btn_del = PushButton("删除所选")
+        rec_btns.addWidget(btn_add)
+        rec_btns.addWidget(btn_del)
+        rec_btns.addStretch()
+        lay.addLayout(rec_btns)
+
+        def add_rec():
+            sub = QDialog(dlg)
+            sub.setWindowTitle("添加收款")
+            f2 = QFormLayout(sub)
+            s_amt = QDoubleSpinBox(); s_amt.setRange(0.01, 99999999); s_amt.setDecimals(2)
+            s_date = QDateEdit(); s_date.setCalendarPopup(True); s_date.setDisplayFormat("yyyy-MM")
+            s_date.setDate(QDate.currentDate())
+            f2.addRow("收款金额", s_amt)
+            f2.addRow("收款日期(月)", s_date)
+            b2 = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+            b2.accepted.connect(sub.accept); b2.rejected.connect(sub.reject)
+            f2.addRow(b2)
+            if sub.exec() != QDialog.DialogCode.Accepted:
+                return
+            r_ = rec_table.rowCount()
+            rec_table.insertRow(r_)
+            ai = QTableWidgetItem(f"{s_amt.value():,.2f}")
+            ai.setData(Qt.ItemDataRole.UserRole, round(s_amt.value(), 2))
+            rec_table.setItem(r_, 0, ai)
+            rec_table.setItem(r_, 1, QTableWidgetItem(s_date.date().toString("yyyy-MM")))
+
+        def del_rec():
+            r_ = rec_table.currentRow()
+            if r_ >= 0:
+                rec_table.removeRow(r_)
+            else:
+                QMessageBox.information(dlg, "提示", "请先选择要删除的收款行")
+
+        btn_add.clicked.connect(add_rec)
+        btn_del.clicked.connect(del_rec)
+
+        btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        btns.accepted.connect(dlg.accept); btns.rejected.connect(dlg.reject)
+        lay.addWidget(btns)
+
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        total = amt.value()
+        handlers = parse_handler_column(handler_edit.text(), total, no) if handler_edit.text().strip() else []
+        receipts = []
+        for r_ in range(rec_table.rowCount()):
+            a_item = rec_table.item(r_, 0)
+            d_item = rec_table.item(r_, 1)
+            if a_item and d_item:
+                receipts.append((a_item.data(Qt.ItemDataRole.UserRole), d_item.text()))
+        if total > 0 and sum(a for a, _ in receipts) > total + 0.01:
+            QMessageBox.warning(self, "提示", "收款合计超过开票金额")
+            return
+
+        conn = get_conn()
+        try:
+            # 发票基础信息
+            conn.execute(
+                "UPDATE invoice SET invoice_date=?, buyer=?, total_amount=?, case_no=? WHERE invoice_no=?",
+                (date_edit.text().strip() or None, buyer_edit.text().strip(), total,
+                 case_edit.text().strip(), no),
+            )
+            # 经办人：删旧插新
+            conn.execute("DELETE FROM charge_detail WHERE invoice_no=?", (no,))
+            for name, amount in handlers:
+                conn.execute(
+                    "INSERT INTO charge_detail (invoice_no, person_name, billing_amount, source) VALUES (?,?,?,?)",
+                    (no, name, amount, "manual"),
+                )
+            # 收款：重建（仅 manual 来源；导入来源收款不受影响）
+            conn.execute("DELETE FROM collection WHERE invoice_no=? AND source='manual'", (no,))
+            for amount, ym in receipts:
+                conn.execute(
+                    "INSERT INTO collection (invoice_no, amount, receipt_date, source, note) VALUES (?,?,?,?,?)",
+                    (no, amount, ym, "manual", "手动补录"),
+                )
+            conn.commit()
+        except Exception as e:  # noqa: BLE001
+            conn.rollback(); QMessageBox.critical(self, "失败", str(e)); return
+        finally:
+            conn.close()
+        self.refresh()
+        QMessageBox.information(self, "已保存", f"发票 {no} 已更新")
 
     @staticmethod
     def _fill(tbl: QTableWidget, rows, ncols: int) -> None:
