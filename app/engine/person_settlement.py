@@ -188,15 +188,16 @@ def _compute(conn, year: int, person: str | None) -> Dict:
             m = st["months"][inv_month]
             # 已收部分（该经办人在此票上的分摊累计已收，含期外预收）
             got_total = sum(_allocated_total(remaining, cds, name, receipts_by_inv.get(no, [])))
-            # 被红冲的原票：按经办人冲减开票金额（红冲后作废，未收清零）
+            # 被红冲的原票：按经办人冲减开票金额（红冲后作废，不计开收/未收）
             red_cut = red_by_orig.get(no, {}).get(name, 0.0)
-            uncollected = round(max(billing - red_cut, 0.0) - got_total, 2)
+            billing_eff = max(billing - red_cut, 0.0)
+            uncollected = round(billing_eff - got_total, 2)
             if uncollected > 0.01:
                 m["inv_open_uncollected"] += uncollected   # ⑦本月未收
                 st["uncollected_month"][inv_month] += uncollected  # 四·本月
                 st["_uncollected_acc"] += uncollected            # 四·合计（存量累计）
             # ①/⑥本月开收 = 本月开票且已收款（含当月收款与以前月份预收款）
-            received = round(billing - max(uncollected, 0.0), 2)
+            received = round(billing_eff - max(uncollected, 0.0), 2)
             m["rec_open_cur"] += received          # ①
             m["inv_open_received"] += received     # ⑥
             # 本月开票总额（三小计独立计算，含预收票）
