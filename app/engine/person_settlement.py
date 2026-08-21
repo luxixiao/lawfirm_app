@@ -147,8 +147,7 @@ def _compute(conn, year: int, person: str | None) -> Dict:
                 st = result.setdefault(name, _new_st(conn, name))
                 m = st["months"][rec_month]
                 if rec_year == inv_year and rec_month == inv_month:
-                    m["rec_open_cur"] += val          # ①本月开收
-                    m["inv_open_received"] += val     # ⑥
+                    m["rec_open_cur"] += val          # ①本月开收（⑥在开票循环统一计算）
                 elif rec_year == year and inv_year == year and rec_month > inv_month:
                     m["rec_cur_year"] += val          # ②收本年
                 elif inv_year < year:
@@ -165,13 +164,16 @@ def _compute(conn, year: int, person: str | None) -> Dict:
             billing = cd["billing_amount"]
             st = result.setdefault(name, _new_st(conn, name))
             m = st["months"][inv_month]
-            # 已收部分（该经办人在此票上的分摊累计已收）
+            # 已收部分（该经办人在此票上的分摊累计已收，含期外预收）
             got_total = sum(_allocated_total(remaining, cds, name, receipts_by_inv.get(no, [])))
             uncollected = round(billing - got_total, 2)
             if uncollected > 0.01:
                 m["inv_open_uncollected"] += uncollected   # ⑦本月未收
                 st["uncollected_month"][inv_month] += uncollected  # 四·本月
                 st["_uncollected_acc"] += uncollected            # 四·合计（存量累计）
+            # ⑥本月开收 = 本月开票且已收（含期外预收），保证 ⑥+⑦ = 本月开票总额
+            received = round(billing - max(uncollected, 0.0), 2)
+            m["inv_open_received"] += received
 
     # ============ 红字发票（三⑧⑨）============
     reds = conn.execute(
