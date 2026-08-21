@@ -90,10 +90,13 @@ class SettlementView(QWidget):
         self.btn_all.clicked.connect(self.gen_all)
         self.btn_selected = PushButton("导出指定人员…")
         self.btn_selected.clicked.connect(self.gen_selected)
+        self.btn_report = PushButton("导出月度结算表…")
+        self.btn_report.clicked.connect(self.gen_report)
         self.lbl_summary = CaptionLabel("")
         self.lbl_summary.setStyleSheet("color:#8A8886;")
         bottom.addWidget(self.btn_all)
         bottom.addWidget(self.btn_selected)
+        bottom.addWidget(self.btn_report)
         bottom.addStretch()
         bottom.addWidget(self.lbl_summary)
         lay.addLayout(bottom)
@@ -307,3 +310,96 @@ class SettlementView(QWidget):
             self.log.appendPlainText(f"✓ {f.name}")
         self.log.appendPlainText(f"\n完成：共 {len(files)} 份，输出目录：{out}")
         QMessageBox.information(self, "生成完成", f"已生成 {len(files)} 份\n输出目录：{out}")
+
+    # ---- 导出月度结算表（多 sheet，仿模板）----
+    @staticmethod
+    def _prefs() -> dict:
+        import json
+        from pathlib import Path
+        p = Path("data") / "prefs.json"
+        try:
+            return json.loads(p.read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001
+            return {}
+
+    @staticmethod
+    def _save_prefs(prefs: dict) -> None:
+        import json
+        from pathlib import Path
+        Path("data").mkdir(parents=True, exist_ok=True)
+        (Path("data") / "prefs.json").write_text(json.dumps(prefs, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def gen_report(self) -> None:
+        """选择月份 + 多选员工（默认上次选择），导出月度结算表"""
+        from pathlib import Path
+        from PySide6.QtWidgets import QCheckBox, QDialog, QDialogButtonBox, QListWidget, QListWidgetItem
+        year = self.year.currentData() or datetime.now().year
+        names = self._person_names
+        prefs = self._prefs()
+        last = prefs.get("report_persons", [])
+        last = [n for n in last if n in names]
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("导出月度结算表")
+        dlg.resize(400, 520)
+        lay = QVBoxLayout(dlg)
+        # 月份
+        mbar = QHBoxLayout()
+        mbar.addWidget(CaptionLabel("月份"))
+        month_combo = QComboBox()
+        for mo in range(1, 13):
+            month_combo.addItem(f"{mo}月", userData=mo)
+        mbar.addWidget(month_combo)
+        mbar.addStretch()
+        lay.addLayout(mbar)
+        # 人员多选
+        tip = CaptionLabel(f"勾选要导出的员工（共 {len(names)} 人，默认上次选择）")
+        tip.setStyleSheet("color:#8A8886;")
+        lay.addWidget(tip)
+        lst = QListWidget()
+        for n in names:
+            it = QListWidgetItem(n)
+            it.setFlags(it.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            it.setCheckState(Qt.CheckState.Checked if (last and n in last) else Qt.CheckState.Unchecked)
+            lst.addItem(it)
+        lay.addWidget(lst, 1)
+        btns = QHBoxLayout()
+        check_all = QCheckBox("全选")
+        btns.addWidget(check_all)
+        btns.addStretch()
+        okb = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        okb.accepted.connect(dlg.accept); okb.rejected.connect(dlg.reject)
+        btns.addWidget(okb)
+        lay.addLayout(btns)
+
+        def toggle_all(state: int) -> None:
+            for i in range(lst.count()):
+                lst.item(i).setCheckState(Qt.CheckState.Checked if state else Qt.CheckState.Unchecked)
+        check_all.stateChanged.connect(toggle_all)
+
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        selected = [lst.item(i).text() for i in range(lst.count())
+                    if lst.item(i).checkState() == Qt.CheckState.Checked]
+        if not selected:
+            QMessageBox.information(self, "提示", "未选择任何员工")
+            return
+        month = month_combo.currentData()
+        # 记忆上次选择
+        prefs["report_persons"] = selected
+        self._save_prefs(prefs)
+
+        out = self._choose_dir()
+        if not out:
+            return
+        from app.exporter.settlement_report_exporter import export_report
+        self.log.clear()
+        self.log.appendPlainText(f"正在生成 {year}年{month}月 结算表（{len(selected)} 人）…")
+        try:
+            f = export_report(Path(out) / f"{year}年{month}月结算表.xlsx", year, month, selected)
+        except Exception as e:  # noqa: BLE001
+            self.log.appendPlainText(f"✗ 生成失败: {e}")
+            QMessageBox.critical(self, "生成失败", str(e))
+            return
+        self.log.appendPlainText(f"✓ {f}")
+        QMessageBox.information(self, "生成完成", f"已生成：{f}")
