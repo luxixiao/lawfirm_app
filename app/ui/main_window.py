@@ -63,6 +63,10 @@ class MainWindow(FluentWindow):
             self.addSubInterface(page, icon, text, NavigationItemPosition.TOP)
         self.navigationInterface.setCurrentItem("import")
 
+        # 固定导航栏展开宽度（保持图标+文字模式，宽度稳定）
+        self.navigationInterface.setExpandWidth(220)
+        self.navigationInterface.setMinimumExpandWidth(220)
+
     # ---- 对外接口 ----
     def go_to_page(self, key: str) -> None:
         """切换到指定页面并刷新"""
