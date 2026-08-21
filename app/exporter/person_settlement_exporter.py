@@ -1,4 +1,4 @@
-"""个人结算总表 Excel 导出器（按模板样式，每人一份文件）"""
+"""个人结算总表 Excel 导出器（每人一个文件，内含：X汇总 + 各身份 sheet）"""
 from __future__ import annotations
 
 from pathlib import Path
@@ -29,16 +29,28 @@ def _subtotal(st: Dict, months: list, keys: list) -> list:
     return vals + [round(sum(vals), 2)]
 
 
-def export_one(st: Dict, person: str, path: str | Path, year: int) -> Path:
-    """导出单个员工的个人结算总表（模板样式）"""
-    wb = openpyxl.Workbook()
-    ws = wb.active
-    ws.title = "个人结算总表"
+def _has_data(st: Dict) -> bool:
+    """全年有任一数据"""
+    if st is None:
+        return False
+    for mo in range(1, 13):
+        m = st["months"][mo]
+        for k in ("rec_open_cur", "rec_cur_year", "rec_prev_year", "rec_refund_cur",
+                  "rec_refund_prev", "inv_open_received", "inv_open_uncollected",
+                  "inv_red_cur", "inv_red_prev", "income"):
+            if abs(m[k]) > 0.01:
+                return True
+    if sum(st["expenses"].get(t, {}).get(mo, 0.0) for t in st["expenses"] for mo in range(1, 13)) > 0.01:
+        return True
+    return False
 
+
+def _write_ws(ws, person: str, st: Dict, year: int, type_label: str) -> None:
+    """写一个员工结算总表 sheet（type_label: 合伙/聘用/兼职/汇总）"""
     # 标题
     ws.merge_cells("A1:O1")
     c = ws["A1"]
-    c.value = f"个人结算总表（{year}年）　姓名：{person}　类型：{st['staff_type']}"
+    c.value = f"个人结算总表（{year}年）　姓名：{person}　类型：{type_label}"
     c.font = Font(size=14, bold=True)
     c.alignment = CENTER
     ws.row_dimensions[1].height = 28
@@ -118,6 +130,21 @@ def export_one(st: Dict, person: str, path: str | Path, year: int) -> Path:
     for j in range(3, 16):
         ws.column_dimensions[get_column_letter(j)].width = 11
 
+
+def export_one(person: str, path: str | Path, year: int) -> Path:
+    """导出单个员工的个人结算总表（每人一文件，内含：X汇总 + 各身份 sheet）"""
+    wb = openpyxl.Workbook()
+    wb.remove(wb.active)
+    st_all = build_settlement(year, person=person).get(person)
+    # 各身份 sheet（有数据才出）
+    for ptype in ("合伙", "聘用", "兼职"):
+        st = build_settlement(year, person=person, person_type=ptype).get(person)
+        if _has_data(st):
+            ws = wb.create_sheet(title=f"{person}{ptype}")
+            _write_ws(ws, person, st, year, ptype)
+    # 汇总 sheet（恒出）
+    ws = wb.create_sheet(title=f"{person}汇总")
+    _write_ws(ws, person, st_all, year, "汇总")
     out = Path(path)
     out.parent.mkdir(parents=True, exist_ok=True)
     wb.save(out)
@@ -125,12 +152,12 @@ def export_one(st: Dict, person: str, path: str | Path, year: int) -> Path:
 
 
 def export_all(out_dir: str | Path, year: int) -> list:
-    """为全部员工生成个人结算总表，返回生成的文件路径列表"""
+    """为全部员工生成个人结算总表（每人一文件多 sheet），返回文件路径列表"""
     data = build_settlement(year)
     out_dir = Path(out_dir)
     files = []
-    for person, st in data.items():
+    for person in data:
         safe = person.replace("/", "_").replace("\\", "_").strip() or "未命名"
-        path = export_one(st, person, out_dir / f"个人结算总表_{safe}.xlsx", year)
+        path = export_one(person, out_dir / f"个人结算总表_{safe}.xlsx", year)
         files.append(path)
     return files

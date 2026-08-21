@@ -312,15 +312,11 @@ class SettlementView(QWidget):
         self.log.clear()
         self.log.appendPlainText(f"正在为 {len(selected)} 人生成 {year} 年结算总表…")
         try:
-            data = build_settlement(year)
             from pathlib import Path
             files = []
             for n in selected:
-                st = data.get(n)
-                if st is None:
-                    continue
                 safe = n.replace("/", "_").replace("\\", "_").strip() or "未命名"
-                files.append(export_one(st, n, Path(out) / f"个人结算总表_{safe}.xlsx", year))
+                files.append(export_one(n, Path(out) / f"个人结算总表_{safe}.xlsx", year))
         except Exception as e:  # noqa: BLE001
             self.log.appendPlainText(f"✗ 生成失败: {e}")
             QMessageBox.critical(self, "生成失败", str(e))
