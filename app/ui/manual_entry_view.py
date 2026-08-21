@@ -33,16 +33,20 @@ class ManualEntryView(QWidget):
         self.btn_collection.clicked.connect(self.add_collection)
         self.btn_refund = QPushButton("添加退款")
         self.btn_refund.clicked.connect(self.add_refund)
-        for b in (self.btn_invoice, self.btn_collection, self.btn_refund):
-            b.setObjectName("primary" if b is self.btn_invoice else "")
+        self.btn_prefill = QPushButton("补录待补录原票")
+        self.btn_prefill.setObjectName("primary")
+        self.btn_prefill.clicked.connect(self.add_pending_orig)
+        for b in (self.btn_invoice, self.btn_collection, self.btn_refund, self.btn_prefill):
             btns.addWidget(b)
         btns.addStretch()
         lay.addLayout(btns)
 
         self.tabs = QTabWidget()
+        self.tab_pending = self._make_tab("待补录")
         self.tab_invoices = self._make_tab("发票")
         self.tab_collections = self._make_tab("收款")
         self.tab_refunds = self._make_tab("退款")
+        self.tabs.addTab(self.tab_pending, "待补录原票")
         self.tabs.addTab(self.tab_invoices, "补录发票")
         self.tabs.addTab(self.tab_collections, "补录收款")
         self.tabs.addTab(self.tab_refunds, "补录退款")
@@ -51,12 +55,14 @@ class ManualEntryView(QWidget):
         self.refresh()
 
     def _make_tab(self, kind: str) -> QTableWidget:
-        cols = {"发票": ["开票日期", "发票号码", "购方名称", "价税合计", "经办人", "案号"],
+        cols = {"待补录": ["红字发票", "红字金额", "原票号码", "应退金额", "购方名称"],
+                "发票": ["开票日期", "发票号码", "购方名称", "价税合计", "经办人", "案号"],
                 "收款": ["发票号码", "收款金额", "收款日期", "备注"],
                 "退款": ["红字发票", "退款金额", "退款日期"]}[kind]
         t = QTableWidget(0, len(cols))
         t.setHorizontalHeaderLabels(cols)
         t.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        t.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         t.verticalHeader().setVisible(False)
         t.horizontalHeader().setStretchLastSection(True)
         return t
@@ -77,6 +83,70 @@ class ManualEntryView(QWidget):
         self._fill(self.tab_invoices, invs, 5)
         self._fill(self.tab_collections, cols, 4)
         self._fill(self.tab_refunds, refs, 3)
+        self._load_pending()
+
+    # ---- 待补录原票列表 ----
+    def _load_pending(self) -> None:
+        from app.engine.refund import evaluate_red_invoices
+        conn = get_conn()
+        try:
+            rows = []
+            for m in evaluate_red_invoices(conn):
+                if m["status"] != "orig_missing":
+                    continue
+                inv = conn.execute(
+                    "SELECT buyer, case_no FROM invoice WHERE invoice_no=?", (m["red_invoice_no"],)
+                ).fetchone()
+                rows.append([
+                    m["red_invoice_no"], m["red_amount"], m["orig_invoice_no"] or "—",
+                    m["refund_amount"], inv["buyer"] if inv else "", m["red_invoice_no"],
+                ])
+        finally:
+            conn.close()
+        self.tab_pending.setRowCount(len(rows))
+        self._pending_meta = {}
+        for r, row in enumerate(rows):
+            for c in range(5):
+                v = row[c]
+                item = QTableWidgetItem("" if v is None else (f"{v:,.2f}" if isinstance(v, float) else str(v)))
+                self.tab_pending.setItem(r, c, item)
+            self._pending_meta[r] = row[5]  # 红字发票号
+
+    # ---- 补录待补录原票（预填红字发票已知信息）----
+    def add_pending_orig(self) -> None:
+        row = self.tab_pending.currentRow()
+        if row < 0:
+            # 无选中时给提示并列出可选
+            if self.tab_pending.rowCount() == 0:
+                QMessageBox.information(self, "提示", "当前没有需要补录的原票（退款页显示'原票未导入'的发票）")
+                return
+            QMessageBox.information(self, "提示", "请先在列表中选择一行（红字发票）再补录")
+            return
+        red_no = self._pending_meta.get(row)
+        if not red_no:
+            return
+        conn = get_conn()
+        try:
+            inv = conn.execute("SELECT * FROM invoice WHERE invoice_no=?", (red_no,)).fetchone()
+            cds = conn.execute(
+                "SELECT person_name, billing_amount FROM charge_detail WHERE invoice_no=? ORDER BY id", (red_no,)
+            ).fetchall()
+        finally:
+            conn.close()
+        if inv is None:
+            return
+        # 经办人文本（负号转正，供原票预填）
+        parts = []
+        for cd in cds:
+            amt = abs(cd["billing_amount"])
+            parts.append(f"{cd['person_name']}{amt:g}")
+        self.add_invoice(prefill={
+            "no": inv["orig_invoice_no"] or "",
+            "buyer": inv["buyer"],
+            "amount": abs(inv["total_amount"]),   # 原票金额 ≥ 红字绝对值（参考值）
+            "handler": "、".join(parts),
+            "case": inv["case_no"],
+        })
 
     @staticmethod
     def _fill(tbl: QTableWidget, rows, ncols: int) -> None:
@@ -88,7 +158,8 @@ class ManualEntryView(QWidget):
                     "" if v is None else (f"{v:,.2f}" if isinstance(v, float) else str(v))))
 
     # ---- 添加发票（含收款信息）----
-    def add_invoice(self) -> None:
+    def add_invoice(self, prefill: dict | None = None) -> None:
+        prefill = prefill or {}
         from PySide6.QtWidgets import (QDoubleSpinBox, QTableWidgetItem, QVBoxLayout,
                                        QFormLayout, QDialogButtonBox, QDateEdit)
         from PySide6.QtCore import QDate
@@ -103,6 +174,18 @@ class ManualEntryView(QWidget):
         amt = QDoubleSpinBox(); amt.setRange(-99999999, 99999999); amt.setDecimals(2)
         handler_edit = QLineEdit(); handler_edit.setPlaceholderText("如：张三4000、李四5000（红字填正数即可）")
         case_edit = QLineEdit()
+        # 预填已有基础信息（补录原票场景）
+        if prefill.get("no"):
+            no_edit.setText(prefill["no"])
+            no_edit.setReadOnly(True)  # 原票号码来自红字备注，锁定
+        if prefill.get("buyer"):
+            buyer_edit.setText(prefill["buyer"])
+        if prefill.get("amount") is not None:
+            amt.setValue(prefill["amount"])
+        if prefill.get("handler"):
+            handler_edit.setText(prefill["handler"])
+        if prefill.get("case"):
+            case_edit.setText(prefill["case"])
         form.addRow("发票号码", no_edit)
         form.addRow("开票日期(YYYY-MM-DD)", date_edit)
         form.addRow("购方名称", buyer_edit)
