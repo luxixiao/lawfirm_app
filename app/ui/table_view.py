@@ -83,15 +83,37 @@ class BaseTableView(QWidget):
         self.refresh()
 
     def _render(self) -> None:
+        total_cols = self._total_cols()
+        # 合计行存在时禁用排序，保证合计行固定底部
         self.table.setSortingEnabled(False)
-        self.table.setRowCount(len(self._rows))
+        self.table.setRowCount(len(self._rows) + (1 if total_cols else 0))
         for r, row in enumerate(self._rows):
             for c, val in enumerate(row):
                 item = self._make_item(val, r, c)
                 self.table.setItem(r, c, item)
             self.table.setRowHeight(r, 34)
-        self.table.setSortingEnabled(True)
+        # 合计行
+        if total_cols:
+            tr = len(self._rows)
+            from PySide6.QtGui import QColor, QFont
+            from PySide6.QtWidgets import QTableWidgetItem
+            total_item = QTableWidgetItem("合计")
+            total_item.setFont(QFont(total_item.font().family(), total_item.font().pointSize(), QFont.Weight.Bold))
+            total_item.setBackground(QColor("#F2F2F0"))
+            self.table.setItem(tr, 0, total_item)
+            for c in total_cols:
+                t = sum(row[c] for row in self._rows if isinstance(row[c], (int, float)))
+                item = QTableWidgetItem(f"{t:,.2f}")
+                item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                item.setFont(QFont(item.font().family(), item.font().pointSize(), QFont.Weight.Bold))
+                item.setBackground(QColor("#F2F2F0"))
+                self.table.setItem(tr, c, item)
+            self.table.setRowHeight(tr, 34)
         self.lbl_summary.setText(f"共 {len(self._rows)} 行")
+
+    def _total_cols(self) -> set:
+        """需要合计的列索引（子类覆写）"""
+        return set()
 
     def _make_item(self, val, r: int, c: int):
         from PySide6.QtWidgets import QTableWidgetItem

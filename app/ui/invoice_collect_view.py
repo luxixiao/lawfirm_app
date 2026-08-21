@@ -20,6 +20,10 @@ class InvoiceCollectView(BaseTableView):
         self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self._ctx_menu)
 
+    def _total_cols(self) -> set:
+        """价税合计(3) / 已收金额(5) / 剩余应收(6)"""
+        return {3, 5, 6}
+
     def _build_filters(self) -> None:
         self.month, self.src, self.buyer, _ = make_filter_widgets(
             self, self.filters, lambda *_: self.refresh()

@@ -21,6 +21,10 @@ class HandlerCollectView(BaseTableView):
         self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self._ctx_menu)
 
+    def _total_cols(self) -> set:
+        """开票总额(3) / 开票金额(5) / 已收金额(6) / 剩余应收(7)"""
+        return {3, 5, 6, 7}
+
     def _build_filters(self) -> None:
         self.month, self.src, self.buyer, _ = make_filter_widgets(
             self, self.filters, lambda *_: self.refresh()
