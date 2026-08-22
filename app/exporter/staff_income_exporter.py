@@ -159,12 +159,12 @@ def _exp_sum(st: Dict, month: int, types: list) -> float:
 
 
 def export_staff_income(out_path: str | Path, year: int, month_to: int) -> Path:
-    """生成年度聘用律师业务收入结算表（1~month_to 各一个 sheet）"""
+    """生成年度聘用律师业务收入结算表模板表（1~month_to 各一个 sheet，从新到旧排序）"""
     data = build_settlement(year)
     cat_map = get_map()
     wb = openpyxl.Workbook()
     wb.remove(wb.active)
-    for month in range(1, month_to + 1):
+    for month in range(month_to, 0, -1):
         conn = get_conn()
         try:
             persons = _staff_employees(conn, year, month)

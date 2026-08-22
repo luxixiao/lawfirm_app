@@ -660,11 +660,16 @@ class SettlementView(QWidget):
             self.si_table.setColumnWidth(c, 95)
         v.addWidget(self.si_table, 1)
         bbar = QHBoxLayout()
-        self.btn_staff_income = PushButton("导出年度聘用结算表…")
+        self.btn_staff_income = PushButton("导出当月…")
+        self.btn_staff_income.setToolTip("仅导出当前预览月份的单个 sheet")
         self.btn_staff_income.clicked.connect(self.gen_staff_income)
+        self.btn_staff_income_full = PushButton("导出模板表…")
+        self.btn_staff_income_full.setToolTip("导出 1~选中月 全部月份 sheet（从新到旧排序，仿模板文件形态）")
+        self.btn_staff_income_full.clicked.connect(self.gen_staff_income_full)
         self.si_summary = CaptionLabel("")
         self.si_summary.setStyleSheet("color:#8A8886;")
         bbar.addWidget(self.btn_staff_income)
+        bbar.addWidget(self.btn_staff_income_full)
         bbar.addStretch()
         bbar.addWidget(self.si_summary)
         v.addLayout(bbar)
@@ -720,6 +725,27 @@ class SettlementView(QWidget):
             f = export_staff_income_month(
                 Path(out) / f"{year}年度业务收入结算表（聘用律师）_{year}{month:02d}.xlsx",
                 year, month)
+        except Exception as e:  # noqa: BLE001
+            self.log.appendPlainText(f"✗ 生成失败: {e}")
+            QMessageBox.critical(self, "生成失败", str(e))
+            return
+        self.log.appendPlainText(f"✓ {f}")
+        QMessageBox.information(self, "生成完成", f"已生成：{f}")
+
+    # ---- 导出模板表（1~选中月全部 sheet，从新到旧）----
+    def gen_staff_income_full(self) -> None:
+        from pathlib import Path
+        year = self.si_year.currentData() or datetime.now().year
+        month_to = self.si_month.currentData() or datetime.now().month
+        out = self._choose_dir()
+        if not out:
+            return
+        from app.exporter.staff_income_exporter import export_staff_income
+        self.log.clear()
+        self.log.appendPlainText(f"正在生成 {year}年度聘用律师业务收入结算表模板表（1~{month_to}月，从新到旧）…")
+        try:
+            f = export_staff_income(
+                Path(out) / f"{year}年度业务收入结算表（聘用律师）.xlsx", year, month_to)
         except Exception as e:  # noqa: BLE001
             self.log.appendPlainText(f"✗ 生成失败: {e}")
             QMessageBox.critical(self, "生成失败", str(e))
