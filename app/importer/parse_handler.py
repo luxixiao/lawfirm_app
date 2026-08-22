@@ -21,9 +21,6 @@ _NAME = r"[\u4e00-\u9fa5·]{1,6}"
 _AMT = r"\d+(?:\.\d+)?"
 _SEG_WITH_AMT = re.compile(rf"^({_NAME})\s*({_AMT})\s*(万)?$")
 _SEG_NAME_ONLY = re.compile(rf"^({_NAME})$")
-# 身份后缀：张三4000(合伙) / 张三4000合伙 / 李四5000（聘用）
-_PT = "(合伙|聘用|兼职)"
-_PT_SUFFIX = re.compile(rf"[（(]?{_PT}[）)]?$")
 
 _CN_NUM = {
     "一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5,
@@ -46,18 +43,16 @@ def _cn_amount(text: str) -> float | None:
     return float(val) * 10000
 
 
-def parse_handler_column(text: str, total_amount: float, invoice_no: str = "",
-                         with_type: bool = False) -> List:
+def parse_handler_column(text: str, total_amount: float, invoice_no: str = "") -> List[Tuple[str, float]]:
     """解析经办人列
 
     Args:
-        text: 经办人列原文（如 "徐志庆4500、柳立中4500"；身份如 "张三4000(合伙)、李四5000聘用"）
+        text: 经办人列原文（如 "徐志庆4500、柳立中4500"）
         total_amount: 该发票开票总额（用于单经办人全额 / 平摊 / 红字负数化）
         invoice_no: 发票号码（仅用于报错信息）
-        with_type: 返回 (name, amount, person_type)
 
     Returns:
-        [(name, amount), ...] 或 [(name, amount, person_type), ...]
+        [(name, amount), ...]
     """
     text = (text or "").strip()
     if not text:
@@ -67,38 +62,32 @@ def parse_handler_column(text: str, total_amount: float, invoice_no: str = "",
     if not segs:
         return []
 
-    items: List[Tuple[str, float | None, str]] = []  # (name, amount=None, person_type)
+    items: List[Tuple[str, float | None]] = []  # amount=None 表示未指定
     for seg in segs:
-        # 剥离身份后缀（张三4000(合伙) → 张三4000 + 合伙）
-        pt = ""
-        mt = _PT_SUFFIX.search(seg)
-        if mt:
-            pt = mt.group(1)
-            seg = seg[:mt.start()].strip()
         m = _SEG_WITH_AMT.match(seg)
         if m:
             name, num, wan = m.group(1), m.group(2), m.group(3)
             amount = float(num) * 10000 if wan else float(num)
-            items.append((name, amount, pt))
+            items.append((name, amount))
             continue
         m = _SEG_NAME_ONLY.match(seg)
         if m:
-            items.append((m.group(1), None, pt))
+            items.append((m.group(1), None))
             continue
         # 尝试中文金额（如 "一万" 单独成段）
         cn = _cn_amount(seg)
         if cn is not None:
-            items.append(("", cn, ""))  # 无名称的金额段（异常，后续报错）
+            items.append(("", cn))  # 无名称的金额段（异常，后续报错）
             continue
         raise ImportError_(f"发票 {invoice_no} 经办人列无法解析: 「{text}」（段: {seg}）")
 
     # 无名称的金额段 → 报错
-    if any(name == "" for name, _, _ in items):
+    if any(name == "" for name, _ in items):
         raise ImportError_(f"发票 {invoice_no} 经办人列缺少姓名: 「{text}」")
 
     # 确定金额（amounts[i] 与 items[i] 对应；amt_specified 记录是否显式写了金额）
-    amt_specified = [a is not None for _, a, _ in items]
-    specified = [a for _, a, _ in items if a is not None]
+    amt_specified = [a is not None for _, a in items]
+    specified = [a for _, a in items if a is not None]
     unspecified_idx = [i for i, s in enumerate(amt_specified) if not s]
 
     if not specified:
@@ -113,7 +102,7 @@ def parse_handler_column(text: str, total_amount: float, invoice_no: str = "",
         rest = total_amount - sum(specified)
         share = rest / len(unspecified_idx)
         amounts = []
-        for i, (_, a, _) in enumerate(items):
+        for i, (_, a) in enumerate(items):
             amounts.append(a if a is not None else share)
     else:
         amounts = [a for a in specified]  # type: ignore[assignment]
@@ -123,9 +112,7 @@ def parse_handler_column(text: str, total_amount: float, invoice_no: str = "",
     if total_amount < 0:
         amounts = [-a if amt_specified[i] else a for i, a in enumerate(amounts)]  # type: ignore[operator]
 
-    if with_type:
-        return [(name, float(amt), pt or "") for (name, _, pt), amt in zip(items, amounts)]
-    return [(name, float(amt)) for (name, _, _), amt in zip(items, amounts)]
+    result = [(name, float(amt)) for (name, _), amt in zip(items, amounts)]
 
     # 校验：经办人合计 = 开票总额（允许 0.01 误差）
     total = sum(a for _, a in result)
@@ -133,4 +120,4 @@ def parse_handler_column(text: str, total_amount: float, invoice_no: str = "",
         raise ImportError_(
             f"发票 {invoice_no} 经办人金额合计({total:g}) ≠ 开票总额({total_amount:g}): 「{text}」"
         )
-    return result  # pragma: no cover
+    return result
