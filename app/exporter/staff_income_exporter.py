@@ -176,3 +176,22 @@ def export_staff_income(out_path: str | Path, year: int, month_to: int) -> Path:
     out.parent.mkdir(parents=True, exist_ok=True)
     wb.save(out)
     return out
+
+
+def export_staff_income_month(out_path: str | Path, year: int, month: int) -> Path:
+    """生成单月聘用律师业务收入结算表（单个 sheet，与预览一致）"""
+    data = build_settlement(year)
+    cat_map = get_map()
+    conn = get_conn()
+    try:
+        persons = _staff_employees(conn, year, month)
+    finally:
+        conn.close()
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = f"{year}{month:02d}"
+    _write_sheet(ws, year, month, persons, data, cat_map)
+    out = Path(out_path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    wb.save(out)
+    return out

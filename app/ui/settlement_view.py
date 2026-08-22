@@ -709,15 +709,17 @@ class SettlementView(QWidget):
     def gen_staff_income(self) -> None:
         from pathlib import Path
         year = self.si_year.currentData() or datetime.now().year
-        month_to = self.si_month.currentData() or datetime.now().month
+        month = self.si_month.currentData() or datetime.now().month
         out = self._choose_dir()
         if not out:
             return
-        from app.exporter.staff_income_exporter import export_staff_income
+        from app.exporter.staff_income_exporter import export_staff_income_month
         self.log.clear()
-        self.log.appendPlainText(f"正在生成 {year}年度聘用律师业务收入结算表（1~{month_to}月）…")
+        self.log.appendPlainText(f"正在生成 {year}年{month}月聘用律师业务收入结算表…")
         try:
-            f = export_staff_income(Path(out) / f"{year}年度业务收入结算表（聘用律师）.xlsx", year, month_to)
+            f = export_staff_income_month(
+                Path(out) / f"{year}年度业务收入结算表（聘用律师）_{year}{month:02d}.xlsx",
+                year, month)
         except Exception as e:  # noqa: BLE001
             self.log.appendPlainText(f"✗ 生成失败: {e}")
             QMessageBox.critical(self, "生成失败", str(e))
