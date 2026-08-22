@@ -113,8 +113,8 @@ class LedgerView(QWidget):
                 """SELECT i.invoice_date, i.invoice_no, i.buyer, i.total_amount,
                           (SELECT group_concat(cd.person_name || printf('%.2f', cd.billing_amount), ' ')
                            FROM charge_detail cd WHERE cd.invoice_no = i.invoice_no) AS handlers,
-                          (SELECT group_concat(cd.person_name || ':' || CASE cd.person_type WHEN '' THEN '未标' ELSE cd.person_type END, ' ')
-                           FROM charge_detail cd WHERE cd.invoice_no = i.invoice_no) AS htypes,
+                          (SELECT COALESCE((SELECT cd.person_type FROM charge_detail cd
+                            WHERE cd.invoice_no = i.invoice_no LIMIT 1), '')) AS htypes,
                           i.case_no, i.source, i.invoice_no AS key
                    FROM invoice i ORDER BY i.invoice_date, i.invoice_no"""
             ).fetchall()
@@ -140,6 +140,16 @@ class LedgerView(QWidget):
                   r["handlers"], r["htypes"], r["case_no"], r["source"], r["key"]]
             inv_display.append(r2)
         self._fill(self.tab_invoice, inv_display, "invoice")
+        # 发票身份列（索引5）改为可直接下拉修改（整票统一）
+        for r, r2 in enumerate(inv_display):
+            combo = QComboBox()
+            for t in ["未标", "合伙", "聘用", "兼职"]:
+                combo.addItem(t, userData=t)
+            combo.setCurrentText(r2[5] or "未标")
+            key = r2[-1]
+            combo.currentIndexChanged.connect(
+                lambda *_, k=key, c=combo: self._set_invoice_type(k, c))
+            self.tab_invoice.setCellWidget(r, 5, combo)
         self._fill(self.tab_collection, cols, "collection")
         exp_display = []
         for r in exps:
@@ -147,6 +157,16 @@ class LedgerView(QWidget):
                   r["ticket_no"], r["person_type"] or "未标", r["key"]]
             exp_display.append(r2)
         self._fill(self.tab_expense, exp_display, "expense")
+        # 费用身份列（索引5）下拉修改
+        for r, r2 in enumerate(exp_display):
+            combo = QComboBox()
+            for t in ["未标", "合伙", "聘用", "兼职"]:
+                combo.addItem(t, userData=t)
+            combo.setCurrentText(r2[5] or "未标")
+            eid = r2[-1]
+            combo.currentIndexChanged.connect(
+                lambda *_, e=eid, c=combo: self._set_expense_type(e, c))
+            self.tab_expense.setCellWidget(r, 5, combo)
         self._fill(self.tab_staff, staffs, "staff")
         self._fill(self.tab_log, logs, "log")
         self._load_cat()
@@ -542,3 +562,41 @@ class LedgerView(QWidget):
         self.refresh()
         self.log.appendPlainText(f"✓ 已为 {n} 条数据设置身份「{ptype}」")
         QMessageBox.information(self, "完成", f"已为 {n} 条数据设置身份「{ptype}」")
+
+    # ---- 身份列下拉即时保存 ----
+    def _set_invoice_type(self, key: str, combo=None) -> None:
+        """发票 Tab 身份下拉：整票统一设置并保存"""
+        conn = get_conn()
+        try:
+            row = conn.execute(
+                "SELECT person_type FROM charge_detail WHERE invoice_no=? LIMIT 1", (key,)
+            ).fetchone()
+            new_pt = combo.currentData() if combo is not None else None
+            if new_pt is None:
+                return
+            old_pt = row["person_type"] or "未标" if row else "未标"
+            if old_pt == new_pt:
+                return
+            conn.execute("UPDATE charge_detail SET person_type=? WHERE invoice_no=?", (new_pt, key))
+            log_change(conn, "charge_detail", key, "person_type", old_pt, new_pt, "身份列修改")
+            conn.commit()
+        finally:
+            conn.close()
+        self.log.appendPlainText(f"✓ 发票 {key[-8:]} 身份 → {new_pt}")
+
+    def _set_expense_type(self, eid: int, combo=None) -> None:
+        conn = get_conn()
+        try:
+            row = conn.execute("SELECT person_type FROM expense_ledger WHERE id=?", (eid,)).fetchone()
+            new_pt = combo.currentData() if combo is not None else None
+            if new_pt is None:
+                return
+            old_pt = row["person_type"] or "未标" if row else "未标"
+            if old_pt == new_pt:
+                return
+            conn.execute("UPDATE expense_ledger SET person_type=? WHERE id=?", (new_pt, eid))
+            log_change(conn, "expense_ledger", str(eid), "person_type", old_pt, new_pt, "身份列修改")
+            conn.commit()
+        finally:
+            conn.close()
+        self.log.appendPlainText(f"✓ 费用 #{eid} 身份 → {new_pt}")
