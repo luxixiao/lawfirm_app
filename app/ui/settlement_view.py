@@ -167,6 +167,39 @@ class SettlementView(QWidget):
         self.refresh()
 
     # ---- 预览 ----
+    @staticmethod
+    def _has_any(st) -> bool:
+        """该人员结构全年有任一数据"""
+        if st is None:
+            return False
+        for mo in range(1, 13):
+            m = st["months"][mo]
+            for k in ("rec_open_cur", "rec_cur_year", "rec_prev_year", "rec_refund_cur",
+                      "rec_refund_prev", "inv_open_received", "inv_open_uncollected",
+                      "inv_red_cur", "inv_red_prev", "income"):
+                if abs(m[k]) > 0.01:
+                    return True
+        if sum(st["expenses"].get(t, {}).get(mo, 0.0) for t in st["expenses"] for mo in range(1, 13)) > 0.01:
+            return True
+        return False
+
+    def _sync_type_options(self, name: str) -> None:
+        """类型下拉只显示该人实际拥有的身份；单身份自动选中"""
+        year = self.year.currentData() or datetime.now().year
+        available = []
+        for pt in ("合伙", "聘用", "兼职"):
+            st = build_settlement(year, person=name, person_type=pt).get(name)
+            if self._has_any(st):
+                available.append(pt)
+        self.person_type.blockSignals(True)
+        self.person_type.clear()
+        self.person_type.addItem("汇总", userData=None)
+        for pt in available:
+            self.person_type.addItem(pt, userData=pt)
+        # 单身份自动选中该身份；多身份默认汇总
+        self.person_type.setCurrentIndex(1 if len(available) == 1 else 0)
+        self.person_type.blockSignals(False)
+
     def refresh(self) -> None:
         year = self.year.currentData() or datetime.now().year
         name = self.person.currentData()
@@ -182,6 +215,7 @@ class SettlementView(QWidget):
             self.table.setRowCount(0)
             self.lbl_summary.setText("请选择经办人")
             return
+        self._sync_type_options(name)
         ptype = self.person_type.currentData()
         data = build_settlement(year, person=name, person_type=ptype)
         st = data.get(name)
@@ -498,6 +532,22 @@ class SettlementView(QWidget):
         v.addLayout(bbar)
         return w
 
+    def _sync_r_type_options(self, name: str) -> None:
+        """月度结算表 Tab 类型下拉动态化"""
+        year = self.r_year.currentData() or datetime.now().year
+        available = []
+        for pt in ("合伙", "聘用", "兼职"):
+            st = build_settlement(year, person=name, person_type=pt).get(name)
+            if self._has_any(st):
+                available.append(pt)
+        self.r_type.blockSignals(True)
+        self.r_type.clear()
+        self.r_type.addItem("汇总", userData=None)
+        for pt in available:
+            self.r_type.addItem(pt, userData=pt)
+        self.r_type.setCurrentIndex(1 if len(available) == 1 else 0)
+        self.r_type.blockSignals(False)
+
     def refresh_report(self) -> None:
         """月度结算表预览：选中经办人 + 月份 → 表格显示其结算表"""
         from app.exporter.settlement_report_exporter import build_report_rows
@@ -510,6 +560,7 @@ class SettlementView(QWidget):
             self.r_table.setRowCount(0)
             self.r_summary.setText("请选择经办人")
             return
+        self._sync_r_type_options(name)
         ptype = self.r_type.currentData()
         data = build_settlement(year, person=name, person_type=ptype)
         st = data.get(name)
