@@ -12,7 +12,6 @@ from qfluentwidgets import (
 from app.db import get_conn
 from app.ui.batch_view import BatchView
 from app.ui.handler_collect_view import HandlerCollectView
-from app.ui.handler_filter_view import HandlerFilterView
 from app.ui.import_view import ImportView
 from app.ui.invoice_collect_view import InvoiceCollectView
 from app.ui.ledger_view import LedgerView
@@ -41,7 +40,6 @@ class MainWindow(FluentWindow):
         self.page_import = ImportView()
         self.page_invoice = InvoiceCollectView()
         self.page_handler_all = HandlerCollectView()
-        self.page_handler_one = HandlerFilterView()
         self.page_prepayment = PrepaymentView()
         self.page_refund = RefundView()
         self.page_manual = ManualEntryView()
@@ -52,7 +50,7 @@ class MainWindow(FluentWindow):
         self.page_batch = BatchView()
         self._pages = {
             "import": self.page_import, "invoice": self.page_invoice,
-            "handler_all": self.page_handler_all, "handler_one": self.page_handler_one,
+            "handler_all": self.page_handler_all,
             "prepayment": self.page_prepayment, "refund": self.page_refund,
             "manual": self.page_manual, "ledger": self.page_ledger,
             "settlement": self.page_settlement,
@@ -64,8 +62,7 @@ class MainWindow(FluentWindow):
         nav = [
             ("import", self.page_import, FluentIcon.DOWNLOAD, "导入"),
             ("invoice", self.page_invoice, FluentIcon.TILES, "发票收款总表"),
-            ("handler_all", self.page_handler_all, FluentIcon.PEOPLE, "经办人收款总表"),
-            ("handler_one", self.page_handler_one, FluentIcon.LABEL, "经办人收款表"),
+            ("handler_all", self.page_handler_all, FluentIcon.PEOPLE, "经办人发票收款情况"),
             ("prepayment", self.page_prepayment, FluentIcon.SAVE, "预收款"),
             ("refund", self.page_refund, FluentIcon.CANCEL, "退款"),
             ("manual", self.page_manual, FluentIcon.EDIT, "手动补录"),

@@ -13,13 +13,14 @@ from app.ui.table_view import BaseTableView, make_filter_widgets
 class HandlerCollectView(BaseTableView):
     def __init__(self) -> None:
         super().__init__(
-            "经办人发票收款总表",
+            "经办人发票收款情况",
             ["开具日期", "发票号码", "购买方名称", "开票总额", "经办人",
              "身份", "开票金额", "已收金额", "剩余应收", "备注"],
-            "经办人维度收款情况；身份列可直接修改经办人身份；右击查看红冲信息 / 其他经办人金额。",
+            "经办人维度收款情况；点击表头可筛选；身份列可直接修改经办人身份；右击查看红冲信息 / 其他经办人金额。",
         )
         self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self._ctx_menu)
+        self._enable_col_filter()
 
     def _total_cols(self) -> set:
         """开票总额(3) / 开票金额(6) / 已收金额(7) / 剩余应收(8)"""

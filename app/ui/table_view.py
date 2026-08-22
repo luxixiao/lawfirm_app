@@ -75,7 +75,95 @@ class BaseTableView(QWidget):
 
     def refresh(self) -> None:
         self.load_data()
+        self._raw_rows = list(self._rows)
+        self._apply_col_filters()
         self._render()
+        self._update_filter_marks()
+
+    # ---- 表头筛选（点击表头弹多选菜单）----
+    def _enable_col_filter(self) -> None:
+        if not hasattr(self, "_col_filters"):
+            self._col_filters = {}
+        self.table.horizontalHeader().sectionClicked.connect(self._header_clicked)
+
+    def _header_clicked(self, col: int) -> None:
+        from PySide6.QtWidgets import (QCheckBox, QDialog, QDialogButtonBox, QHBoxLayout,
+                                       QListWidget, QListWidgetItem, QVBoxLayout)
+        if not self._raw_rows:
+            return
+        # 该列唯一值
+        uniq = []
+        seen = set()
+        for r in self._raw_rows:
+            v = r[col]
+            if isinstance(v, float):
+                key = f"{v:g}"
+            else:
+                key = str(v)
+            if key not in seen:
+                seen.add(key)
+                uniq.append(key)
+        uniq.sort(key=lambda s: (len(s), s))
+        dlg = QDialog(self)
+        dlg.setWindowTitle(f"筛选：{self.table.horizontalHeaderItem(col).text()}")
+        dlg.resize(280, 380)
+        lay = QVBoxLayout(dlg)
+        lst = QListWidget()
+        cur = self._col_filters.get(col)
+        for v in uniq:
+            it = QListWidgetItem(v)
+            it.setFlags(it.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            it.setCheckState(Qt.CheckState.Checked if (cur is None or v in cur) else Qt.CheckState.Unchecked)
+            lst.addItem(it)
+        lay.addWidget(lst, 1)
+        btns = QHBoxLayout()
+        chk = QCheckBox("全选")
+        chk.setChecked(cur is None or len(cur) == len(uniq))
+        btns.addWidget(chk)
+        btns.addStretch()
+        okb = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        okb.accepted.connect(dlg.accept); okb.rejected.connect(dlg.reject)
+        btns.addWidget(okb)
+        lay.addLayout(btns)
+
+        def toggle(state: int) -> None:
+            for i in range(lst.count()):
+                lst.item(i).setCheckState(Qt.CheckState.Checked if state else Qt.CheckState.Unchecked)
+        chk.stateChanged.connect(toggle)
+
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        sel = [lst.item(i).text() for i in range(lst.count())
+               if lst.item(i).checkState() == Qt.CheckState.Checked]
+        if len(sel) == len(uniq):
+            self._col_filters.pop(col, None)  # 全选=不筛
+        else:
+            self._col_filters[col] = set(sel)
+        self.refresh()
+
+    def _apply_col_filters(self) -> None:
+        for c, vals in getattr(self, "_col_filters", {}).items():
+            self._rows = [r for r in self._rows if self._row_key(r[c]) in vals]
+
+    @staticmethod
+    def _row_key(v) -> str:
+        if isinstance(v, float):
+            return f"{v:g}"
+        return str(v)
+
+    def _update_filter_marks(self) -> None:
+        """表头列名标记 ▾（有筛选时）"""
+        marks = getattr(self, "_col_filters", {})
+        for c in range(self.table.columnCount()):
+            it = self.table.horizontalHeaderItem(c)
+            if it is None:
+                continue
+            base = it.text().replace(" ▾", "")
+            it.setText(base + (" ▾" if c in marks else ""))
+
+    def _reset_col_filters(self) -> None:
+        self._col_filters = {}
+        self.refresh()
 
     def showEvent(self, event) -> None:  # noqa: N802
         """导航切换显示时自动刷新（保证数据最新）"""
