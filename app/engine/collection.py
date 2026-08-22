@@ -135,7 +135,7 @@ def handler_rows(conn=None, person: str | None = None, period: str | None = None
             params.append(source)
         sql = """SELECT i.invoice_no, i.invoice_date, i.buyer, i.total_amount,
                         i.orig_invoice_no, i.case_no, i.source,
-                        cd.person_name, cd.billing_amount
+                        cd.person_name, cd.billing_amount, cd.person_type
                  FROM charge_detail cd JOIN invoice i ON cd.invoice_no = i.invoice_no"""
         if where:
             sql += " WHERE " + " AND ".join(where)
@@ -159,16 +159,16 @@ def handler_rows(conn=None, person: str | None = None, period: str | None = None
             receipts = [(r["receipt_date"], r["amount"]) for r in conn.execute(
                 "SELECT receipt_date, amount FROM collection WHERE invoice_no=? ORDER BY id", (no,)
             )]
-            handlers = [(r["person_name"], r["billing_amount"]) for r in items]
+            handlers = [(r["person_name"], r["billing_amount"], r["person_type"] or "") for r in items]
             if is_red:
                 # 红字发票：经办人已收 = 0（退款走 refund 手动确认，不参与分摊）
-                got_map = {name: 0.0 for name, _ in handlers}
+                got_map = {name: 0.0 for name, _, _ in handlers}
             else:
-                allocated = allocate_invoice(handlers, receipts)
+                allocated = allocate_invoice([(n, b) for n, b, _ in handlers], receipts)
                 got_map = {name: got for name, got in allocated}
 
             receipt_dates = sorted({d for d, _ in receipts})
-            for name, billing in handlers:
+            for name, billing, ptype in handlers:
                 got = got_map.get(name, 0.0)
                 rows.append({
                     "invoice_no": no,
@@ -176,6 +176,7 @@ def handler_rows(conn=None, person: str | None = None, period: str | None = None
                     "buyer": inv["buyer"],
                     "total_amount": inv["total_amount"],
                     "person_name": name,
+                    "person_type": ptype,
                     "billing_amount": round(billing, 2),
                     "collected": round(got, 2),
                     "remain": round(billing - got, 2),
