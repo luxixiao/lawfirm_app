@@ -105,14 +105,11 @@ class SettlementView(QWidget):
         self.btn_selected.clicked.connect(self.gen_selected)
         self.btn_report = PushButton("导出月度结算表…")
         self.btn_report.clicked.connect(self.gen_report)
-        self.btn_staff_income = PushButton("导出年度聘用结算表…")
-        self.btn_staff_income.clicked.connect(self.gen_staff_income)
         self.lbl_summary = CaptionLabel("")
         self.lbl_summary.setStyleSheet("color:#8A8886;")
         bottom.addWidget(self.btn_all)
         bottom.addWidget(self.btn_selected)
         bottom.addWidget(self.btn_report)
-        bottom.addWidget(self.btn_staff_income)
         bottom.addStretch()
         bottom.addWidget(self.lbl_summary)
         lay.addLayout(bottom)
@@ -135,7 +132,14 @@ class SettlementView(QWidget):
         # ---- 外层 Tab：个人结算总表 / 月度结算表 ----
         self.tabs.addTab(self.tab_personal, "个人结算总表")
         self.tabs.addTab(self._build_report_tab(), "月度结算表")
-        self.tabs.currentChanged.connect(lambda *_: self.refresh_report())
+        self.tabs.addTab(self._build_staff_income_tab(), "年度聘用结算表")
+        self.tabs.currentChanged.connect(self._on_tab_changed)
+
+    def _on_tab_changed(self, idx: int) -> None:
+        if idx == 1:
+            self.refresh_report()
+        elif idx == 2:
+            self.refresh_staff_income()
 
     # ---- 人员列表 ----
     @staticmethod
@@ -601,28 +605,111 @@ class SettlementView(QWidget):
             self.r_table.resizeRowToContents(r)
         self.r_summary.setText(f"{name}（{self.r_type.currentText()}）· {year}年{month}月结算表预览（共{len(rows)}行，确认后导出）")
 
+    # ---- 年度聘用结算表 Tab（预览 + 导出）----
+    def _build_staff_income_tab(self) -> QWidget:
+        w = QWidget()
+        v = QVBoxLayout()
+        v.setContentsMargins(8, 10, 8, 10)
+        v.setSpacing(10)
+        w.setLayout(v)
+        bar = QHBoxLayout()
+        bar.setSpacing(8)
+        bar.addWidget(CaptionLabel("年份"))
+        self.si_year = QComboBox()
+        cur = datetime.now().year
+        for y in range(cur, cur - 3, -1):
+            self.si_year.addItem(f"{y}年", userData=y)
+        for i in range(self.si_year.count()):
+            if self.si_year.itemData(i) == self._latest_data_year():
+                self.si_year.setCurrentIndex(i)
+                break
+        self.si_year.currentIndexChanged.connect(lambda *_: self.refresh_staff_income())
+        bar.addWidget(self.si_year)
+        bar.addWidget(CaptionLabel("月份"))
+        self.si_month = QComboBox()
+        for mo in range(1, 13):
+            self.si_month.addItem(f"{mo}月", userData=mo)
+        self.si_month.setCurrentIndex(min(datetime.now().month, 12) - 1)
+        self.si_month.currentIndexChanged.connect(lambda *_: self.refresh_staff_income())
+        bar.addWidget(self.si_month)
+        bar.addStretch()
+        v.addLayout(bar)
+        COMBO_QSS = """
+        QComboBox { background: #FFFFFF; border: 1px solid #DADAD7; border-radius: 6px;
+                    padding: 5px 10px; min-height: 18px; }
+        QComboBox QAbstractItemView {
+            background: #FFFFFF; color: #37352F;
+            selection-background-color: #E9E9E7; selection-color: #37352F;
+            border: 1px solid #DADAD7; outline: none;
+        }
+        """
+        for c in (self.si_year, self.si_month):
+            c.setStyleSheet(COMBO_QSS)
+        # 12 列：序号/姓名/5 组(本月/累计)
+        self.si_table = QTableWidget(0, 12)
+        heads = ["序号", "姓名"]
+        for lab in ["本年收入", "报酬发放", "住房公积金", "保险费", "汽油费"]:
+            heads += [f"{lab}(本月)", f"{lab}(累计)"]
+        self.si_table.setHorizontalHeaderLabels(heads)
+        self.si_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.si_table.verticalHeader().setVisible(False)
+        self.si_table.horizontalHeader().setStretchLastSection(True)
+        self.si_table.setColumnWidth(0, 40)
+        self.si_table.setColumnWidth(1, 90)
+        for c in range(2, 12):
+            self.si_table.setColumnWidth(c, 95)
+        v.addWidget(self.si_table, 1)
+        bbar = QHBoxLayout()
+        self.btn_staff_income = PushButton("导出年度聘用结算表…")
+        self.btn_staff_income.clicked.connect(self.gen_staff_income)
+        self.si_summary = CaptionLabel("")
+        self.si_summary.setStyleSheet("color:#8A8886;")
+        bbar.addWidget(self.btn_staff_income)
+        bbar.addStretch()
+        bbar.addWidget(self.si_summary)
+        v.addLayout(bbar)
+        return w
+
+    def refresh_staff_income(self) -> None:
+        """年度聘用结算表预览：选年份+月份 → 表格显示该月完整内容（含合计行）"""
+        from app.exporter.staff_income_exporter import build_report_rows
+        if not hasattr(self, "si_table"):
+            return
+        year = self.si_year.currentData() or datetime.now().year
+        month = self.si_month.currentData() or 1
+        persons, rows, totals = build_report_rows(year, month)
+        from PySide6.QtGui import QFont
+        bold = QFont()
+        bold.setBold(True)
+        self.si_table.setRowCount(len(rows) + 1)
+        for i, row in enumerate(rows):
+            it0 = QTableWidgetItem(str(i + 1))
+            it0.setTextAlignment(Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignVCenter)
+            self.si_table.setItem(i, 0, it0)
+            self.si_table.setItem(i, 1, QTableWidgetItem(row[0]))
+            for j, v in enumerate(row[1:], 2):
+                it = QTableWidgetItem(f"{v:,.2f}")
+                it.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                self.si_table.setItem(i, j, it)
+        # 合计行
+        last = len(rows)
+        self.si_table.setItem(last, 0, QTableWidgetItem(""))
+        it = QTableWidgetItem("合计")
+        it.setFont(bold)
+        self.si_table.setItem(last, 1, it)
+        for j, v in enumerate(totals, 2):
+            it = QTableWidgetItem(f"{v:,.2f}")
+            it.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            it.setFont(bold)
+            self.si_table.setItem(last, j, it)
+        self.si_summary.setText(
+            f"{year}年{month}月聘用律师业务收入结算表（{len(persons)} 人）· 预览共 {len(rows)} 行+合计，确认后导出")
+
     # ---- 导出年度聘用律师业务收入结算表 ----
     def gen_staff_income(self) -> None:
         from pathlib import Path
-        from PySide6.QtWidgets import QDialog, QDialogButtonBox, QSpinBox
-        year = self.year.currentData() or datetime.now().year
-        dlg = QDialog(self)
-        dlg.setWindowTitle("导出年度聘用结算表")
-        form = QVBoxLayout(dlg)
-        mbar = QHBoxLayout()
-        mbar.addWidget(CaptionLabel("截至月份"))
-        month_spin = QSpinBox()
-        month_spin.setRange(1, 12)
-        month_spin.setValue(min(datetime.now().month, 12))
-        mbar.addWidget(month_spin)
-        mbar.addStretch()
-        form.addLayout(mbar)
-        btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        btns.accepted.connect(dlg.accept); btns.rejected.connect(dlg.reject)
-        form.addWidget(btns)
-        if dlg.exec() != QDialog.DialogCode.Accepted:
-            return
-        month_to = month_spin.value()
+        year = self.si_year.currentData() or datetime.now().year
+        month_to = self.si_month.currentData() or datetime.now().month
         out = self._choose_dir()
         if not out:
             return

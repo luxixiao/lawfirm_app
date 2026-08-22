@@ -50,6 +50,46 @@ def _staff_employees(conn, year: int, month: int) -> list:
     return out
 
 
+def _build_rows(persons: list, data: Dict, cat_map: Dict, year: int, month: int):
+    """某月年度聘用结算表的行数据（预览/导出共用）
+
+    rows: [[姓名, 收入本月, 收入累计, 报酬本月, 报酬累计, 公积金本月, 公积金累计,
+            保险本月, 保险累计, 汽油本月, 汽油累计], ...]
+    totals: 各数值列合计（10 个）
+    """
+    rows = []
+    for name in persons:
+        st = data.get(name)
+        if st is None:
+            rows.append([name] + [0.0] * 10)
+            continue
+        m = st["months"]
+        income_cur = m[month]["income"]
+        income_tot = round(sum(m[mo]["income"] for mo in range(1, month + 1)), 2)
+        fees = []
+        for _label, cat in COLS:
+            types = [t for t in cat_map if cat_map[t] == cat]
+            cur = _exp_sum(st, month, types)
+            tot = round(sum(_exp_sum(st, mo, types) for mo in range(1, month + 1)), 2)
+            fees += [cur, tot]
+        rows.append([name, income_cur, income_tot] + fees)
+    totals = [round(sum(r[j] for r in rows), 2) for j in range(1, 11)]
+    return rows, totals
+
+
+def build_report_rows(year: int, month: int):
+    """预览/导出共用：返回 (persons, rows, totals)"""
+    data = build_settlement(year)
+    cat_map = get_map()
+    conn = get_conn()
+    try:
+        persons = _staff_employees(conn, year, month)
+    finally:
+        conn.close()
+    rows, totals = _build_rows(persons, data, cat_map, year, month)
+    return persons, rows, totals
+
+
 def _write_sheet(ws, year: int, month: int, persons: list, data: Dict, cat_map: Dict) -> None:
     ws.merge_cells("A1:L1")
     ws["A1"] = "浙江震天律师事务所"
@@ -76,29 +116,13 @@ def _write_sheet(ws, year: int, month: int, persons: list, data: Dict, cat_map: 
         ws.cell(3, j).border = BORDER
         ws.cell(4, j).border = BORDER
 
+    rows, totals = _build_rows(persons, data, cat_map, year, month)
     r = 5
-    for i, name in enumerate(persons, 1):
-        st = data.get(name)
+    for i, row in enumerate(rows, 1):
         ws.cell(r, 1, i).alignment = CENTER
-        ws.cell(r, 2, name).alignment = Alignment(horizontal="left", vertical="center")
-        if st is None:
-            for j in range(3, 13):
-                ws.cell(r, j, 0)
-            r += 1
-            continue
-        m = st["months"]
-        # 本年收入 = 业务收入（本月/累计）
-        income_cur = m[month]["income"]
-        income_tot = round(sum(m[mo]["income"] for mo in range(1, month + 1)), 2)
-        ws.cell(r, 3, income_cur); ws.cell(r, 4, income_tot)
-        # 四类费用（按归类映射）
-        ci = 5
-        for label, cat in COLS:
-            types = [t for t in cat_map if cat_map[t] == cat]
-            cur = _exp_sum(st, month, types)
-            tot = round(sum(_exp_sum(st, mo, types) for mo in range(1, month + 1)), 2)
-            ws.cell(r, ci, cur); ws.cell(r, ci + 1, tot)
-            ci += 2
+        ws.cell(r, 2, row[0]).alignment = Alignment(horizontal="left", vertical="center")
+        for j in range(3, 13):
+            ws.cell(r, j, row[j - 2])
         for j in range(1, 13):
             cell = ws.cell(r, j)
             if j >= 3:
@@ -110,12 +134,7 @@ def _write_sheet(ws, year: int, month: int, persons: list, data: Dict, cat_map: 
     # 合计
     ws.cell(r, 2, "合计").font = BOLD
     for j in range(3, 13):
-        total = 0.0
-        for rr in range(5, r):
-            v = ws.cell(rr, j).value
-            if isinstance(v, (int, float)):
-                total += v
-        c = ws.cell(r, j, round(total, 2))
+        c = ws.cell(r, j, round(totals[j - 3], 2))
         c.number_format = "#,##0.00"
         c.alignment = RIGHT
         c.font = BOLD
