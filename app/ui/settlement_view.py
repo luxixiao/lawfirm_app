@@ -62,6 +62,13 @@ class SettlementView(QWidget):
             self.month.addItem(f"{mo}月", userData=mo)
         self.month.currentIndexChanged.connect(lambda *_: self.refresh())
         bar.addWidget(self.month)
+
+        bar.addWidget(CaptionLabel("类型"))
+        self.person_type = QComboBox()
+        for t, v in [("汇总", None), ("合伙", "合伙"), ("聘用", "聘用"), ("兼职", "兼职")]:
+            self.person_type.addItem(t, userData=v)
+        self.person_type.currentIndexChanged.connect(lambda *_: self.refresh())
+        bar.addWidget(self.person_type)
         bar.addStretch()
         lay.addLayout(bar)
         # 下拉列表显式样式：白底黑字 + 选中高亮（避免 qfluentwidgets 主题影响不可见）
@@ -76,7 +83,7 @@ class SettlementView(QWidget):
         }
         QComboBox QAbstractItemView::item { padding: 6px 10px; min-height: 22px; }
         """
-        for c in (self.year, self.person, self.month):
+        for c in (self.year, self.person, self.month, self.person_type):
             c.setStyleSheet(COMBO_QSS)
             v = c.view()
             if v is not None:
@@ -175,7 +182,8 @@ class SettlementView(QWidget):
             self.table.setRowCount(0)
             self.lbl_summary.setText("请选择经办人")
             return
-        data = build_settlement(year, person=name)
+        ptype = self.person_type.currentData()
+        data = build_settlement(year, person=name, person_type=ptype)
         st = data.get(name)
         if st is None:
             self.table.setRowCount(0)
@@ -189,8 +197,9 @@ class SettlementView(QWidget):
                 if isinstance(v, float) and c > 0:
                     item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
                 self.table.setItem(r, c, item)
+        type_txt = self.person_type.currentText()
         self.lbl_summary.setText(
-            f"{name}（{st['staff_type']}）{'·' + str(mo) + '月' if mo else '·全年'}")
+            f"{name}（{type_txt}）{'·' + str(mo) + '月' if mo else '·全年'}")
 
     def _build_rows(self, st: dict, year: int) -> list:
         """结算总表行（项目 × 1-12月 + 合计）；月份筛选时只保留该月列"""
@@ -450,6 +459,12 @@ class SettlementView(QWidget):
         self.r_person.setMinimumWidth(150)
         self.r_person.currentIndexChanged.connect(lambda *_: self.refresh_report())
         bar.addWidget(self.r_person)
+        bar.addWidget(CaptionLabel("类型"))
+        self.r_type = QComboBox()
+        for t, vt in [("汇总", None), ("合伙", "合伙"), ("聘用", "聘用"), ("兼职", "兼职")]:
+            self.r_type.addItem(t, userData=vt)
+        self.r_type.currentIndexChanged.connect(lambda *_: self.refresh_report())
+        bar.addWidget(self.r_type)
         bar.addStretch()
         v.addLayout(bar)
         self._reload_persons()  # 填充 r_person（r_year 已设默认）
@@ -462,7 +477,7 @@ class SettlementView(QWidget):
             border: 1px solid #DADAD7; outline: none;
         }
         """
-        for c in (self.r_year, self.r_month, self.r_person):
+        for c in (self.r_year, self.r_month, self.r_person, self.r_type):
             c.setStyleSheet(COMBO_QSS)
         self.r_table = QTableWidget(0, 5)
         self.r_table.setHorizontalHeaderLabels(["序号", "项目", "本期", "本年累计", "备注"])
@@ -495,7 +510,8 @@ class SettlementView(QWidget):
             self.r_table.setRowCount(0)
             self.r_summary.setText("请选择经办人")
             return
-        data = build_settlement(year, person=name)
+        ptype = self.r_type.currentData()
+        data = build_settlement(year, person=name, person_type=ptype)
         st = data.get(name)
         if st is None:
             self.r_table.setRowCount(0)
@@ -532,7 +548,7 @@ class SettlementView(QWidget):
                     note_rows.append(r)
         for r in note_rows:
             self.r_table.resizeRowToContents(r)
-        self.r_summary.setText(f"{name}（{st['staff_type']}）· {year}年{month}月结算表预览（共{len(rows)}行，确认后导出）")
+        self.r_summary.setText(f"{name}（{self.r_type.currentText()}）· {year}年{month}月结算表预览（共{len(rows)}行，确认后导出）")
 
     # ---- 导出年度聘用律师业务收入结算表 ----
     def gen_staff_income(self) -> None:
