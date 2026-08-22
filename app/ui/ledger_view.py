@@ -113,8 +113,9 @@ class LedgerView(QWidget):
                 """SELECT i.invoice_date, i.invoice_no, i.buyer, i.total_amount,
                           (SELECT group_concat(cd.person_name || printf('%.2f', cd.billing_amount), ' ')
                            FROM charge_detail cd WHERE cd.invoice_no = i.invoice_no) AS handlers,
-                          (SELECT COALESCE((SELECT cd.person_type FROM charge_detail cd
-                            WHERE cd.invoice_no = i.invoice_no LIMIT 1), '')) AS htypes,
+                          (SELECT CASE WHEN COUNT(DISTINCT cd.person_type) <= 1
+                                  THEN COALESCE(MAX(cd.person_type), '') ELSE '混合' END
+                           FROM charge_detail cd WHERE cd.invoice_no = i.invoice_no) AS htypes,
                           i.case_no, i.source, i.invoice_no AS key
                    FROM invoice i ORDER BY i.invoice_date, i.invoice_no"""
             ).fetchall()
@@ -203,7 +204,11 @@ class LedgerView(QWidget):
             conn.close()
         if inv is None:
             return
-        parts = [f"{cd['person_name']}{abs(cd['billing_amount']):g}" for cd in cds]
+        parts = []
+        for cd in cds:
+            pt = cd["person_type"] or ""
+            parts.append(f"{cd['person_name']}{abs(cd['billing_amount']):g}({pt})" if pt
+                         else f"{cd['person_name']}{abs(cd['billing_amount']):g}")
 
         dlg = QDialog(self)
         dlg.setWindowTitle(f"编辑发票：{key}")
@@ -213,7 +218,7 @@ class LedgerView(QWidget):
         buyer_edit = QLineEdit(inv["buyer"] or "")
         amt = QDoubleSpinBox(); amt.setRange(-99999999, 99999999); amt.setDecimals(2); amt.setValue(inv["total_amount"])
         handler_edit = QLineEdit("、".join(parts))
-        handler_edit.setPlaceholderText("如：张三4000、李四5000")
+        handler_edit.setPlaceholderText("如：张三4000(合伙)、李四5000(聘用)；不带身份则保持原值")
         case_edit = QLineEdit(inv["case_no"] or "")
         # 身份：整票统一（取首个经办人身份）
         type_combo = QComboBox()
@@ -237,7 +242,7 @@ class LedgerView(QWidget):
 
         total = amt.value()
         note = note_edit.text().strip()
-        new_handlers = parse_handler_column(handler_edit.text(), total, key) if handler_edit.text().strip() else []
+        new_handlers = parse_handler_column(handler_edit.text(), total, key, with_type=True) if handler_edit.text().strip() else []
         conn = get_conn()
         try:
             changes = []
@@ -252,21 +257,25 @@ class LedgerView(QWidget):
                 (date_edit.text().strip() or None, buyer_edit.text().strip(), total,
                  case_edit.text().strip(), key),
             )
-            # 经办人重建（比较旧列表）
+            # 经办人重建（比较旧列表；身份逐经办人保留）
             old_handlers = [(cd["person_name"], cd["billing_amount"]) for cd in cds]
-            if sorted(str(x) for x in old_handlers) != sorted(str(x) for x in new_handlers):
+            if sorted(str(x[:2]) for x in old_handlers) != sorted(str(x[:2]) for x in new_handlers):
                 changes.append(("charge_detail", ";".join(map(str, old_handlers)), ";".join(map(str, new_handlers))))
                 conn.execute("DELETE FROM charge_detail WHERE invoice_no=?", (key,))
-                for name, amount in new_handlers:
+                for name, amount, pt in new_handlers:
                     conn.execute(
                         "INSERT INTO charge_detail (invoice_no, person_name, billing_amount, source, person_type) VALUES (?,?,?,?,?)",
-                        (key, name, amount, inv["source"], type_combo.currentData()),
+                        (key, name, amount, inv["source"], pt or (type_combo.currentData() if type_combo.currentData() != "未标" else "")),
                     )
-            elif type_combo.currentData() != cur_type:
-                # 仅身份变化：整票统一更新
-                old_pt = "、".join(sorted({cd["person_type"] or "未标" for cd in cds}))
-                changes.append(("person_type", old_pt, type_combo.currentData()))
-                conn.execute("UPDATE charge_detail SET person_type=? WHERE invoice_no=?", (type_combo.currentData(), key))
+            else:
+                # 身份逐经办人更新（new_handlers 带身份）
+                for (name, amount, pt), (old_name, old_amt, old_pt) in zip(
+                        new_handlers, [(cd["person_name"], cd["billing_amount"], cd["person_type"] or "") for cd in cds]):
+                    if (old_pt or "") != (pt or ""):
+                        changes.append((f"person_type[{name}]", old_pt or "未标", pt or "未标"))
+                        conn.execute(
+                            "UPDATE charge_detail SET person_type=? WHERE invoice_no=? AND person_name=?",
+                            (pt, key, name))
             log_changes(conn, "invoice", key, changes, note)
             conn.commit()
         except Exception as e:  # noqa: BLE001
