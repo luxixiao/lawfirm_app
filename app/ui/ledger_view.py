@@ -177,7 +177,7 @@ class LedgerView(QWidget):
         try:
             inv = conn.execute("SELECT * FROM invoice WHERE invoice_no=?", (key,)).fetchone()
             cds = conn.execute(
-                "SELECT person_name, billing_amount FROM charge_detail WHERE invoice_no=? ORDER BY id", (key,)
+                "SELECT person_name, billing_amount, person_type FROM charge_detail WHERE invoice_no=? ORDER BY id", (key,)
             ).fetchall()
         finally:
             conn.close()
@@ -187,7 +187,7 @@ class LedgerView(QWidget):
 
         dlg = QDialog(self)
         dlg.setWindowTitle(f"编辑发票：{key}")
-        dlg.resize(460, 360)
+        dlg.resize(460, 400)
         form = QFormLayout(dlg)
         date_edit = QLineEdit(inv["invoice_date"] or "")
         buyer_edit = QLineEdit(inv["buyer"] or "")
@@ -195,11 +195,18 @@ class LedgerView(QWidget):
         handler_edit = QLineEdit("、".join(parts))
         handler_edit.setPlaceholderText("如：张三4000、李四5000")
         case_edit = QLineEdit(inv["case_no"] or "")
+        # 身份：整票统一（取首个经办人身份）
+        type_combo = QComboBox()
+        for t in ["未标", "合伙", "聘用", "兼职"]:
+            type_combo.addItem(t, userData=t)
+        cur_type = (cds[0]["person_type"] if cds and cds[0]["person_type"] else "未标")
+        type_combo.setCurrentText(cur_type)
         note_edit = _note_input(self)
         form.addRow("开票日期", date_edit)
         form.addRow("购方名称", buyer_edit)
         form.addRow("价税合计", amt)
         form.addRow("经办人及金额", handler_edit)
+        form.addRow("身份(整票统一)", type_combo)
         form.addRow("案号", case_edit)
         form.addRow("修改备注", note_edit)
         btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
@@ -232,9 +239,14 @@ class LedgerView(QWidget):
                 conn.execute("DELETE FROM charge_detail WHERE invoice_no=?", (key,))
                 for name, amount in new_handlers:
                     conn.execute(
-                        "INSERT INTO charge_detail (invoice_no, person_name, billing_amount, source) VALUES (?,?,?,?)",
-                        (key, name, amount, inv["source"]),
+                        "INSERT INTO charge_detail (invoice_no, person_name, billing_amount, source, person_type) VALUES (?,?,?,?,?)",
+                        (key, name, amount, inv["source"], type_combo.currentData()),
                     )
+            elif type_combo.currentData() != cur_type:
+                # 仅身份变化：整票统一更新
+                old_pt = "、".join(sorted({cd["person_type"] or "未标" for cd in cds}))
+                changes.append(("person_type", old_pt, type_combo.currentData()))
+                conn.execute("UPDATE charge_detail SET person_type=? WHERE invoice_no=?", (type_combo.currentData(), key))
             log_changes(conn, "invoice", key, changes, note)
             conn.commit()
         except Exception as e:  # noqa: BLE001
