@@ -133,6 +133,7 @@ class SettlementView(QWidget):
         self.tabs.addTab(self.tab_personal, "个人结算总表")
         self.tabs.addTab(self._build_report_tab(), "月度结算表")
         self.tabs.addTab(self._build_staff_income_tab(), "年度聘用结算表")
+        self.tabs.addTab(self._build_invoice_income_tab(), "开票收入表")
         self.tabs.currentChanged.connect(self._on_tab_changed)
 
     def _on_tab_changed(self, idx: int) -> None:
@@ -140,6 +141,8 @@ class SettlementView(QWidget):
             self.refresh_report()
         elif idx == 2:
             self.refresh_staff_income()
+        elif idx == 3:
+            self.refresh_invoice_income()
 
     # ---- 人员列表 ----
     @staticmethod
@@ -746,6 +749,151 @@ class SettlementView(QWidget):
         try:
             f = export_staff_income(
                 Path(out) / f"{year}年度业务收入结算表（聘用律师）.xlsx", year, month_to)
+        except Exception as e:  # noqa: BLE001
+            self.log.appendPlainText(f"✗ 生成失败: {e}")
+            QMessageBox.critical(self, "生成失败", str(e))
+            return
+        self.log.appendPlainText(f"✓ {f}")
+        QMessageBox.information(self, "生成完成", f"已生成：{f}")
+
+    # ---- 开票收入表 Tab（预览 + 导出）----
+    def _build_invoice_income_tab(self) -> QWidget:
+        w = QWidget()
+        v = QVBoxLayout()
+        v.setContentsMargins(8, 10, 8, 10)
+        v.setSpacing(10)
+        w.setLayout(v)
+        bar = QHBoxLayout()
+        bar.setSpacing(8)
+        bar.addWidget(CaptionLabel("年份"))
+        self.ii_year = QComboBox()
+        cur = datetime.now().year
+        for y in range(cur, cur - 3, -1):
+            self.ii_year.addItem(f"{y}年", userData=y)
+        for i in range(self.ii_year.count()):
+            if self.ii_year.itemData(i) == self._latest_data_year():
+                self.ii_year.setCurrentIndex(i)
+                break
+        self.ii_year.currentIndexChanged.connect(lambda *_: self.refresh_invoice_income())
+        bar.addWidget(self.ii_year)
+        bar.addWidget(CaptionLabel("月份"))
+        self.ii_month = QComboBox()
+        for mo in range(1, 13):
+            self.ii_month.addItem(f"{mo}月", userData=mo)
+        self.ii_month.setCurrentIndex(min(datetime.now().month, 12) - 1)
+        self.ii_month.currentIndexChanged.connect(lambda *_: self.refresh_invoice_income())
+        bar.addWidget(self.ii_month)
+        bar.addStretch()
+        v.addLayout(bar)
+        COMBO_QSS = """
+        QComboBox { background: #FFFFFF; border: 1px solid #DADAD7; border-radius: 6px;
+                    padding: 5px 10px; min-height: 18px; }
+        QComboBox QAbstractItemView {
+            background: #FFFFFF; color: #37352F;
+            selection-background-color: #E9E9E7; selection-color: #37352F;
+            border: 1px solid #DADAD7; outline: none;
+        }
+        """
+        for c in (self.ii_year, self.ii_month):
+            c.setStyleSheet(COMBO_QSS)
+        # 8 列：序号/姓名/收入本月/收入累计/期末未收/开票已收/收回以前/合计收款
+        self.ii_table = QTableWidget(0, 8)
+        self.ii_table.setHorizontalHeaderLabels(
+            ["序号", "姓名", "收入本月", "收入累计", "期末未收",
+             "本月开票本月收回", "本月收回以前应收款", "本月合计收款"])
+        self.ii_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.ii_table.verticalHeader().setVisible(False)
+        self.ii_table.horizontalHeader().setStretchLastSection(True)
+        self.ii_table.setColumnWidth(0, 40)
+        self.ii_table.setColumnWidth(1, 90)
+        for c in range(2, 8):
+            self.ii_table.setColumnWidth(c, 105)
+        v.addWidget(self.ii_table, 1)
+        bbar = QHBoxLayout()
+        self.btn_ii_month = PushButton("导出当月…")
+        self.btn_ii_month.setToolTip("仅导出当前预览月份主表 + 未收款明细")
+        self.btn_ii_month.clicked.connect(self.gen_invoice_income)
+        self.btn_ii_full = PushButton("导出模板表…")
+        self.btn_ii_full.setToolTip("导出 1~选中月 主表（从新到旧）+ 未收款明细（当年+历史年度）")
+        self.btn_ii_full.clicked.connect(self.gen_invoice_income_full)
+        self.ii_summary = CaptionLabel("")
+        self.ii_summary.setStyleSheet("color:#8A8886;")
+        bbar.addWidget(self.btn_ii_month)
+        bbar.addWidget(self.btn_ii_full)
+        bbar.addStretch()
+        bbar.addWidget(self.ii_summary)
+        v.addLayout(bbar)
+        return w
+
+    def refresh_invoice_income(self) -> None:
+        """开票收入表预览：主表（选中月，8 列 + 合计行）"""
+        from app.exporter.invoice_income_exporter import build_main_preview
+        if not hasattr(self, "ii_table"):
+            return
+        year = self.ii_year.currentData() or datetime.now().year
+        month = self.ii_month.currentData() or 1
+        persons, rows, totals = build_main_preview(year, month)
+        from PySide6.QtGui import QFont
+        bold = QFont()
+        bold.setBold(True)
+        self.ii_table.setRowCount(len(rows) + 1)
+        for i, row in enumerate(rows):
+            it0 = QTableWidgetItem(str(i + 1))
+            it0.setTextAlignment(Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignVCenter)
+            self.ii_table.setItem(i, 0, it0)
+            self.ii_table.setItem(i, 1, QTableWidgetItem(row[0]))
+            for j, v in enumerate(row[1:], 2):
+                it = QTableWidgetItem(f"{v:,.2f}")
+                it.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                self.ii_table.setItem(i, j, it)
+        # 合计行
+        last = len(rows)
+        self.ii_table.setItem(last, 0, QTableWidgetItem(""))
+        it = QTableWidgetItem("合计")
+        it.setFont(bold)
+        self.ii_table.setItem(last, 1, it)
+        for j, v in enumerate(totals, 2):
+            it = QTableWidgetItem(f"{v:,.2f}")
+            it.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            it.setFont(bold)
+            self.ii_table.setItem(last, j, it)
+        self.ii_summary.setText(
+            f"{year}年{month}月律师收费情况表（开票收入）· {len(persons)} 人 + 合计，确认后导出")
+
+    # ---- 导出开票收入表 ----
+    def gen_invoice_income(self) -> None:
+        from pathlib import Path
+        year = self.ii_year.currentData() or datetime.now().year
+        month = self.ii_month.currentData() or datetime.now().month
+        out = self._choose_dir()
+        if not out:
+            return
+        from app.exporter.invoice_income_exporter import export_invoice_income_month
+        self.log.clear()
+        self.log.appendPlainText(f"正在生成 {year}年{month}月开票收入表…")
+        try:
+            f = export_invoice_income_month(
+                Path(out) / f"{year}年度开票收入_{year}{month:02d}.xlsx", year, month)
+        except Exception as e:  # noqa: BLE001
+            self.log.appendPlainText(f"✗ 生成失败: {e}")
+            QMessageBox.critical(self, "生成失败", str(e))
+            return
+        self.log.appendPlainText(f"✓ {f}")
+        QMessageBox.information(self, "生成完成", f"已生成：{f}")
+
+    def gen_invoice_income_full(self) -> None:
+        from pathlib import Path
+        year = self.ii_year.currentData() or datetime.now().year
+        month_to = self.ii_month.currentData() or datetime.now().month
+        out = self._choose_dir()
+        if not out:
+            return
+        from app.exporter.invoice_income_exporter import export_invoice_income
+        self.log.clear()
+        self.log.appendPlainText(f"正在生成 {year}年度开票收入表模板表（1~{month_to}月，从新到旧 + 未收款明细）…")
+        try:
+            f = export_invoice_income(
+                Path(out) / f"{year}年度开票收入.xlsx", year, month_to)
         except Exception as e:  # noqa: BLE001
             self.log.appendPlainText(f"✗ 生成失败: {e}")
             QMessageBox.critical(self, "生成失败", str(e))
