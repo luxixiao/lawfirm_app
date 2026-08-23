@@ -1,0 +1,439 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>律所开票收款统计 · 界面 redesign 方案（墨玉·克制专业）</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@500;600;700&family=Noto+Sans+SC:wght@300;400;500;700&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --paper:#FBF9F5;
+    --paper-2:#F4F0E8;
+    --panel:#FFFFFF;
+    --ink:#1F1D1A;
+    --ink-soft:#6B665C;
+    --ink-faint:#9A9389;
+    --rule:#E7E2D8;
+    --rule-soft:#F0ECE3;
+    --jade:#2E6E5C;
+    --jade-deep:#235649;
+    --jade-tint:#EAF1EE;
+    --cinnabar:#9E2B25;
+    --cinnabar-tint:#F7ECEA;
+    --up:#B23A2E;     /* 红涨 */
+    --down:#2E7D52;   /* 绿跌 */
+    --serif:"Noto Serif SC","Source Han Serif SC","Songti SC","SimSun",serif;
+    --sans:"Noto Sans SC","PingFang SC","Microsoft YaHei","微软雅黑",sans-serif;
+    --ease:cubic-bezier(.22,1,.36,1);
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{
+    margin:0; background:var(--paper); color:var(--ink);
+    font-family:var(--sans); font-weight:400; font-size:14px; line-height:1.55;
+    -webkit-font-smoothing:antialiased; text-rendering:optimizeLegibility;
+  }
+  .num{font-variant-numeric:tabular-nums; font-feature-settings:"tnum" 1; letter-spacing:.2px}
+
+  /* ===== App shell ===== */
+  .app{display:grid; grid-template-columns:236px 1fr; height:100vh; overflow:hidden}
+
+  /* ----- Navigation ----- */
+  .nav{
+    background:var(--paper-2); border-right:1px solid var(--rule);
+    display:flex; flex-direction:column; padding:22px 14px 16px; gap:6px;
+    overflow-y:auto;
+  }
+  .brand{display:flex; align-items:center; gap:12px; padding:4px 8px 18px; border-bottom:1px solid var(--rule); margin-bottom:10px}
+  .seal{flex:0 0 auto; width:42px; height:42px}
+  .brand-txt b{display:block; font-family:var(--serif); font-weight:700; font-size:16px; letter-spacing:.5px; line-height:1.25}
+  .brand-txt span{display:block; font-size:11px; color:var(--ink-faint); letter-spacing:2px; margin-top:2px}
+
+  .nav-group{margin-top:14px}
+  .nav-group > .label{
+    font-family:var(--serif); font-size:11px; font-weight:600; letter-spacing:3px;
+    color:var(--ink-faint); padding:0 10px 6px; text-transform:none;
+  }
+  .nav-item{
+    display:flex; align-items:center; gap:11px; padding:9px 10px; border-radius:8px;
+    color:var(--ink-soft); cursor:pointer; font-size:13.5px; position:relative;
+    transition:background .25s var(--ease), color .25s var(--ease);
+  }
+  .nav-item .ico{width:17px; height:17px; flex:0 0 auto; opacity:.85}
+  .nav-item:hover{background:var(--paper); color:var(--ink)}
+  .nav-item.active{background:var(--panel); color:var(--jade-deep); font-weight:500; box-shadow:0 1px 2px rgba(31,29,26,.04)}
+  .nav-item.active::before{content:""; position:absolute; left:-14px; top:8px; bottom:8px; width:3px; border-radius:0 3px 3px 0; background:var(--jade)}
+  .nav-item .badge{margin-left:auto; font-size:10px; color:var(--ink-faint); background:var(--rule-soft); padding:1px 7px; border-radius:10px}
+
+  /* ----- Main ----- */
+  .main{display:flex; flex-direction:column; min-width:0; overflow:hidden}
+  .topbar{
+    display:flex; align-items:flex-end; justify-content:space-between; gap:16px;
+    padding:20px 28px 16px; border-bottom:1px solid var(--rule); background:var(--paper);
+  }
+  .topbar .tt{font-family:var(--serif); font-size:23px; font-weight:600; letter-spacing:.5px}
+  .topbar .sub{font-size:12px; color:var(--ink-faint); margin-top:3px; letter-spacing:.5px}
+  .topbar .acts{display:flex; align-items:center; gap:10px}
+  .period{display:flex; align-items:center; gap:8px; font-size:12.5px; color:var(--ink-soft)}
+  .period b{font-family:var(--serif); color:var(--ink); font-weight:600; font-size:13.5px}
+
+  .content{padding:22px 28px 30px; overflow-y:auto; flex:1}
+
+  /* ===== Filter bar ===== */
+  .filters{display:flex; flex-wrap:wrap; align-items:center; gap:14px; margin-bottom:18px}
+  .field{display:flex; align-items:center; gap:8px}
+  .field > .fl{font-size:12px; color:var(--ink-faint); letter-spacing:1px}
+  .select{
+    appearance:none; background:var(--panel); border:1px solid var(--rule); color:var(--ink);
+    font-family:var(--sans); font-size:13px; padding:7px 30px 7px 12px; border-radius:8px; cursor:pointer;
+    background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'><path d='M2 4l4 4 4-4' stroke='%236B665C' stroke-width='1.4' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>");
+    background-repeat:no-repeat; background-position:right 10px center; transition:border-color .2s var(--ease);
+  }
+  .select:hover{border-color:var(--jade)}
+  .hint{font-size:12px; color:var(--ink-faint); margin-left:2px}
+
+  /* ===== KPI strip ===== */
+  .kpis{display:grid; grid-template-columns:repeat(4,1fr); gap:1px; background:var(--rule); border:1px solid var(--rule); border-radius:12px; overflow:hidden; margin-bottom:22px}
+  .kpi{background:var(--panel); padding:16px 18px}
+  .kpi .k{font-size:12px; color:var(--ink-faint); letter-spacing:1px}
+  .kpi .v{font-family:var(--serif); font-size:27px; font-weight:600; margin-top:7px; line-height:1}
+  .kpi .v .cur{font-size:15px; color:var(--ink-soft); margin-right:3px; font-family:var(--sans)}
+  .kpi .d{font-size:11.5px; margin-top:8px; color:var(--ink-soft)}
+  .kpi .d .up{color:var(--up)} .kpi .d .down{color:var(--down)}
+
+  /* ===== Tabs ===== */
+  .tabs{display:flex; gap:26px; border-bottom:1px solid var(--rule); margin-bottom:16px}
+  .tab{
+    font-family:var(--serif); font-size:15px; color:var(--ink-soft); padding:0 2px 11px; cursor:pointer;
+    border-bottom:2px solid transparent; margin-bottom:-1px; transition:color .2s var(--ease), border-color .2s var(--ease);
+  }
+  .tab:hover{color:var(--ink)}
+  .tab.active{color:var(--jade-deep); border-color:var(--jade); font-weight:600}
+
+  /* ===== Table ===== */
+  .table-wrap{border:1px solid var(--rule); border-radius:12px; overflow:hidden; background:var(--panel)}
+  table{width:100%; border-collapse:collapse; font-size:13px}
+  thead th{
+    font-family:var(--serif); font-weight:600; font-size:12.5px; color:var(--ink-soft);
+    text-align:right; padding:11px 14px; background:var(--paper-2); border-bottom:1px solid var(--rule);
+    white-space:nowrap; letter-spacing:.3px;
+  }
+  thead th.l{text-align:left}
+  thead tr.group th{background:var(--paper); color:var(--ink-faint); font-size:11px; font-weight:500; letter-spacing:1px; padding:8px 14px}
+  tbody td{padding:10px 14px; text-align:right; border-bottom:1px solid var(--rule-soft); color:var(--ink)}
+  tbody td.l{text-align:left}
+  tbody tr:hover{background:var(--jade-tint)}
+  tbody tr:last-child td{border-bottom:none}
+  tbody tr.total td{font-weight:600; background:var(--paper-2); border-top:1.5px solid var(--rule)}
+  tbody tr.total td.l{font-family:var(--serif); color:var(--ink)}
+  .tag{display:inline-block; font-size:11px; padding:1px 8px; border-radius:6px; background:var(--jade-tint); color:var(--jade-deep)}
+  .tag.part{background:#EFE7D8; color:#8A6A2E}
+  .tag.hire{background:#E7EEF4; color:#2E5A7D}
+  .tag.pt{background:#F0E9F2; color:#6B3E74}
+
+  /* ===== Footer actions ===== */
+  .foot{display:flex; align-items:center; gap:12px; margin-top:18px}
+  .btn{
+    font-family:var(--sans); font-size:13px; padding:9px 18px; border-radius:9px; cursor:pointer;
+    border:1px solid var(--rule); background:var(--panel); color:var(--ink); transition:all .2s var(--ease);
+  }
+  .btn:hover{border-color:var(--jade); color:var(--jade-deep)}
+  .btn.primary{background:var(--jade); border-color:var(--jade); color:#fff}
+  .btn.primary:hover{background:var(--jade-deep); border-color:var(--jade-deep)}
+  .btn.danger{color:var(--cinnabar); border-color:#E6C9C6}
+  .btn.danger:hover{background:var(--cinnabar-tint); border-color:var(--cinnabar)}
+  .foot .spacer{flex:1}
+  .foot .summary{font-size:12px; color:var(--ink-faint)}
+
+  .log{
+    margin-top:16px; border:1px solid var(--rule); border-radius:10px; background:var(--paper-2);
+    padding:12px 14px; font-size:12px; color:var(--ink-soft); max-height:96px; overflow:auto; line-height:1.7;
+  }
+  .log .ok{color:var(--jade-deep)} .log .err{color:var(--cinnabar)}
+
+  /* ===== Empty / placeholder page ===== */
+  .placeholder{display:flex; flex-direction:column; align-items:center; justify-content:center; min-height:60vh; text-align:center; color:var(--ink-faint); position:relative}
+  .placeholder .wm{position:absolute; opacity:.06; width:300px; height:300px}
+  .placeholder h3{font-family:var(--serif); font-size:19px; color:var(--ink-soft); margin:18px 0 6px}
+  .placeholder p{font-size:13px; max-width:380px; line-height:1.7}
+
+  .fade{animation:fade .35s var(--ease)}
+  @keyframes fade{from{opacity:0; transform:translateY(6px)} to{opacity:1; transform:none}}
+
+  /* scrollbar */
+  ::-webkit-scrollbar{width:10px;height:10px}
+  ::-webkit-scrollbar-thumb{background:var(--rule); border-radius:8px; border:3px solid var(--paper)}
+  ::-webkit-scrollbar-thumb:hover{background:#D8D2C6}
+</style>
+</head>
+<body>
+<div class="app">
+  <!-- ============ NAV ============ -->
+  <aside class="nav">
+    <div class="brand">
+      <svg class="seal" viewBox="0 0 100 100" aria-label="震天律所印章">
+        <circle cx="50" cy="50" r="46" fill="none" stroke="#9E2B25" stroke-width="4"/>
+        <circle cx="50" cy="50" r="38" fill="none" stroke="#9E2B25" stroke-width="1.5"/>
+        <text x="50" y="44" text-anchor="middle" font-family="Noto Serif SC, serif" font-size="26" font-weight="700" fill="#9E2B25">震天</text>
+        <text x="50" y="68" text-anchor="middle" font-family="Noto Serif SC, serif" font-size="13" fill="#9E2B25" letter-spacing="2">律所</text>
+      </svg>
+      <div class="brand-txt"><b>浙江震天律师事务所</b><span>开 票 收 款 统 计</span></div>
+    </div>
+
+    <div class="nav-group">
+      <div class="label">数 据</div>
+      <div class="nav-item" data-page="import"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M12 3v12m0 0l-4-4m4 4l4-4M4 17v2a2 2 0 002 2h12a2 2 0 002-2v-2"/></svg>导入</div>
+      <div class="nav-item" data-page="ledger"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 6h16M4 12h16M4 18h10"/></svg>台账数据</div>
+      <div class="nav-item" data-page="batch"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M12 7v5l3 2M4 5a2 2 0 012-2h12a2 2 0 012 2v14a2 2 0 01-2 2H6a2 2 0 01-2-2z"/></svg>导入记录</div>
+      <div class="nav-item" data-page="snapshot"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M3 8a2 2 0 012-2h2l1.5-2h7L19 6h0a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><circle cx="12" cy="13" r="3.5"/></svg>快照</div>
+    </div>
+
+    <div class="nav-group">
+      <div class="label">业 务</div>
+      <div class="nav-item" data-page="invoice"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 8h8M8 12h8M8 16h5"/></svg>发票收款总表</div>
+      <div class="nav-item" data-page="handler"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="9" cy="8" r="3"/><path d="M3 20a6 6 0 0112 0M17 11l2 2 4-4"/></svg>经办人发票收款情况</div>
+      <div class="nav-item" data-page="prepayment"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M5 4h11l3 3v13a1 1 0 01-1 1H5a1 1 0 01-1-1V5a1 1 0 011-1z"/><path d="M9 12h6"/></svg>预收款</div>
+      <div class="nav-item" data-page="refund"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="12" r="9"/><path d="M9 9l6 6M15 9l-6 6"/></svg>退款</div>
+      <div class="nav-item" data-page="manual"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 20h16M14 4l5 5-9 9H5v-5z"/></svg>手动补录</div>
+    </div>
+
+    <div class="nav-group">
+      <div class="label">结 算</div>
+      <div class="nav-item active" data-page="settlement"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M6 3h9l4 4v14H6a1 1 0 01-1-1V4a1 1 0 011-1z"/><path d="M14 3v5h5M8 13h8M8 17h5"/></svg>个人结算总表</div>
+      <div class="nav-item" data-page="staff"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 5h16M4 12h16M4 19h16"/><circle cx="8" cy="5" r="0"/></svg>员工管理</div>
+    </div>
+  </aside>
+
+  <!-- ============ MAIN ============ -->
+  <main class="main">
+    <header class="topbar">
+      <div>
+        <div class="tt" id="pageTitle">个人结算总表</div>
+        <div class="sub" id="pageSub">按经办人 · 月份筛选预览，导出结算 Excel（多 sheet / 红冲 / 累计）</div>
+      </div>
+      <div class="acts">
+        <div class="period">数据期间 <b id="periodLabel">2025 年 1 月</b></div>
+        <button class="btn primary" onclick="toast('已打开导出向导（设计中）')">＋ 新建导入</button>
+      </div>
+    </header>
+
+    <div class="content" id="content"><!-- rendered by JS --></div>
+  </main>
+</div>
+
+<script>
+/* ---------- 通用：确定性伪随机，保证样例数据稳定 ---------- */
+function rng(seed){return function(){seed=(seed*1103515245+12345)&0x7fffffff;return seed/0x7fffffff}}
+const f0=n=>n.toLocaleString('zh-CN',{minimumFractionDigits:0,maximumFractionDigits:0});
+const f2=n=>n.toLocaleString('zh-CN',{minimumFractionDigits:2,maximumFractionDigits:2});
+const yb=n=>`<span class="cur">¥</span>${f0(n)}`;
+
+/* ---------- 导航切换 ---------- */
+const meta={
+  import:{t:'导入',s:'从固定格式台账（开票/收款/费用/员工）导入，跨年累计'},
+  ledger:{t:'台账数据',s:'查看与维护已导入的开票 / 收款 / 费用台账明细'},
+  batch:{t:'导入记录',s:'历次导入批次、来源文件与时间戳，可追溯'},
+  snapshot:{t:'快照',s:'对当前数据库生成只读快照，用于月末对账留档'},
+  invoice:{t:'发票收款总表',s:'按发票维度的开票与收款汇总'},
+  handler:{t:'经办人发票收款情况',s:'按经办人维度的发票与收款归集'},
+  prepayment:{t:'预收款',s:'预收 / prepayment 模块，挂账与冲抵管理'},
+  refund:{t:'退款',s:'红冲发票的确认、退款金额与退款日期台账'},
+  manual:{t:'手动补录',s:'补录系统外发生的开票 / 收款 / 费用'},
+  staff:{t:'员工管理',s:'职工花名册：类型（合伙/聘用/兼职）、在职与月度归属'},
+  settlement:{t:'个人结算总表',s:'按经办人 · 月份筛选预览，导出结算 Excel（多 sheet / 红冲 / 累计）'}
+};
+const wm=`<svg class="wm" viewBox="0 0 100 100"><circle cx="50" cy="50" r="46" fill="none" stroke="#9E2B25" stroke-width="4"/><circle cx="50" cy="50" r="38" fill="none" stroke="#9E2B25" stroke-width="1.5"/><text x="50" y="44" text-anchor="middle" font-family="serif" font-size="26" font-weight="700" fill="#9E2B25">震天</text><text x="50" y="68" text-anchor="middle" font-family="serif" font-size="13" fill="#9E2B25" letter-spacing="2">律所</text></svg>`;
+
+document.querySelectorAll('.nav-item').forEach(el=>{
+  el.addEventListener('click',()=>{
+    document.querySelectorAll('.nav-item').forEach(n=>n.classList.remove('active'));
+    el.classList.add('active');
+    const p=el.dataset.page;
+    document.getElementById('pageTitle').textContent=meta[p].t;
+    document.getElementById('pageSub').textContent=meta[p].s;
+    const c=document.getElementById('content');
+    if(p==='settlement'){renderSettlement();}
+    else{
+      c.className='content';
+      c.innerHTML=`<div class="placeholder fade">${wm}<h3>${meta[p].t}　设计中</h3><p>本页沿用统一「墨玉」语言：左侧导航定位、顶部期间与操作、主区编辑型表格 + 合计行、底部导出。该页面为后续移植阶段实现，此处仅展示框架与空状态。</p></div>`;
+    }
+  });
+});
+
+/* ---------- 旗舰页：个人结算总表 ---------- */
+function renderSettlement(){
+  const c=document.getElementById('content');
+  c.className='content';
+  c.innerHTML=`
+  <div class="filters fade">
+    <div class="field"><span class="fl">年份</span>
+      <select class="select" id="fYear"><option>2025年</option><option>2024年</option><option>2023年</option></select></div>
+    <div class="field"><span class="fl">经办人</span>
+      <select class="select" id="fPerson"><option>全部经办人</option><option>周利生</option><option>张伯灿</option><option>徐志庆</option><option>胡坚</option></select></div>
+    <div class="field"><span class="fl">月份</span>
+      <select class="select" id="fMonth"><option>全部月份</option>${[...Array(12)].map((_,i)=>`<option>${i+1}月</option>`).join('')}</select></div>
+    <div class="field"><span class="fl">类型</span>
+      <select class="select" id="fType"><option>汇总</option><option>合伙</option><option>聘用</option><option>兼职</option></select></div>
+    <span class="hint">口径：收款 / 开票 / 未收 / 业务收入 / 费用</span>
+  </div>
+
+  <div class="kpis fade">
+    <div class="kpi"><div class="k">本月开票金额</div><div class="v num">${yb(1790456)}</div><div class="d">累计 <b class="num">${f0(1790456)}</b></div></div>
+    <div class="kpi"><div class="k">本月收款金额</div><div class="v num">${yb(1455461)}</div><div class="d">较上月 <span class="up">▲ 6.2%</span></div></div>
+    <div class="kpi"><div class="k">期末未收金额</div><div class="v num">${yb(440095)}</div><div class="d">占开票 <b>24.6%</b></div></div>
+    <div class="kpi"><div class="k">业务笔数（本月）</div><div class="v num">312</div><div class="d">较上月 <span class="down">▼ 3 笔</span></div></div>
+  </div>
+
+  <div class="tabs fade" id="tabs">
+    <div class="tab active" data-tab="personal">个人结算总表</div>
+    <div class="tab" data-tab="monthly">月度结算表</div>
+    <div class="tab" data-tab="staff">年度聘用结算表</div>
+    <div class="tab" data-tab="invoice">开票收入表</div>
+  </div>
+
+  <div id="tabBody" class="fade"></div>
+  `;
+  document.getElementById('fYear').addEventListener('change',syncPeriod);
+  document.getElementById('fMonth').addEventListener('change',syncPeriod);
+  document.querySelectorAll('#tabs .tab').forEach(t=>t.addEventListener('click',()=>{
+    document.querySelectorAll('#tabs .tab').forEach(x=>x.classList.remove('active'));
+    t.classList.add('active');
+    renderTab(t.dataset.tab);
+  }));
+  renderTab('personal');
+}
+function syncPeriod(){
+  const y=document.getElementById('fYear').value.replace('年','');
+  const m=document.getElementById('fMonth').value;
+  document.getElementById('periodLabel').textContent=`${y} 年 ${m==='全部月份'?'全年':m.replace('月','')+' 月'}`;
+}
+
+/* ---------- 四个 Tab 内容 ---------- */
+function renderTab(tab){
+  const body=document.getElementById('tabBody');
+  if(tab==='personal') return body.innerHTML=personalHTML();
+  if(tab==='monthly')  return body.innerHTML=monthlyHTML();
+  if(tab==='staff')    return body.innerHTML=staffHTML();
+  if(tab==='invoice')  return body.innerHTML=invoiceHTML();
+}
+
+/* 1) 个人结算总表：经办人 × 12月 + 合计 */
+function personalHTML(){
+  const names=["周利生","张伯灿","徐志庆","章山山","柳立中","王建","胡坚","洪震亮","丁祥锋","朱云","谭玲玲","陈娟"];
+  const r=rng(7); let rows='',tot=[0,0,0,0,0,0,0,0,0,0,0,0],gtot=0;
+  names.forEach((nm,i)=>{
+    const type=i%3===0?'<span class="tag part">合伙</span>':i%3===1?'<span class="tag hire">聘用</span>':'<span class="tag pt">兼职</span>';
+    let sum=0,cells='';
+    for(let m=0;m<12;m++){const v=Math.round((r()*180000+20000)*(i%2?0.6:1));cells+=`<td class="num">${v?f0(v):'—'}</td>`;tot[m]+=v;sum+=v;}
+    gtot+=sum;
+    rows+=`<tr><td class="l">${nm}</td><td class="l">${type}</td>${cells}<td class="num"><b>${f0(sum)}</b></td></tr>`;
+  });
+  let totCells='';tot.forEach(v=>totCells+=`<td class="num">${f0(v)}</td>`);
+  return `<div class="table-wrap"><table>
+    <thead><tr><th class="l">经办人</th><th class="l">类型</th>${[...Array(12)].map((_,i)=>`<th>${i+1}月</th>`).join('')}<th>合计</th></tr></thead>
+    <tbody>${rows}
+      <tr class="total"><td class="l">合计</td><td class="l"></td>${totCells}<td class="num">${f0(gtot)}</td></tr>
+    </tbody></table></div>
+    ${footBar('导出全部员工','导出指定人员…','导出月度结算表…','12 名经办人 × 12 月 + 合计，确认后导出')}`;
+}
+
+/* 2) 月度结算表：月份为行 */
+function monthlyHTML(){
+  const r=rng(21);let rows='',tk=0,tc=0,tu=0,te=0,tb=0,tn=0;
+  for(let m=1;m<=12;m++){
+    const k=Math.round(r()*400000+900000),c=Math.round(r()*380000+800000),u=Math.round(r()*120000+300000),e=Math.round(r()*90000+40000),b=Math.round(k*0.55),n=b-e;
+    tk+=k;tc+=c;tu+=u;te+=e;tb+=b;tn+=n;
+    rows+=`<tr><td class="l"><b>${m} 月</b></td><td class="num">${f0(k)}</td><td class="num">${f0(c)}</td><td class="num">${f0(u)}</td><td class="num">${f0(e)}</td><td class="num">${f0(b)}</td><td class="num">${f0(n)}</td></tr>`;
+  }
+  return `<div class="table-wrap"><table>
+    <thead><tr><th class="l">月份</th><th>开票金额</th><th>收款金额</th><th>未收金额</th><th>费用合计</th><th>业务收入</th><th>净收益</th></tr></thead>
+    <tbody>${rows}
+      <tr class="total"><td class="l">合计</td><td class="num">${f0(tk)}</td><td class="num">${f0(tc)}</td><td class="num">${f0(tu)}</td><td class="num">${f0(te)}</td><td class="num">${f0(tb)}</td><td class="num">${f0(tn)}</td></tr>
+    </tbody></table></div>
+    ${footBar('导出月度结算表','—','—','2025 年 12 个月结算 + 合计行')}`;
+}
+
+/* 3) 年度聘用结算表：8 列（序号/姓名/收入/四类费用 本月+累计）+ 合计 */
+function staffHTML(){
+  const names=["周利生","张伯灿","徐志庆","章山山","柳立中","胡坚","谭玲玲","陈娟","傅强","徐琦","赵樑波","韩丽敏","徐思嘉","钱航","王竹青","黄宝根","方国兴","丁祥锋","朱云","洪震亮","王建"];
+  const r=rng(33);
+  const cols=[['本年收入',2],['报酬发放',2],['住房公积金',2],['保险费',2],['汽油费',2]];
+  let rows='',tot=[0,0,0,0,0,0,0,0,0];
+  names.forEach((nm,i)=>{
+    const incomeCur=Math.round(r()*120000+30000), incomeTot=Math.round(incomeCur*(r()*3+6));
+    const vals=[incomeCur,incomeTot];
+    vals.push(Math.round(r()*40000+8000),Math.round(r()*120000+40000)); // 报酬
+    vals.push(Math.round(r()*2000+200),Math.round(r()*8000+800));      // 公积金
+    vals.push(Math.round(r()*1500+200),Math.round(r()*6000+600));      // 保险
+    vals.push(Math.round(r()*3000),Math.round(r()*9000));              // 汽油
+    vals.forEach((v,j)=>tot[j]+=v);
+    let cells=`<td class="num">${f0(vals[0])}</td><td class="num">${f0(vals[1])}</td>`;
+    for(let g=0;g<4;g++)cells+=`<td class="num">${f0(vals[2+g*2])}</td><td class="num">${f0(vals[3+g*2])}</td>`;
+    rows+=`<tr><td class="num">${i+1}</td><td class="l">${nm}</td>${cells}</tr>`;
+  });
+  let totCells='';tot.forEach(v=>totCells+=`<td class="num">${f0(v)}</td>`);
+  const head2=`<tr class="group"><th class="l" rowspan="2">序号</th><th class="l" rowspan="2">姓名</th>`+
+    cols.map(c=>`<th colspan="2">${c[0]}</th>`).join('')+`</tr>`;
+  const head1=`<tr><th class="l"></th><th class="l"></th>${cols.map(()=>`<th>本月</th><th>累计</th>`).join('')}</tr>`;
+  return `<div class="table-wrap"><table>
+    <thead>${head2}${head1}</thead>
+    <tbody>${rows}
+      <tr class="total"><td class="num"></td><td class="l">合计</td>${totCells}</tr>
+    </tbody></table></div>
+    ${footBar('导出当月…','导出模板表…','—','21 人 · 本年收入 / 报酬 / 公积金 / 保险 / 汽油费（本月+累计）+ 合计')}`;
+}
+
+/* 4) 开票收入表：8 列（序号/姓名/收入本月/累计/期末未收/开票已收/收回以前/合计收款）+ 合计 */
+function invoiceHTML(){
+  // 已知锚点（与模板核对）：周利生 收入220000/0/220000；胡坚 177321/45000/148321/-16000/132321
+  const data=[
+    ["周利生",220000,220000,0,220000,0,220000],
+    ["张伯灿",253000,253000,0,0,253000,253000],
+    ["徐志庆",260500,260500,175000,185000,0,185000],
+    ["章山山",40000,40000,0,38600,0,38600],
+    ["柳立中",73000,73000,7500,65500,0,65500],
+    ["胡坚",177321,177321,45000,148321,-16000,132321],
+    ["谭玲玲",120000,120000,30000,90000,0,90000],
+    ["陈娟",95000,95000,20000,75000,0,75000],
+    ["傅强",110000,110000,0,110000,0,110000],
+    ["徐琦",80000,80000,15000,65000,0,65000],
+    ["赵樑波",60000,60000,10000,50000,0,50000],
+  ];
+  let rows='',t=[0,0,0,0,0,0];
+  data.forEach((d,i)=>{
+    for(let j=0;j<6;j++)t[j]+=d[j+1];
+    rows+=`<tr><td class="num">${i+1}</td><td class="l">${d[0]}</td>${d.slice(1).map(v=>`<td class="num">${f0(v)}</td>`).join('')}</tr>`;
+  });
+  return `<div class="table-wrap"><table>
+    <thead><tr><th class="l">序号</th><th class="l">姓名</th><th>收入本月</th><th>收入累计</th><th>期末未收</th><th>本月开票本月收回</th><th>本月收回以前应收款</th><th>本月合计收款</th></tr></thead>
+    <tbody>${rows}
+      <tr class="total"><td class="num"></td><td class="l">合计</td>${t.map(v=>`<td class="num">${f0(v)}</td>`).join('')}</tr>
+    </tbody></table></div>
+    ${footBar('导出当月…','导出模板表…','—','11 人 · 收入/未收/开票已收/收回以前/合计收款 + 合计（红冲与退款按模板口径）')}`;
+}
+
+/* 通用底部操作条 */
+function footBar(primary,sec,tert,summary){
+  const b2=sec&&sec!=='—'?`<button class="btn" onclick="toast('${sec}（设计中）')">${sec}</button>`:'';
+  const b3=tert&&tert!=='—'?`<button class="btn" onclick="toast('${tert}（设计中）')">${tert}</button>`:'';
+  return `<div class="foot">
+    <button class="btn primary" onclick="toast('✓ 已生成：'+document.getElementById('periodLabel').textContent+' 结算表.xlsx')">${primary}</button>
+    ${b2}${b3}
+    <span class="spacer"></span>
+    <span class="summary">${summary}</span>
+  </div>
+  <div class="log" id="log"><span class="ok">●</span> 预览已就绪 · 切换月份 / 类型即时刷新 · 导出沿用固定 Excel 模板（多 sheet / 红冲 / 累计）</div>`;
+}
+
+function toast(msg){
+  const bar=document.getElementById('log')||document.querySelector('.log');
+  if(bar)bar.innerHTML=`<span class="ok">✓</span> ${msg}`;
+}
+
+/* 初始渲染 */
+renderSettlement();
+</script>
+</body>
+</html>

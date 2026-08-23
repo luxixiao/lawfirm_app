@@ -1,142 +1,212 @@
-"""Notion-like 主题（浅色）——全局 QSS"""
+"""Notion-like 主题（浅色 / 深色）—— 全局 QSS + 多皮肤注册表
 
-# 色板
-BG        = "#FFFFFF"   # 主背景
-BG_SIDE   = "#F7F7F5"   # 侧栏
-BG_HOVER  = "#EFEFEC"   # 悬停
-BG_SELECT = "#E9E9E7"   # 选中
-BG_TABLE  = "#FAFAF9"   # 表格斑马
-BORDER    = "#E9E9E7"   # 边框
-BORDER_2  = "#DADAD7"   # 控件边框
-TEXT      = "#37352F"   # 主文字
-TEXT_MUTE = "#787774"   # 次要文字
-TEXT_FAINT= "#B3B1AD"   # 弱文字
-ACCENT    = "#37352F"   # 强调（深）
-RED       = "#C0392B"   # 负数/红字
-GREEN     = "#1E8449"   # 已收/正数
-WHITE     = "#FFFFFF"
+设计要点：
+- 视觉基线 = 类似 Notion 的极简风：暖灰侧栏、发丝线、无阴影、留白多、字体克制。
+- 颜色全部参数化到 palette 字典，build_qss() 按 palette 生成 QSS，便于新增皮肤。
+- SKINS 是皮肤注册表；apply_skin() 在运行时切换；当前皮肤持久化到 data/prefs.json。
+- 第二批皮肤（如品牌色、午夜蓝）只需往 PALETTES / SKINS 追加一项，无需改其他代码。
+"""
+from __future__ import annotations
 
-QSS = f"""
+import json
+from pathlib import Path
+
+PREFS_PATH = Path(__file__).resolve().parent.parent.parent / "data" / "prefs.json"
+
+DEFAULT_SKIN = "notion_light"
+
+
+# ---------------------------------------------------------------------------
+# 调色板
+# ---------------------------------------------------------------------------
+def _light() -> dict:
+    return {
+        "bg": "#FFFFFF", "bg_side": "#F7F7F5", "bg_hover": "#EFEFEC",
+        "bg_select": "#E9E9E7", "bg_table": "#FAFAF9", "border": "#E9E9E7",
+        "border_2": "#DADAD7", "text": "#37352F", "text_mute": "#787774",
+        "text_faint": "#B3B1AD", "accent": "#37352F", "red": "#C0392B",
+        "green": "#1E8449", "white": "#FFFFFF",
+        "btn_bg": "#FFFFFF", "btn_border": "#DADAD7", "btn_hover": "#EFEFEC",
+        "btn_press": "#E9E9E7", "btn_pri_bg": "#37352F", "btn_pri_fg": "#FFFFFF",
+        "btn_pri_hover": "#4F4D49", "btn_pri_press": "#2A2823", "grid": "#F1F1EF",
+    }
+
+
+def _dark() -> dict:
+    return {
+        "bg": "#1F1F1E", "bg_side": "#262625", "bg_hover": "#2E2E2C",
+        "bg_select": "#3A3A37", "bg_table": "#2A2A28", "border": "#343432",
+        "border_2": "#45453F", "text": "#E9E9E7", "text_mute": "#A0A09C",
+        "text_faint": "#6B6B66", "accent": "#E9E9E7", "red": "#E07A6B",
+        "green": "#5CB98C", "white": "#FFFFFF",
+        "btn_bg": "#2E2E2C", "btn_border": "#45453F", "btn_hover": "#3A3A37",
+        "btn_press": "#45453F", "btn_pri_bg": "#E9E9E7", "btn_pri_fg": "#1F1F1E",
+        "btn_pri_hover": "#FFFFFF", "btn_pri_press": "#CFCFCA", "grid": "#33332F",
+    }
+
+
+PALETTES = {"notion_light": _light(), "notion_dark": _dark()}
+
+
+# ---------------------------------------------------------------------------
+# QSS 生成
+# ---------------------------------------------------------------------------
+def build_qss(p: dict) -> str:
+    return f"""
 * {{
     font-family: "Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI", sans-serif;
     font-size: 13px;
-    color: {TEXT};
+    color: {p['text']};
 }}
-QMainWindow, QWidget#pageArea {{ background: {BG}; }}
-QToolTip {{ background: {TEXT}; color: {WHITE}; border: none; padding: 6px 10px; border-radius: 6px; }}
+QMainWindow, QWidget#pageArea {{ background: {p['bg']}; }}
+QToolTip {{ background: {p['text']}; color: {p['white']}; border: none; padding: 6px 10px; border-radius: 6px; }}
 
 /* ===== 侧边栏 ===== */
-#sidebar {{
-    background: {BG_SIDE};
-    border-right: 1px solid {BORDER};
+#sidebar {{ background: {p['bg_side']}; border-right: 1px solid {p['border']}; }}
+#sidebar QLabel#groupHeader {{
+    color: {p['text_faint']}; font-size: 11px; font-weight: 700;
+    padding: 16px 16px 6px 16px;
 }}
-#sidebar QLabel#app_title {{
-    font-size: 15px; font-weight: 700; color: {TEXT};
-    padding: 18px 16px 10px 16px;
+#sidebar QPushButton#navItem {{
+    background: transparent; border: none; border-radius: 7px;
+    text-align: left; padding: 9px 12px; color: {p['text']}; font-size: 13px;
 }}
-#sidebar QLabel#app_sub {{ color: {TEXT_FAINT}; font-size: 11px; padding: 0 16px 12px 16px; }}
-#sidebar QListWidget {{
-    background: transparent; border: none; outline: none;
-    padding: 4px 10px;
+#sidebar QPushButton#navItem:hover {{ background: {p['bg_hover']}; }}
+#sidebar QPushButton#navItem:checked {{
+    background: {p['bg_select']}; color: {p['text']}; font-weight: 600;
 }}
-#sidebar QListWidget::item {{
-    padding: 9px 12px; border-radius: 7px; color: {TEXT};
-    margin: 1px 0;
-}}
-#sidebar QListWidget::item:hover {{ background: {BG_HOVER}; }}
-#sidebar QListWidget::item:selected {{
-    background: {BG_SELECT}; color: {TEXT}; font-weight: 600;
-}}
-#sidebar QListWidget::item:selected:hover {{ background: {BG_SELECT}; }}
+#sidebar QLabel#skinLabel {{ color: {p['text_faint']}; font-size: 11px; padding: 0 0 4px 0; }}
 
-/* ===== 页面标题 ===== */
-#pageTitle {{ font-size: 20px; font-weight: 700; color: {TEXT}; }}
-#pageHint  {{ color: {TEXT_MUTE}; font-size: 12px; }}
-#placeholder {{ color: {TEXT_FAINT}; font-size: 14px; padding: 40px; }}
+/* ===== 页面标题（视图自带，保留选择器兼容） ===== */
+#pageTitle {{ font-size: 20px; font-weight: 700; color: {p['text']}; }}
+#pageHint  {{ color: {p['text_mute']}; font-size: 12px; }}
+#placeholder {{ color: {p['text_faint']}; font-size: 14px; padding: 40px; }}
 
 /* ===== 按钮 ===== */
 QPushButton {{
-    background: {WHITE};
-    border: 1px solid {BORDER_2};
-    border-radius: 8px;
-    padding: 7px 16px;
-    color: {TEXT};
+    background: {p['btn_bg']}; border: 1px solid {p['btn_border']};
+    border-radius: 8px; padding: 7px 16px; color: {p['text']};
 }}
-QPushButton:hover {{ background: {BG_HOVER}; border-color: {BORDER_2}; }}
-QPushButton:pressed {{ background: {BG_SELECT}; }}
-QPushButton:disabled {{ color: {TEXT_FAINT}; background: {BG_TABLE}; }}
+QPushButton:hover {{ background: {p['btn_hover']}; border-color: {p['btn_border']}; }}
+QPushButton:pressed {{ background: {p['btn_press']}; }}
+QPushButton:disabled {{ color: {p['text_faint']}; background: {p['bg_table']}; }}
 QPushButton#primary {{
-    background: {ACCENT}; color: {WHITE}; border: none; font-weight: 600;
+    background: {p['btn_pri_bg']}; color: {p['btn_pri_fg']}; border: none; font-weight: 600;
 }}
-QPushButton#primary:hover {{ background: #4F4D49; }}
-QPushButton#primary:pressed {{ background: #2A2823; }}
+QPushButton#primary:hover {{ background: {p['btn_pri_hover']}; }}
+QPushButton#primary:pressed {{ background: {p['btn_pri_press']}; }}
+
+/* 兼容 qfluentwidgets 的 PrimaryPushButton（按 C++ 类名匹配，不匹配则忽略） */
+PrimaryPushButton {{
+    background: {p['btn_pri_bg']}; color: {p['btn_pri_fg']}; border: none;
+    font-weight: 600; border-radius: 8px;
+}}
+PrimaryPushButton:hover {{ background: {p['btn_pri_hover']}; }}
 
 /* ===== 输入控件 ===== */
 QLineEdit, QComboBox, QDateEdit, QDoubleSpinBox {{
-    background: {WHITE};
-    border: 1px solid {BORDER_2};
-    border-radius: 7px;
-    padding: 6px 10px;
-    min-height: 18px;
+    background: {p['btn_bg']}; border: 1px solid {p['btn_border']};
+    border-radius: 7px; padding: 6px 10px; min-height: 18px; color: {p['text']};
 }}
-QLineEdit:focus, QComboBox:focus, QDateEdit:focus, QDoubleSpinBox:focus {{
-    border-color: #9E9C98;
-}}
+QLineEdit:focus, QComboBox:focus, QDateEdit:focus, QDoubleSpinBox:focus {{ border-color: {p['text_faint']}; }}
 QComboBox::drop-down {{ border: none; width: 22px; }}
 QComboBox QAbstractItemView {{
-    background: {WHITE}; border: 1px solid {BORDER};
-    border-radius: 8px; padding: 4px; selection-background-color: {BG_SELECT};
-    selection-color: {TEXT};
+    background: {p['btn_bg']}; border: 1px solid {p['border']}; border-radius: 8px; padding: 4px;
+    selection-background-color: {p['bg_select']}; selection-color: {p['text']};
 }}
 
 /* ===== 表格 ===== */
 QTableWidget {{
-    background: {WHITE};
-    alternate-background-color: {BG_TABLE};
-    border: 1px solid {BORDER};
-    border-radius: 10px;
-    gridline-color: #F1F1EF;
-    selection-background-color: #EDEDEA;
-    selection-color: {TEXT};
+    background: {p['bg']}; alternate-background-color: {p['bg_table']};
+    border: 1px solid {p['border']}; border-radius: 10px; gridline-color: {p['grid']};
+    selection-background-color: {p['bg_select']}; selection-color: {p['text']};
 }}
 QTableWidget::item {{ padding: 6px 10px; border: none; }}
-QTableWidget::item:selected {{ background: #EDEDEA; color: {TEXT}; }}
+QTableWidget::item:selected {{ background: {p['bg_select']}; color: {p['text']}; }}
 QHeaderView::section {{
-    background: {BG_TABLE};
-    color: {TEXT_MUTE};
-    border: none;
-    border-bottom: 1px solid {BORDER};
-    border-right: 1px solid #F3F3F1;
-    padding: 9px 10px;
-    font-weight: 600;
+    background: {p['bg_table']}; color: {p['text_mute']}; border: none;
+    border-bottom: 1px solid {p['border']}; border-right: 1px solid {p['grid']};
+    padding: 9px 10px; font-weight: 600;
 }}
-QHeaderView::section:hover {{ color: {TEXT}; }}
-QTableCornerButton::section {{ background: {BG_TABLE}; border: none; }}
+QHeaderView::section:hover {{ color: {p['text']}; }}
+QTableCornerButton::section {{ background: {p['bg_table']}; border: none; }}
 
 /* ===== 滚动条 ===== */
 QScrollBar:vertical {{ background: transparent; width: 10px; margin: 2px; }}
-QScrollBar::handle:vertical {{ background: #D3D1CB; border-radius: 5px; min-height: 30px; }}
-QScrollBar::handle:vertical:hover {{ background: #B9B7B1; }}
-QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
+QScrollBar::handle:vertical {{ background: {p['text_faint']}; border-radius: 5px; min-height: 30px; }}
+QScrollBar::handle:vertical:hover {{ background: {p['text_mute']}; }}
 QScrollBar:horizontal {{ background: transparent; height: 10px; margin: 2px; }}
-QScrollBar::handle:horizontal {{ background: #D3D1CB; border-radius: 5px; min-width: 30px; }}
+QScrollBar::handle:horizontal {{ background: {p['text_faint']}; border-radius: 5px; min-width: 30px; }}
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
 QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{ width: 0; }}
 
 /* ===== Tab ===== */
-QTabWidget::pane {{ border: 1px solid {BORDER}; border-radius: 10px; background: {WHITE}; top: -1px; }}
+QTabWidget::pane {{ border: 1px solid {p['border']}; border-radius: 10px; background: {p['bg']}; top: -1px; }}
 QTabBar::tab {{
-    background: transparent; color: {TEXT_MUTE};
-    padding: 8px 18px; border: none; border-bottom: 2px solid transparent;
-    font-weight: 500;
+    background: transparent; color: {p['text_mute']}; padding: 8px 18px; border: none;
+    border-bottom: 2px solid transparent; font-weight: 500;
 }}
-QTabBar::tab:hover {{ color: {TEXT}; }}
-QTabBar::tab:selected {{ color: {TEXT}; border-bottom: 2px solid {ACCENT}; font-weight: 600; }}
+QTabBar::tab:hover {{ color: {p['text']}; }}
+QTabBar::tab:selected {{ color: {p['text']}; border-bottom: 2px solid {p['accent']}; font-weight: 600; }}
 
 /* ===== 标签 ===== */
-QLabel {{ color: {TEXT}; }}
-QLabel#pageHint {{ color: {TEXT_MUTE}; }}
+QLabel {{ color: {p['text']}; }}
+QLabel#pageHint {{ color: {p['text_mute']}; }}
 
-/* ===== 消息框/弹窗 ===== */
-QMessageBox, QDialog {{ background: {WHITE}; }}
+/* ===== 消息框 / 弹窗 ===== */
+QMessageBox, QDialog {{ background: {p['bg']}; }}
 QMessageBox QLabel {{ font-size: 13px; }}
 """
+
+
+# ---------------------------------------------------------------------------
+# 皮肤注册表
+# ---------------------------------------------------------------------------
+SKINS = {
+    "notion_light": {"label": "Notion 浅色", "qss": build_qss(PALETTES["notion_light"])},
+    "notion_dark": {"label": "Notion 深色", "qss": build_qss(PALETTES["notion_dark"])},
+}
+
+
+def apply_skin(app, name: str) -> None:
+    """在运行时切换皮肤（app 为 QApplication 实例）。"""
+    name = name if name in SKINS else DEFAULT_SKIN
+    app.setStyleSheet(SKINS[name]["qss"])
+
+
+def skin_label(name: str) -> str:
+    return SKINS.get(name, SKINS[DEFAULT_SKIN])["label"]
+
+
+def available_skins():
+    """返回 [(key, label), ...]，供 UI 枚举。"""
+    return [(k, v["label"]) for k, v in SKINS.items()]
+
+
+def load_skin_pref() -> str:
+    try:
+        if PREFS_PATH.exists():
+            data = json.loads(PREFS_PATH.read_text(encoding="utf-8"))
+            name = data.get("skin")
+            if name in SKINS:
+                return name
+    except Exception:
+        pass
+    return DEFAULT_SKIN
+
+
+def save_skin_pref(name: str) -> None:
+    try:
+        PREFS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        data: dict = {}
+        if PREFS_PATH.exists():
+            try:
+                data = json.loads(PREFS_PATH.read_text(encoding="utf-8"))
+            except Exception:
+                data = {}
+        data["skin"] = name
+        PREFS_PATH.write_text(
+            json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+    except Exception:
+        pass

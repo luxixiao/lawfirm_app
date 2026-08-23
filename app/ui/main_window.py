@@ -1,15 +1,22 @@
-"""主窗口：QFluentWidgets FluentWindow（Fluent Design 导航 + 页面栈）"""
+"""主窗口：QMainWindow + 自绘 Notion 分组侧栏 + 页面栈（多皮肤框架）
+
+- 侧栏为自绘（非 qfluentwidgets FluentWindow），分组：数据 / 业务 / 结算 / 维护。
+- 内容区用 QStackedWidget 承载全部业务视图，逻辑零改动。
+- 侧栏底部「皮肤」下拉切换并持久化到 data/prefs.json。
+- 保留 go_to_page / show_info / staff_ready / showEvent / closeEvent 等接口，
+  以保证 refund_view 等视图里的 window().go_to_page(...) 继续可用。
+"""
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QWidget, QVBoxLayout, QLabel
-
-from qfluentwidgets import (
-    FluentIcon, FluentWindow, InfoBar, InfoBarPosition, NavigationItemPosition,
-    SubtitleLabel, BodyLabel,
+from PySide6.QtWidgets import (
+    QApplication, QComboBox, QHBoxLayout, QLabel, QMainWindow, QPushButton,
+    QStackedWidget, QVBoxLayout, QWidget, QButtonGroup,
 )
+from qfluentwidgets import InfoBar, InfoBarPosition
 
 from app.db import get_conn
+from app.ui import style
 from app.ui.batch_view import BatchView
 from app.ui.handler_collect_view import HandlerCollectView
 from app.ui.import_view import ImportView
@@ -22,20 +29,46 @@ from app.ui.settlement_view import SettlementView
 from app.ui.snapshot_view import SnapshotView
 from app.ui.staff_view import StaffView
 
+# 分组导航： (分组标题, [(key, 显示名), ...])
+NAV_GROUPS = [
+    ("数据", [
+        ("import", "导入"),
+        ("ledger", "台账数据"),
+        ("batch", "导入记录"),
+    ]),
+    ("业务", [
+        ("invoice", "发票收款总表"),
+        ("handler_all", "经办人发票收款情况"),
+        ("prepayment", "预收款"),
+        ("refund", "退款"),
+        ("manual", "手动补录"),
+    ]),
+    ("结算", [
+        ("settlement", "个人结算总表"),
+    ]),
+    ("维护", [
+        ("staff", "员工管理"),
+        ("snapshot", "快照"),
+    ]),
+]
 
-class MainWindow(FluentWindow):
+
+class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("律所开票收款统计")
         self.resize(1280, 820)
-        # Windows 10 无 Mica 材质，自动降级普通背景
-        self.setMicaEffectEnabled(False)
-        # 禁用页面切换动画（保证 setCurrentWidget 即时生效，跳转可靠）
-        self.stackedWidget.setAnimationEnabled(False)
 
         self._build_pages()
-        self._build_navigation()
+        self._build_layout()
+        self._apply_current_skin_to_combo()
 
+        # 默认选中导入页
+        self.select("import")
+
+    # ------------------------------------------------------------------ #
+    # 页面
+    # ------------------------------------------------------------------ #
     def _build_pages(self) -> None:
         self.page_import = ImportView()
         self.page_invoice = InvoiceCollectView()
@@ -57,45 +90,122 @@ class MainWindow(FluentWindow):
             "staff": self.page_staff,
             "snapshot": self.page_snapshot, "batch": self.page_batch,
         }
-
-    def _build_navigation(self) -> None:
-        nav = [
-            ("import", self.page_import, FluentIcon.DOWNLOAD, "导入"),
-            ("invoice", self.page_invoice, FluentIcon.TILES, "发票收款总表"),
-            ("handler_all", self.page_handler_all, FluentIcon.PEOPLE, "经办人发票收款情况"),
-            ("prepayment", self.page_prepayment, FluentIcon.SAVE, "预收款"),
-            ("refund", self.page_refund, FluentIcon.CANCEL, "退款"),
-            ("manual", self.page_manual, FluentIcon.EDIT, "手动补录"),
-            ("ledger", self.page_ledger, FluentIcon.MENU, "台账数据"),
-            ("settlement", self.page_settlement, FluentIcon.DOCUMENT, "个人结算总表"),
-            ("staff", self.page_staff, FluentIcon.LIBRARY, "员工管理"),
-            ("snapshot", self.page_snapshot, FluentIcon.CAMERA, "快照"),
-            ("batch", self.page_batch, FluentIcon.HISTORY, "导入记录"),
-        ]
-        for key, page, icon, text in nav:
+        for key, page in self._pages.items():
             page.setObjectName(key)
-            # routeKey = objectName，addSubInterface 返回 NavigationTreeWidget 对象
-            self.addSubInterface(page, icon, text, NavigationItemPosition.TOP)
-        self.navigationInterface.setCurrentItem("import")
 
-        # 固定导航栏展开宽度（保持图标+文字模式，宽度稳定）
-        self.navigationInterface.setExpandWidth(220)
-        self.navigationInterface.setMinimumExpandWidth(220)
+    def _build_layout(self) -> None:
+        central = QWidget()
+        self.setCentralWidget(central)
+        root = QHBoxLayout(central)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
 
-    # ---- 对外接口 ----
-    def go_to_page(self, key: str) -> None:
-        """切换到指定页面并刷新（key 为页面 objectName，即 routeKey）"""
-        self.navigationInterface.setCurrentItem(key)
+        self.stack = QStackedWidget()
+        for page in self._pages.values():
+            self.stack.addWidget(page)
+
+        content = QWidget()
+        content.setObjectName("pageArea")
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(0)
+        content_layout.addWidget(self.stack)
+
+        root.addWidget(self._build_sidebar_widget())
+        root.addWidget(content, 1)
+
+    # ------------------------------------------------------------------ #
+    # 侧栏（自绘）
+    # ------------------------------------------------------------------ #
+    def _build_sidebar_widget(self) -> QWidget:
+        sidebar = QWidget()
+        sidebar.setObjectName("sidebar")
+        sidebar.setFixedWidth(232)
+        layout = QVBoxLayout(sidebar)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        self._nav_group = QButtonGroup(self)
+        self._nav_group.setExclusive(True)
+        self._nav_buttons: dict[str, QPushButton] = {}
+
+        for group_title, items in NAV_GROUPS:
+            header = QLabel(group_title)
+            header.setObjectName("groupHeader")
+            layout.addWidget(header)
+            for key, label in items:
+                btn = QPushButton(label)
+                btn.setObjectName("navItem")
+                btn.setCheckable(True)
+                btn.clicked.connect(lambda _checked=False, k=key: self.select(k))
+                self._nav_group.addButton(btn)
+                self._nav_buttons[key] = btn
+                layout.addWidget(btn)
+
+        layout.addStretch(1)
+
+        # 底部：皮肤切换
+        skin_box = QWidget()
+        skin_layout = QVBoxLayout(skin_box)
+        skin_layout.setContentsMargins(16, 8, 16, 16)
+        skin_layout.setSpacing(4)
+        skin_label = QLabel("皮肤")
+        skin_label.setObjectName("skinLabel")
+        self.skin_combo = QComboBox()
+        for key, label in style.available_skins():
+            self.skin_combo.addItem(label, key)
+        self.skin_combo.currentIndexChanged.connect(self._on_skin_changed)
+        skin_layout.addWidget(skin_label)
+        skin_layout.addWidget(self.skin_combo)
+        layout.addWidget(skin_box)
+
+        return sidebar
+
+    def _apply_current_skin_to_combo(self) -> None:
+        current = style.load_skin_pref()
+        idx = self.skin_combo.findData(current)
+        if idx >= 0:
+            self.skin_combo.setCurrentIndex(idx)
+
+    def _on_skin_changed(self, index: int) -> None:
+        name = self.skin_combo.itemData(index)
+        if not name:
+            return
+        app = QApplication.instance()
+        if app is not None:
+            style.apply_skin(app, name)
+        style.save_skin_pref(name)
+
+    # ------------------------------------------------------------------ #
+    # 对外接口（保持与旧 FluentWindow 版兼容）
+    # ------------------------------------------------------------------ #
+    def select(self, key: str) -> None:
+        """切换到指定页面并刷新（key 为页面标识）。"""
         page = self._pages.get(key)
-        if page is not None:
-            self.stackedWidget.setCurrentWidget(page)
-            if hasattr(page, "refresh"):
+        if page is None:
+            return
+        self.stack.setCurrentWidget(page)
+        btn = self._nav_buttons.get(key)
+        if btn is not None:
+            btn.setChecked(True)
+        if hasattr(page, "refresh"):
+            try:
                 page.refresh()
+            except Exception:
+                pass
+
+    def go_to_page(self, key: str) -> None:
+        """兼容旧接口：供其他视图通过 window().go_to_page(...) 调用。"""
+        self.select(key)
 
     def show_info(self, message: str, success: bool = True) -> None:
-        """Fluent 风格通知条"""
-        InfoBar.success(message, parent=self, position=InfoBarPosition.TOP_RIGHT, duration=3000) if success \
-            else InfoBar.error(message, parent=self, position=InfoBarPosition.TOP_RIGHT, duration=4000)
+        """Fluent 风格通知条。"""
+        if success:
+            InfoBar.success(message, parent=self,
+                            position=InfoBarPosition.TOP_RIGHT, duration=3000)
+        else:
+            InfoBar.error(message, parent=self,
+                          position=InfoBarPosition.TOP_RIGHT, duration=4000)
 
     def staff_ready(self) -> bool:
         conn = get_conn()
@@ -111,7 +221,7 @@ class MainWindow(FluentWindow):
                 "首次使用请先在「员工管理」导入职工花名册（模板：职工清单.xlsx），完成初始化后才能导入台账。",
                 parent=self, position=InfoBarPosition.TOP, duration=8000,
             )
-            self.navigationInterface.setCurrentItem("staff")
+            self.select("staff")
 
     def closeEvent(self, event) -> None:  # noqa: N802
         from app.db import checkpoint
