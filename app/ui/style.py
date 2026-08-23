@@ -96,13 +96,6 @@ QPushButton#primary {{
 QPushButton#primary:hover {{ background: {p['btn_pri_hover']}; }}
 QPushButton#primary:pressed {{ background: {p['btn_pri_press']}; }}
 
-/* 兼容 qfluentwidgets 的 PrimaryPushButton（按 C++ 类名匹配，不匹配则忽略） */
-PrimaryPushButton {{
-    background: {p['btn_pri_bg']}; color: {p['btn_pri_fg']}; border: none;
-    font-weight: 600; border-radius: 8px;
-}}
-PrimaryPushButton:hover {{ background: {p['btn_pri_hover']}; }}
-
 /* ===== 输入控件 ===== */
 QLineEdit, QComboBox, QDateEdit, QDoubleSpinBox {{
     background: {p['btn_bg']}; border: 1px solid {p['btn_border']};

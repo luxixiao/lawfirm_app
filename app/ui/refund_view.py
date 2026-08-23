@@ -8,7 +8,7 @@ from PySide6.QtWidgets import (
     QLabel, QMessageBox, QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
-from qfluentwidgets import (SubtitleLabel, CaptionLabel, PrimaryPushButton, PushButton)
+from app.ui.widgets import (SubtitleLabel, CaptionLabel, PrimaryPushButton, PushButton)
 from app.db import get_conn
 from app.engine.refund import evaluate_red_invoices
 
@@ -34,7 +34,6 @@ class RefundView(QWidget):
         t = SubtitleLabel("退款")
         lay.addWidget(t)
         h = QLabel("红字发票退款确认。手动填写退款金额与日期，可多次确认（部分退款）。")
-        h.setStyleSheet("color:#8A8886;")
         lay.addWidget(h)
 
         # ---- 待补录警告横幅 ----
@@ -169,7 +168,7 @@ class RefundView(QWidget):
         lay.addWidget(tbl)
         # 按钮（用普通 PushButton + clicked 信号，不用 QDialogButtonBox 自动映射）
         btn_row = QHBoxLayout()
-        from qfluentwidgets import PrimaryPushButton, PushButton
+        from app.ui.widgets import PrimaryPushButton, PushButton
         go_btn = PrimaryPushButton("去手动补录原票")
         close_btn = PushButton("关闭")
         btn_row.addStretch()

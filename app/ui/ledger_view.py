@@ -8,7 +8,7 @@ from PySide6.QtWidgets import (
     QTabWidget, QVBoxLayout, QWidget,
 )
 
-from qfluentwidgets import (CaptionLabel, PushButton, SubtitleLabel)
+from app.ui.widgets import (CaptionLabel, PushButton, SubtitleLabel)
 
 from app.db import get_conn
 from app.engine.change_log import log_change, log_changes, fetch_log
@@ -33,7 +33,6 @@ class LedgerView(QWidget):
         t = SubtitleLabel("台账数据")
         lay.addWidget(t)
         h = CaptionLabel("查看并修改所有导入/补录的台账数据；任何修改都会记录（含手动备注），修改后以新数据参与全部计算。")
-        h.setStyleSheet("color:#8A8886;")
         lay.addWidget(h)
 
         self.tabs = QTabWidget()
@@ -59,7 +58,6 @@ class LedgerView(QWidget):
         self.btn_refresh = PushButton("刷新")
         self.btn_refresh.clicked.connect(self.refresh)
         self.lbl = CaptionLabel("双击也可编辑")
-        self.lbl.setStyleSheet("color:#8A8886;")
         btns.addWidget(self.btn_edit)
         btns.addWidget(self.btn_batch_type)
         btns.addWidget(self.btn_refresh)

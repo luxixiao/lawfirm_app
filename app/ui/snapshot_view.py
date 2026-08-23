@@ -6,7 +6,7 @@ from PySide6.QtWidgets import (
     QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
-from qfluentwidgets import (SubtitleLabel, CaptionLabel, PrimaryPushButton, PushButton)
+from app.ui.widgets import (SubtitleLabel, CaptionLabel, PrimaryPushButton, PushButton)
 from app.system.snapshot import delete_snapshot, list_snapshots, restore_snapshot, save_snapshot
 
 
@@ -20,7 +20,6 @@ class SnapshotView(QWidget):
         t = SubtitleLabel("快照")
         lay.addWidget(t)
         h = QLabel("保存当前完整数据为快照；恢复快照可回到该时点。每次导入前自动保存快照。")
-        h.setStyleSheet("color:#8A8886;")
         lay.addWidget(h)
 
         btns = QHBoxLayout()

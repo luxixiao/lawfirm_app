@@ -7,7 +7,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QFileDialog, QHBoxLayout, QLabel, QLineEdit, QMessageBox, QVBoxLayout, QWidget
 
-from qfluentwidgets import ComboBox, LineEdit, PrimaryPushButton, PushButton, TableWidget
+from app.ui.widgets import ComboBox, LineEdit, PrimaryPushButton, PushButton, TableWidget
 
 RED = QColor("#C0392B")    # 红字/负数
 GREEN = QColor("#1E8449")  # 已收
@@ -23,12 +23,11 @@ class BaseTableView(QWidget):
         lay.setContentsMargins(28, 24, 28, 20)
         lay.setSpacing(12)
 
-        from qfluentwidgets import SubtitleLabel, CaptionLabel
+        from app.ui.widgets import SubtitleLabel, CaptionLabel
         t = SubtitleLabel(title)
         lay.addWidget(t)
         if hint:
             h = CaptionLabel(hint)
-            h.setStyleSheet("color:#8A8886;")
             lay.addWidget(h)
 
         # 筛选栏
@@ -44,8 +43,6 @@ class BaseTableView(QWidget):
         self.table.setEditTriggers(TableWidget.EditTrigger.NoEditTriggers)
         self.table.setSelectionBehavior(TableWidget.SelectionBehavior.SelectRows)
         self.table.setAlternatingRowColors(False)
-        self.table.setBorderVisible(True)
-        self.table.setBorderRadius(8)
         self.table.verticalHeader().setVisible(False)
         self.table.horizontalHeader().setStretchLastSection(True)
         lay.addWidget(self.table, 1)
@@ -55,7 +52,6 @@ class BaseTableView(QWidget):
         self.btn_export = PrimaryPushButton("导出 Excel")
         self.btn_export.clicked.connect(self.export_excel)
         self.lbl_summary = CaptionLabel("")
-        self.lbl_summary.setStyleSheet("color:#8A8886;")
         bottom.addWidget(self.btn_export)
         bottom.addStretch()
         bottom.addWidget(self.lbl_summary)
@@ -259,7 +255,7 @@ class BaseTableView(QWidget):
 def make_filter_widgets(parent: QWidget, filters: QHBoxLayout,
                         on_change: Callable) -> Tuple[ComboBox, ComboBox, QLineEdit, None]:
     """月份 / 来源 / 购方搜索 筛选控件"""
-    from qfluentwidgets import CaptionLabel
+    from app.ui.widgets import CaptionLabel
     filters.addWidget(CaptionLabel("开票月份"))
     month = ComboBox()
     month.addItem("全部月份", userData="")

@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (
     QTabWidget, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
-from qfluentwidgets import (CaptionLabel, PrimaryPushButton, PushButton, SubtitleLabel)
+from app.ui.widgets import (CaptionLabel, PrimaryPushButton, PushButton, SubtitleLabel)
 
 from app.engine.person_settlement import build_settlement
 from app.exporter.person_settlement_exporter import export_all, export_one
@@ -35,7 +35,6 @@ class SettlementView(QWidget):
         t = SubtitleLabel("个人结算总表")
         lay.addWidget(t)
         h = CaptionLabel("选择经办人查看结算总表；可导出全部或指定经办人（支持多选）。口径：收款/开票/未收/业务收入/费用。")
-        h.setStyleSheet("color:#8A8886;")
         lay.addWidget(h)
 
         # ---- 筛选栏（经办人 + 月份 + 年份）----
@@ -106,7 +105,6 @@ class SettlementView(QWidget):
         self.btn_report = PushButton("导出月度结算表…")
         self.btn_report.clicked.connect(self.gen_report)
         self.lbl_summary = CaptionLabel("")
-        self.lbl_summary.setStyleSheet("color:#8A8886;")
         bottom.addWidget(self.btn_all)
         bottom.addWidget(self.btn_selected)
         bottom.addWidget(self.btn_report)
@@ -324,7 +322,6 @@ class SettlementView(QWidget):
         dlg.resize(360, 480)
         lay = QVBoxLayout(dlg)
         tip = CaptionLabel(f"共 {len(names)} 人，勾选要导出的（可多选）：")
-        tip.setStyleSheet("color:#8A8886;")
         lay.addWidget(tip)
         lst = QListWidget()
         for n in names:
@@ -419,7 +416,6 @@ class SettlementView(QWidget):
         lay.addLayout(mbar)
         # 人员多选
         tip = CaptionLabel(f"勾选要导出的员工（共 {len(names)} 人，默认上次选择）")
-        tip.setStyleSheet("color:#8A8886;")
         lay.addWidget(tip)
         lst = QListWidget()
         for n in names:
@@ -532,7 +528,6 @@ class SettlementView(QWidget):
         self.btn_report = PushButton("导出月度结算表…")
         self.btn_report.clicked.connect(self.gen_report)
         self.r_summary = CaptionLabel("")
-        self.r_summary.setStyleSheet("color:#8A8886;")
         bbar.addWidget(self.btn_report)
         bbar.addStretch()
         bbar.addWidget(self.r_summary)
@@ -670,7 +665,6 @@ class SettlementView(QWidget):
         self.btn_staff_income_full.setToolTip("导出 1~选中月 全部月份 sheet（从新到旧排序，仿模板文件形态）")
         self.btn_staff_income_full.clicked.connect(self.gen_staff_income_full)
         self.si_summary = CaptionLabel("")
-        self.si_summary.setStyleSheet("color:#8A8886;")
         bbar.addWidget(self.btn_staff_income)
         bbar.addWidget(self.btn_staff_income_full)
         bbar.addStretch()
@@ -817,7 +811,6 @@ class SettlementView(QWidget):
         self.btn_ii_full.setToolTip("导出 1~选中月 主表（从新到旧）+ 未收款明细（当年+历史年度）")
         self.btn_ii_full.clicked.connect(self.gen_invoice_income_full)
         self.ii_summary = CaptionLabel("")
-        self.ii_summary.setStyleSheet("color:#8A8886;")
         bbar.addWidget(self.btn_ii_month)
         bbar.addWidget(self.btn_ii_full)
         bbar.addStretch()

@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout, QWidget,
 )
 
-from qfluentwidgets import (SubtitleLabel, CaptionLabel, PrimaryPushButton, PushButton)
+from app.ui.widgets import (SubtitleLabel, CaptionLabel, PrimaryPushButton, PushButton)
 from app.db import get_conn
 
 
@@ -24,7 +24,6 @@ class PrepaymentView(QWidget):
         t = SubtitleLabel("预收款")
         lay.addWidget(t)
         h = QLabel("已入账未开票（sheet4）。选择预收款 → 核销到发票（按案号建议、手动确认，可部分核销）。")
-        h.setStyleSheet("color:#8A8886;")
         lay.addWidget(h)
 
         btns = QHBoxLayout()

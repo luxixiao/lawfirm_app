@@ -8,7 +8,7 @@ from PySide6.QtWidgets import (
     QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
-from qfluentwidgets import (SubtitleLabel, CaptionLabel, PrimaryPushButton, PushButton)
+from app.ui.widgets import (SubtitleLabel, CaptionLabel, PrimaryPushButton, PushButton)
 from app.db import get_conn
 from app.importer.parse_handler import parse_handler_column
 
@@ -23,7 +23,6 @@ class ManualEntryView(QWidget):
         t = SubtitleLabel("手动补录")
         lay.addWidget(t)
         h = QLabel("补录历史发票 / 收款 / 退款（如跨年红冲原票）。补录数据与导入数据同模型计算。")
-        h.setStyleSheet("color:#8A8886;")
         lay.addWidget(h)
 
         btns = QHBoxLayout()
@@ -378,11 +377,10 @@ class ManualEntryView(QWidget):
         lay.addLayout(form)
 
         # ---- 收款信息（可多笔，可选）----
-        from qfluentwidgets import SubtitleLabel, CaptionLabel
+        from app.ui.widgets import SubtitleLabel, CaptionLabel
         rec_title = SubtitleLabel("收款信息（可选，可多笔）")
         lay.addWidget(rec_title)
         rec_hint = CaptionLabel("全额收款填一笔（金额=开票金额）；部分收款可分多笔。红字发票无需填收款（走退款）。")
-        rec_hint.setStyleSheet("color:#8A8886;")
         lay.addWidget(rec_hint)
 
         rec_table = QTableWidget(0, 2)
