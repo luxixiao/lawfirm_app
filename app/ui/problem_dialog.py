@@ -56,7 +56,6 @@ class ProblemDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("发票台账导入 - 问题行修正")
         self.resize(1180, 620)
-        self._init_cell_tooltip()
         self._problems = problems
         self._staff = set(staff_names)
         self._staff_list = sorted(staff_names)
@@ -97,6 +96,7 @@ class ProblemDialog(QDialog):
         self._fill_table()
         self.table.itemSelectionChanged.connect(self._load_form)
         self.splitter.addWidget(self.table)
+        self._init_cell_tooltip()
 
         # ---- 右侧表单 ----
         form_box = QWidget()
