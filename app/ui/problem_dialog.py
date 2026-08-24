@@ -12,10 +12,10 @@ from __future__ import annotations
 
 import re
 
-from PySide6.QtCore import Qt, QSizePolicy
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QComboBox, QDialog, QFrame, QGridLayout, QHBoxLayout, QHeaderView, QLabel,
-    QLineEdit, QMessageBox, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
+    QLineEdit, QMessageBox, QSizePolicy, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
 from app.importer.date_utils import normalize_date
