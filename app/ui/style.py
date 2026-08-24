@@ -68,6 +68,14 @@ QToolTip {{
     padding: 5px 9px;
     border-radius: 6px;
 }}
+QLabel#cellTip {{
+    background: {p['bg_table']};
+    color: {p['text']};
+    border: 1px solid {p['border_2']};
+    padding: 5px 9px;
+    border-radius: 6px;
+    font-size: 12px;
+}}
 
 /* ===== 侧边栏 ===== */
 #sidebar {{ background: {p['bg_side']}; border-right: 1px solid {p['border']}; }}

@@ -12,11 +12,12 @@ from __future__ import annotations
 
 import re
 
-from PySide6.QtCore import Qt, QSettings
+from PySide6.QtCore import Qt, QSettings, QTimer, QPoint
+from PySide6.QtGui import QCursor
 from PySide6.QtWidgets import (
-    QComboBox, QDialog, QFrame, QGridLayout, QHBoxLayout, QHeaderView, QLabel,
-    QLineEdit, QMessageBox, QSizePolicy, QSplitter, QTableWidget, QTableWidgetItem,
-    QToolTip, QVBoxLayout, QWidget,
+    QComboBox, QDialog, QFrame, QGridLayout, QHBoxLayout, QHeaderView,
+    QLabel, QLineEdit, QMessageBox, QSizePolicy, QSplitter, QTableWidget,
+    QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
 from app.importer.date_utils import normalize_date
@@ -55,9 +56,7 @@ class ProblemDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("发票台账导入 - 问题行修正")
         self.resize(1180, 620)
-        # Notion 风 tooltip：减少延迟、避免闪烁、延长停留
-        QToolTip.setShowDelay(120)
-        QToolTip.setToolTipDuration(15000)
+        self._init_cell_tooltip()
         self._problems = problems
         self._staff = set(staff_names)
         self._staff_list = sorted(staff_names)
@@ -236,6 +235,8 @@ class ProblemDialog(QDialog):
             self.table.selectRow(0)
 
     # ---- 列表 ----
+    _TIP_ROLE = Qt.ItemDataRole.UserRole + 1  # 单元格悬停全文
+
     def _fill_table(self) -> None:
         tooltip_cols = {3, 4, 6}  # 发票号、购方、原因：悬停显示全文
         for i, p in enumerate(self._problems):
@@ -249,9 +250,48 @@ class ProblemDialog(QDialog):
             for c, v in enumerate(vals):
                 item = QTableWidgetItem(v)
                 if c in tooltip_cols and isinstance(v, str) and v:
-                    item.setToolTip(v)
+                    item.setData(self._TIP_ROLE, v)
                 self.table.setItem(i, c, item)
         self._set_status_all()
+
+    # ---- 自定义单元格 tooltip（Notion 浅灰卡片，替代原生黑底，避免闪烁） ----
+    def _init_cell_tooltip(self) -> None:
+        self._tip = QLabel(self)
+        self._tip.setObjectName("cellTip")
+        self._tip.setWindowFlag(Qt.WindowType.ToolTip, True)
+        self._tip.hide()
+        self._tip_timer = QTimer(self)
+        self._tip_timer.setSingleShot(True)
+        self._tip_timer.timeout.connect(self._pop_tip)
+        self.table.setMouseTracking(True)
+        self.table.cellEntered.connect(self._on_cell_entered)
+        self.table.viewportEntered.connect(self._hide_tip)
+
+    def _on_cell_entered(self, row: int, col: int) -> None:
+        self._tip_timer.stop()
+        item = self.table.item(row, col)
+        if item and item.data(self._TIP_ROLE):
+            self._tip_row = row
+            self._tip_col = col
+            self._tip_timer.start(120)   # 悬停 120ms 即弹出（比原生默认更快）
+        else:
+            self._hide_tip()
+
+    def _pop_tip(self) -> None:
+        row = getattr(self, "_tip_row", -1)
+        col = getattr(self, "_tip_col", -1)
+        item = self.table.item(row, col)
+        text = item.data(self._TIP_ROLE) if item else None
+        if not text:
+            return
+        self._tip.setText(text)
+        self._tip.adjustSize()
+        self._tip.move(QCursor.pos() + QPoint(14, 18))
+        self._tip.show()
+
+    def _hide_tip(self) -> None:
+        self._tip_timer.stop()
+        self._tip.hide()
 
     def _set_status_all(self) -> None:
         for i in range(self.table.rowCount()):
