@@ -49,6 +49,17 @@ def normalize_date(text, default_year: int | None = None) -> str:
     if not s:
         return ""
 
+    # Excel 日期序列号（xls 日期单元格读成数字，如 45658 → 2024-12-28）
+    # 范围校验防误伤：30000(1982) ~ 60000(2064)，财务台账不可能超出
+    if re.fullmatch(r"\d+(?:\.\d+)?", s):
+        n = float(s)
+        if 30000 <= n <= 60000:
+            try:
+                from openpyxl.utils.datetime import from_excel
+                return from_excel(n).strftime("%Y-%m-%d")
+            except Exception:  # noqa: BLE001
+                raise ImportError_(f"日期无法解析: 「{s}」") from None
+
     # 带时间的完整日期（openpyxl 读出的 datetime 经 cell_text 后形如 2025-01-02 00:00:00）
     m = _TS.match(s)
     if m and _valid(int(m.group(1)), int(m.group(2)), int(m.group(3))):
