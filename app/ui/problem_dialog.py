@@ -111,7 +111,7 @@ class ProblemDialog(QDialog):
         card.setObjectName("infoCard")
         cg = QGridLayout(card)
         cg.setContentsMargins(0, 0, 0, 0)
-        cg.setSpacing(6)
+        cg.setSpacing(10)
         cg.setColumnStretch(0, 1)
         cg.setColumnStretch(1, 1)
         k1 = QLabel("开票日期"); k1.setObjectName("infoKey")
@@ -248,15 +248,15 @@ class ProblemDialog(QDialog):
 
     def _make_handler_combo(self, name: str = "") -> QComboBox:
         cb = ComboBox()
-        cb.setObjectName("handlerCombo")  # 套用 #handlerCombo 无边框浅底样式
         cb.setEditable(False)
         items = list(self._staff_list)
         if name and name not in items:   # 预填名不在花名册也先显示，保存时再校验
             items = [name] + items
         cb.addItems(items)
         cb.setCurrentIndex(items.index(name) if name in items else 0)
-        # 关键点：下拉框跟随单元格撑满，无边框浅底贴合单元格
-        cb.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        # 关键：让下拉框宽度跟随单元格，避免溢出表格
+        cb.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        cb.setMinimumWidth(40)
         return cb
 
     def _apply_split(self) -> None:
