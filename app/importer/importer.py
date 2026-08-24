@@ -167,7 +167,7 @@ def _apply_resolved(data: Dict, resolved: List[Dict]) -> None:
                            "is_red_remark": False, "is_red_off": False},
                 "case_no": p.get("case_no", ""),
                 "is_red": d["total_amount"] < 0,
-                "receipts_override": d["receipts"],
+                "split_receipts": d["split_receipts"],
             })
         else:  # prepayment
             data["prepayments"].append({
@@ -257,12 +257,12 @@ def import_ledger_file(path: str, period: str,
                     )
             # 收款明细：先删该发票 import 旧记录（以最新台账为准），再插入
             conn.execute("DELETE FROM collection WHERE invoice_no=? AND source='import'", (no,))
-            if inv.get("receipts_override") is not None:
-                # 问题行修正：收款由用户手动指定（空列表 = 无收款）
-                for ym, amt in inv["receipts_override"]:
+            if "split_receipts" in inv:
+                # 问题行修正：逐经办人写入收款（person_name 归因；空列表 = 无收款）
+                for name, amt, ym in inv["split_receipts"]:
                     conn.execute(
-                        "INSERT INTO collection (invoice_no, amount, receipt_date, source, import_batch_id) VALUES (?,?,?,?,?)",
-                        (no, amt, ym, "import", batch_id),
+                        "INSERT INTO collection (invoice_no, amount, receipt_date, person_name, source, import_batch_id) VALUES (?,?,?,?,?,?)",
+                        (no, amt, ym, name, "import", batch_id),
                     )
                 continue
             rem = inv["remark"]

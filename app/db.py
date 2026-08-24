@@ -41,11 +41,14 @@ CREATE TABLE IF NOT EXISTS charge_detail (
 );
 
 -- 收款明细（台账备注解析 + 手动补录 + 预收款核销生成）
+-- person_name：按经办人归因的收款（问题行修正/历史补录可逐人填不同收款额与日期）；
+--   普通导入留空''，由结算时按开票份额比例分摊兜底。
 CREATE TABLE IF NOT EXISTS collection (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     invoice_no    TEXT NOT NULL REFERENCES invoice(invoice_no),
     amount        REAL NOT NULL DEFAULT 0,
     receipt_date  TEXT NOT NULL,
+    person_name   TEXT NOT NULL DEFAULT '',
     source        TEXT NOT NULL DEFAULT 'import',
     import_batch_id INTEGER,
     note          TEXT
@@ -195,6 +198,10 @@ def init_db() -> None:
         cols = [r[1] for r in conn.execute("PRAGMA table_info(expense_cat)")]
         if "sort_order" not in cols:
             conn.execute("ALTER TABLE expense_cat ADD COLUMN sort_order INTEGER DEFAULT 0")
+        # 迁移：收款明细按经办人归因（历史补录/问题行修正可逐人不同收款额与日期）
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(collection)")]
+        if "person_name" not in cols:
+            conn.execute("ALTER TABLE collection ADD COLUMN person_name TEXT NOT NULL DEFAULT ''")
         conn.commit()
     finally:
         conn.close()

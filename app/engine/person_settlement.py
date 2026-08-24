@@ -153,7 +153,7 @@ def _compute(conn, year: int, person: str | None, person_type: str | None = None
 
     for inv in invoices:
         receipts_by_inv[inv["invoice_no"]] = conn.execute(
-            "SELECT amount, receipt_date FROM collection WHERE invoice_no=? ORDER BY id",
+            "SELECT amount, receipt_date, person_name FROM collection WHERE invoice_no=? ORDER BY id",
             (inv["invoice_no"],),
         ).fetchall()
 
@@ -176,7 +176,14 @@ def _compute(conn, year: int, person: str | None, person_type: str | None = None
         # 逐笔收款分摊
         for rec in receipts_by_inv.get(no, []):
             amount, rec_date = rec["amount"], rec["receipt_date"]
-            got = allocate_receipt(remaining, amount)
+            pname = rec["person_name"]
+            if pname and pname in remaining:
+                # 已按经办人归因的收款：直接计入该经办人并扣减其应收池
+                got = {pname: amount} if amount > 0 else {}
+                remaining[pname] = max(remaining[pname] - amount, 0.0)
+            else:
+                # 未归因（历史/普通导入）：按开票份额比例分摊兜底
+                got = allocate_receipt(remaining, amount)
             rec_year, rec_month = _year_of(rec_date), _month_of(rec_date)
             if rec_year != year:
                 continue  # 只统计本年收款
@@ -345,6 +352,11 @@ def _allocated_total(remaining: Dict[str, float], cds, name: str, receipts) -> L
     rem = {cd["person_name"]: cd["billing_amount"] for cd in cds}
     out = []
     for rec in receipts:
-        got = allocate_receipt(rem, rec["amount"])
+        pname = rec["person_name"]
+        if pname and pname in rem:
+            got = {pname: rec["amount"]} if rec["amount"] > 0 else {}
+            rem[pname] = max(rem[pname] - rec["amount"], 0.0)
+        else:
+            got = allocate_receipt(rem, rec["amount"])
         out.append(got.get(name, 0.0))
     return out
