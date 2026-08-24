@@ -158,6 +158,17 @@ QLabel#infoVal {{ color: {p['text']}; font-size: 15px; font-weight: 700; }}
 QWidget#infoCard QLineEdit {{
     min-height: 28px; max-height: 28px;
 }}
+QComboBox#handlerCombo {{
+    border: none; background: transparent; border-radius: 6px;
+    padding: 2px 6px;
+}}
+QComboBox#handlerCombo:hover,
+QComboBox#handlerCombo:focus {{
+    background: {p['bg_hover']};
+}}
+QComboBox#handlerCombo::drop-down {{
+    border: none; width: 18px;
+}}
 
 QLabel#chip {{
     background: {p['bg_table']}; border: 1px solid {p['border']};

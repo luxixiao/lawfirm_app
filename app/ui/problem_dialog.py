@@ -248,15 +248,15 @@ class ProblemDialog(QDialog):
 
     def _make_handler_combo(self, name: str = "") -> QComboBox:
         cb = ComboBox()
+        cb.setObjectName("handlerCombo")
         cb.setEditable(False)
         items = list(self._staff_list)
         if name and name not in items:   # 预填名不在花名册也先显示，保存时再校验
             items = [name] + items
         cb.addItems(items)
         cb.setCurrentIndex(items.index(name) if name in items else 0)
-        # 关键：让下拉框宽度跟随单元格，避免溢出表格
-        cb.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
-        cb.setMinimumWidth(40)
+        # 关键：让下拉框宽高都跟随单元格，去掉边框后内嵌进表格
+        cb.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
         return cb
 
     def _apply_split(self) -> None:
