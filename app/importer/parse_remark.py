@@ -27,7 +27,7 @@ _PURE_DATE = re.compile(rf"^{_DATE}(?:-\d{{1,2}}(?:\.\d{{1,2}})?)?$")
 _RED_REMARK = re.compile(r"^冲.*发票")
 _RED_OFF = re.compile(r"冲掉")
 _RECEIPT = re.compile(
-    rf"(?:(?P<date>{_DATE})\s*)?(?P<verb>收到|收|付)\s*(?P<amt>\d+(?:\.\d+)?万?|[\u4e00-\u9fa5]+万)"
+    rf"(?:(?P<date>{_DATE})\s*)?(?P<verb>收到|收|汇|到|付)\s*(?P<amt>\d+(?:\.\d+)?万?|[\u4e00-\u9fa5]+万)"
 )
 _AMT_NUM = re.compile(r"^(\d+(?:\.\d+)?)\s*(万)?$")
 _CN_NUM = {"一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5,

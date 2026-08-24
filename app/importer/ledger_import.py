@@ -94,6 +94,17 @@ def _parse_invoice_sheet(rows: List[List[str]], sheet_key: str, period: str) -> 
             problems.append(problem(str(e)))
             continue
 
+        # ---- 已收/未收按 sheet 归属修正（sheet 是权威，备注为辅）----
+        # sheet2（已开票未入账）/ sheet3（应收账款）：纯日期备注不是收款证据
+        # （单日期是挂账/应收信息，如 25.3.4），降级为未收；有明确收款动词（收/汇/到）才收。
+        if sheet_key in ("sheet2", "sheet3") and remark.get("pure_date"):
+            remark["pure_date"] = None
+            remark["receipts"] = []
+        # sheet1（已开票已入账）：备注无任何收款明细（空备注/旧写法）→ 补全额收款兜底，
+        # 保证「已开已收」的票一定判已收（日期取导入账期月）。
+        if sheet_key == "sheet1" and not remark["receipts"] and total >= 0:
+            remark["receipts"] = [(period, 0.0)]  # 0 = 全额（importer 写入时填开票总额）
+
         items.append({
             "sheet": sheet_key,
             "invoice_no": no,
