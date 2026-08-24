@@ -180,7 +180,12 @@ class MainWindow(QMainWindow):
     # 对外接口（保持与旧 FluentWindow 版兼容）
     # ------------------------------------------------------------------ #
     def select(self, key: str) -> None:
-        """切换到指定页面并刷新（key 为页面标识）。"""
+        """切换到指定页面（key 为页面标识）。
+
+        刷新由页面的 showEvent 负责：setCurrentWidget 切换必然触发新页
+        showEvent（各视图 showEvent 内已调用 refresh），这里不再显式刷新，
+        避免每次点开页面「select + showEvent」双重刷新导致卡顿。
+        """
         page = self._pages.get(key)
         if page is None:
             return
@@ -188,11 +193,6 @@ class MainWindow(QMainWindow):
         btn = self._nav_buttons.get(key)
         if btn is not None:
             btn.setChecked(True)
-        if hasattr(page, "refresh"):
-            try:
-                page.refresh()
-            except Exception:
-                pass
 
     def go_to_page(self, key: str) -> None:
         """兼容旧接口：供其他视图通过 window().go_to_page(...) 调用。"""

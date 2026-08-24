@@ -2,12 +2,45 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QComboBox, QLabel, QMenu
+from PySide6.QtWidgets import (
+    QAbstractItemView, QComboBox, QLabel, QMenu, QStyledItemDelegate,
+)
 
 from app.db import get_conn
 from app.engine.collection import handler_rows
 from app.ui.dialogs import show_invoice_handlers, show_red_relation
 from app.ui.table_view import BaseTableView, make_filter_widgets
+
+
+class _TypeDelegate(QStyledItemDelegate):
+    """身份列（索引5）编辑委托：双击/F2 弹下拉，选择后直接写库。
+
+    替代旧的「每行常驻 QComboBox」方案——行数上千时逐行建 widget 极慢，
+    改为按列委托后仅在进入编辑时创建一个下拉，渲染零额外开销。
+    """
+
+    def __init__(self, view: "HandlerCollectView") -> None:
+        super().__init__(view)
+        self._view = view
+
+    def createEditor(self, parent, option, index):  # noqa: N802
+        combo = QComboBox(parent)
+        for t in ["未标", "合伙", "聘用", "兼职"]:
+            combo.addItem(t, userData=t)
+        return combo
+
+    def setEditorData(self, editor, index):  # noqa: N802
+        cur = index.data(Qt.ItemDataRole.DisplayRole) or "未标"
+        editor.setCurrentText(cur)
+
+    def setModelData(self, editor, model, index):  # noqa: N802
+        val = editor.currentData()
+        if val is None:
+            return
+        model.setData(index, val, Qt.ItemDataRole.EditRole)
+        meta = index.data(Qt.ItemDataRole.UserRole)
+        if meta and meta.get("invoice_no") and meta.get("person_name"):
+            self._view._set_handler_type(meta["invoice_no"], meta["person_name"], editor)
 
 
 class HandlerCollectView(BaseTableView):
@@ -16,11 +49,17 @@ class HandlerCollectView(BaseTableView):
             "经办人发票收款情况",
             ["开具日期", "发票号码", "购买方名称", "开票总额", "经办人",
              "身份", "开票金额", "已收金额", "剩余应收", "备注"],
-            "经办人维度收款情况；点击表头可筛选；身份列可直接修改经办人身份；右击查看红冲信息 / 其他经办人金额。",
+            "经办人维度收款情况；点击表头可筛选；身份列双击可修改经办人身份；右击查看红冲信息 / 其他经办人金额。",
         )
         self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self._ctx_menu)
         self._enable_col_filter()
+        # 身份列：双击/F2 弹下拉修改（其他列保持只读）
+        self.table.setEditTriggers(
+            QAbstractItemView.EditTrigger.DoubleClicked
+            | QAbstractItemView.EditTrigger.EditKeyPressed
+        )
+        self.table.setItemDelegateForColumn(5, _TypeDelegate(self))
 
     def _total_cols(self) -> set:
         """开票总额(3) / 开票金额(6) / 已收金额(7) / 剩余应收(8)"""
@@ -62,19 +101,12 @@ class HandlerCollectView(BaseTableView):
     def _green_cols(self) -> set:
         return {6}
 
-    def _render(self) -> None:
-        super()._render()
-        # 身份列（索引5）：每行=一个经办人，下拉直接修改（精确到发票+经办人）
-        from PySide6.QtWidgets import QComboBox
-        for r, row in enumerate(self._rows):
-            combo = QComboBox()
-            for t in ["未标", "合伙", "聘用", "兼职"]:
-                combo.addItem(t, userData=t)
-            combo.setCurrentText(row[5] or "未标")
-            no, name = row[1], row[4]
-            combo.currentIndexChanged.connect(
-                lambda *_, no=no, nm=name, c=combo: self._set_handler_type(no, nm, c))
-            self.table.setCellWidget(r, 5, combo)
+    def _make_item(self, val, r: int, c: int):
+        item = super()._make_item(val, r, c)
+        # 仅身份列（索引5）可编辑（双击弹下拉），其余列保持只读
+        if c != 5:
+            item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+        return item
 
     def _set_handler_type(self, invoice_no: str, person_name: str, combo) -> None:
         """按 发票+经办人 精确设置身份"""

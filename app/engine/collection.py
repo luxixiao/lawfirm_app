@@ -8,7 +8,7 @@
 """
 from __future__ import annotations
 
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from app.db import get_conn
 from app.engine.split import allocate_invoice
@@ -67,6 +67,15 @@ def invoice_rows(conn=None, period: str | None = None, buyer: str | None = None,
         sql += " ORDER BY invoice_date, invoice_no"
 
         rows = []
+        # 一次取全部经办人明细与收款日期，按发票号分组（消除逐发票 N+1 查询）
+        cds_by_inv: Dict[str, list] = {}
+        for r in conn.execute(
+                "SELECT invoice_no, person_name, billing_amount FROM charge_detail ORDER BY invoice_no, id"):
+            cds_by_inv.setdefault(r["invoice_no"], []).append(r)
+        dates_by_inv: Dict[str, list] = {}
+        for r in conn.execute("SELECT invoice_no, receipt_date FROM collection ORDER BY invoice_no, id"):
+            dates_by_inv.setdefault(r["invoice_no"], []).append(r["receipt_date"])
+
         for inv in conn.execute(sql, params):
             no = inv["invoice_no"]
             is_red = inv["total_amount"] < 0
@@ -75,14 +84,10 @@ def invoice_rows(conn=None, period: str | None = None, buyer: str | None = None,
             else:
                 got = collected.get(no, 0.0)
             remain = round(inv["total_amount"] - got, 2)
-            cd = conn.execute(
-                "SELECT person_name, billing_amount FROM charge_detail WHERE invoice_no=? ORDER BY id", (no,)
-            ).fetchall()
+            cd = cds_by_inv.get(no, [])
             handlers = [r["person_name"] for r in cd]
             # 备注 = 收款日期 + 经办人占据金额（如"2025-01 张三1000王五2000"）
-            dates = sorted({r["receipt_date"] for r in conn.execute(
-                "SELECT receipt_date FROM collection WHERE invoice_no=?", (no,)
-            )})
+            dates = sorted(set(dates_by_inv.get(no, [])))
             amount_parts = [f"{r['person_name']}{r['billing_amount']:g}" for r in cd]
             remark = ("、".join(dates) + " " if dates else "") + " ".join(amount_parts)
             rows.append({
@@ -151,14 +156,18 @@ def handler_rows(conn=None, person: str | None = None, period: str | None = None
                 order.append(no)
             grouped[no].append(r)
 
+        # 一次取全部收款明细，按发票号分组（消除逐发票 N+1 查询）
+        receipts_by_inv: Dict[str, List[Tuple[str, float]]] = {}
+        for r in conn.execute(
+                "SELECT invoice_no, receipt_date, amount FROM collection ORDER BY invoice_no, id"):
+            receipts_by_inv.setdefault(r["invoice_no"], []).append((r["receipt_date"], r["amount"]))
+
         rows: List[Dict] = []
         for no in order:
             items = grouped[no]
             inv = items[0]
             is_red = inv["total_amount"] < 0
-            receipts = [(r["receipt_date"], r["amount"]) for r in conn.execute(
-                "SELECT receipt_date, amount FROM collection WHERE invoice_no=? ORDER BY id", (no,)
-            )]
+            receipts = receipts_by_inv.get(no, [])
             handlers = [(r["person_name"], r["billing_amount"], r["person_type"] or "") for r in items]
             if is_red:
                 # 红字发票：经办人已收 = 0（退款走 refund 手动确认，不参与分摊）
