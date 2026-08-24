@@ -25,13 +25,13 @@ class InvoiceCollectView(BaseTableView):
         return {3, 5, 6}
 
     def _build_filters(self) -> None:
-        self.month, self.src, self.buyer, _ = make_filter_widgets(
+        self.year, self.month, self.src, self.buyer, _ = make_filter_widgets(
             self, self.filters, lambda *_: self.refresh()
         )
 
     def load_data(self) -> None:
         rows = invoice_rows(
-            period=self.month.currentData(),
+            period=self.month.currentData() or self.year.currentData() or None,
             buyer=self.buyer.text().strip() or None,
             source=self.src.currentData() or None,
         )

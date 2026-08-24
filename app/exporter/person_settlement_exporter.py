@@ -116,10 +116,13 @@ def _write_ws(ws, person: str, st: Dict, year: int, type_label: str) -> None:
 
     # 六、减：分成报酬及费用
     exp = st["expenses"]
+    from app.engine.expense_cat import ordered_types
+    exp_order = {t: i for i, t in enumerate(ordered_types())}
+    exp_types = sorted(exp.keys(), key=lambda t: (exp_order.get(t, 999), t))
     exp_sub = [round(sum(exp.get(t, {}).get(mo, 0.0) for t in exp), 2) for mo in months]
     exp_sub.append(round(sum(exp_sub), 2))
     put(r, "六", "减：分成报酬及费用", exp_sub, bold=True); r += 1
-    for i, etype in enumerate(sorted(exp.keys()), 1):
+    for i, etype in enumerate(exp_types, 1):
         vals = [round(exp[etype].get(mo, 0.0), 2) for mo in months]
         vals.append(round(sum(vals), 2))
         put(r, str(i), etype, vals); r += 1

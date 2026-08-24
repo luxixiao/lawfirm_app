@@ -4,13 +4,15 @@ from __future__ import annotations
 from datetime import datetime
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QHBoxLayout,
     QLabel, QListWidget, QListWidgetItem, QMessageBox, QPlainTextEdit,
     QTabWidget, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
-from app.ui.widgets import (CaptionLabel, PrimaryPushButton, PushButton, SubtitleLabel)
+from app.ui.table_view import auto_fit_columns
+from app.ui.widgets import (CaptionLabel, FrozenTableWidget, PrimaryPushButton, PushButton, SubtitleLabel)
 
 from app.engine.person_settlement import build_settlement
 from app.exporter.person_settlement_exporter import export_all, export_one
@@ -89,7 +91,7 @@ class SettlementView(QWidget):
                 v.setMinimumWidth(180)
 
         # ---- 结算总表表格（项目 × 月）----
-        self.table = QTableWidget(0, 14)
+        self.table = FrozenTableWidget(0, 14, frozen=1)
         self.table.setHorizontalHeaderLabels(["项目"] + MONTH_LABELS + ["合计"])
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.table.verticalHeader().setVisible(False)
@@ -230,12 +232,23 @@ class SettlementView(QWidget):
             return
         rows = self._build_rows(st, year)
         self.table.setRowCount(len(rows))
+        bold = QFont()
+        bold.setBold(True)
         for r, row in enumerate(rows):
+            label = str(row[0]) if row and row[0] is not None else ""
+            is_cat = (label.startswith(("一、", "二、", "三、", "四、", "五、", "六、", "七、", "八、", "九、", "十、"))
+                      or label.startswith("▶"))
             for c, v in enumerate(row):
                 item = QTableWidgetItem("" if v is None else (f"{v:,.2f}" if isinstance(v, float) else str(v)))
                 if isinstance(v, float) and c > 0:
                     item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                if is_cat:
+                    # 大分类（一、二、三…）整行加粗，首列显式左对齐
+                    item.setFont(bold)
+                    if c == 0:
+                        item.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
                 self.table.setItem(r, c, item)
+        auto_fit_columns(self.table, max_width=140)
         type_txt = self.person_type.currentText()
         self.lbl_summary.setText(
             f"{name}（{type_txt}）{'·' + str(mo) + '月' if mo else '·全年'}")
@@ -279,7 +292,7 @@ class SettlementView(QWidget):
         exp = st["expenses"]
         rows.append(row("六、减：分成报酬及费用",
                         [round(sum(exp.get(t, {}).get(mo_, 0.0) for t in exp), 2) for mo_ in range(1, 13)], True))
-        for i, etype in enumerate(sorted(exp.keys()), 1):
+        for i, etype in enumerate(self._sorted_expense_types(exp), 1):
             rows.append(row(f"{i}.{etype}", [round(exp[etype].get(mo_, 0.0), 2) for mo_ in range(1, 13)], True))
         # 修正合计列：未收款金额的合计=本年累计未收（非各月之和）
         for rr in rows:
@@ -287,6 +300,13 @@ class SettlementView(QWidget):
                 rr[-1] = round(st["uncollected_total"], 2)
                 break
         return rows
+
+    @staticmethod
+    def _sorted_expense_types(exp: dict) -> list:
+        """费用类型按维护顺序（expense_cat.sort_order）排序，未维护的按名称兜底"""
+        from app.engine.expense_cat import ordered_types
+        order = {t: i for i, t in enumerate(ordered_types())}
+        return sorted(exp.keys(), key=lambda t: (order.get(t, 999), t))
 
     # ---- 导出 ----
     def _choose_dir(self) -> str:
@@ -516,7 +536,7 @@ class SettlementView(QWidget):
         """
         for c in (self.r_year, self.r_month, self.r_person, self.r_type):
             c.setStyleSheet(COMBO_QSS)
-        self.r_table = QTableWidget(0, 5)
+        self.r_table = FrozenTableWidget(0, 5, frozen=1)
         self.r_table.setHorizontalHeaderLabels(["序号", "项目", "本期", "本年累计", "备注"])
         self.r_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.r_table.verticalHeader().setVisible(False)
@@ -601,6 +621,7 @@ class SettlementView(QWidget):
                     note_rows.append(r)
         for r in note_rows:
             self.r_table.resizeRowToContents(r)
+        auto_fit_columns(self.r_table, max_width=260)
         self.r_summary.setText(f"{name}（{self.r_type.currentText()}）· {year}年{month}月结算表预览（共{len(rows)}行，确认后导出）")
 
     # ---- 年度聘用结算表 Tab（预览 + 导出）----
@@ -644,7 +665,7 @@ class SettlementView(QWidget):
         for c in (self.si_year, self.si_month):
             c.setStyleSheet(COMBO_QSS)
         # 12 列：序号/姓名/5 组(本月/累计)
-        self.si_table = QTableWidget(0, 12)
+        self.si_table = FrozenTableWidget(0, 12, frozen=1)
         heads = ["序号", "姓名"]
         for lab in ["本年收入", "报酬发放", "住房公积金", "保险费", "汽油费"]:
             heads += [f"{lab}(本月)", f"{lab}(累计)"]
@@ -704,6 +725,7 @@ class SettlementView(QWidget):
             it.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             it.setFont(bold)
             self.si_table.setItem(last, j, it)
+        auto_fit_columns(self.si_table, max_width=140)
         self.si_summary.setText(
             f"{year}年{month}月聘用律师业务收入结算表（{len(persons)} 人）· 预览共 {len(rows)} 行+合计，确认后导出")
 
@@ -791,7 +813,7 @@ class SettlementView(QWidget):
         for c in (self.ii_year, self.ii_month):
             c.setStyleSheet(COMBO_QSS)
         # 8 列：序号/姓名/收入本月/收入累计/期末未收/开票已收/收回以前/合计收款
-        self.ii_table = QTableWidget(0, 8)
+        self.ii_table = FrozenTableWidget(0, 8, frozen=1)
         self.ii_table.setHorizontalHeaderLabels(
             ["序号", "姓名", "收入本月", "收入累计", "期末未收",
              "本月开票本月收回", "本月收回以前应收款", "本月合计收款"])
@@ -850,6 +872,7 @@ class SettlementView(QWidget):
             it.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             it.setFont(bold)
             self.ii_table.setItem(last, j, it)
+        auto_fit_columns(self.ii_table, max_width=140)
         self.ii_summary.setText(
             f"{year}年{month}月律师收费情况表（开票收入）· {len(persons)} 人 + 合计，确认后导出")
 

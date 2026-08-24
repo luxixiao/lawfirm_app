@@ -191,6 +191,10 @@ def init_db() -> None:
             cols = [r[1] for r in conn.execute(f"PRAGMA table_info({tbl})")]
             if "person_type" not in cols:
                 conn.execute(f"ALTER TABLE {tbl} ADD COLUMN person_type TEXT DEFAULT ''")
+        # 迁移：费用类型维护顺序
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(expense_cat)")]
+        if "sort_order" not in cols:
+            conn.execute("ALTER TABLE expense_cat ADD COLUMN sort_order INTEGER DEFAULT 0")
         conn.commit()
     finally:
         conn.close()

@@ -8,11 +8,15 @@
 """
 from __future__ import annotations
 
+from PySide6.QtCore import QRect, Qt
+from PySide6.QtGui import QColor, QPainter
 from PySide6.QtWidgets import (
     QLabel,
     QPushButton,
     QComboBox,
     QLineEdit,
+    QStyle,
+    QStyleOptionViewItem,
     QTableWidget,
 )
 
@@ -70,3 +74,66 @@ class TableWidget(QTableWidget):
 
     def setBorderRadius(self, radius: int) -> None:
         return None
+
+
+class FrozenTableWidget(QTableWidget):
+    """首列冻结表格：横向滚动时前 frozen 列固定不动（painter 重绘叠加）
+
+    用法与 QTableWidget 一致，构造后调用 setFrozenColumns(n) 指定冻结列数。
+    适用于列多、需要参照首列（序号/姓名/项目）的表格（如结算总表）。
+    """
+
+    def __init__(self, *args, frozen: int = 1, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._frozen = max(1, frozen)
+        self.horizontalScrollBar().valueChanged.connect(lambda *_: self.viewport().update())
+        self.verticalScrollBar().valueChanged.connect(lambda *_: self.viewport().update())
+
+    def setFrozenColumns(self, n: int) -> None:
+        self._frozen = max(1, n)
+        self.viewport().update()
+
+    def frozen_width(self) -> int:
+        return sum(self.columnWidth(c) for c in range(self._frozen))
+
+    def paintEvent(self, event) -> None:  # noqa: N802
+        super().paintEvent(event)
+        if self._frozen <= 0 or self.rowCount() == 0:
+            return
+        fw = self.frozen_width()
+        if fw <= 0:
+            return
+        painter = QPainter(self.viewport())
+        painter.save()
+        painter.setClipRect(0, 0, fw, self.viewport().height())
+        first = max(0, self.rowAt(0))
+        last = self.rowAt(self.viewport().height() - 1)
+        if last < 0:
+            last = self.rowCount() - 1
+        for r in range(first, min(last + 1, self.rowCount())):
+            y = self.rowViewportPosition(r)
+            if y < 0:
+                continue
+            for c in range(self._frozen):
+                idx = self.model().index(r, c)
+                opt = QStyleOptionViewItem()
+                self.initViewItemOption(opt)
+                opt.rect = QRect(0, y, self.columnWidth(c), self.rowHeight(r))
+                if self.selectionModel().isSelected(idx):
+                    opt.state |= QStyle.StateFlag.State_Selected
+                if self.currentIndex() == idx:
+                    opt.state |= QStyle.StateFlag.State_HasFocus
+                self.itemDelegate().paint(painter, opt, idx)
+        painter.restore()
+        # 冻结列分隔线
+        painter.setPen(QColor("#DADAD7"))
+        painter.drawLine(fw, 0, fw, self.viewport().height())
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802
+        # 点击冻结区域 → 映射为选中该行（便于阅读/右键）
+        if event.button() == Qt.MouseButton.LeftButton and event.position().x() < self.frozen_width():
+            r = self.rowAt(int(event.position().y()))
+            if r >= 0:
+                self.setCurrentCell(r, 0)
+                return
+        super().mousePressEvent(event)

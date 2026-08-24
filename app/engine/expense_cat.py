@@ -90,3 +90,33 @@ def sync_from_ledger() -> None:
         conn.commit()
     finally:
         conn.close()
+
+
+def ordered_types() -> list:
+    """按维护顺序（sort_order，0 值按名称兜底）返回费用类型列表"""
+    conn = get_conn()
+    try:
+        return [r["expense_type"] for r in conn.execute(
+            "SELECT expense_type FROM expense_cat ORDER BY sort_order, expense_type")]
+    finally:
+        conn.close()
+
+
+def move_type(expense_type: str, direction: int) -> None:
+    """上移(-1)/下移(+1)费用类型：重写全部 sort_order 为当前显示序，保证顺序稳定"""
+    conn = get_conn()
+    try:
+        names = [r["expense_type"] for r in conn.execute(
+            "SELECT expense_type FROM expense_cat ORDER BY sort_order, expense_type")]
+        if expense_type not in names:
+            return
+        i = names.index(expense_type)
+        j = i + direction
+        if j < 0 or j >= len(names):
+            return
+        names[i], names[j] = names[j], names[i]
+        for idx, n in enumerate(names):
+            conn.execute("UPDATE expense_cat SET sort_order=? WHERE expense_type=?", (idx + 1, n))
+        conn.commit()
+    finally:
+        conn.close()

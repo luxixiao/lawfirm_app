@@ -50,8 +50,11 @@ def invoice_rows(conn=None, period: str | None = None, buyer: str | None = None,
         where = []
         params: List = []
         if period:
-            # strftime 规范化匹配：兼容非零填充日期（2024-9-15 也归入 2024-09）
-            where.append("strftime('%Y-%m', invoice_date) = ?")
+            # 年份（4 位）按年过滤；月份按 YYYY-MM 规范化匹配（兼容非零填充日期）
+            if len(period) == 4:
+                where.append("strftime('%Y', invoice_date) = ?")
+            else:
+                where.append("strftime('%Y-%m', invoice_date) = ?")
             params.append(period)
         if buyer:
             where.append("buyer LIKE ?")
@@ -132,8 +135,11 @@ def handler_rows(conn=None, person: str | None = None, period: str | None = None
             where.append("cd.person_name = ?")
             params.append(person)
         if period:
-            # strftime 规范化匹配：兼容非零填充日期（2024-9-15 也归入 2024-09）
-            where.append("strftime('%Y-%m', i.invoice_date) = ?")
+            # 年份（4 位）按年过滤；月份按 YYYY-MM 规范化匹配（兼容非零填充日期）
+            if len(period) == 4:
+                where.append("strftime('%Y', i.invoice_date) = ?")
+            else:
+                where.append("strftime('%Y-%m', i.invoice_date) = ?")
             params.append(period)
         if keyword:
             kw = f"%{keyword}%"

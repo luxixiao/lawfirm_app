@@ -13,7 +13,7 @@ from app.ui.widgets import (CaptionLabel, PushButton, SubtitleLabel)
 from app.db import get_conn
 from app.engine.change_log import log_change, log_changes, fetch_log
 from app.engine.expense_cat import (CATEGORIES, add_type, ensure_types, get_by_category,
-                                    set_category, sync_from_ledger)
+                                    move_type, set_category, sync_from_ledger)
 from app.importer.parse_handler import parse_handler_column
 
 
@@ -38,11 +38,34 @@ class LedgerView(QWidget):
         self.tabs = QTabWidget()
         self.tab_invoice = self._make_table(["开票日期", "发票号码", "购方名称", "价税合计", "经办人", "身份", "案号", "来源"],
                                             [1, 2, 3, 4, 5, 6, 7])
+        # 发票 Tab 包一层：顶部加「开票月份」筛选
+        inv_page = QWidget()
+        inv_lay = QVBoxLayout(inv_page)
+        inv_lay.setContentsMargins(0, 8, 0, 0)
+        inv_lay.setSpacing(8)
+        fbar = QHBoxLayout()
+        fbar.addWidget(CaptionLabel("开票月份"))
+        self.inv_month = QComboBox()
+        self.inv_month.addItem("全部月份", userData="")
+        conn0 = get_conn()
+        try:
+            for r in conn0.execute(
+                    "SELECT DISTINCT strftime('%Y-%m', invoice_date) AS m FROM invoice "
+                    "WHERE invoice_date IS NOT NULL AND invoice_date != '' "
+                    "AND strftime('%Y-%m', invoice_date) IS NOT NULL ORDER BY m"):
+                self.inv_month.addItem(r["m"], userData=r["m"])
+        finally:
+            conn0.close()
+        self.inv_month.currentIndexChanged.connect(lambda *_: self.refresh())
+        fbar.addWidget(self.inv_month)
+        fbar.addStretch()
+        inv_lay.addLayout(fbar)
+        inv_lay.addWidget(self.tab_invoice, 1)
         self.tab_collection = self._make_table(["发票号码", "收款金额", "收款日期", "备注", "来源"], [1, 2, 3])
         self.tab_expense = self._make_table(["账期", "经办人", "费用类型", "金额", "凭证号", "身份"], [0, 1, 2, 3, 5])
         self.tab_staff = self._make_table(["姓名", "员工类型", "是否在职"], [0, 1, 2])
         self.tab_log = self._make_table(["时间", "表", "记录", "字段", "旧值", "新值", "备注"], [], readonly=True)
-        self.tabs.addTab(self.tab_invoice, "发票")
+        self.tabs.addTab(inv_page, "发票")
         self.tabs.addTab(self.tab_collection, "收款")
         self.tabs.addTab(self.tab_expense, "费用")
         self.tabs.addTab(self.tab_staff, "员工")
@@ -107,6 +130,11 @@ class LedgerView(QWidget):
     def refresh(self) -> None:
         conn = get_conn()
         try:
+            inv_where = ""
+            inv_params: tuple = ()
+            if getattr(self, "inv_month", None) and self.inv_month.currentData():
+                inv_where = " WHERE strftime('%Y-%m', i.invoice_date) = ?"
+                inv_params = (self.inv_month.currentData(),)
             invs = conn.execute(
                 """SELECT i.invoice_date, i.invoice_no, i.buyer, i.total_amount,
                           (SELECT group_concat(cd.person_name || printf('%.2f', cd.billing_amount), ' ')
@@ -114,7 +142,8 @@ class LedgerView(QWidget):
                           (SELECT group_concat(cd.person_name || ':' || CASE cd.person_type WHEN '' THEN '未标' ELSE cd.person_type END, ' ')
                            FROM charge_detail cd WHERE cd.invoice_no = i.invoice_no) AS htypes,
                           i.case_no, i.source, i.invoice_no AS key
-                   FROM invoice i ORDER BY i.invoice_date, i.invoice_no"""
+                   FROM invoice i""" + inv_where + " ORDER BY i.invoice_date, i.invoice_no",
+                inv_params,
             ).fetchall()
             cols = conn.execute(
                 "SELECT invoice_no, amount, receipt_date, note, source, id AS key FROM collection ORDER BY receipt_date"
@@ -398,15 +427,23 @@ class LedgerView(QWidget):
         v = QVBoxLayout(w)
         v.setContentsMargins(8, 10, 8, 10)
         v.setSpacing(8)
-        self.cat_table = QTableWidget(0, 3)
-        self.cat_table.setHorizontalHeaderLabels(["费用类型", "归类", "说明"])
+        self.cat_table = QTableWidget(0, 4)
+        self.cat_table.setHorizontalHeaderLabels(["顺序", "费用类型", "归类", "说明"])
         self.cat_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.cat_table.verticalHeader().setVisible(False)
         self.cat_table.horizontalHeader().setStretchLastSection(True)
-        self.cat_table.setColumnWidth(0, 200)
-        self.cat_table.setColumnWidth(1, 130)
+        self.cat_table.setColumnWidth(0, 50)
+        self.cat_table.setColumnWidth(1, 200)
+        self.cat_table.setColumnWidth(2, 130)
         v.addWidget(self.cat_table, 1)
         bar = QHBoxLayout()
+        self.btn_cat_up = PushButton("上移")
+        self.btn_cat_up.clicked.connect(lambda: self._cat_move(-1))
+        self.btn_cat_down = PushButton("下移")
+        self.btn_cat_down.clicked.connect(lambda: self._cat_move(1))
+        bar.addWidget(self.btn_cat_up)
+        bar.addWidget(self.btn_cat_down)
+        bar.addSpacing(12)
         bar.addWidget(CaptionLabel("新增类型"))
         self.cat_new = QLineEdit()
         self.cat_new.setPlaceholderText("费用类型名称")
@@ -427,29 +464,55 @@ class LedgerView(QWidget):
         sync_from_ledger()
         conn = get_conn()
         try:
-            rows = conn.execute("SELECT expense_type, category FROM expense_cat ORDER BY category, expense_type").fetchall()
+            rows = conn.execute(
+                "SELECT expense_type, category FROM expense_cat ORDER BY sort_order, expense_type").fetchall()
         finally:
             conn.close()
         self.cat_table.setRowCount(0)
         self.cat_table.setRowCount(len(rows))
         for r, row in enumerate(rows):
+            seq_item = QTableWidgetItem(str(r + 1))
+            seq_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignVCenter)
+            self.cat_table.setItem(r, 0, seq_item)
             t_item = QTableWidgetItem(row["expense_type"])
             t_item.setData(Qt.ItemDataRole.UserRole, row["expense_type"])
-            self.cat_table.setItem(r, 0, t_item)
+            self.cat_table.setItem(r, 1, t_item)
             combo = QComboBox()
             for c in CATEGORIES:
                 combo.addItem(c, userData=c)
             combo.setCurrentText(row["category"] or "其他")
             combo.currentIndexChanged.connect(
                 lambda *_, row=r, etype=row["expense_type"]: self._cat_change(row, etype))
-            self.cat_table.setCellWidget(r, 1, combo)
+            self.cat_table.setCellWidget(r, 2, combo)
             # 说明：该归类当前包含的类型
             types = get_by_category(row["category"])
-            self.cat_table.setItem(r, 2, QTableWidgetItem("、".join(types)))
-        self.cat_table.setRowHeight(r, 34)
+            self.cat_table.setItem(r, 3, QTableWidgetItem("、".join(types)))
+            self.cat_table.setRowHeight(r, 34)
+
+    def _cat_move(self, direction: int) -> None:
+        rows = self.cat_table.selectionModel().selectedRows()
+        if not rows:
+            QMessageBox.information(self, "提示", "请先选中要移动的费用类型")
+            return
+        r = rows[0].row()
+        item = self.cat_table.item(r, 1)
+        if item is None:
+            return
+        etype = item.data(Qt.ItemDataRole.UserRole)
+        if not etype:
+            return
+        move_type(etype, direction)
+        self._load_cat()
+        # 重新选中移动后的行
+        for i in range(self.cat_table.rowCount()):
+            it = self.cat_table.item(i, 1)
+            if it and it.text() == etype:
+                self.cat_table.selectRow(i)
+                break
+        self.log.appendPlainText(f"✓ 费用类型「{etype}」{'上移' if direction < 0 else '下移'}")
 
     def _cat_change(self, row: int, etype: str) -> None:
-        combo = self.cat_table.cellWidget(row, 1)
+        combo = self.cat_table.cellWidget(row, 2)
         if combo is None:
             return
         new_cat = combo.currentData()
@@ -466,7 +529,7 @@ class LedgerView(QWidget):
             conn.close()
         # 刷新说明列
         for i in range(self.cat_table.rowCount()):
-            combo_i = self.cat_table.cellWidget(i, 1)
+            combo_i = self.cat_table.cellWidget(i, 2)
             if combo_i and combo_i.currentData() == new_cat:
                 types = get_by_category(new_cat)
                 self.cat_table.setItem(i, 2, QTableWidgetItem("、".join(types)))

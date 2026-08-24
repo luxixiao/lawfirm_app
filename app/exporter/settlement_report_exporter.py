@@ -123,9 +123,10 @@ def build_report_rows(st: Dict, year: int, month: int) -> list:
     cur6 = round(sum(exp.get(t, {}).get(month, 0.0) for t in exp), 2)
     tot6 = round(sum(exp.get(t, {}).get(mo, 0.0) for t in exp for mo in months[:month]), 2)
     row("六", "减：分成报酬及费用", cur6, tot6, bold=True)
-    _EXP_ORDER = ["分成报酬", "合办人员报酬", "社保", "刷卡汽油费", "发票报销", "停车费",
-                  "高温费", "旅游费", "行政工资", "行政年终奖", "实习工资", "公积金"]
-    exp_types = sorted(exp.keys(), key=lambda t: (_EXP_ORDER.index(t) if t in _EXP_ORDER else 99, t))
+    # 费用类型按维护顺序（expense_cat.sort_order），未维护的按名称兜底
+    from app.engine.expense_cat import ordered_types
+    exp_order = {t: i for i, t in enumerate(ordered_types())}
+    exp_types = sorted(exp.keys(), key=lambda t: (exp_order.get(t, 999), t))
     for i, etype in enumerate(exp_types, 1):
         row(str(i), etype, exp[etype].get(month, 0.0), cum([exp[etype].get(mo, 0.0) for mo in months]))
     # 七、减：税金及会费

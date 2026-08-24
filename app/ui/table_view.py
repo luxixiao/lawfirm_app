@@ -13,6 +13,19 @@ RED = QColor("#C0392B")    # 红字/负数
 GREEN = QColor("#1E8449")  # 已收
 
 
+def auto_fit_columns(table, max_width: int = 300, min_width: int = 70) -> None:
+    """列宽自适应：按内容撑开但限幅，最后一列拉伸，避免文字被省略号截断
+
+    窄列（金额/序号）宽度贴合内容；超长文本列不超过 max_width；末列拉伸填满。
+    数据渲染完成后调用。
+    """
+    table.resizeColumnsToContents()
+    for c in range(table.columnCount()):
+        w = max(min_width, min(table.columnWidth(c), max_width))
+        table.setColumnWidth(c, w)
+    table.horizontalHeader().setStretchLastSection(True)
+
+
 class BaseTableView(QWidget):
     """基础表格页：标题 + 筛选栏 + Fluent 表格 + 导出"""
 
@@ -195,6 +208,7 @@ class BaseTableView(QWidget):
                 item.setBackground(QColor("#F2F2F0"))
                 self.table.setItem(tr, c, item)
             self.table.setRowHeight(tr, 34)
+        auto_fit_columns(self.table)
         self.lbl_summary.setText(f"共 {len(self._rows)} 行")
 
     def _total_cols(self) -> set:
@@ -253,15 +267,27 @@ class BaseTableView(QWidget):
 
 
 def make_filter_widgets(parent: QWidget, filters: QHBoxLayout,
-                        on_change: Callable, search_label: str = "购方") -> Tuple[ComboBox, ComboBox, QLineEdit, None]:
-    """月份 / 来源 / 搜索 筛选控件（search_label 默认「购方」，可传「搜索」表示全字段）"""
+                        on_change: Callable, search_label: str = "购方") -> Tuple[ComboBox, ComboBox, ComboBox, QLineEdit, None]:
+    """年份 + 月份 两级联动 + 来源 + 搜索 筛选控件
+
+    年份下拉变化 → 月份下拉只显示该年月份；选「全部年份」时月份显示全部。
+    返回 (year, month, src, search, None)。
+    """
     from app.ui.widgets import CaptionLabel
+
+    filters.addWidget(CaptionLabel("开票年份"))
+    year = ComboBox()
+    year.addItem("全部年份", userData="")
+    for y in _year_options():
+        year.addItem(y, userData=y)
+    filters.addWidget(year)
+
     filters.addWidget(CaptionLabel("开票月份"))
     month = ComboBox()
     month.addItem("全部月份", userData="")
     for m in _month_options():
         month.addItem(m, userData=m)
-    month.currentIndexChanged.connect(on_change)
+    filters.addWidget(month)
 
     filters.addWidget(CaptionLabel("来源"))
     src = ComboBox()
@@ -271,16 +297,44 @@ def make_filter_widgets(parent: QWidget, filters: QHBoxLayout,
     src.currentIndexChanged.connect(on_change)
 
     filters.addWidget(CaptionLabel(search_label))
-    buyer = LineEdit()
-    buyer.setPlaceholderText("输入关键词搜索")
-    buyer.setFixedWidth(180)
-    buyer.textChanged.connect(on_change)
+    search = LineEdit()
+    search.setPlaceholderText("输入关键词搜索")
+    search.setFixedWidth(180)
+    search.textChanged.connect(on_change)
 
+    def _on_year_changed(*_) -> None:
+        # 重建月份下拉：仅保留所选年份的月份
+        sel = year.currentData()
+        month.blockSignals(True)
+        month.clear()
+        month.addItem("全部月份", userData="")
+        for m in _month_options():
+            if not sel or m.startswith(sel + "-"):
+                month.addItem(m, userData=m)
+        month.blockSignals(False)
+        on_change()
+
+    year.currentIndexChanged.connect(_on_year_changed)
+    month.currentIndexChanged.connect(on_change)
+
+    filters.addWidget(year)
     filters.addWidget(month)
     filters.addWidget(src)
-    filters.addWidget(buyer)
+    filters.addWidget(search)
     filters.addStretch()
-    return month, src, buyer, None
+    return year, month, src, search, None
+
+
+def _year_options() -> List[str]:
+    from app.db import get_conn
+    conn = get_conn()
+    try:
+        return [r["y"] for r in conn.execute(
+            "SELECT DISTINCT strftime('%Y', invoice_date) AS y FROM invoice "
+            "WHERE invoice_date IS NOT NULL AND invoice_date != '' "
+            "AND strftime('%Y', invoice_date) IS NOT NULL ORDER BY y")]
+    finally:
+        conn.close()
 
 
 def _month_options() -> List[str]:

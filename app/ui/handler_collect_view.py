@@ -88,7 +88,7 @@ class HandlerCollectView(BaseTableView):
         return {3, 6, 7, 8}
 
     def _build_filters(self) -> None:
-        self.month, self.src, self.keyword, _ = make_filter_widgets(
+        self.year, self.month, self.src, self.keyword, _ = make_filter_widgets(
             self, self.filters, lambda *_: self.refresh(), search_label="搜索"
         )
         # 经办人下拉
@@ -108,7 +108,7 @@ class HandlerCollectView(BaseTableView):
     def load_data(self) -> None:
         rows = handler_rows(
             person=self.person.currentData() or None,
-            period=self.month.currentData() or None,
+            period=self.month.currentData() or self.year.currentData() or None,
             keyword=self.keyword.text().strip() or None,
             source=self.src.currentData() or None,
         )
