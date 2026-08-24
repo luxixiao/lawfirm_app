@@ -1,11 +1,11 @@
-"""发票台账导入 - 问题行修正对话框（方案 C：逐人分摊）
+"""发票台账导入 - 问题行修正对话框（逐经办人单表）
 
 解析失败的问题行统一弹一个对话框：左侧表格列出全部问题行，右侧对选中行
-手动修正。发票行采用「逐经办人」编辑（方案 C）：
-  - 开票日期 / 开票总额
-  - ② 开票分摊表：经办人(花名册下拉) | 开票金额
-  - ③ 收款分摊表：经办人 | 收款金额 | 收款日期（与开票表经办人一一对应）
-  - 分摊按钮：均分开票额 / 均分收款 / 按开票比例生成(全额,账期月)
+手动修正。发票行采用「逐经办人」单表编辑（每人一行，四列）：
+    经办人（花名册下拉） | 开票金额 | 收款金额 | 收款日期
+- 顶部信息卡：开票日期 / 开票总额（只读参考）
+- 实时合计条：开票额合计 vs 总额、收款合计；不对齐自动转红胶囊
+- 工具栏：＋添加经办人 / －删除选中 ｜ 均分开票额 / 均分收款 / 按开票比例生成收款
 预收款行保持原有简单字段。每行可「保存修改」或「跳过」，确认后由调用方合并入库。
 """
 from __future__ import annotations
@@ -14,15 +14,17 @@ import re
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QComboBox, QDialog, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
-    QMessageBox, QPlainTextEdit, QPushButton, QTableWidget, QTableWidgetItem,
-    QVBoxLayout, QWidget,
+    QComboBox, QDialog, QFrame, QGridLayout, QHBoxLayout, QHeaderView, QLabel,
+    QLineEdit, QMessageBox, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
 from app.importer.date_utils import normalize_date
 from app.importer.excel_reader import ImportError_
 from app.importer.parse_handler import parse_handler_column
-from app.ui.widgets import CaptionLabel, PushButton, SubtitleLabel
+from app.ui.widgets import (
+    CaptionLabel, ComboBox, LineEdit, PrimaryPushButton, PushButton,
+    SubtitleLabel, TableWidget,
+)
 
 _TYPES = {"invoice": "发票", "prepayment": "预收款"}
 
@@ -43,11 +45,15 @@ def _norm_dt(s: str) -> str | None:
     return normalize_date(s)
 
 
+def _money(x: float) -> str:
+    return f"{x:,.2f}"
+
+
 class ProblemDialog(QDialog):
     def __init__(self, problems: list, staff_names: list, period: str, parent=None) -> None:
         super().__init__(parent)
         self.setWindowTitle("发票台账导入 - 问题行修正")
-        self.resize(1000, 600)
+        self.resize(1180, 620)
         self._problems = problems
         self._staff = set(staff_names)
         self._staff_list = sorted(staff_names)
@@ -69,94 +75,111 @@ class ProblemDialog(QDialog):
         )
         root.addWidget(h)
 
-        # ---- 中部：表格 + 表单 ----
+        # ---- 中部：列表 + 表单 ----
         mid = QHBoxLayout()
-        mid.setSpacing(12)
+        mid.setSpacing(14)
 
-        self.table = QTableWidget(0, 8)
+        self.table = TableWidget(0, 8)
         self.table.setHorizontalHeaderLabels(
             ["#", "类型", "行号", "发票号", "购方", "金额", "原因", "状态"])
         self.table.verticalHeader().setVisible(False)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.table.setFixedWidth(430)
         self.table.horizontalHeader().setSectionResizeMode(6, QHeaderView.ResizeMode.Stretch)
-        for i, w in enumerate([40, 60, 50, 150, 110, 90, 200, 70]):
+        for i, w in enumerate([36, 52, 48, 150, 84, 92, 200, 64]):
             self.table.setColumnWidth(i, w)
         self._fill_table()
         self.table.itemSelectionChanged.connect(self._load_form)
-        mid.addWidget(self.table, 3)
+        mid.addWidget(self.table)
 
         # ---- 右侧表单 ----
         form_box = QWidget()
         form_box.setObjectName("problemForm")
         fv = QVBoxLayout(form_box)
-        fv.setContentsMargins(12, 12, 12, 12)
-        fv.setSpacing(8)
+        fv.setContentsMargins(0, 0, 0, 0)
+        fv.setSpacing(10)
 
         # 发票行容器
         self.inv_box = QWidget()
         iv = QVBoxLayout(self.inv_box)
         iv.setContentsMargins(0, 0, 0, 0)
-        iv.setSpacing(6)
+        iv.setSpacing(10)
 
-        def line_field(label: str, hint: str = "") -> QLineEdit:
-            lbl = QLabel(label)
-            w = QLineEdit()
-            if hint:
-                w.setPlaceholderText(hint)
-            iv.addWidget(lbl)
-            iv.addWidget(w)
-            return w
+        # 信息卡：开票日期 / 开票总额
+        card = QWidget()
+        card.setObjectName("infoCard")
+        cg = QGridLayout(card)
+        cg.setContentsMargins(0, 0, 0, 0)
+        cg.setSpacing(10)
+        cg.setColumnStretch(1, 1)
+        cg.setColumnStretch(3, 1)
+        k1 = QLabel("开票日期"); k1.setObjectName("infoKey")
+        self.inv_date = LineEdit(); self.inv_date.setPlaceholderText("如 2025-02-13，可空")
+        k2 = QLabel("开票总额"); k2.setObjectName("infoKey")
+        self.inv_amount = LineEdit(); self.inv_amount.setPlaceholderText("必填，数字")
+        self.inv_amount.textChanged.connect(self._update_summary)
+        cg.addWidget(k1, 0, 0); cg.addWidget(self.inv_date, 1, 0)
+        cg.addWidget(k2, 0, 1); cg.addWidget(self.inv_amount, 1, 1)
+        iv.addWidget(card)
 
-        self.inv_date = line_field("开票日期", "如 2025-02-13，可空")
-        self.inv_amount = line_field("开票总额", "必填，数字")
-
-        iv.addWidget(QLabel("② 开票分摊（经办人及开票金额）"))
-        self.bill_table = QTableWidget(0, 2)
-        self.bill_table.setHorizontalHeaderLabels(["经办人", "开票金额"])
-        self.bill_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        self.bill_table.setColumnWidth(1, 110)
-        iv.addWidget(self.bill_table)
-        bw = QHBoxLayout()
-        self._btn_add = PushButton("+ 加行")
-        self._btn_del = PushButton("- 删行")
+        # 工具栏：行操作 ｜ 分摊
+        tb = QHBoxLayout()
+        tb.setSpacing(8)
+        self._btn_add = PushButton("＋ 添加经办人")
+        self._btn_del = PushButton("－ 删除选中")
+        sep = QFrame(); sep.setObjectName("sep"); sep.setFrameShape(QFrame.Shape.VLine)
+        sep.setFixedWidth(1)
         self._btn_split_bill = PushButton("均分开票额")
+        self._btn_split_recv = PushButton("均分收款")
+        self._btn_gen_recv = PushButton("按开票比例生成收款")
         self._btn_add.clicked.connect(self._add_row)
         self._btn_del.clicked.connect(self._del_row)
         self._btn_split_bill.clicked.connect(self._split_bill_even)
-        bw.addWidget(self._btn_add)
-        bw.addWidget(self._btn_del)
-        bw.addWidget(self._btn_split_bill)
-        bw.addStretch()
-        iv.addLayout(bw)
-
-        iv.addWidget(QLabel("③ 收款分摊（可部分人收、不同日期）"))
-        self.recv_table = QTableWidget(0, 3)
-        self.recv_table.setHorizontalHeaderLabels(["经办人", "收款金额", "收款日期"])
-        self.recv_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        self.recv_table.setColumnWidth(1, 100)
-        self.recv_table.setColumnWidth(2, 110)
-        iv.addWidget(self.recv_table)
-        rw = QHBoxLayout()
-        self._btn_split_recv = PushButton("均分收款")
-        self._btn_gen_recv = PushButton("按开票比例生成(全额,账期月)")
         self._btn_split_recv.clicked.connect(self._split_recv_even)
         self._btn_gen_recv.clicked.connect(self._gen_recv_from_bill)
-        rw.addWidget(self._btn_split_recv)
-        rw.addWidget(self._btn_gen_recv)
-        rw.addStretch()
-        iv.addLayout(rw)
+        tb.addWidget(self._btn_add)
+        tb.addWidget(self._btn_del)
+        tb.addWidget(sep)
+        tb.addWidget(self._btn_split_bill)
+        tb.addWidget(self._btn_split_recv)
+        tb.addWidget(self._btn_gen_recv)
+        tb.addStretch()
+        iv.addLayout(tb)
+
+        # 逐经办人单表：经办人 | 开票金额 | 收款金额 | 收款日期
+        self.htable = TableWidget(0, 4)
+        self.htable.setHorizontalHeaderLabels(
+            ["经办人", "开票金额", "收款金额", "收款日期"])
+        self.htable.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.htable.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        self.htable.setColumnWidth(1, 120)
+        self.htable.setColumnWidth(2, 120)
+        self.htable.setColumnWidth(3, 130)
+        self.htable.itemChanged.connect(self._on_item_changed)
+        iv.addWidget(self.htable)
+
+        # 实时合计条
+        sb = QHBoxLayout()
+        sb.setSpacing(10)
+        self._chip_bill = QLabel(""); self._chip_bill.setObjectName("chip")
+        self._chip_recv = QLabel(""); self._chip_recv.setObjectName("chip")
+        sb.addWidget(self._chip_bill)
+        sb.addWidget(self._chip_recv)
+        sb.addStretch()
+        iv.addLayout(sb)
+
         fv.addWidget(self.inv_box)
 
         # 预收款行容器
         self.pp_box = QWidget()
         pv = QVBoxLayout(self.pp_box)
         pv.setContentsMargins(0, 0, 0, 0)
-        pv.setSpacing(6)
+        pv.setSpacing(10)
 
         def pp_field(key: str, label: str, hint: str = "") -> None:
-            lbl = QLabel(label)
-            w = QLineEdit()
+            lbl = QLabel(label); lbl.setObjectName("infoKey")
+            w = LineEdit()
             if hint:
                 w.setPlaceholderText(hint)
             pv.addWidget(lbl)
@@ -178,14 +201,13 @@ class ProblemDialog(QDialog):
         row.addStretch()
         fv.addLayout(row)
         fv.addStretch()
-        mid.addWidget(form_box, 2)
+        mid.addWidget(form_box, 1)
         root.addLayout(mid, 1)
 
         # ---- 底部 ----
         bottom = QHBoxLayout()
         bottom.addStretch()
-        self._btn_ok = PushButton("确认导入（未处理行将跳过）")
-        self._btn_ok.setObjectName("primary")
+        self._btn_ok = PrimaryPushButton("确认导入（未处理行将跳过）")
         self._btn_ok.clicked.connect(self._confirm)
         bottom.addWidget(self._btn_ok)
         root.addLayout(bottom)
@@ -193,7 +215,7 @@ class ProblemDialog(QDialog):
         if self.table.rowCount():
             self.table.selectRow(0)
 
-    # ---- 表格 ----
+    # ---- 列表 ----
     def _fill_table(self) -> None:
         for i, p in enumerate(self._problems):
             vals = [
@@ -226,50 +248,77 @@ class ProblemDialog(QDialog):
         return rows[0].row() if rows else None
 
     def _make_handler_combo(self, name: str = "") -> QComboBox:
-        cb = QComboBox()
+        cb = ComboBox()
         cb.setEditable(True)
         cb.addItems(self._staff_list)
         if name:
             cb.setCurrentText(name)
         return cb
 
-    def _render_bill(self, rows: list) -> None:
-        self.bill_table.setRowCount(0)
+    def _render_rows(self, rows: list) -> None:
+        self.htable.blockSignals(True)
+        self.htable.setRowCount(0)
         for r in rows:
-            i = self.bill_table.rowCount()
-            self.bill_table.insertRow(i)
-            self.bill_table.setCellWidget(i, 0, self._make_handler_combo(r.get("name", "")))
-            self.bill_table.setItem(i, 1, QTableWidgetItem(str(r.get("bill", ""))))
+            i = self.htable.rowCount()
+            self.htable.insertRow(i)
+            self.htable.setCellWidget(i, 0, self._make_handler_combo(r.get("name", "")))
+            self.htable.setItem(i, 1, QTableWidgetItem(str(r.get("bill", ""))))
+            self.htable.setItem(i, 2, QTableWidgetItem(str(r.get("recv_amt", ""))))
+            self.htable.setItem(i, 3, QTableWidgetItem(str(r.get("recv_date", ""))))
+        self.htable.blockSignals(False)
+        self._update_summary()
 
-    def _render_recv(self, rows: list) -> None:
-        self.recv_table.setRowCount(0)
-        for r in rows:
-            i = self.recv_table.rowCount()
-            self.recv_table.insertRow(i)
-            lbl = QLabel(r.get("name", ""))
-            lbl.setObjectName("recvName")
-            self.recv_table.setCellWidget(i, 0, lbl)
-            self.recv_table.setItem(i, 1, QTableWidgetItem(str(r.get("recv_amt", ""))))
-            self.recv_table.setItem(i, 2, QTableWidgetItem(str(r.get("recv_date", ""))))
-
-    def _read_bill_rows(self) -> list:
+    def _read_rows(self) -> list:
         out = []
-        for i in range(self.bill_table.rowCount()):
-            cb = self.bill_table.cellWidget(i, 0)
+        for i in range(self.htable.rowCount()):
+            cb = self.htable.cellWidget(i, 0)
             name = cb.currentText().strip() if cb else ""
-            amt = self.bill_table.item(i, 1).text().strip() if self.bill_table.item(i, 1) else ""
-            out.append({"name": name, "bill": amt})
+            bill = self.htable.item(i, 1).text().strip() if self.htable.item(i, 1) else ""
+            recv_amt = self.htable.item(i, 2).text().strip() if self.htable.item(i, 2) else ""
+            recv_date = self.htable.item(i, 3).text().strip() if self.htable.item(i, 3) else ""
+            out.append({"name": name, "bill": bill, "recv_amt": recv_amt, "recv_date": recv_date})
         return out
 
-    def _read_recv_rows(self) -> list:
-        out = []
-        for i in range(self.recv_table.rowCount()):
-            lbl = self.recv_table.cellWidget(i, 0)
-            name = lbl.text().strip() if lbl else ""
-            amt = self.recv_table.item(i, 1).text().strip() if self.recv_table.item(i, 1) else ""
-            dt = self.recv_table.item(i, 2).text().strip() if self.recv_table.item(i, 2) else ""
-            out.append({"name": name, "recv_amt": amt, "recv_date": dt})
-        return out
+    def _on_item_changed(self, item: QTableWidgetItem) -> None:
+        if item.column() in (1, 2, 3):
+            self._update_summary()
+
+    def _update_summary(self) -> None:
+        rows = self._read_rows()
+        total_txt = self.inv_amount.text().strip()
+        try:
+            total = float(total_txt.replace(",", "")) if total_txt else 0.0
+        except ValueError:
+            total = 0.0
+        bill_sum = 0.0
+        recv_sum = 0.0
+        for r in rows:
+            try:
+                bill_sum += float(r["bill"].replace(",", "")) if r["bill"] else 0.0
+            except ValueError:
+                pass
+            try:
+                recv_sum += float(r["recv_amt"].replace(",", "")) if r["recv_amt"] else 0.0
+            except ValueError:
+                pass
+        ok = abs(bill_sum - total) <= 0.01
+        self._set_chip(
+            self._chip_bill,
+            f"开票额合计 <span style='font-family:Consolas,monospace'>{_money(bill_sum)}</span>"
+            f" / 总额 <span style='font-family:Consolas,monospace'>{_money(total)}</span>",
+            not ok,
+        )
+        self._set_chip(
+            self._chip_recv,
+            f"收款合计 <span style='font-family:Consolas,monospace'>{_money(recv_sum)}</span>",
+            False,
+        )
+
+    def _set_chip(self, label: QLabel, html: str, warn: bool) -> None:
+        label.setText(html)
+        label.setObjectName("chipWarn" if warn else "chip")
+        label.style().unpolish(label)
+        label.style().polish(label)
 
     def _load_form(self) -> None:
         idx = self._current_idx()
@@ -287,15 +336,10 @@ class ProblemDialog(QDialog):
 
         self.inv_box.setVisible(True)
         self.pp_box.setVisible(False)
-        # 初始经办人行（优先用已保存修正，其次尝试用问题行的经办人列预填）
-        if fix:
-            rows = fix["_rows"]
-        else:
-            rows = self._prefill_rows(p)
+        rows = fix["_rows"] if fix else self._prefill_rows(p)
         self.inv_date.setText(p.get("date_text", "") or "")
         self.inv_amount.setText(p.get("total_amount", "") or "")
-        self._render_bill(rows)
-        self._render_recv(rows)
+        self._render_rows(rows)
 
     def _prefill_rows(self, p: dict) -> list:
         """尝试用问题行的经办人/金额预填；失败则给一行空行"""
@@ -307,41 +351,32 @@ class ProblemDialog(QDialog):
         handler_text = p.get("handler_text", "") or ""
         try:
             hs = parse_handler_column(handler_text, total, p.get("invoice_no", ""))
-            return [{"name": n, "bill": (int(a) if a == int(a) else a), "recv_amt": "", "recv_date": ""}
-                    for n, a in hs]
+            return [{"name": n, "bill": (int(a) if a == int(a) else a),
+                     "recv_amt": "", "recv_date": ""} for n, a in hs]
         except ImportError_:
             return [{"name": "", "bill": (int(total) if total == int(total) else total),
                      "recv_amt": "", "recv_date": ""}]
 
-    # ---- 分摊按钮 ----
+    # ---- 工具栏 ----
     def _add_row(self) -> None:
-        i = self.bill_table.rowCount()
-        self.bill_table.insertRow(i)
-        self.bill_table.setCellWidget(i, 0, self._make_handler_combo())
-        self.bill_table.setItem(i, 1, QTableWidgetItem(""))
-        self._sync_recv()
+        i = self.htable.rowCount()
+        self.htable.insertRow(i)
+        self.htable.setCellWidget(i, 0, self._make_handler_combo())
+        self.htable.setItem(i, 1, QTableWidgetItem(""))
+        self.htable.setItem(i, 2, QTableWidgetItem(""))
+        self.htable.setItem(i, 3, QTableWidgetItem(""))
+        self._update_summary()
 
     def _del_row(self) -> None:
-        rows = self.bill_table.selectionModel().selectedRows()
+        rows = self.htable.selectionModel().selectedRows()
         if not rows:
             return
         for r in sorted((x.row() for x in rows), reverse=True):
-            self.bill_table.removeRow(r)
-        self._sync_recv()
-
-    def _sync_recv(self) -> None:
-        """收款表经办人与开票表保持一致（保留同名者的收款额/日期）"""
-        bill = self._read_bill_rows()
-        existing = {r["name"]: r for r in self._read_recv_rows()}
-        self._render_recv([
-            {"name": b["name"],
-             "recv_amt": existing.get(b["name"], {}).get("recv_amt", ""),
-             "recv_date": existing.get(b["name"], {}).get("recv_date", "")}
-            for b in bill
-        ])
+            self.htable.removeRow(r)
+        self._update_summary()
 
     def _split_bill_even(self) -> None:
-        rows = self._read_bill_rows()
+        rows = self._read_rows()
         if not rows:
             return
         total_txt = self.inv_amount.text().strip()
@@ -351,15 +386,13 @@ class ProblemDialog(QDialog):
             QMessageBox.warning(self, "无法均分", f"开票总额无法解析: 「{total_txt}」")
             return
         share = total / len(rows)
-        # 末位吸收余数
         for i, r in enumerate(rows):
             val = share if i < len(rows) - 1 else total - share * (len(rows) - 1)
             r["bill"] = f"{round(val, 2):g}"
-        self._render_bill(rows)
-        self._sync_recv()
+        self._render_rows(rows)
 
     def _split_recv_even(self) -> None:
-        rows = self._read_bill_rows()
+        rows = self._read_rows()
         if not rows:
             return
         total_txt = self.inv_amount.text().strip()
@@ -369,25 +402,23 @@ class ProblemDialog(QDialog):
             QMessageBox.warning(self, "无法均分", f"开票总额无法解析: 「{total_txt}」")
             return
         share = total / len(rows)
-        recv = self._read_recv_rows()
-        for i, r in enumerate(recv):
-            val = share if i < len(recv) - 1 else total - share * (len(recv) - 1)
+        for i, r in enumerate(rows):
+            val = share if i < len(rows) - 1 else total - share * (len(rows) - 1)
             r["recv_amt"] = f"{round(val, 2):g}"
             r["recv_date"] = self._period
-        self._render_recv(recv)
+        self._render_rows(rows)
 
     def _gen_recv_from_bill(self) -> None:
         """按各经办人开票比例生成收款：收款额=开票额、日期=账期月（即全额当月收讫）"""
-        bill = self._read_bill_rows()
-        recv = self._read_recv_rows()
-        for b, r in zip(bill, recv):
+        rows = self._read_rows()
+        for r in rows:
             try:
-                amt = float(b["bill"].replace(",", "")) if b["bill"] else 0.0
+                amt = float(r["bill"].replace(",", "")) if r["bill"] else 0.0
             except ValueError:
                 amt = 0.0
             r["recv_amt"] = f"{round(amt, 2):g}"
             r["recv_date"] = self._period
-        self._render_recv(recv)
+        self._render_rows(rows)
 
     # ---- 保存 ----
     def _save_fix(self) -> None:
@@ -416,21 +447,17 @@ class ProblemDialog(QDialog):
         except ValueError:
             raise ImportError_(f"开票总额无法解析: 「{total_txt}」") from None
 
-        bill_rows = self._read_bill_rows()
-        recv_rows = self._read_recv_rows()
-        if len(bill_rows) != len(recv_rows):
-            raise ImportError_("开票/收款经办人不一致，请重新操作")
-
+        rows = self._read_rows()
         handlers: list = []
         receipts: list = []
         bill_sum = 0.0
-        for b, rc in zip(bill_rows, recv_rows):
-            name = b["name"].strip()
-            bill_txt = b["bill"].strip()
+        for r in rows:
+            name = r["name"].strip()
             if not name:
                 raise ImportError_("经办人不能为空")
             if name not in self._staff:
                 raise ImportError_(f"经办人不在职工花名册中: {name}")
+            bill_txt = r["bill"].strip()
             try:
                 bill = float(bill_txt.replace(",", "")) if bill_txt else 0.0
             except ValueError:
@@ -439,8 +466,8 @@ class ProblemDialog(QDialog):
                 raise ImportError_("开票金额不能为负")
             bill_sum += bill
             handlers.append((name, bill))
-            recv_amt = rc["recv_amt"].strip()
-            recv_date = rc["recv_date"].strip()
+            recv_amt = r["recv_amt"].strip()
+            recv_date = r["recv_date"].strip()
             if recv_amt or recv_date:
                 if not recv_date:
                     raise ImportError_("填了收款金额/日期，必须同时填写收款日期")
@@ -471,9 +498,7 @@ class ProblemDialog(QDialog):
             "split_receipts": receipts,
             "buyer": p.get("buyer", ""),
             "case_no": p.get("case_no", ""),
-            "_rows": [{"name": b["name"], "bill": b["bill"],
-                       "recv_amt": rc["recv_amt"], "recv_date": rc["recv_date"]}
-                      for b, rc in zip(bill_rows, recv_rows)],
+            "_rows": rows,
         }
 
     def _validate_prepayment(self, p: dict) -> dict:

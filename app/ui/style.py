@@ -29,6 +29,7 @@ def _light() -> dict:
         "btn_bg": "#FFFFFF", "btn_border": "#DADAD7", "btn_hover": "#EFEFEC",
         "btn_press": "#E9E9E7", "btn_pri_bg": "#37352F", "btn_pri_fg": "#FFFFFF",
         "btn_pri_hover": "#4F4D49", "btn_pri_press": "#2A2823", "grid": "#F1F1EF",
+        "warn_bg": "#FCEBEB", "warn_fg": "#C0392B",
     }
 
 
@@ -42,6 +43,7 @@ def _dark() -> dict:
         "btn_bg": "#2E2E2C", "btn_border": "#45453F", "btn_hover": "#3A3A37",
         "btn_press": "#45453F", "btn_pri_bg": "#E9E9E7", "btn_pri_fg": "#1F1F1E",
         "btn_pri_hover": "#FFFFFF", "btn_pri_press": "#CFCFCA", "grid": "#33332F",
+        "warn_bg": "#3A2622", "warn_fg": "#E07A6B",
     }
 
 
@@ -145,6 +147,26 @@ QTabBar::tab:selected {{ color: {p['text']}; border-bottom: 2px solid {p['accent
 /* ===== 标签 ===== */
 QLabel {{ color: {p['text']}; }}
 QLabel#pageHint {{ color: {p['text_mute']}; }}
+
+/* ===== 问题行修正面板 ===== */
+QWidget#infoCard {{
+    background: {p['bg_table']}; border: 1px solid {p['border']};
+    border-radius: 10px; padding: 14px 16px;
+}}
+QLabel#infoKey {{ color: {p['text_mute']}; font-size: 12px; }}
+QLabel#infoVal {{ color: {p['text']}; font-size: 15px; font-weight: 700; }}
+
+QLabel#chip {{
+    background: {p['bg_table']}; border: 1px solid {p['border']};
+    border-radius: 14px; padding: 6px 14px; color: {p['text_mute']}; font-size: 12px;
+}}
+QLabel#chipVal {{ color: {p['text']}; font-weight: 700; font-family: "JetBrains Mono", "Consolas", monospace; }}
+QLabel#chipWarn {{
+    background: {p['warn_bg']}; border: 1px solid {p['warn_bg']};
+    border-radius: 14px; padding: 6px 14px; color: {p['warn_fg']}; font-size: 12px; font-weight: 600;
+}}
+QLabel#chipWarn QLabel#chipVal {{ color: {p['warn_fg']}; }}
+QFrame#sep {{ background: {p['border_2']}; }}
 
 /* ===== 消息框 / 弹窗 ===== */
 QMessageBox, QDialog {{ background: {p['bg']}; }}
