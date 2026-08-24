@@ -50,8 +50,9 @@ def invoice_rows(conn=None, period: str | None = None, buyer: str | None = None,
         where = []
         params: List = []
         if period:
-            where.append("invoice_date LIKE ?")
-            params.append(period + "%")
+            # strftime 规范化匹配：兼容非零填充日期（2024-9-15 也归入 2024-09）
+            where.append("strftime('%Y-%m', invoice_date) = ?")
+            params.append(period)
         if buyer:
             where.append("buyer LIKE ?")
             params.append("%" + buyer + "%")
@@ -111,11 +112,12 @@ def invoice_rows(conn=None, period: str | None = None, buyer: str | None = None,
 
 
 def handler_rows(conn=None, person: str | None = None, period: str | None = None,
-                 buyer: str | None = None, source: str | None = None) -> List[Dict]:
+                 keyword: str | None = None, source: str | None = None) -> List[Dict]:
     """经办人发票收款总表 / 经办人发票收款表（单经办人）数据
 
     列：开具日期、发票号码、购买方名称、开票总额、经办人、开票金额、已收金额、剩余应收、备注
     一票多经办人拆多行。
+    keyword：全字段检索（发票号/购方/经办人/案号/金额）。
     """
     own = conn is None
     if own:
@@ -130,11 +132,17 @@ def handler_rows(conn=None, person: str | None = None, period: str | None = None
             where.append("cd.person_name = ?")
             params.append(person)
         if period:
-            where.append("i.invoice_date LIKE ?")
-            params.append(period + "%")
-        if buyer:
-            where.append("i.buyer LIKE ?")
-            params.append("%" + buyer + "%")
+            # strftime 规范化匹配：兼容非零填充日期（2024-9-15 也归入 2024-09）
+            where.append("strftime('%Y-%m', i.invoice_date) = ?")
+            params.append(period)
+        if keyword:
+            kw = f"%{keyword}%"
+            where.append(
+                "(i.invoice_no LIKE ? OR i.buyer LIKE ? OR cd.person_name LIKE ? "
+                "OR i.case_no LIKE ? OR CAST(i.total_amount AS TEXT) LIKE ? "
+                "OR CAST(cd.billing_amount AS TEXT) LIKE ?)"
+            )
+            params.extend([kw] * 6)
         if source:
             where.append("i.source = ?")
             params.append(source)

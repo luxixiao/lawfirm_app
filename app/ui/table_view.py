@@ -253,8 +253,8 @@ class BaseTableView(QWidget):
 
 
 def make_filter_widgets(parent: QWidget, filters: QHBoxLayout,
-                        on_change: Callable) -> Tuple[ComboBox, ComboBox, QLineEdit, None]:
-    """月份 / 来源 / 购方搜索 筛选控件"""
+                        on_change: Callable, search_label: str = "购方") -> Tuple[ComboBox, ComboBox, QLineEdit, None]:
+    """月份 / 来源 / 搜索 筛选控件（search_label 默认「购方」，可传「搜索」表示全字段）"""
     from app.ui.widgets import CaptionLabel
     filters.addWidget(CaptionLabel("开票月份"))
     month = ComboBox()
@@ -270,9 +270,9 @@ def make_filter_widgets(parent: QWidget, filters: QHBoxLayout,
     src.addItem("手动补录", userData="manual")
     src.currentIndexChanged.connect(on_change)
 
-    filters.addWidget(CaptionLabel("购方"))
+    filters.addWidget(CaptionLabel(search_label))
     buyer = LineEdit()
-    buyer.setPlaceholderText("输入购方名称搜索")
+    buyer.setPlaceholderText("输入关键词搜索")
     buyer.setFixedWidth(180)
     buyer.textChanged.connect(on_change)
 
@@ -287,8 +287,12 @@ def _month_options() -> List[str]:
     from app.db import get_conn
     conn = get_conn()
     try:
+        # strftime 规范化：兼容非零填充日期（如 2024-9-15 → 2024-09），
+        # 避免 substr(1,7) 把 2024-9-15 切成 "2024-9-"。
         rows = conn.execute(
-            "SELECT DISTINCT substr(invoice_date,1,7) AS m FROM invoice ORDER BY m"
+            "SELECT DISTINCT strftime('%Y-%m', invoice_date) AS m FROM invoice "
+            "WHERE invoice_date IS NOT NULL AND invoice_date != '' "
+            "AND strftime('%Y-%m', invoice_date) IS NOT NULL ORDER BY m"
         ).fetchall()
         return [r["m"] for r in rows]
     finally:

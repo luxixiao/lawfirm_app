@@ -12,6 +12,28 @@ from app.ui.dialogs import show_invoice_handlers, show_red_relation
 from app.ui.table_view import BaseTableView, make_filter_widgets
 
 
+def _to_months(receipt_dates: str) -> str:
+    """收款日期串 → 收款月（去重、月份补零），未收款显示「未收款」。
+
+    兼容非零填充日期（2025-1-5 → 2025-01）。
+    """
+    months = set()
+    for d in receipt_dates.split("、"):
+        d = d.strip()
+        if not d:
+            continue
+        parts = d.split("-")
+        if len(parts) >= 2:
+            try:
+                mm = int(parts[1])
+                months.add(f"{parts[0]}-{mm:02d}")
+            except ValueError:
+                months.add(parts[1])
+        else:
+            months.add(d)
+    return "、".join(sorted(months)) if months else "未收款"
+
+
 class _TypeDelegate(QStyledItemDelegate):
     """身份列（索引5）编辑委托：双击/F2 弹下拉，选择后直接写库。
 
@@ -48,8 +70,8 @@ class HandlerCollectView(BaseTableView):
         super().__init__(
             "经办人发票收款情况",
             ["开具日期", "发票号码", "购买方名称", "开票总额", "经办人",
-             "身份", "开票金额", "已收金额", "剩余应收", "备注"],
-            "经办人维度收款情况；点击表头可筛选；身份列双击可修改经办人身份；右击查看红冲信息 / 其他经办人金额。",
+             "身份", "开票金额", "已收金额", "剩余应收", "收款月"],
+            "经办人维度收款情况；搜索框可检索全部字段；点击表头可筛选；身份列双击可修改经办人身份；右击查看红冲信息 / 其他经办人金额。",
         )
         self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self._ctx_menu)
@@ -66,8 +88,8 @@ class HandlerCollectView(BaseTableView):
         return {3, 6, 7, 8}
 
     def _build_filters(self) -> None:
-        self.month, self.src, self.buyer, _ = make_filter_widgets(
-            self, self.filters, lambda *_: self.refresh()
+        self.month, self.src, self.keyword, _ = make_filter_widgets(
+            self, self.filters, lambda *_: self.refresh(), search_label="搜索"
         )
         # 经办人下拉
         lbl = QLabel("经办人")
@@ -87,13 +109,13 @@ class HandlerCollectView(BaseTableView):
         rows = handler_rows(
             person=self.person.currentData() or None,
             period=self.month.currentData() or None,
-            buyer=self.buyer.text().strip() or None,
+            keyword=self.keyword.text().strip() or None,
             source=self.src.currentData() or None,
         )
         self._rows = [
             [r["invoice_date"], r["invoice_no"], r["buyer"], r["total_amount"],
              r["person_name"], r["person_type"] or "未标",
-             r["billing_amount"], r["collected"], r["remain"], r["receipt_dates"]]
+             r["billing_amount"], r["collected"], r["remain"], _to_months(r["receipt_dates"])]
             for r in rows
         ]
         self._meta = {i: r for i, r in enumerate(rows)}

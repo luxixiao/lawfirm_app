@@ -53,7 +53,7 @@ class LedgerView(QWidget):
         btns = QHBoxLayout()
         self.btn_edit = PushButton("编辑所选")
         self.btn_edit.clicked.connect(self.edit_selected)
-        self.btn_batch_type = PushButton("批量设身份…")
+        self.btn_batch_type = PushButton("批量设身份")
         self.btn_batch_type.clicked.connect(self.batch_set_type)
         self.btn_refresh = PushButton("刷新")
         self.btn_refresh.clicked.connect(self.refresh)
