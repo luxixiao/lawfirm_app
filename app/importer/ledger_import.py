@@ -42,8 +42,8 @@ def classify_sheets(names: List[str]) -> Dict[str, str]:
     return mapping
 
 
-def _parse_invoice_sheet(rows: List[List[str]], sheet_key: str, period: str) -> List[Dict]:
-    """解析 sheet1/2/3：发票行"""
+def _parse_invoice_sheet(rows: List[List[str]], sheet_key: str, period: str) -> "tuple[List[Dict], List[Dict]]":
+    """解析 sheet1/2/3：发票行。返回 (items, problems)；问题行不中断，收集到 problems。"""
     hr = find_header_row(rows, ["发票号码", "经办人"])
     if hr < 0:
         raise ImportError_(f"{sheet_key} 未找到表头（需含'发票号码'和'经办人'列）")
@@ -57,44 +57,61 @@ def _parse_invoice_sheet(rows: List[List[str]], sheet_key: str, period: str) -> 
     idx_case = col_index(header, "案号")
     idx_rcvdate = col_index(header, "收到日期")  # sheet4 专用，这里通常 -1
 
+    def g(row: List[str], i: int) -> str:
+        return row[i].strip() if 0 <= i < len(row) else ""
+
     items: List[Dict] = []
+    problems: List[Dict] = []
     year = int(period.split("-")[0])
-    for row in rows[hr + 1:]:
-        no = row[idx_no].strip() if 0 <= idx_no < len(row) else ""
+    for row_idx, row in enumerate(rows[hr + 1:], start=hr + 2):  # 行号按原始表头起算（1 基）
+        no = g(row, idx_no)
         if not no:
             continue
-        def g(i: int) -> str:
-            return row[i].strip() if 0 <= i < len(row) else ""
-        amt_txt = g(idx_amt)
+
+        def problem(reason: str) -> Dict:
+            return {
+                "kind": "invoice", "sheet": sheet_key, "row_no": row_idx,
+                "invoice_no": no, "buyer": g(row, idx_buyer),
+                "total_amount": g(row, idx_amt),
+                "handler_text": g(row, idx_handler), "remark_raw": g(row, idx_remark),
+                "date_text": g(row, idx_date), "reason": reason,
+            }
+
+        amt_txt = g(row, idx_amt)
         try:
             total = float(amt_txt.replace(",", "")) if amt_txt else 0.0
         except ValueError:
-            raise ImportError_(f"发票 {no} 金额无法解析: 「{amt_txt}」") from None
+            problems.append(problem(f"金额无法解析「{amt_txt}」"))
+            continue
 
-        handler_text = g(idx_handler)
-        handlers = parse_handler_column(handler_text, total, no)
-        remark_raw = g(idx_remark)
-        remark = parse_remark(remark_raw, default_year=year)
-        rcv_date = norm_full_date(g(idx_rcvdate), year) if idx_rcvdate >= 0 and g(idx_rcvdate) else None
+        handler_text = g(row, idx_handler)
+        try:
+            handlers = parse_handler_column(handler_text, total, no)
+            remark_raw = g(row, idx_remark)
+            remark = parse_remark(remark_raw, default_year=year)
+            rcv_date = norm_full_date(g(row, idx_rcvdate), year) if idx_rcvdate >= 0 and g(row, idx_rcvdate) else None
+        except ImportError_ as e:
+            problems.append(problem(str(e)))
+            continue
 
         items.append({
             "sheet": sheet_key,
             "invoice_no": no,
-            "invoice_date": norm_full_date(g(idx_date), year) if idx_date >= 0 else None,
-            "buyer": g(idx_buyer),
+            "invoice_date": norm_full_date(g(row, idx_date), year) if idx_date >= 0 else None,
+            "buyer": g(row, idx_buyer),
             "total_amount": total,
             "handlers": handlers,
             "handler_text": handler_text,
             "remark_raw": remark_raw,
             "remark": remark,
-            "case_no": g(idx_case),
+            "case_no": g(row, idx_case),
             "is_red": total < 0,
         })
-    return items
+    return items, problems
 
 
-def _parse_sheet4(rows: List[List[str]], period: str) -> List[Dict]:
-    """解析 sheet4：预收款行"""
+def _parse_sheet4(rows: List[List[str]], period: str) -> "tuple[List[Dict], List[Dict]]":
+    """解析 sheet4：预收款行。返回 (items, problems)。"""
     hr = find_header_row(rows, ["金额", "经办人"])
     if hr < 0:
         raise ImportError_("已入账未开票未找到表头（需含'金额'和'经办人'列）")
@@ -106,47 +123,72 @@ def _parse_sheet4(rows: List[List[str]], period: str) -> List[Dict]:
     idx_remark = col_index(header, "备注")
     idx_case = col_index(header, "案号")
 
+    def g(row: List[str], i: int) -> str:
+        return row[i].strip() if 0 <= i < len(row) else ""
+
     items: List[Dict] = []
+    problems: List[Dict] = []
     year = int(period.split("-")[0])
-    for row in rows[hr + 1:]:
-        def g(i: int) -> str:
-            return row[i].strip() if 0 <= i < len(row) else ""
-        buyer = g(idx_buyer)
-        amt_txt = g(idx_amt)
+    for row_idx, row in enumerate(rows[hr + 1:], start=hr + 2):
+        buyer = g(row, idx_buyer)
+        amt_txt = g(row, idx_amt)
         if not buyer and not amt_txt:
             continue
+
+        def problem(reason: str) -> Dict:
+            return {
+                "kind": "prepayment", "sheet": "sheet4", "row_no": row_idx,
+                "buyer": buyer, "amount_text": amt_txt,
+                "person_text": g(row, idx_handler), "date_text": g(row, idx_rcvdate),
+                "reason": reason,
+            }
+
         try:
             amount = float(amt_txt.replace(",", "")) if amt_txt else 0.0
         except ValueError:
-            raise ImportError_(f"预收款金额无法解析: 「{amt_txt}」") from None
+            problems.append(problem(f"金额无法解析「{amt_txt}」"))
+            continue
+
+        try:
+            received_date = norm_full_date(g(row, idx_rcvdate), year) if idx_rcvdate >= 0 and g(row, idx_rcvdate) else None
+        except ImportError_ as e:
+            problems.append(problem(str(e)))
+            continue
 
         items.append({
-            "received_date": norm_full_date(g(idx_rcvdate), year) if idx_rcvdate >= 0 and g(idx_rcvdate) else None,
+            "received_date": received_date,
             "buyer": buyer,
             "amount": amount,
-            "person_text": g(idx_handler),
-            "remark": g(idx_remark),
-            "case_no": g(idx_case),
+            "person_text": g(row, idx_handler),
+            "remark": g(row, idx_remark),
+            "case_no": g(row, idx_case),
         })
-    return items
+    return items, problems
 
 
 def parse_ledger_file(path: str, period: str) -> Dict:
-    """解析发票台账，返回结构化数据（未落库）"""
+    """解析发票台账，返回结构化数据（未落库）
+
+    返回: {invoices, prepayments, sheet_totals, problems, sheet12_total}
+    problems 为无法解析的问题行（解析失败不中断，收集到此列表由上层处理）。
+    """
     names = sheet_names(path)
     mapping = classify_sheets(names)
     if not mapping:
         raise ImportError_("未识别到发票台账 sheet（需含'已开票已入账/已开票未入账/应收账款/已入账未开票'）")
 
-    result: Dict = {"invoices": [], "prepayments": [], "sheet_totals": {}}
+    result: Dict = {"invoices": [], "prepayments": [], "sheet_totals": {}, "problems": []}
     for key, name in mapping.items():
         rows = read_sheet(path, sheet_name=name)
         if key in ("sheet1", "sheet2", "sheet3"):
-            items = _parse_invoice_sheet(rows, key, period)
+            items, problems = _parse_invoice_sheet(rows, key, period)
             result["invoices"].extend(items)
+            result["problems"].extend(problems)
             result["sheet_totals"][key] = sum(i["total_amount"] for i in items)
         elif key == "sheet4":
-            result["prepayments"] = _parse_sheet4(rows, period)
+            items, problems = _parse_sheet4(rows, period)
+            result["prepayments"] = items
+            result["problems"].extend(problems)
 
     result["sheet12_total"] = result["sheet_totals"].get("sheet1", 0.0) + result["sheet_totals"].get("sheet2", 0.0)
     return result

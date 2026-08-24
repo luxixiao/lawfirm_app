@@ -140,7 +140,10 @@ class ImportView(QWidget):
                     r = import_invoice_file(path, period)
                     msg = f"✓ 销项文档 {period}: {r['count']} 张发票"
                 elif ftype == "ledger":
-                    r = import_ledger_file(path, period)
+                    r = import_ledger_file(
+                        path, period,
+                        on_problems=lambda probs: self._resolve_problems(probs, period),
+                    )
                     msg = (f"✓ 发票台账 {period}: {r['invoice_count']} 张发票, "
                            f"{r['prepayment_count']} 条预收款")
                 else:
@@ -154,3 +157,17 @@ class ImportView(QWidget):
         self._log(msg)
         if not quiet:
             QMessageBox.information(self, "导入成功", msg)
+
+    def _resolve_problems(self, problems: list, period: str):
+        """问题行修正回调：弹汇总对话框，返回 resolved；取消返回 None"""
+        from PySide6.QtWidgets import QDialog
+        from app.ui.problem_dialog import ProblemDialog
+        conn = get_conn()
+        try:
+            staff_names = [r["name"] for r in conn.execute("SELECT name FROM staff ORDER BY name")]
+        finally:
+            conn.close()
+        dlg = ProblemDialog(problems, staff_names, period, self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return None
+        return dlg.resolved()

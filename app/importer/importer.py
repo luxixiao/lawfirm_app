@@ -146,9 +146,56 @@ def _validate_handler_names(conn, names: List[str], context: str) -> List[str]:
     return missing
 
 
-def import_ledger_file(path: str, period: str) -> Dict:
+def _apply_resolved(data: Dict, resolved: List[Dict]) -> None:
+    """把问题行修正结果合并回解析数据：fix 行转正常结构追加，skip 行忽略"""
+    for item in resolved:
+        if item["action"] != "fix":
+            continue
+        p = data["problems"][item["index"]]
+        d = item["data"]
+        if d["kind"] == "invoice":
+            data["invoices"].append({
+                "sheet": "problem_fix",
+                "invoice_no": d["invoice_no"] or p.get("invoice_no", ""),
+                "invoice_date": d["invoice_date"] or "",
+                "buyer": p.get("buyer", ""),
+                "total_amount": d["total_amount"],
+                "handlers": d["handlers"],
+                "handler_text": d["handler_text"],
+                "remark_raw": p.get("remark_raw", ""),
+                "remark": {"receipts": [], "remaining": None, "pure_date": None,
+                           "is_red_remark": False, "is_red_off": False},
+                "case_no": p.get("case_no", ""),
+                "is_red": d["total_amount"] < 0,
+                "receipts_override": d["receipts"],
+            })
+        else:  # prepayment
+            data["prepayments"].append({
+                "received_date": d["received_date"] or None,
+                "buyer": p.get("buyer", ""),
+                "amount": d["amount"],
+                "person_text": d["person_text"],
+                "remark": "",
+                "case_no": "",
+            })
+
+
+def import_ledger_file(path: str, period: str,
+                       on_problems: callable | None = None) -> Dict:
+    """导入发票台账。
+
+    on_problems: 可选回调 (problems: list) -> resolved: list | None。
+    解析失败的问题行交给回调处理（如弹修正对话框），返回
+    [{index, action: 'fix'|'skip', data}]；返回 None 表示用户取消导入。
+    """
     _auto_snapshot()
     data = parse_ledger_file(path, period)
+    if data["problems"] and on_problems is not None:
+        resolved = on_problems(data["problems"])
+        if resolved is None:
+            raise ImportError_("已取消导入")
+        _apply_resolved(data, resolved)
+        data["problems"] = []
     conn = get_conn()
     try:
         # ---- 校验 1：sheet1+sheet2 合计 = 销项合计（本月销项须已导入）----
@@ -210,6 +257,14 @@ def import_ledger_file(path: str, period: str) -> Dict:
                     )
             # 收款明细：先删该发票 import 旧记录（以最新台账为准），再插入
             conn.execute("DELETE FROM collection WHERE invoice_no=? AND source='import'", (no,))
+            if inv.get("receipts_override") is not None:
+                # 问题行修正：收款由用户手动指定（空列表 = 无收款）
+                for ym, amt in inv["receipts_override"]:
+                    conn.execute(
+                        "INSERT INTO collection (invoice_no, amount, receipt_date, source, import_batch_id) VALUES (?,?,?,?,?)",
+                        (no, amt, ym, "import", batch_id),
+                    )
+                continue
             rem = inv["remark"]
             if inv["is_red"]:
                 # 红字发票：不产生收款（退款走 refund 手动确认）
