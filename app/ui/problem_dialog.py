@@ -85,6 +85,9 @@ class ProblemDialog(QDialog):
         self.table.verticalHeader().setVisible(False)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.table.setMinimumWidth(280)
         self.table.horizontalHeader().setSectionResizeMode(6, QHeaderView.ResizeMode.Stretch)
         for i, w in enumerate([36, 52, 48, 150, 84, 92, 200, 64]):
@@ -231,6 +234,7 @@ class ProblemDialog(QDialog):
 
     # ---- 列表 ----
     def _fill_table(self) -> None:
+        tooltip_cols = {3, 4, 6}  # 发票号、购方、原因：悬停显示全文
         for i, p in enumerate(self._problems):
             vals = [
                 str(i + 1), _TYPES.get(p["kind"], p["kind"]), str(p.get("row_no", "")),
@@ -240,7 +244,10 @@ class ProblemDialog(QDialog):
             ]
             self.table.insertRow(i)
             for c, v in enumerate(vals):
-                self.table.setItem(i, c, QTableWidgetItem(v))
+                item = QTableWidgetItem(v)
+                if c in tooltip_cols and isinstance(v, str) and v:
+                    item.setToolTip(v)
+                self.table.setItem(i, c, item)
         self._set_status_all()
 
     def _set_status_all(self) -> None:
