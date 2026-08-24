@@ -132,26 +132,15 @@ class ProblemDialog(QDialog):
         cg.addWidget(k2, 0, 2); cg.addWidget(self.inv_amount, 1, 2)
         iv.addWidget(card)
 
-        # 工具栏：行操作 ｜ 分摊（下拉选方式 + 单按钮）
+        # 工具栏：行操作（手工填写，去掉自动分摊按钮）
         tb = QHBoxLayout()
         tb.setSpacing(8)
         self._btn_add = PushButton("＋ 添加经办人")
         self._btn_del = PushButton("－ 删除选中")
-        sep = QFrame(); sep.setObjectName("sep"); sep.setFrameShape(QFrame.Shape.VLine)
-        sep.setFixedWidth(1)
-        self._split_mode = ComboBox()
-        self._split_mode.addItems(["均分开票额", "均分收款", "按开票比例生成收款"])
-        self._split_mode.setCurrentIndex(0)
-        self._split_mode.setFixedWidth(160)
-        self._btn_split = PushButton("分摊")
-        self._btn_split.clicked.connect(self._apply_split)
         self._btn_add.clicked.connect(self._add_row)
         self._btn_del.clicked.connect(self._del_row)
         tb.addWidget(self._btn_add)
         tb.addWidget(self._btn_del)
-        tb.addWidget(sep)
-        tb.addWidget(self._split_mode)
-        tb.addWidget(self._btn_split)
         tb.addStretch()
         iv.addLayout(tb)
 
@@ -323,15 +312,6 @@ class ProblemDialog(QDialog):
         # 关键：让下拉框宽高都跟随单元格，去掉边框后内嵌进表格
         cb.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
         return cb
-
-    def _apply_split(self) -> None:
-        idx = self._split_mode.currentIndex()
-        if idx == 0:
-            self._split_bill_even()
-        elif idx == 1:
-            self._split_recv_even()
-        else:
-            self._gen_recv_from_bill()
 
     def _render_rows(self, rows: list) -> None:
         self.htable.blockSignals(True)
