@@ -12,10 +12,11 @@ from __future__ import annotations
 
 import re
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QSettings
 from PySide6.QtWidgets import (
     QComboBox, QDialog, QFrame, QGridLayout, QHBoxLayout, QHeaderView, QLabel,
-    QLineEdit, QMessageBox, QSizePolicy, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
+    QLineEdit, QMessageBox, QSizePolicy, QSplitter, QTableWidget, QTableWidgetItem,
+    QVBoxLayout, QWidget,
 )
 
 from app.importer.date_utils import normalize_date
@@ -75,9 +76,8 @@ class ProblemDialog(QDialog):
         )
         root.addWidget(h)
 
-        # ---- 中部：列表 + 表单 ----
-        mid = QHBoxLayout()
-        mid.setSpacing(14)
+        # ---- 中部：列表 + 表单（可拖拽宽度，状态记忆） ----
+        self.splitter = QSplitter(Qt.Orientation.Horizontal)
 
         self.table = TableWidget(0, 8)
         self.table.setHorizontalHeaderLabels(
@@ -85,17 +85,18 @@ class ProblemDialog(QDialog):
         self.table.verticalHeader().setVisible(False)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        self.table.setFixedWidth(430)
+        self.table.setMinimumWidth(280)
         self.table.horizontalHeader().setSectionResizeMode(6, QHeaderView.ResizeMode.Stretch)
         for i, w in enumerate([36, 52, 48, 150, 84, 92, 200, 64]):
             self.table.setColumnWidth(i, w)
         self._fill_table()
         self.table.itemSelectionChanged.connect(self._load_form)
-        mid.addWidget(self.table)
+        self.splitter.addWidget(self.table)
 
         # ---- 右侧表单 ----
         form_box = QWidget()
         form_box.setObjectName("problemForm")
+        form_box.setMinimumWidth(420)
         fv = QVBoxLayout(form_box)
         fv.setContentsMargins(0, 0, 0, 0)
         fv.setSpacing(10)
@@ -203,8 +204,19 @@ class ProblemDialog(QDialog):
         row.addStretch()
         fv.addLayout(row)
         fv.addStretch()
-        mid.addWidget(form_box, 1)
-        root.addLayout(mid, 1)
+        self.splitter.addWidget(form_box)
+        self.splitter.setHandleWidth(8)
+        # 恢复上次布局（首次打开用默认 430/750）
+        settings = QSettings("lawfirm_app", "problem_dialog")
+        geo = settings.value("geometry")
+        if isinstance(geo, (bytes, bytearray)):
+            self.restoreGeometry(geo)
+        state = settings.value("splitter_state")
+        if isinstance(state, (bytes, bytearray)):
+            self.splitter.restoreState(state)
+        else:
+            self.splitter.setSizes([430, 750])
+        root.addWidget(self.splitter, 1)
 
         # ---- 底部 ----
         bottom = QHBoxLayout()
@@ -555,3 +567,10 @@ class ProblemDialog(QDialog):
 
     def resolved(self) -> list:
         return getattr(self, "_resolved", [])
+
+    def closeEvent(self, event) -> None:
+        """关闭时记忆窗口几何与 splitter 状态"""
+        settings = QSettings("lawfirm_app", "problem_dialog")
+        settings.setValue("geometry", self.saveGeometry())
+        settings.setValue("splitter_state", self.splitter.saveState())
+        super().closeEvent(event)
