@@ -113,14 +113,17 @@ class ProblemDialog(QDialog):
         cg.setContentsMargins(0, 0, 0, 0)
         cg.setSpacing(10)
         cg.setColumnStretch(0, 1)
-        cg.setColumnStretch(1, 1)
+        cg.setColumnStretch(2, 1)
         k1 = QLabel("开票日期"); k1.setObjectName("infoKey")
         self.inv_date = LineEdit(); self.inv_date.setPlaceholderText("如 2025-02-13，可空")
         k2 = QLabel("开票总额"); k2.setObjectName("infoKey")
         self.inv_amount = LineEdit(); self.inv_amount.setPlaceholderText("必填，数字")
         self.inv_amount.textChanged.connect(self._update_summary)
+        sep = QFrame(); sep.setObjectName("sep"); sep.setFrameShape(QFrame.Shape.VLine)
+        sep.setFixedWidth(1)
         cg.addWidget(k1, 0, 0); cg.addWidget(self.inv_date, 1, 0)
-        cg.addWidget(k2, 0, 1); cg.addWidget(self.inv_amount, 1, 1)
+        cg.addWidget(sep, 0, 1, 2, 1)  # 跨两行居中分隔
+        cg.addWidget(k2, 0, 2); cg.addWidget(self.inv_amount, 1, 2)
         iv.addWidget(card)
 
         # 工具栏：行操作 ｜ 分摊（下拉选方式 + 单按钮）
