@@ -123,27 +123,26 @@ class ProblemDialog(QDialog):
         cg.addWidget(k2, 0, 1); cg.addWidget(self.inv_amount, 1, 1)
         iv.addWidget(card)
 
-        # 工具栏：行操作 ｜ 分摊（方案A：三个独立按钮）
+        # 工具栏：行操作 ｜ 分摊（下拉选方式 + 单按钮）
         tb = QHBoxLayout()
         tb.setSpacing(8)
         self._btn_add = PushButton("＋ 添加经办人")
         self._btn_del = PushButton("－ 删除选中")
         sep = QFrame(); sep.setObjectName("sep"); sep.setFrameShape(QFrame.Shape.VLine)
         sep.setFixedWidth(1)
-        self._btn_split_bill = PushButton("均分开票额")
-        self._btn_split_recv = PushButton("均分收款")
-        self._btn_gen_recv = PushButton("按开票比例生成收款")
+        self._split_mode = ComboBox()
+        self._split_mode.addItems(["均分开票额", "均分收款", "按开票比例生成收款"])
+        self._split_mode.setCurrentIndex(0)
+        self._split_mode.setFixedWidth(160)
+        self._btn_split = PushButton("分摊")
+        self._btn_split.clicked.connect(self._apply_split)
         self._btn_add.clicked.connect(self._add_row)
         self._btn_del.clicked.connect(self._del_row)
-        self._btn_split_bill.clicked.connect(self._split_bill_even)
-        self._btn_split_recv.clicked.connect(self._split_recv_even)
-        self._btn_gen_recv.clicked.connect(self._gen_recv_from_bill)
         tb.addWidget(self._btn_add)
         tb.addWidget(self._btn_del)
         tb.addWidget(sep)
-        tb.addWidget(self._btn_split_bill)
-        tb.addWidget(self._btn_split_recv)
-        tb.addWidget(self._btn_gen_recv)
+        tb.addWidget(self._split_mode)
+        tb.addWidget(self._btn_split)
         tb.addStretch()
         iv.addLayout(tb)
 
@@ -259,6 +258,15 @@ class ProblemDialog(QDialog):
         cb.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         cb.setMinimumWidth(40)
         return cb
+
+    def _apply_split(self) -> None:
+        idx = self._split_mode.currentIndex()
+        if idx == 0:
+            self._split_bill_even()
+        elif idx == 1:
+            self._split_recv_even()
+        else:
+            self._gen_recv_from_bill()
 
     def _render_rows(self, rows: list) -> None:
         self.htable.blockSignals(True)
