@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Dict, List, Tuple
 
 from app.db import get_conn
+from app.engine.backfill import norm_type, staff_type_of
 from app.importer.expense_import import parse_expense_file
 from app.importer.invoice_import import parse_invoice_file
 from app.importer.ledger_import import parse_ledger_file
