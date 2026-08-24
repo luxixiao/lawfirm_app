@@ -156,6 +156,22 @@ QWidget#infoCard {{
 QLabel#infoKey {{ color: {p['text_mute']}; font-size: 12px; }}
 QLabel#infoVal {{ color: {p['text']}; font-size: 15px; font-weight: 700; }}
 
+/* 信息卡内输入框：去边框、只留底部细线，与卡片融为一体 */
+#infoCard QLineEdit {{
+    background: transparent; border: none;
+    border-bottom: 1px solid {p['border_2']}; border-radius: 0;
+    padding: 3px 2px; min-height: 18px; color: {p['text']}; font-size: 14px;
+}}
+#infoCard QLineEdit:focus {{ border-bottom-color: {p['text_faint']}; }}
+
+/* 经办人下拉框：无边框浅底，贴合单元格 */
+QComboBox#handlerCombo {{
+    border: none; background: {p['bg_table']}; border-radius: 6px;
+    padding: 3px 8px; min-height: 18px; color: {p['text']};
+}}
+QComboBox#handlerCombo:focus {{ background: {p['btn_bg']}; }}
+QComboBox#handlerCombo::drop-down {{ border: none; width: 20px; }}
+
 QLabel#chip {{
     background: {p['bg_table']}; border: 1px solid {p['border']};
     border-radius: 14px; padding: 6px 14px; color: {p['text_mute']}; font-size: 12px;
