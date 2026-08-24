@@ -142,7 +142,6 @@ class ProblemDialog(QDialog):
         tb.addWidget(self._btn_add)
         tb.addWidget(self._btn_del)
         tb.addStretch()
-        iv.addLayout(tb)
 
         # 逐经办人单表：经办人 | 开票金额 | 收款金额 | 收款日期
         self.htable = TableWidget(0, 4)
@@ -192,11 +191,16 @@ class ProblemDialog(QDialog):
         self._btn_save.clicked.connect(self._save_fix)
         self._btn_skip = PushButton("跳过此行")
         self._btn_skip.clicked.connect(self._skip_row)
-        row = QHBoxLayout()
-        row.addWidget(self._btn_save)
-        row.addWidget(self._btn_skip)
-        row.addStretch()
-        fv.addLayout(row)
+
+        # 统一底部按钮行：添加/删除（仅发票） | 保存/跳过
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(8)
+        btn_row.addWidget(self._btn_add)
+        btn_row.addWidget(self._btn_del)
+        btn_row.addStretch()
+        btn_row.addWidget(self._btn_save)
+        btn_row.addWidget(self._btn_skip)
+        fv.addLayout(btn_row)
         fv.addStretch()
         self.splitter.addWidget(form_box)
         self.splitter.setHandleWidth(8)
@@ -387,6 +391,8 @@ class ProblemDialog(QDialog):
         if p["kind"] == "prepayment":
             self.inv_box.setVisible(False)
             self.pp_box.setVisible(True)
+            self._btn_add.setVisible(False)
+            self._btn_del.setVisible(False)
             self.pp_date.setText((fix or {}).get("received_date") or p.get("date_text", "") or "")
             self.pp_amount.setText((fix or {}).get("amount_text") or p.get("amount_text", "") or "")
             self.pp_person.setText((fix or {}).get("person_text") or p.get("person_text", "") or "")
@@ -394,6 +400,8 @@ class ProblemDialog(QDialog):
 
         self.inv_box.setVisible(True)
         self.pp_box.setVisible(False)
+        self._btn_add.setVisible(True)
+        self._btn_del.setVisible(True)
         rows = fix["_rows"] if fix else self._prefill_rows(p)
         self.inv_date.setText(p.get("date_text", "") or "")
         self.inv_amount.setText(p.get("total_amount", "") or "")

@@ -194,7 +194,7 @@ QLabel#chipWarn {{
     border-radius: 14px; padding: 6px 14px; color: {p['warn_fg']}; font-size: 12px; font-weight: 600;
 }}
 QLabel#chipWarn QLabel#chipVal {{ color: {p['warn_fg']}; }}
-QFrame#sep {{ background: {p['grid']}; }}
+QFrame#sep {{ background: {p['grid']}; border: none; }}
 
 /* ===== 消息框 / 弹窗 ===== */
 QMessageBox, QDialog {{ background: {p['bg']}; }}
