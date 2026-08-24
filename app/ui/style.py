@@ -61,7 +61,13 @@ def build_qss(p: dict) -> str:
     color: {p['text']};
 }}
 QMainWindow, QWidget#pageArea {{ background: {p['bg']}; }}
-QToolTip {{ background: {p['text']}; color: {p['white']}; border: none; padding: 6px 10px; border-radius: 6px; }}
+QToolTip {{
+    background: {p['bg_table']};
+    color: {p['text']};
+    border: 1px solid {p['border_2']};
+    padding: 5px 9px;
+    border-radius: 6px;
+}}
 
 /* ===== 侧边栏 ===== */
 #sidebar {{ background: {p['bg_side']}; border-right: 1px solid {p['border']}; }}

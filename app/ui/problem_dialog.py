@@ -16,7 +16,7 @@ from PySide6.QtCore import Qt, QSettings
 from PySide6.QtWidgets import (
     QComboBox, QDialog, QFrame, QGridLayout, QHBoxLayout, QHeaderView, QLabel,
     QLineEdit, QMessageBox, QSizePolicy, QSplitter, QTableWidget, QTableWidgetItem,
-    QVBoxLayout, QWidget,
+    QToolTip, QVBoxLayout, QWidget,
 )
 
 from app.importer.date_utils import normalize_date
@@ -55,6 +55,9 @@ class ProblemDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("发票台账导入 - 问题行修正")
         self.resize(1180, 620)
+        # Notion 风 tooltip：减少延迟、避免闪烁、延长停留
+        QToolTip.setShowDelay(120)
+        QToolTip.setToolTipDuration(15000)
         self._problems = problems
         self._staff = set(staff_names)
         self._staff_list = sorted(staff_names)
