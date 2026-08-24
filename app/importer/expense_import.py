@@ -10,6 +10,7 @@ from __future__ import annotations
 import re
 from typing import Dict, List
 
+from app.importer.date_utils import normalize_date
 from app.importer.excel_reader import ImportError_, col_index, find_header_row, read_sheet
 
 # 真实数据中经办人可能写成"徐琦合伙"（姓名+类型拼接），清洗类型后缀
@@ -74,7 +75,7 @@ def parse_expense_file(path: str, period: str) -> List[Dict]:
         items.append({
             "period": period,
             "seq": int(g(idx_seq)) if g(idx_seq) else None,
-            "exp_date": g(idx_time),
+            "exp_date": normalize_date(g(idx_time), default_year=int(period.split("-")[0])),
             "name": name,
             "ticket_no": g(idx_ticket),
             "handler": _clean_name(g(idx_handler)),

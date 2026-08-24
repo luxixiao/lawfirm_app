@@ -151,9 +151,10 @@ def import_ledger_file(path: str, period: str) -> Dict:
     conn = get_conn()
     try:
         # ---- 校验 1：sheet1+sheet2 合计 = 销项合计（本月销项须已导入）----
+        # strftime 规范化匹配：兼容历史非零填充日期（2024-9-15 也算入 2024-09）
         inv_total = conn.execute(
-            "SELECT COALESCE(SUM(total_amount),0) FROM invoice WHERE invoice_date LIKE ?",
-            (period + "%",),
+            "SELECT COALESCE(SUM(total_amount),0) FROM invoice WHERE strftime('%Y-%m', invoice_date) = ?",
+            (period,),
         ).fetchone()[0]
         s12 = data["sheet12_total"]
         if abs(inv_total - s12) > 0.01:

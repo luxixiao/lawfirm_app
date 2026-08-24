@@ -11,6 +11,7 @@ from __future__ import annotations
 import re
 from typing import Dict, List
 
+from app.importer.date_utils import normalize_date
 from app.importer.excel_reader import ImportError_, col_index, find_header_row, read_sheet
 
 _RED_RE = re.compile(r"被红冲蓝字数电票号码[:：]\s*(\d+)")
@@ -62,7 +63,7 @@ def parse_invoice_file(path: str, period: str) -> List[Dict]:
 
         invoices.append({
             "invoice_no": no,
-            "invoice_date": g(idx_date),
+            "invoice_date": normalize_date(g(idx_date), default_year=int(period.split("-")[0])),
             "kind": g(idx_kind),
             "status": g(idx_status),
             "voucher_no": g(idx_voucher),

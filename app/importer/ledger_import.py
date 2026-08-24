@@ -8,41 +8,17 @@
 """
 from __future__ import annotations
 
-import re
 from typing import Dict, List
 
+from app.importer.date_utils import normalize_date
 from app.importer.excel_reader import ImportError_, cell_text, col_index, find_header_row, read_sheet, sheet_names
 from app.importer.parse_handler import parse_handler_column
 from app.importer.parse_remark import parse_remark
 
-DATE_FULL = re.compile(r"^(\d{4})-(\d{1,2})-(\d{1,2})$")
-DATE_DOT4 = re.compile(r"^(\d{4})\.(\d{1,2})(?:\.(\d{1,2}))?$")
-DATE_SHORT = re.compile(r"^(\d{1,2})\.(\d{1,2})(?:\.(\d{1,2}))?$")
-
 
 def norm_full_date(text: str, default_year: int | None = None) -> str:
-    """台账日期 → YYYY-MM-DD（支持 25.1.2 / 2022.5.23 / 2025-01-02 / 1.2 缺年）"""
-    text = (text or "").strip()
-    m = DATE_FULL.match(text)
-    if m:
-        return f"{m.group(1)}-{int(m.group(2)):02d}-{int(m.group(3)):02d}"
-    m = DATE_DOT4.match(text)
-    if m:
-        y = int(m.group(1))
-        mo = int(m.group(2))
-        d = int(m.group(3)) if m.group(3) else 1
-        return f"{y:04d}-{mo:02d}-{d:02d}"
-    m = DATE_SHORT.match(text)
-    if m:
-        y = int(m.group(1)) + 2000
-        mo = int(m.group(2))
-        d = int(m.group(3)) if m.group(3) else 1
-        return f"{y:04d}-{mo:02d}-{d:02d}"
-    if default_year:
-        m2 = DATE_SHORT.match(f"1.{text}")  # 兜底
-        if m2:
-            return norm_full_date(f"{default_year}.{text}", default_year)
-    raise ImportError_(f"日期无法解析: 「{text}」")
+    """台账日期 → YYYY-MM-DD（委托通用 normalize_date，支持更多写法）。"""
+    return normalize_date(text, default_year=default_year)
 
 
 def _pick_sheet(rows: List[List[str]], keyword: str) -> List[List[str]] | None:
