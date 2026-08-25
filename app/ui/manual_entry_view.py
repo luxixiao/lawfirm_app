@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
 from app.ui.widgets import (SubtitleLabel, CaptionLabel, PrimaryPushButton, PushButton)
 from app.db import get_conn
 from app.importer.parse_handler import parse_handler_column
+from app.engine.backfill import norm_type, staff_type_of
 from app.ui.dialogs import show_invoice_info
 from app.ui.column_state import attach_persistence, restore_col_widths
 
@@ -209,6 +210,7 @@ class ManualEntryView(QWidget):
             "amount": abs(inv["total_amount"]),   # 原票金额 ≥ 红字绝对值（参考值）
             "handler": "、".join(parts),
             "case": inv["case_no"],
+            "date": inv["invoice_date"] or "",      # 预填红字发票开票日期，用户按原票实际日期修改
         })
 
     # ---- 编辑已补录发票（含收款）----
@@ -323,6 +325,9 @@ class ManualEntryView(QWidget):
 
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
+        if not date_edit.text().strip():
+            QMessageBox.warning(self, "缺少开票日期", "「开票日期(YYYY-MM-DD)」为必填项，请填写后再保存。")
+            return
         total = amt.value()
         handlers = parse_handler_column(handler_edit.text(), total, no) if handler_edit.text().strip() else []
         receipts = []
@@ -404,6 +409,8 @@ class ManualEntryView(QWidget):
             handler_edit.setText(prefill["handler"])
         if prefill.get("case"):
             case_edit.setText(prefill["case"])
+        if prefill.get("date"):
+            date_edit.setText(prefill["date"])
         form.addRow("发票号码", no_edit)
         form.addRow("开票日期(YYYY-MM-DD)", date_edit)
         form.addRow("购方名称", buyer_edit)
@@ -475,7 +482,16 @@ class ManualEntryView(QWidget):
         amt.valueChanged.connect(on_total_changed)
 
         btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        btns.accepted.connect(dlg.accept); btns.rejected.connect(dlg.reject)
+
+        def _on_accept() -> None:
+            # 防御：开票日期为 NULL 会撞 SQLite NOT NULL 约束，提前友好拦截
+            if not date_edit.text().strip():
+                QMessageBox.warning(dlg, "缺少开票日期", "「开票日期(YYYY-MM-DD)」为必填项，请填写后再保存。")
+                return
+            dlg.accept()
+
+        btns.accepted.connect(_on_accept)
+        btns.rejected.connect(dlg.reject)
         lay.addWidget(btns)
 
         if dlg.exec() != QDialog.DialogCode.Accepted:
