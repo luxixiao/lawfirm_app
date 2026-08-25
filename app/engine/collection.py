@@ -154,6 +154,7 @@ def handler_rows(conn=None, person: str | None = None, period: str | None = None
             params.append(source)
         sql = """SELECT i.invoice_no, i.invoice_date, i.buyer, i.total_amount,
                         i.orig_invoice_no, i.case_no, i.source,
+                        i.src_sheet, i.src_row, i.import_batch_id,
                         cd.person_name, cd.billing_amount, cd.person_type
                  FROM charge_detail cd JOIN invoice i ON cd.invoice_no = i.invoice_no"""
         if where:
@@ -207,6 +208,9 @@ def handler_rows(conn=None, person: str | None = None, period: str | None = None
                     "is_red": is_red,
                     "orig_invoice_no": inv["orig_invoice_no"],
                     "case_no": inv["case_no"],
+                    "src_sheet": inv["src_sheet"] or "",
+                    "src_row": inv["src_row"] or 0,
+                    "import_batch_id": inv["import_batch_id"],
                 })
         return rows
     finally:

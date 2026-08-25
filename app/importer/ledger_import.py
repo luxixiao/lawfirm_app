@@ -42,7 +42,7 @@ def classify_sheets(names: List[str]) -> Dict[str, str]:
     return mapping
 
 
-def _parse_invoice_sheet(rows: List[List[str]], sheet_key: str, period: str) -> "tuple[List[Dict], List[Dict]]":
+def _parse_invoice_sheet(rows: List[List[str]], sheet_key: str, sheet_name: str, period: str) -> "tuple[List[Dict], List[Dict]]":
     """解析 sheet1/2/3：发票行。返回 (items, problems)；问题行不中断，收集到 problems。"""
     hr = find_header_row(rows, ["发票号码", "经办人"])
     if hr < 0:
@@ -107,6 +107,10 @@ def _parse_invoice_sheet(rows: List[List[str]], sheet_key: str, period: str) -> 
 
         items.append({
             "sheet": sheet_key,
+            "sheet_name": sheet_name,
+            "row_no": row_idx,
+            "header": header,
+            "raw_row": list(row),
             "invoice_no": no,
             "invoice_date": norm_full_date(g(row, idx_date), year) if idx_date >= 0 else None,
             "buyer": g(row, idx_buyer),
@@ -121,7 +125,7 @@ def _parse_invoice_sheet(rows: List[List[str]], sheet_key: str, period: str) -> 
     return items, problems
 
 
-def _parse_sheet4(rows: List[List[str]], period: str) -> "tuple[List[Dict], List[Dict]]":
+def _parse_sheet4(rows: List[List[str]], sheet_name: str, period: str) -> "tuple[List[Dict], List[Dict]]":
     """解析 sheet4：预收款行。返回 (items, problems)。"""
     hr = find_header_row(rows, ["金额", "经办人"])
     if hr < 0:
@@ -167,6 +171,11 @@ def _parse_sheet4(rows: List[List[str]], period: str) -> "tuple[List[Dict], List
             continue
 
         items.append({
+            "sheet": "sheet4",
+            "sheet_name": sheet_name,
+            "row_no": row_idx,
+            "header": header,
+            "raw_row": list(row),
             "received_date": received_date,
             "buyer": buyer,
             "amount": amount,
@@ -192,12 +201,12 @@ def parse_ledger_file(path: str, period: str) -> Dict:
     for key, name in mapping.items():
         rows = read_sheet(path, sheet_name=name)
         if key in ("sheet1", "sheet2", "sheet3"):
-            items, problems = _parse_invoice_sheet(rows, key, period)
+            items, problems = _parse_invoice_sheet(rows, key, name, period)
             result["invoices"].extend(items)
             result["problems"].extend(problems)
             result["sheet_totals"][key] = sum(i["total_amount"] for i in items)
         elif key == "sheet4":
-            items, problems = _parse_sheet4(rows, period)
+            items, problems = _parse_sheet4(rows, name, period)
             result["prepayments"] = items
             result["problems"].extend(problems)
 

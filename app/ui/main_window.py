@@ -20,6 +20,7 @@ from app.ui import style
 from app.ui.batch_view import BatchView
 from app.ui.handler_collect_view import HandlerCollectView
 from app.ui.import_view import ImportView
+from app.ui.import_verify_view import ImportVerifyView
 from app.ui.invoice_collect_view import InvoiceCollectView
 from app.ui.ledger_view import LedgerView
 from app.ui.manual_entry_view import ManualEntryView
@@ -48,6 +49,7 @@ NAV_GROUPS = [
     ]),
     ("维护", [
         ("staff", "员工管理"),
+        ("verify", "导入校验"),
         ("snapshot", "快照"),
     ]),
 ]
@@ -79,6 +81,7 @@ class MainWindow(QMainWindow):
         self.page_ledger = LedgerView()
         self.page_settlement = SettlementView()
         self.page_staff = StaffView()
+        self.page_verify = ImportVerifyView()
         self.page_snapshot = SnapshotView()
         self.page_batch = BatchView()
         self._pages = {
@@ -88,6 +91,7 @@ class MainWindow(QMainWindow):
             "manual": self.page_manual, "ledger": self.page_ledger,
             "settlement": self.page_settlement,
             "staff": self.page_staff,
+            "verify": self.page_verify,
             "snapshot": self.page_snapshot, "batch": self.page_batch,
         }
         for key, page in self._pages.items():

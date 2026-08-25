@@ -202,6 +202,13 @@ def init_db() -> None:
         cols = [r[1] for r in conn.execute("PRAGMA table_info(collection)")]
         if "person_name" not in cols:
             conn.execute("ALTER TABLE collection ADD COLUMN person_name TEXT NOT NULL DEFAULT ''")
+        # 迁移：行级溯源（发票台账试点）— 记录原始 sheet 名与行号，供导入校验/右键溯源
+        for tbl in ("invoice", "charge_detail", "collection", "prepayment"):
+            cols = [r[1] for r in conn.execute(f"PRAGMA table_info({tbl})")]
+            if "src_sheet" not in cols:
+                conn.execute(f"ALTER TABLE {tbl} ADD COLUMN src_sheet TEXT DEFAULT ''")
+            if "src_row" not in cols:
+                conn.execute(f"ALTER TABLE {tbl} ADD COLUMN src_row INTEGER DEFAULT 0")
         conn.commit()
     finally:
         conn.close()

@@ -196,6 +196,26 @@ QLabel#chipWarn {{
 QLabel#chipWarn QLabel#chipVal {{ color: {p['warn_fg']}; }}
 QFrame#sep {{ background: {p['grid']}; border: none; }}
 
+/* ===== 台账溯源卡片 ===== */
+QWidget#sourceCard {{
+    background: {p['bg_table']}; border: 1px solid {p['border']};
+    border-radius: 10px; padding: 16px 18px;
+}}
+QLabel#sourceBreadcrumb {{
+    color: {p['text_mute']}; font-size: 12px; padding: 0 0 10px 0;
+}}
+QLabel#sourceBreadcrumb QLabel#crumbFile {{ color: {p['text']}; font-weight: 600; }}
+QWidget#sourceGrid {{ background: transparent; }}
+QLabel#sourceKey {{
+    color: {p['text_mute']}; font-size: 12px; padding: 5px 8px;
+    border-right: 1px solid {p['border']};
+}}
+QLabel#sourceVal {{
+    color: {p['text']}; font-size: 13px; padding: 5px 8px;
+    font-family: "JetBrains Mono", "Consolas", monospace;
+}}
+QLabel#sourceEmpty {{ color: {p['text_faint']}; font-style: italic; }}
+
 /* ===== 消息框 / 弹窗 ===== */
 QMessageBox, QDialog {{ background: {p['bg']}; }}
 QMessageBox QLabel {{ font-size: 13px; }}

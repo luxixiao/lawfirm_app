@@ -1,0 +1,367 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>导入校验 · UI 设计规范（匹配 D-Notion 基线）</title>
+<style>
+  :root{
+    /* —— 与 design/ui_redesign_prototype.html / app/ui/style.py 完全一致 —— */
+    --bg:#FFFFFF; --bg-side:#F7F7F5;
+    --text:#37352F; --text-2:#787774; --text-3:#9B9A97;
+    --line:rgba(55,53,47,.09); --line-2:rgba(55,53,47,.16);
+    --hover:rgba(55,53,47,.055); --hover-2:rgba(55,53,47,.08);
+    --accent:#2E6FB0; --accent-d:#245A90; --accent-soft:rgba(46,111,176,.10);
+    --red:#D44C47; --green:#4F9D69; --amber:#C98A2E;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei","Noto Sans SC",sans-serif;
+    --radius:6px;
+  }
+  *{box-sizing:border-box}
+  body{margin:0; background:#ECECEA; color:var(--text); font-family:var(--sans); font-size:14px; line-height:1.55; -webkit-font-smoothing:antialiased}
+  .num{font-variant-numeric:tabular-nums; font-feature-settings:"tnum" 1}
+  .doc{max-width:1120px; margin:0 auto; padding:40px 24px 80px}
+  .doc > h1{font-size:23px; font-weight:600; margin:0 0 4px; color:var(--text)}
+  .doc > .lede{color:var(--text-2); font-size:13.5px; margin:0 0 30px}
+  .sec{margin:0 0 46px}
+  .sec-head{display:flex; align-items:baseline; gap:10px; margin:0 0 12px}
+  .sec-head .n{font-size:11px; font-weight:700; color:#fff; background:var(--text); border-radius:6px; padding:2px 8px}
+  .sec-head h2{font-size:16px; font-weight:600; margin:0}
+  .sec-head .t{color:var(--text-3); font-size:12px}
+  .cap{font-size:12px; color:var(--text-3); margin:10px 2px 0}
+
+  /* ===== App 外壳 ===== */
+  .app{display:grid; grid-template-columns:224px 1fr; height:560px; background:var(--bg); border:1px solid var(--line-2); border-radius:10px; overflow:hidden; box-shadow:0 2px 10px rgba(15,15,15,.05)}
+  .nav{background:var(--bg-side); border-right:1px solid var(--line); padding:12px 7px 16px; display:flex; flex-direction:column; overflow:hidden}
+  .nav .grp{margin-top:8px}
+  .nav .gl{font-size:10.5px; font-weight:600; letter-spacing:1.2px; color:var(--text-3); padding:6px 10px 3px}
+  .nav a{display:block; padding:6px 10px; border-radius:var(--radius); color:var(--text-2); font-size:13px; text-decoration:none; cursor:pointer}
+  .nav a:hover{background:var(--hover)}
+  .nav a.on{background:var(--hover-2); color:var(--text); font-weight:500}
+  .main{display:flex; flex-direction:column; min-width:0; overflow:hidden}
+  .topbar{display:flex; align-items:center; justify-content:space-between; gap:14px; padding:15px 22px 12px; border-bottom:1px solid var(--line)}
+  .topbar .tt{font-size:18px; font-weight:600}
+  .topbar .sub{font-size:12px; color:var(--text-3); margin-top:1px}
+  .content{padding:18px 22px 22px; overflow:auto; flex:1}
+
+  /* ===== 通用件 ===== */
+  .btn{font-family:var(--sans); font-size:13px; font-weight:500; padding:6px 14px; border-radius:var(--radius); cursor:pointer; border:1px solid var(--line-2); background:var(--bg); color:var(--text); transition:all .15s ease}
+  .btn:hover{background:var(--hover)}
+  .btn.primary{background:var(--accent); border-color:var(--accent); color:#fff}
+  .btn.primary:hover{background:var(--accent-d); border-color:var(--accent-d)}
+  .btn.ghost{color:var(--text-2); border-color:transparent}
+  .btn.ghost:hover{background:var(--hover); border-color:var(--line)}
+  .select{appearance:none; background:var(--bg); border:1px solid var(--line-2); color:var(--text); font-family:var(--sans); font-size:13px; padding:6px 28px 6px 11px; border-radius:var(--radius); cursor:pointer; background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'><path d='M2 4l4 4 4-4' stroke='%239B9A97' stroke-width='1.4' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>"); background-repeat:no-repeat; background-position:right 9px center}
+  .select:hover{border-color:var(--text-3)}
+  .label{font-size:12px; color:var(--text-3)}
+
+  .kpi-row{display:grid; grid-template-columns:repeat(4,1fr); gap:10px; margin-bottom:16px}
+  .kpi{border:1px solid var(--line); border-radius:var(--radius); padding:11px 13px; background:var(--bg)}
+  .kpi .k{font-size:11.5px; color:var(--text-3)}
+  .kpi .v{font-size:18px; font-weight:600; margin-top:5px; color:var(--text)}
+  .kpi .v .cur{font-size:12px; color:var(--text-2); font-weight:500}
+  .kpi .v.bad{color:var(--red)} .kpi .v.ok{color:var(--green)}
+
+  .filters{display:flex; flex-wrap:wrap; align-items:center; gap:10px; margin-bottom:14px}
+  .filters .field{display:flex; align-items:center; gap:6px}
+  .filters .field > .label{margin-right:1px}
+  .toggle{display:inline-flex; align-items:center; gap:7px; font-size:12.5px; color:var(--text-2); cursor:pointer; user-select:none; padding:5px 11px; border:1px solid var(--line-2); border-radius:20px; transition:all .15s ease}
+  .toggle.on{background:var(--accent-soft); border-color:var(--accent); color:var(--accent-d)}
+  .toggle .dot{width:9px; height:9px; border-radius:50%; background:var(--text-3); transition:background .15s ease}
+  .toggle.on .dot{background:var(--accent)}
+
+  .table-wrap{border:1px solid var(--line); border-radius:var(--radius); overflow:hidden; background:var(--bg)}
+  table{width:100%; border-collapse:collapse; font-size:12.5px}
+  thead th{font-weight:500; font-size:12px; color:var(--text-2); text-align:left; padding:9px 13px; background:#FBFBFA; border-bottom:1px solid var(--line); white-space:nowrap}
+  tbody td{padding:9px 13px; border-bottom:1px solid var(--line); color:var(--text); vertical-align:top}
+  tbody tr:last-child td{border-bottom:none}
+  tbody tr:hover{background:var(--hover)}
+  tbody tr.row-bad{background:#FCF4F4}
+  tbody tr.row-bad:hover{background:#FBEFEF}
+  .mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12px; color:var(--text); background:rgba(55,53,47,.05); border-radius:4px; padding:1px 6px}
+  .tag{display:inline-block; font-size:11px; padding:1px 8px; border-radius:4px; background:rgba(55,53,47,.08); color:var(--text-2)}
+  .tag.ok{background:rgba(79,157,105,.14); color:#2E6B45}
+  .tag.bad{background:rgba(212,76,71,.14); color:var(--red)}
+  .tag.warn{background:rgba(201,138,46,.16); color:var(--amber)}
+  .muted{color:var(--text-3)}
+
+  /* ===== A 写前预览弹框 ===== */
+  .mask{position:absolute; inset:0; background:rgba(15,15,15,.34); display:flex; align-items:center; justify-content:center; z-index:5}
+  .dialog{background:var(--bg); border-radius:10px; width:900px; max-width:94%; border:1px solid var(--line-2); overflow:hidden; box-shadow:0 16px 48px rgba(15,15,15,.22)}
+  .dialog .dhead{padding:15px 20px; border-bottom:1px solid var(--line)}
+  .dialog .dhead .t{font-size:15px; font-weight:600}
+  .dialog .dhead .m{font-size:12px; color:var(--text-3); margin-top:2px}
+  .pbar{display:flex; gap:16px; padding:9px 20px; background:var(--bg-side); border-bottom:1px solid var(--line); font-size:12px; color:var(--text-2)}
+  .pbar b{color:var(--text); font-weight:600}
+  .pbar .d{color:var(--red); font-weight:600}
+  .plist{max-height:300px; overflow:auto}
+  .prow{display:grid; grid-template-columns:30px 1fr 26px 1fr; border-bottom:1px solid var(--line)}
+  .prow .idx{padding:11px 6px; text-align:center; color:var(--text-3); font-size:11px; background:var(--bg-side)}
+  .prow .side{padding:11px 16px; font-size:12.5px}
+  .prow .side .lab{font-size:10.5px; color:var(--text-3); margin-bottom:3px}
+  .prow .side .ln{margin-bottom:5px}
+  .prow .mid{display:flex; align-items:center; justify-content:center; color:var(--text-3); border-left:1px solid var(--line); border-right:1px solid var(--line)}
+  .prow.b{background:#FCF4F4}
+  .prow.b .side.r .ln{color:var(--red)}
+  .dfoot{display:flex; gap:10px; justify-content:flex-end; padding:13px 20px; border-top:1px solid var(--line)}
+
+  /* ===== C 右键菜单 + 溯源卡片 ===== */
+  .ctxmenu{position:absolute; min-width:172px; background:var(--bg); border:1px solid var(--line-2); border-radius:8px; padding:5px; box-shadow:0 8px 26px rgba(15,15,15,.16); z-index:6}
+  .ctxmenu .ci{padding:7px 11px; border-radius:5px; font-size:13px; color:var(--text); cursor:pointer}
+  .ctxmenu .ci:hover{background:var(--hover)}
+  .ctxmenu .ci.hl{color:var(--accent-d); font-weight:500}
+  .ctxmenu .ci.hl:hover{background:var(--accent-soft)}
+  .ctxmenu .sep{height:1px; background:var(--line); margin:5px 4px}
+  .srccard{background:var(--bg); border-radius:10px; width:520px; max-width:94%; border:1px solid var(--line-2); overflow:hidden; box-shadow:0 16px 48px rgba(15,15,15,.22)}
+  .srccard .path{padding:11px 16px; background:var(--bg-side); border-bottom:1px solid var(--line); font-size:12px; color:var(--text-2)}
+  .srccard .path b{color:var(--accent-d); font-weight:600}
+  .srccard .kv{display:grid; grid-template-columns:120px 1fr; padding:9px 16px; border-bottom:1px solid var(--line); font-size:13px}
+  .srccard .kv .k{color:var(--text-3)}
+  .srccard .kv .v{color:var(--text)}
+  .srccard .chips{display:flex; flex-wrap:wrap; gap:7px; padding:11px 16px}
+  .srccard .chips .chip{background:rgba(46,111,176,.10); color:var(--accent-d); border-radius:6px; padding:4px 10px; font-size:12.5px}
+  .srccard .cfoot{display:flex; gap:10px; justify-content:flex-end; padding:12px 16px; border-top:1px solid var(--line)}
+
+  /* ===== 规范条 ===== */
+  .spec{display:flex; flex-wrap:wrap; gap:18px; padding:14px 18px; border:1px solid var(--line); border-radius:10px; background:var(--bg-side); font-size:12px; color:var(--text-2)}
+  .spec .blk{display:flex; flex-direction:column; gap:6px}
+  .spec .blk .h{font-size:11px; font-weight:600; color:var(--text-3); letter-spacing:.5px}
+  .sw{display:inline-flex; align-items:center; gap:6px}
+  .sw i{width:14px; height:14px; border-radius:4px; display:inline-block; border:1px solid var(--line-2)}
+</style>
+</head>
+<body>
+<div class="doc">
+
+  <h1>导入校验 · UI 设计规范</h1>
+  <p class="lede">方案 A（写前预览）+ B（写后校验中心）+ C（右键溯源）。全部复用 D-Notion 基线 token，与现有应用视觉一致；下方三块分别嵌入真实 App 外壳展示落位。</p>
+
+  <!-- ===================== A ===================== -->
+  <div class="sec">
+    <div class="sec-head"><span class="n">A</span><h2>写前预览弹框</h2>
+      <span class="t">importer 解析完、写库前弹出，确认无误才入库</span></div>
+
+    <div class="app">
+      <div class="nav">
+        <div class="grp"><div class="gl">数据</div>
+          <a>导入</a><a>台账数据</a><a>导入记录</a></div>
+        <div class="grp"><div class="gl">业务</div>
+          <a>发票收款总表</a><a>经办人发票收款情况</a><a>预收款</a><a>退款</a><a>手动补录</a></div>
+        <div class="grp"><div class="gl">结算</div><a>个人结算总表</a></div>
+        <div class="grp"><div class="gl">维护</div><a>员工管理</a><a>快照</a></div>
+      </div>
+      <div class="main">
+        <div class="topbar"><div><div class="tt">导入</div><div class="sub">选择台账文件后自动解析</div></div></div>
+        <div class="content" style="position:relative; padding:0">
+          <div class="mask">
+            <div class="dialog">
+              <div class="dhead">
+                <div class="t">发票台账导入预览</div>
+                <div class="m">2025-12 · 共 199 行 · 来源 2025.12台账.xlsx</div>
+              </div>
+              <div class="pbar">
+                <span>✅ 正常 <b>196</b> 行</span>
+                <span class="d">⚠ 差异 3 行</span>
+                <span>合计开票 <b class="num">¥3,012,000.00</b></span>
+              </div>
+              <div class="plist">
+                <div class="prow">
+                  <div class="idx">1</div>
+                  <div class="side l">
+                    <div class="lab">原始行（202512已开票已入账 · 第 3 行）</div>
+                    <div class="ln">发票号 <b>02095255</b> ｜ 购买方 上海xx公司</div>
+                    <div class="ln">价税合计 100000 ｜ 经办人 胡坚</div>
+                  </div>
+                  <div class="mid">→</div>
+                  <div class="side r">
+                    <div class="lab">解析结果</div>
+                    <div class="ln">发票号 02095255 ｜ 总额 <span class="num">100,000.00</span></div>
+                    <div class="ln">经办人拆分：胡坚 <span class="num">100,000.00</span></div>
+                  </div>
+                </div>
+                <div class="prow b">
+                  <div class="idx">7</div>
+                  <div class="side l">
+                    <div class="lab">原始行（202512已开票已入账 · 第 7 行）</div>
+                    <div class="ln">发票号 <b>25332000000552722473</b> ｜ 价税合计 3000</div>
+                    <div class="ln">经办人 <span class="mono">周士杰2000.朱琰芳1000</span></div>
+                  </div>
+                  <div class="mid">→</div>
+                  <div class="side r">
+                    <div class="lab">解析结果 <span class="tag bad">已修正</span></div>
+                    <div class="ln">发票号 25332000000552722473 ｜ 总额 <span class="num">3,000.00</span></div>
+                    <div class="ln">经办人拆分：周士杰 <span class="num">2000.00</span> ｜ 朱琰芳 <span class="num">1000.00</span></div>
+                  </div>
+                </div>
+              </div>
+              <div class="dfoot">
+                <button class="btn ghost">逐条退回修正</button>
+                <button class="btn">跳过差异行</button>
+                <button class="btn primary">全部确认并入库（199 行）</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <p class="cap">默认「全部确认入库」一键过；点「逐条退回修正」可单独重编辑某行（复用现有问题行面板）。差异行整行浅红高亮。</p>
+  </div>
+
+  <!-- ===================== B ===================== -->
+  <div class="sec">
+    <div class="sec-head"><span class="n">B</span><h2>导入校验中心</h2>
+      <span class="t">维护组新增页 · 选月份+台账类型，源文件重解析 ↔ DB 逐行比对</span></div>
+
+    <div class="app">
+      <div class="nav">
+        <div class="grp"><div class="gl">数据</div>
+          <a>导入</a><a>台账数据</a><a>导入记录</a></div>
+        <div class="grp"><div class="gl">业务</div>
+          <a>发票收款总表</a><a>经办人发票收款情况</a><a>预收款</a><a>退款</a><a>手动补录</a></div>
+        <div class="grp"><div class="gl">结算</div><a>个人结算总表</a></div>
+        <div class="grp"><div class="gl">维护</div>
+          <a>员工管理</a><a>快照</a><a class="on">导入校验</a></div>
+      </div>
+      <div class="main">
+        <div class="topbar"><div><div class="tt">导入校验</div>
+          <div class="sub">原台账 ↔ 落库数据 逐行对照，确认导入是否正确</div></div></div>
+        <div class="content">
+          <div class="kpi-row">
+            <div class="kpi"><div class="k">本批次行数</div><div class="v num">199</div></div>
+            <div class="kpi"><div class="k">差异行</div><div class="v num bad">3</div></div>
+            <div class="kpi"><div class="k">落库总额</div><div class="v num"><span class="cur">¥</span>3,012,000.00</div></div>
+            <div class="kpi"><div class="k">一致率</div><div class="v num ok">98.5%</div></div>
+          </div>
+
+          <div class="filters">
+            <div class="field"><span class="label">月份</span><select class="select"><option>2025-12</option><option>2025-11</option></select></div>
+            <div class="field"><span class="label">台账类型</span><select class="select"><option>发票台账</option><option>销项台账</option><option>费用台账</option></select></div>
+            <div class="field"><span class="label">批次</span><select class="select"><option>2025.12台账.xlsx · 08-25 09:12</option></select></div>
+            <span class="toggle on"><span class="dot"></span>只看异常</span>
+            <button class="btn">重新对账</button>
+          </div>
+
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>发票号</th><th>原台账值</th><th>落库值</th><th style="width:74px">状态</th></tr></thead>
+              <tbody>
+                <tr class="row-bad">
+                  <td class="mono">2533…22473</td>
+                  <td>经办人 <span class="mono">周士杰2000.朱琰芳1000</span></td>
+                  <td>周士杰 <span class="num">2000</span> / 朱琰芳 <span class="num">1000</span></td>
+                  <td><span class="tag bad">差异</span></td>
+                </tr>
+                <tr class="row-bad">
+                  <td class="mono">0209…255</td>
+                  <td>价税合计 <span class="mono">100000.5</span></td>
+                  <td>总额 <span class="num">100,000.00</span>（精度截断）</td>
+                  <td><span class="tag warn">注意</span></td>
+                </tr>
+                <tr>
+                  <td class="mono">0209…256</td>
+                  <td>经办人 胡坚</td>
+                  <td>胡坚 全额</td>
+                  <td><span class="tag ok">一致</span></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <p class="cap muted" style="margin-top:8px">差异/注意行可点击展开「原始单元格 ↔ 解析字段」完整对照；取消「只看异常」显示全部 199 行。状态语义：绿=一致，红=差异，琥珀=需注意（如精度截断）。</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================== C ===================== -->
+  <div class="sec">
+    <div class="sec-head"><span class="n">C</span><h2>右键「查看台账信息」</h2>
+      <span class="t">经办人发票收款情况 · 右键新增项 · 直达原台账行（含 sheet）</span></div>
+
+    <div class="app">
+      <div class="nav">
+        <div class="grp"><div class="gl">数据</div><a>导入</a><a>台账数据</a><a>导入记录</a></div>
+        <div class="grp"><div class="gl">业务</div>
+          <a>发票收款总表</a><a class="on">经办人发票收款情况</a><a>预收款</a><a>退款</a><a>手动补录</a></div>
+        <div class="grp"><div class="gl">结算</div><a>个人结算总表</a></div>
+        <div class="grp"><div class="gl">维护</div><a>员工管理</a><a>快照</a><a>导入校验</a></div>
+      </div>
+      <div class="main">
+        <div class="topbar"><div><div class="tt">经办人发票收款情况</div>
+          <div class="sub">身份列双击可改 · 右击查看红冲 / 其他经办人 / 台账信息</div></div></div>
+        <div class="content" style="position:relative; padding:18px 22px">
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>开具日期</th><th>发票号码</th><th>购买方名称</th><th>开票总额</th><th>经办人</th><th>身份</th><th>开票金额</th><th>已收金额</th></tr></thead>
+              <tbody>
+                <tr><td class="num">2025-12-03</td><td class="mono">02095255</td><td>上海xx科技</td><td class="num">100,000.00</td><td>胡坚</td><td><span class="tag">合伙</span></td><td class="num">100,000.00</td><td class="num">100,000.00</td></tr>
+                <tr style="background:var(--accent-soft)"><td class="num">2025-12-03</td><td class="mono">2533…22473</td><td>上海xx科技</td><td class="num">3,000.00</td><td>周士杰</td><td><span class="tag">聘用</span></td><td class="num">2,000.00</td><td class="num">0.00</td></tr>
+                <tr><td class="num">2025-12-04</td><td class="mono">02095257</td><td>杭州yy</td><td class="num">58,000.00</td><td>柳立中</td><td><span class="tag">合伙</span></td><td class="num">58,000.00</td><td class="num">30,000.00</td></tr>
+              </tbody>
+            </table>
+          </div>
+
+          <!-- 右键菜单 -->
+          <div class="ctxmenu" style="left:120px; top:150px">
+            <div class="ci">查看红冲信息</div>
+            <div class="ci">其他经办人金额</div>
+            <div class="sep"></div>
+            <div class="ci hl">查看台账信息</div>
+          </div>
+
+          <!-- 溯源卡片 -->
+          <div class="mask">
+            <div class="srccard">
+              <div class="path">📄 来源：<b>2025.12台账.xlsx</b> ＞ <b>202512已开票已入账</b> ＞ 第 7 行</div>
+              <div class="kv"><span class="k">发票号码</span><span class="v mono">25332000000552722473</span></div>
+              <div class="kv"><span class="k">购买方名称</span><span class="v">上海xx科技有限公司</span></div>
+              <div class="kv"><span class="k">开票日期</span><span class="v num">2025-12-03</span></div>
+              <div class="kv"><span class="k">价税合计（原）</span><span class="v mono">3000</span></div>
+              <div class="kv"><span class="k">经办人（原）</span><span class="v mono">周士杰2000.朱琰芳1000</span></div>
+              <div class="chips">
+                <span class="chip">解析 → 周士杰 2000.00</span>
+                <span class="chip">解析 → 朱琰芳 1000.00</span>
+              </div>
+              <div class="kv"><span class="k">落库总额</span><span class="v num">3,000.00</span></div>
+              <div class="cfoot">
+                <button class="btn ghost">打开原文件</button>
+                <button class="btn primary">关闭</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <p class="cap">右键菜单在现有「查看红冲信息 / 其他经办人金额」下加分隔线 + 高亮项「查看台账信息」。卡片顶部面包屑明确到 sheet 与行号；原始单元格用等宽字体，解析结果用蓝 chip。</p>
+  </div>
+
+  <!-- ===================== 规范 ===================== -->
+  <div class="sec">
+    <div class="sec-head"><span class="n">※</span><h2>设计规范（与原应用一致）</h2></div>
+    <div class="spec">
+      <div class="blk"><div class="h">色彩</div>
+        <span class="sw"><i style="background:#37352F"></i>文字 #37352F</span>
+        <span class="sw"><i style="background:#787774"></i>次文 #787774</span>
+        <span class="sw"><i style="background:#2E6FB0"></i>主操作蓝 #2E6FB0</span>
+        <span class="sw"><i style="background:#D44C47"></i>红 #D44C47</span>
+        <span class="sw"><i style="background:#4F9D69"></i>绿 #4F9D69</span>
+      </div>
+      <div class="blk"><div class="h">线条 / 圆角</div>
+        <span class="sw"><i style="background:rgba(55,53,47,.09)"></i>发丝线 rgba(55,53,47,.09)</span>
+        <span>圆角 6px（弹框/卡片 10px）</span>
+        <span>表格仅横线、无竖线</span>
+      </div>
+      <div class="blk"><div class="h">字体 / 字阶</div>
+        <span>微软雅黑 13px 基准</span>
+        <span>页标题 18–22px / 600</span>
+        <span>金额 tabular-nums 对齐</span>
+      </div>
+      <div class="blk"><div class="h">状态语义</div>
+        <span class="sw"><i style="background:rgba(79,157,105,.14)"></i>一致（绿）</span>
+        <span class="sw"><i style="background:rgba(212,76,71,.14)"></i>差异（红）</span>
+        <span class="sw"><i style="background:rgba(201,138,46,.16)"></i>注意（琥珀）</span>
+      </div>
+    </div>
+  </div>
+
+</div>
+</body>
+</html>

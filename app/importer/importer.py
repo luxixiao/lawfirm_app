@@ -156,6 +156,10 @@ def _apply_resolved(data: Dict, resolved: List[Dict]) -> None:
         if d["kind"] == "invoice":
             data["invoices"].append({
                 "sheet": "problem_fix",
+                "sheet_name": p.get("sheet") or "问题行修正",
+                "row_no": p["row_no"],
+                "header": [],
+                "raw_row": [],
                 "invoice_no": d["invoice_no"] or p.get("invoice_no", ""),
                 "invoice_date": d["invoice_date"] or "",
                 "buyer": p.get("buyer", ""),
@@ -171,6 +175,11 @@ def _apply_resolved(data: Dict, resolved: List[Dict]) -> None:
             })
         else:  # prepayment
             data["prepayments"].append({
+                "sheet": "sheet4",
+                "sheet_name": "已入账未开票",
+                "row_no": p["row_no"],
+                "header": [],
+                "raw_row": [],
                 "received_date": d["received_date"] or None,
                 "buyer": p.get("buyer", ""),
                 "amount": d["amount"],
@@ -181,12 +190,15 @@ def _apply_resolved(data: Dict, resolved: List[Dict]) -> None:
 
 
 def import_ledger_file(path: str, period: str,
-                       on_problems: callable | None = None) -> Dict:
+                       on_problems: callable | None = None,
+                       on_preview: callable | None = None) -> Dict:
     """导入发票台账。
 
     on_problems: 可选回调 (problems: list) -> resolved: list | None。
     解析失败的问题行交给回调处理（如弹修正对话框），返回
     [{index, action: 'fix'|'skip', data}]；返回 None 表示用户取消导入。
+    on_preview: 可选回调 (data: dict) -> data | None。写库前全量预览确认，
+    接收完整解析结果，返回修改后的 data（或原样返回）；返回 None 表示用户取消导入。
     """
     _auto_snapshot()
     data = parse_ledger_file(path, period)
@@ -224,6 +236,14 @@ def import_ledger_file(path: str, period: str,
                 f"经办人不在职工花名册中（请先在员工管理中添加）: {', '.join(sorted(set(missing)))}"
             )
 
+        # ---- 写前预览确认（方案 A）：返回 None = 取消导入 ----
+        if on_preview is not None:
+            confirmed = on_preview(data)
+            if confirmed is None:
+                raise ImportError_("已取消导入")
+            if isinstance(confirmed, dict):
+                data = confirmed
+
         # ---- 覆盖式导入 ----
         _drop_active_batch(conn, "ledger", period)
         archive = _archive_file(path, "ledger", period)
@@ -239,10 +259,11 @@ def import_ledger_file(path: str, period: str,
             else:
                 conn.execute(
                     """INSERT INTO invoice (invoice_no, invoice_date, buyer, total_amount, case_no,
-                       source, import_batch_id, orig_invoice_no)
-                       VALUES (?,?,?,?,?,?,?,?)""",
+                       source, import_batch_id, orig_invoice_no, src_sheet, src_row)
+                       VALUES (?,?,?,?,?,?,?,?,?,?)""",
                     (no, inv["invoice_date"], inv["buyer"], inv["total_amount"],
-                     inv.get("case_no"), "import", batch_id, ""),
+                     inv.get("case_no"), "import", batch_id, "",
+                     inv.get("sheet_name") or "", inv.get("row_no") or 0),
                 )
             # 经办人拆分（已存在则跳过）
             for name, amount in inv["handlers"]:
@@ -251,9 +272,10 @@ def import_ledger_file(path: str, period: str,
                 ).fetchone()
                 if not r:
                     conn.execute(
-                        "INSERT INTO charge_detail (invoice_no, person_name, billing_amount, source, import_batch_id, person_type) VALUES (?,?,?,?,?,?)",
+                        "INSERT INTO charge_detail (invoice_no, person_name, billing_amount, source, import_batch_id, person_type, src_sheet, src_row) VALUES (?,?,?,?,?,?,?,?)",
                         (no, name, amount, "import", batch_id,
-                         norm_type(staff_type_of(conn, name))),
+                         norm_type(staff_type_of(conn, name)),
+                         inv.get("sheet_name") or "", inv.get("row_no") or 0),
                     )
             # 收款明细：先删该发票 import 旧记录（以最新台账为准），再插入
             conn.execute("DELETE FROM collection WHERE invoice_no=? AND source='import'", (no,))
@@ -261,8 +283,9 @@ def import_ledger_file(path: str, period: str,
                 # 问题行修正：逐经办人写入收款（person_name 归因；空列表 = 无收款）
                 for name, amt, ym in inv["split_receipts"]:
                     conn.execute(
-                        "INSERT INTO collection (invoice_no, amount, receipt_date, person_name, source, import_batch_id) VALUES (?,?,?,?,?,?)",
-                        (no, amt, ym, name, "import", batch_id),
+                        "INSERT INTO collection (invoice_no, amount, receipt_date, person_name, source, import_batch_id, src_sheet, src_row) VALUES (?,?,?,?,?,?,?,?)",
+                        (no, amt, ym, name, "import", batch_id,
+                         inv.get("sheet_name") or "", inv.get("row_no") or 0),
                     )
                 continue
             rem = inv["remark"]
@@ -271,25 +294,28 @@ def import_ledger_file(path: str, period: str,
                 pass
             elif rem["pure_date"]:
                 conn.execute(
-                    "INSERT INTO collection (invoice_no, amount, receipt_date, source, import_batch_id) VALUES (?,?,?,?,?)",
-                    (no, inv["total_amount"], rem["pure_date"], "import", batch_id),
+                    "INSERT INTO collection (invoice_no, amount, receipt_date, source, import_batch_id, src_sheet, src_row) VALUES (?,?,?,?,?,?,?)",
+                    (no, inv["total_amount"], rem["pure_date"], "import", batch_id,
+                     inv.get("sheet_name") or "", inv.get("row_no") or 0),
                 )
             else:
                 for ym, amt in rem["receipts"]:
                     if amt == 0:
                         amt = inv["total_amount"]
                     conn.execute(
-                        "INSERT INTO collection (invoice_no, amount, receipt_date, source, import_batch_id) VALUES (?,?,?,?,?)",
-                        (no, amt, ym, "import", batch_id),
+                        "INSERT INTO collection (invoice_no, amount, receipt_date, source, import_batch_id, src_sheet, src_row) VALUES (?,?,?,?,?,?,?)",
+                        (no, amt, ym, "import", batch_id,
+                         inv.get("sheet_name") or "", inv.get("row_no") or 0),
                     )
 
         # 预收款（sheet4）
         for pp in data["prepayments"]:
             conn.execute(
                 """INSERT INTO prepayment (received_date, buyer, amount, person_text, case_no, remark,
-                   source, import_batch_id) VALUES (?,?,?,?,?,?,?,?)""",
+                   source, import_batch_id, src_sheet, src_row) VALUES (?,?,?,?,?,?,?,?,?,?)""",
                 (pp["received_date"], pp["buyer"], pp["amount"], pp["person_text"],
-                 pp["case_no"], pp["remark"], "import", batch_id),
+                 pp["case_no"], pp["remark"], "import", batch_id,
+                 pp.get("sheet_name") or "sheet4", pp.get("row_no") or 0),
             )
 
         conn.commit()

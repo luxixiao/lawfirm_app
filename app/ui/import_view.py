@@ -143,6 +143,7 @@ class ImportView(QWidget):
                     r = import_ledger_file(
                         path, period,
                         on_problems=lambda probs: self._resolve_problems(probs, period),
+                        on_preview=lambda data: self._preview_ledger(data, period, path),
                     )
                     msg = (f"✓ 发票台账 {period}: {r['invoice_count']} 张发票, "
                            f"{r['prepayment_count']} 条预收款")
@@ -171,3 +172,12 @@ class ImportView(QWidget):
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return None
         return dlg.resolved()
+
+    def _preview_ledger(self, data: dict, period: str, path: str):
+        """写前预览回调：弹对照确认框；确认返回 data，取消返回 None（中止导入）"""
+        from PySide6.QtWidgets import QDialog
+        from app.ui.preview_dialog import PreviewDialog
+        dlg = PreviewDialog(data, period, self, path=path)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return None
+        return data

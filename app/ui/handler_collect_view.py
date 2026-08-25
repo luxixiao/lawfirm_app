@@ -164,10 +164,15 @@ class HandlerCollectView(BaseTableView):
         if not meta:
             return
         menu = QMenu(self)
+        a3 = menu.addAction("查看台账信息")
+        menu.addSeparator()
         a1 = menu.addAction("查看红冲信息")
         a2 = menu.addAction("查看其他经办人金额")
         chosen = menu.exec(self.table.viewport().mapToGlobal(pos))
-        if chosen == a1:
+        if chosen == a3:
+            from app.ui.ledger_source import show_source_for_invoice
+            show_source_for_invoice(self, meta["invoice_no"])
+        elif chosen == a1:
             show_red_relation(self, meta["invoice_no"])
         elif chosen == a2:
             show_invoice_handlers(self, meta["invoice_no"], meta["person_name"])
