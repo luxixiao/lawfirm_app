@@ -1,0 +1,308 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>发票台账页（方案 D）· UI 设计稿 · Notion 风格</title>
+<style>
+  /* ===== 复用现有 prototype 的 Notion 设计 token（保证风格一致）===== */
+  :root{
+    --bg:#FFFFFF; --bg-side:#F7F7F5;
+    --text:#37352F; --text-2:#787774; --text-3:#9B9A97;
+    --line:rgba(55,53,47,.09); --line-2:rgba(55,53,47,.16);
+    --hover:rgba(55,53,47,.055); --hover-2:rgba(55,53,47,.08);
+    --accent:#2E6FB0; --accent-d:#245A90; --accent-soft:rgba(46,111,176,.10);
+    --red:#D44C47; --green:#4F9D69;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei","Noto Sans SC",sans-serif;
+    --radius:6px;
+    /* 方案 D 新增语义色 */
+    --sync-on-bg:#E7F3EC; --sync-on-tx:#1F6B43;     /* 已同步：柔和绿 */
+    --sync-off-bg:#FBEED2; --sync-off-tx:#8A5A12;    /* 待同步：柔和橙 */
+    --red-soft-bg:#FBEAE9;                            /* 红字发票整行浅底 */
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{margin:0; background:var(--bg); color:var(--text); font-family:var(--sans); font-size:14px; line-height:1.55; -webkit-font-smoothing:antialiased}
+  .num{font-variant-numeric:tabular-nums; font-feature-settings:"tnum" 1}
+
+  .app{display:grid; grid-template-columns:248px 1fr; height:100vh; overflow:hidden}
+
+  /* ===== 左侧 Nav（Notion 风：浅灰、无边框、填充选中）===== */
+  .nav{background:var(--bg-side); border-right:1px solid var(--line); display:flex; flex-direction:column; padding:14px 8px 16px; overflow-y:auto}
+  .brand{padding:6px 10px 14px}
+  .brand b{display:block; font-weight:600; font-size:14.5px; letter-spacing:.2px}
+  .brand span{display:block; font-size:11.5px; color:var(--text-3); margin-top:2px; letter-spacing:.5px}
+  .nav-group{margin-top:10px}
+  .nav-group > .label{font-size:11px; font-weight:600; letter-spacing:1.5px; color:var(--text-3); padding:4px 10px}
+  .nav-item{display:flex; align-items:center; gap:9px; padding:6px 10px; border-radius:var(--radius); color:var(--text-2); cursor:default; font-size:13.5px; transition:background .15s ease,color .15s ease}
+  .nav-item .ico{width:16px; height:16px; flex:0 0 auto; opacity:.8; color:var(--text-3)}
+  .nav-item:hover{background:var(--hover)}
+  .nav-item.active{background:var(--hover-2); color:var(--text); font-weight:500}
+  .nav-item .badge{margin-left:auto; font-size:10px; color:var(--text-3); background:var(--hover-2); border-radius:10px; padding:1px 7px}
+
+  /* ===== 主区 ===== */
+  .main{display:flex; flex-direction:column; min-width:0; overflow:hidden}
+  .topbar{display:flex; align-items:flex-start; justify-content:space-between; gap:16px; padding:18px 30px 14px; border-bottom:1px solid var(--line)}
+  .topbar .tt{font-size:22px; font-weight:600; letter-spacing:.2px}
+  .topbar .sub{font-size:12.5px; color:var(--text-3); margin-top:4px; max-width:760px}
+  .topbar .acts{display:flex; align-items:center; gap:14px}
+  .skin{display:flex; align-items:center; gap:6px; font-size:12px; color:var(--text-2)}
+  .content{padding:20px 30px 30px; overflow:auto; flex:1}
+
+  /* ===== 筛选条 ===== */
+  .filters{display:flex; flex-wrap:wrap; align-items:center; gap:12px; margin-bottom:14px}
+  .field{display:flex; align-items:center; gap:7px}
+  .field > .fl{font-size:12.5px; color:var(--text-3)}
+  .select{appearance:none; background:var(--bg); border:1px solid var(--line-2); color:var(--text); font-family:var(--sans); font-size:13px; padding:6px 28px 6px 11px; border-radius:var(--radius); cursor:pointer;
+    background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'><path d='M2 4l4 4 4-4' stroke='%239B9A97' stroke-width='1.4' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>"); background-repeat:no-repeat; background-position:right 9px center; transition:border-color .15s ease}
+  .select:focus{outline:none; border-color:var(--accent)}
+  .search{flex:0 1 320px; min-width:200px; display:flex; align-items:center; gap:8px; border:1px solid var(--line-2); border-radius:var(--radius); padding:6px 11px; background:var(--bg)}
+  .search:focus-within{border-color:var(--accent)}
+  .search input{border:none; outline:none; font-family:var(--sans); font-size:13px; color:var(--text); width:100%; background:transparent}
+  .search svg{width:15px;height:15px;color:var(--text-3);flex:0 0 auto}
+
+  /* ===== 工具栏 ===== */
+  .toolbar{display:flex; align-items:center; gap:10px; margin-bottom:14px}
+  .btn{display:inline-flex; align-items:center; gap:6px; font-family:var(--sans); font-size:13px; font-weight:500; padding:7px 13px; border-radius:var(--radius); border:1px solid var(--line-2); background:var(--bg); color:var(--text); cursor:default; transition:all .15s ease}
+  .btn:hover{background:var(--hover)}
+  .btn svg{width:15px;height:15px;opacity:.85}
+  .btn.primary{background:var(--accent); border-color:var(--accent); color:#fff}
+  .btn.primary:hover{background:var(--accent-d); border-color:var(--accent-d)}
+  .btn.ghost{border-color:transparent; color:var(--text-2)}
+  .btn.ghost:hover{background:var(--hover); color:var(--text)}
+  .btn:disabled{opacity:.45; pointer-events:none}
+  .spacer{flex:1}
+  .stat{font-size:12.5px; color:var(--text-3)}
+  .stat b{color:var(--text); font-weight:600}
+  .stat .warn{color:var(--sync-off-tx)}
+
+  /* ===== 表格（Notion 风：细分隔线、无斑马、悬浮高亮）===== */
+  .table-wrap{border:1px solid var(--line); border-radius:8px; overflow:auto; max-height:calc(100vh - 320px); background:var(--bg)}
+  table{border-collapse:collapse; width:100%; font-size:13px; min-width:1480px}
+  thead th{position:sticky; top:0; z-index:2; background:#FBFBFA; text-align:left; font-weight:600; color:var(--text-2); font-size:12px; letter-spacing:.2px; padding:9px 12px; border-bottom:1px solid var(--line-2); white-space:nowrap}
+  thead th .ar{float:right; color:var(--text-3)}
+  tbody td{padding:8px 12px; border-bottom:1px solid var(--line); color:var(--text); white-space:nowrap; vertical-align:middle}
+  tbody tr:hover{background:var(--hover)}
+  tbody tr.sel{background:var(--accent-soft)}
+  tbody tr.redrow{background:var(--red-soft-bg)}
+  tbody tr.redrow:hover{background:#F7DEDC}
+  .num-cell{text-align:right; font-variant-numeric:tabular-nums}
+  .red{color:var(--red); font-weight:600}
+  .muted{color:var(--text-3)}
+  .ellipsis{max-width:240px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+  /* 同步徽标 */
+  .pill{display:inline-flex; align-items:center; gap:5px; font-size:11.5px; font-weight:600; padding:2px 9px; border-radius:11px; white-space:nowrap}
+  .pill::before{content:""; width:6px;height:6px;border-radius:50%;background:currentColor;opacity:.9}
+  .pill.on{background:var(--sync-on-bg); color:var(--sync-on-tx)}
+  .pill.off{background:var(--sync-off-bg); color:var(--sync-off-tx)}
+
+  /* ===== 操作日志 ===== */
+  .log{margin-top:18px; border:1px solid var(--line); border-radius:8px; background:#FBFBFA}
+  .log .lh{font-size:12px; font-weight:600; color:var(--text-2); padding:9px 14px; border-bottom:1px solid var(--line)}
+  .log .lb{padding:10px 14px; font-size:12.5px; color:var(--text-2); line-height:1.7; font-family:"JetBrains Mono",ui-monospace,Menlo,Consolas,monospace; max-height:120px; overflow:auto}
+  .log .lb .ok{color:var(--sync-on-tx)}
+
+  /* ===== 对话框（编辑/新增）===== */
+  .modal-mask{position:fixed; inset:0; background:rgba(15,15,15,.32); display:flex; align-items:center; justify-content:center; z-index:50}
+  .modal{width:560px; max-width:92vw; background:var(--bg); border-radius:10px; box-shadow:0 12px 40px rgba(15,15,15,.22); overflow:hidden}
+  .modal h3{margin:0; padding:18px 22px 4px; font-size:16px; font-weight:600}
+  .modal .mh-sub{padding:0 22px 14px; font-size:12.5px; color:var(--text-3)}
+  .modal .mbody{padding:6px 22px 4px; max-height:60vh; overflow:auto}
+  .grid2{display:grid; grid-template-columns:1fr 1fr; gap:12px 16px}
+  .fg{display:flex; flex-direction:column; gap:5px}
+  .fg.full{grid-column:1 / -1}
+  .fg label{font-size:12px; color:var(--text-2)}
+  .fg .req{color:var(--red)}
+  .inp{font-family:var(--sans); font-size:13px; padding:7px 10px; border:1px solid var(--line-2); border-radius:var(--radius); color:var(--text); background:var(--bg); width:100%}
+  .inp:focus{outline:none; border-color:var(--accent)}
+  textarea.inp{resize:vertical; min-height:58px}
+  .mfoot{padding:14px 22px 18px; display:flex; align-items:center; gap:10px; border-top:1px solid var(--line); margin-top:12px}
+  .mfoot .note{font-size:12px; color:var(--text-3); flex:1}
+
+  .divider{display:flex; align-items:center; gap:14px; margin:34px 0 18px; color:var(--text-3); font-size:12px; letter-spacing:1px}
+  .divider::before,.divider::after{content:""; flex:1; height:1px; background:var(--line)}
+  .hint{font-size:12px; color:var(--text-3); margin-top:6px}
+</style>
+</head>
+<body>
+<div class="app">
+
+  <!-- ============ 左侧导航（重构后结构，发票台账在「数据」组高亮）============ -->
+  <aside class="nav">
+    <div class="brand"><b>律所 AR / 收款结算</b><span>桌面端 · PySide6</span></div>
+
+    <div class="nav-group">
+      <div class="label">数据</div>
+      <div class="nav-item"><span class="ico">⬆</span>导入</div>
+      <div class="nav-item active"><span class="ico">▦</span>发票台账<span class="badge">2 待同步</span></div>
+      <div class="nav-item"><span class="ico">☰</span>导入记录</div>
+      <div class="nav-item"><span class="ico">▤</span>台账数据</div>
+    </div>
+
+    <div class="nav-group">
+      <div class="label">业务</div>
+      <div class="nav-item"><span class="ico">✦</span>发票收款情况</div>
+      <div class="nav-item"><span class="ico">✎</span>手动补录</div>
+    </div>
+
+    <div class="nav-group">
+      <div class="label">结算</div>
+      <div class="nav-item"><span class="ico">▣</span>结算报表</div>
+    </div>
+
+    <div class="nav-group">
+      <div class="label">维护</div>
+      <div class="nav-item"><span class="ico">☺</span>员工管理</div>
+      <div class="nav-item"><span class="ico">✓</span>导入校验</div>
+      <div class="nav-item"><span class="ico">⧉</span>快照</div>
+      <div class="nav-item"><span class="ico">⚙</span>费用类型维护<span class="badge">新</span></div>
+    </div>
+  </aside>
+
+  <!-- ============ 主区 ============ -->
+  <section class="main">
+    <div class="topbar">
+      <div>
+        <div class="tt">发票台账</div>
+        <div class="sub">查看并增删改发票台账全部原始数据（多 sheet）。编辑后点「同步到 invoice」写入计算表；所有修改记入修改记录。</div>
+      </div>
+      <div class="acts">
+        <div class="skin">皮肤 <span class="select" style="padding:4px 24px 4px 9px">浅色</span></div>
+      </div>
+    </div>
+
+    <div class="content">
+      <!-- 筛选条 -->
+      <div class="filters">
+        <div class="field"><span class="fl">来源 sheet</span>
+          <span class="select">全部</span></div>
+        <div class="field"><span class="fl">状态</span>
+          <span class="select">全部</span></div>
+        <div class="search">
+          <svg viewBox="0 0 16 16" fill="none"><circle cx="7" cy="7" r="4.5" stroke="currentColor" stroke-width="1.4"/><path d="M11 11l3 3" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+          <input placeholder="搜索 发票号码 / 购方名称 / 备注" />
+        </div>
+      </div>
+
+      <!-- 工具栏 -->
+      <div class="toolbar">
+        <button class="btn primary">＋ 新增</button>
+        <button class="btn">🗑 删除所选</button>
+        <button class="btn">✎ 编辑所选</button>
+        <button class="btn">⇄ 同步到 invoice</button>
+        <button class="btn ghost">⟳ 刷新</button>
+        <div class="spacer"></div>
+        <div class="stat">已选 <b>1</b> 行 · 待同步 <b class="warn">2</b> 行</div>
+      </div>
+
+      <!-- 主表：17 列原始数据 -->
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>来源sheet</th><th>行号</th><th>序号</th><th>发票号码<span class="ar">⇅</span></th>
+              <th>发票种类</th><th>开票日期</th><th>发票状态</th><th>凭证号</th>
+              <th>购方名称</th><th class="num-cell">价税合计<span class="ar">⇅</span></th>
+              <th class="num-cell">不含税金额</th><th>税率</th><th class="num-cell">税额</th>
+              <th>货物、应税劳务及服务</th><th class="ellipsis">备注</th><th>同步状态</th>
+            </tr>
+          </thead>
+          <tbody>
+            <!-- 蓝字 · 已同步 -->
+            <tr class="sel">
+              <td class="muted">销项2025-01</td><td class="muted num-cell">12</td><td class="num-cell">11</td><td>24332000000123456789</td>
+              <td>电子发票</td><td>2025/1/3</td><td>正常</td><td>记0123</td>
+              <td>浙江天成建材有限公司</td><td class="num-cell">10,000.00</td><td class="num-cell">9,174.31</td><td>9%</td><td class="num-cell">825.69</td>
+              <td class="ellipsis" title="法律服务费">法律服务费</td><td class="ellipsis" title="—">—</td>
+              <td><span class="pill on">已同步</span></td>
+            </tr>
+            <!-- 红字 · 待同步（橙徽标 + 红字整行浅底）-->
+            <tr class="redrow">
+              <td class="muted">销项2025-01</td><td class="muted num-cell">28</td><td class="num-cell">27</td><td>24332000000987654321</td>
+              <td>电子发票</td><td>2025/1/9</td><td>正常</td><td>记0145</td>
+              <td>浙江天成建材有限公司</td><td class="num-cell red">-3,000.00</td><td class="num-cell red">-2,752.29</td><td>9%</td><td class="num-cell red">-247.71</td>
+              <td class="ellipsis" title="法律服务费（红冲）">法律服务费（红冲）</td>
+              <td class="ellipsis" title="被红冲蓝字数电票号码：24332000000123456789 红字发票信息确认单编号：XYZ">被红冲蓝字数电票号码：24332000000123456789 …</td>
+              <td><span class="pill off">待同步</span></td>
+            </tr>
+            <!-- 蓝字 · 待同步（手工新增/改过）-->
+            <tr>
+              <td class="muted">手动补录</td><td class="muted num-cell">—</td><td class="num-cell">—</td><td>24332000000555667788</td>
+              <td>电子发票</td><td>2025/2/15</td><td>正常</td><td></td>
+              <td>杭州明远科技有限公司</td><td class="num-cell">5,800.00</td><td class="num-cell">5,321.10</td><td>9%</td><td class="num-cell">478.90</td>
+              <td class="ellipsis" title="咨询费">咨询费</td><td class="ellipsis" title="—">—</td>
+              <td><span class="pill off">待同步</span></td>
+            </tr>
+            <tr>
+              <td class="muted">销项2025-02</td><td class="muted num-cell">6</td><td class="num-cell">5</td><td>24332000000222233344</td>
+              <td>纸质发票</td><td>2025/2/3</td><td>正常</td><td>记0201</td>
+              <td>宁波华瑞物流有限公司</td><td class="num-cell">18,500.00</td><td class="num-cell">16,972.48</td><td>9%</td><td class="num-cell">1,527.52</td>
+              <td class="ellipsis" title="代理服务费">代理服务费</td><td class="ellipsis" title="—">—</td>
+              <td><span class="pill on">已同步</span></td>
+            </tr>
+            <tr>
+              <td class="muted">销项2025-02</td><td class="muted num-cell">19</td><td class="num-cell">18</td><td>24332000000333344455</td>
+              <td>电子发票</td><td>2025/2/20</td><td>正常</td><td>记0224</td>
+              <td>温州正大律师事务所</td><td class="num-cell">7,200.00</td><td class="num-cell">6,605.50</td><td>9%</td><td class="num-cell">594.50</td>
+              <td class="ellipsis" title="法律顾问费">法律顾问费</td><td class="ellipsis" title="—">—</td>
+              <td><span class="pill on">已同步</span></td>
+            </tr>
+            <tr>
+              <td class="muted">销项2025-03</td><td class="muted num-cell">9</td><td class="num-cell">8</td><td>24332000000444455566</td>
+              <td>电子发票</td><td>2025/3/5</td><td>正常</td><td>记0308</td>
+              <td>绍兴宏图建设集团</td><td class="num-cell">24,000.00</td><td class="num-cell">22,018.35</td><td>9%</td><td class="num-cell">1,981.65</td>
+              <td class="ellipsis" title="诉讼代理费">诉讼代理费</td><td class="ellipsis" title="—">—</td>
+              <td><span class="pill on">已同步</span></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <!-- 操作日志 -->
+      <div class="log">
+        <div class="lh">操作日志</div>
+        <div class="lb">
+          <div class="ok">✓ 2026-08-25 14:32 · 新增发票行 24332000000555667788（手动补录）</div>
+          <div class="ok">✓ 2026-08-25 14:31 · 编辑发票 24332000000987654321：价税合计 3000 → -3000（待同步）</div>
+          <div class="ok">✓ 2026-08-25 09:10 · 导入 销项2025-02.xlsx · 写入 raw 128 行 / invoice 128 行</div>
+        </div>
+      </div>
+
+      <!-- ============ 编辑/新增 对话框设计 ============ -->
+      <div class="divider">编辑 / 新增 对话框</div>
+      <div class="modal-mask">
+        <div class="modal">
+          <h3>编辑发票：24332000000123456789</h3>
+          <div class="mh-sub">覆盖该原始行的全部字段（与 raw_invoice 一一对应，均为原始文本）</div>
+          <div class="mbody">
+            <div class="grid2">
+              <div class="fg"><label>发票号码 <span class="req">*</span></label><input class="inp" value="24332000000123456789" /></div>
+              <div class="fg"><label>发票种类</label><input class="inp" value="电子发票" /></div>
+              <div class="fg"><label>开票日期（原始文本）</label><input class="inp" value="2025/1/3" /></div>
+              <div class="fg"><label>发票状态</label><input class="inp" value="正常" /></div>
+              <div class="fg"><label>凭证号</label><input class="inp" value="记0123" /></div>
+              <div class="fg"><label>购方名称</label><input class="inp" value="浙江天成建材有限公司" /></div>
+              <div class="fg"><label>价税合计（可带负号=红字）</label><input class="inp num-cell" value="10000.00" /></div>
+              <div class="fg"><label>不含税金额</label><input class="inp num-cell" value="9174.31" /></div>
+              <div class="fg"><label>税率</label><input class="inp" value="9%" /></div>
+              <div class="fg"><label>税额</label><input class="inp num-cell" value="825.69" /></div>
+              <div class="fg"><label>序号</label><input class="inp" value="11" /></div>
+              <div class="fg"><label>来源 sheet</label><input class="inp" value="销项2025-01" disabled /></div>
+              <div class="fg full"><label>货物、应税劳务及服务</label><textarea class="inp">法律服务费</textarea></div>
+              <div class="fg full"><label>备注</label><textarea class="inp">—</textarea></div>
+            </div>
+          </div>
+          <div class="mfoot">
+            <span class="note">保存即写 raw_invoice 并置「待同步」；修改备注会进入修改记录。</span>
+            <button class="btn">取消</button>
+            <button class="btn primary">保存</button>
+          </div>
+        </div>
+      </div>
+      <p class="hint">对话框字段与 raw_invoice 一一对应，保存后该行进入「待同步」状态，由「同步到 invoice」按钮解析归一化后写入计算表。</p>
+
+    </div>
+  </section>
+</div>
+</body>
+</html>

@@ -22,6 +22,7 @@ from app.ui.handler_collect_view import HandlerCollectView
 from app.ui.import_view import ImportView
 from app.ui.import_verify_view import ImportVerifyView
 from app.ui.invoice_collect_view import InvoiceCollectView
+from app.ui.invoice_ledger_view import InvoiceLedgerView
 from app.ui.ledger_view import LedgerView
 from app.ui.manual_entry_view import ManualEntryView
 from app.ui.prepayment_view import PrepaymentView
@@ -29,11 +30,14 @@ from app.ui.refund_view import RefundView
 from app.ui.settlement_view import SettlementView
 from app.ui.snapshot_view import SnapshotView
 from app.ui.staff_view import StaffView
+from app.ui.expense_cat_view import ExpenseCatView
+from app.ui.data_clear_view import DataClearView
 
 # 分组导航： (分组标题, [(key, 显示名), ...])
 NAV_GROUPS = [
     ("数据", [
         ("import", "导入"),
+        ("invoice_ledger", "发票台账"),
         ("ledger", "台账数据"),
         ("batch", "导入记录"),
     ]),
@@ -49,6 +53,8 @@ NAV_GROUPS = [
     ]),
     ("维护", [
         ("staff", "员工管理"),
+        ("expense_cat", "费用类型维护"),
+        ("data_clear", "数据清空"),
         ("verify", "导入校验"),
         ("snapshot", "快照"),
     ]),
@@ -84,6 +90,9 @@ class MainWindow(QMainWindow):
         self.page_verify = ImportVerifyView()
         self.page_snapshot = SnapshotView()
         self.page_batch = BatchView()
+        self.page_invoice_ledger = InvoiceLedgerView()
+        self.page_expense_cat = ExpenseCatView()
+        self.page_data_clear = DataClearView()
         self._pages = {
             "import": self.page_import, "invoice": self.page_invoice,
             "handler_all": self.page_handler_all,
@@ -93,6 +102,9 @@ class MainWindow(QMainWindow):
             "staff": self.page_staff,
             "verify": self.page_verify,
             "snapshot": self.page_snapshot, "batch": self.page_batch,
+            "invoice_ledger": self.page_invoice_ledger,
+            "expense_cat": self.page_expense_cat,
+            "data_clear": self.page_data_clear,
         }
         for key, page in self._pages.items():
             page.setObjectName(key)

@@ -209,7 +209,6 @@ class StaffView(QWidget):
                 return
         conn = get_conn()
         try:
-            from app.engine.change_log import log_changes
             changes = []
             for f, o, n in [("staff_type", s["staff_type"], type_combo.currentData()),
                             ("hire_month", s["hire_month"], hire_edit.text().strip() or ""),
@@ -220,7 +219,6 @@ class StaffView(QWidget):
                 conn.execute("UPDATE staff SET staff_type=?, hire_month=?, note=? WHERE name=?",
                              (type_combo.currentData(), hire_edit.text().strip() or "",
                               note_edit.text().strip(), name))
-                log_changes(conn, "staff", name, changes, "员工信息维护")
                 conn.commit()
         finally:
             conn.close()

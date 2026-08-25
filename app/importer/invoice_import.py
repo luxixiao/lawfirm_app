@@ -12,7 +12,16 @@ import re
 from typing import Dict, List
 
 from app.importer.date_utils import normalize_date
-from app.importer.excel_reader import ImportError_, col_index, find_header_row, read_sheet
+from app.importer.excel_reader import (
+    ImportError_, col_index, find_header_row, read_sheet, sheet_names,
+)
+
+# 原始镜表列顺序（与 raw_invoice 表一一对应，不含 id/synced/import_batch_id/created_at）
+RAW_FIELDS = [
+    "sheet_name", "row_no", "seq", "invoice_no", "kind", "invoice_date_raw",
+    "status", "voucher_no", "buyer", "total_amount_raw", "net_amount_raw",
+    "tax_rate_raw", "tax_raw", "goods", "remark",
+]
 
 _RED_RE = re.compile(r"被红冲蓝字数电票号码[:：]\s*(\d+)")
 
@@ -99,3 +108,80 @@ def parse_invoice_file(path: str, period: str) -> List[Dict]:
             pass
 
     return invoices
+
+
+def parse_invoice_workbook(path: str, period: str):
+    """解析销项文档全部 sheet，返回 (raw_rows, warnings)。
+
+    raw_rows：每个 sheet 的每一行原始数据（1:1 镜像，数值列原样存文本），供 raw_invoice 双写。
+    - 列顺序见 RAW_FIELDS；sheet_name/row_no 记录来源用于溯源。
+    - 无表头或表头不含「发票号码/价税合计」的 sheet 跳过并记入 warnings（不中断导入）。
+    - 同一文件内发票号码重复仍报错（与单 sheet 行为一致）。
+    调用方需自行处理 period 仅用于默认年份推断（原始日期文本原样保留，不归一化）。
+    """
+    warnings: List[str] = []
+    try:
+        names = sheet_names(path)
+    except ImportError_ as e:
+        raise ImportError_(f"读取 Excel sheet 失败: {e}") from None
+
+    raw_rows: List[Dict] = []
+    seen = set()
+    for name in names:
+        try:
+            rows = read_sheet(path, sheet_name=name)
+        except Exception as e:  # noqa: BLE001
+            warnings.append(f"Sheet「{name}」读取失败，已跳过：{e}")
+            continue
+        hr = find_header_row(rows, ["发票号码", "价税合计"])
+        if hr < 0:
+            warnings.append(f"Sheet「{name}」未找到表头（需含「发票号码」「价税合计」），已跳过")
+            continue
+
+        header = rows[hr]
+        idx_no = col_index(header, "发票号码")
+        idx_seq = col_index(header, "序号")
+        idx_kind = col_index(header, "发票种类")
+        idx_date = col_index(header, "开票日期")
+        idx_status = col_index(header, "发票状态")
+        idx_voucher = col_index(header, "凭证号")
+        idx_goods = col_index(header, "货物", "应税")
+        idx_buyer = col_index(header, "购方", "购买方")
+        idx_total = col_index(header, "价税合计")
+        idx_net = col_index(header, "不含税")
+        idx_rate = col_index(header, "税率")
+        idx_tax = col_index(header, "税额")
+        idx_remark = col_index(header, "备注")
+
+        for i, row in enumerate(rows[hr + 1:]):
+            def g(idx: int) -> str:
+                return row[idx].strip() if 0 <= idx < len(row) else ""
+
+            no = g(idx_no)
+            if not no:
+                continue
+            if no in seen:
+                raise ImportError_(f"发票号码重复: {no}（跨 sheet）")
+            seen.add(no)
+
+            raw_rows.append({
+                "sheet_name": name,
+                "row_no": i + 1,                         # 该 sheet 内行号（1 基）
+                "seq": g(idx_seq),
+                "invoice_no": no,
+                "kind": g(idx_kind),
+                "invoice_date_raw": g(idx_date),
+                "status": g(idx_status),
+                "voucher_no": g(idx_voucher),
+                "buyer": g(idx_buyer),
+                "total_amount_raw": g(idx_total),
+                "net_amount_raw": g(idx_net),
+                "tax_rate_raw": g(idx_rate),
+                "tax_raw": g(idx_tax),
+                "goods": g(idx_goods),
+                "remark": g(idx_remark),
+            })
+
+    if not raw_rows:
+        raise ImportError_("销项文档没有任何有效发票数据（全部 sheet 均无有效行）")
+    return raw_rows, warnings

@@ -17,7 +17,7 @@ from typing import Dict, List, Tuple
 from app.db import get_conn
 from app.engine.backfill import norm_type, staff_type_of
 from app.importer.expense_import import parse_expense_file
-from app.importer.invoice_import import parse_invoice_file
+from app.importer.invoice_import import parse_invoice_file, parse_invoice_workbook
 from app.importer.ledger_import import parse_ledger_file
 from app.importer.excel_reader import ImportError_
 
@@ -109,8 +109,16 @@ def _auto_snapshot() -> None:
 def import_invoice_file(path: str, period: str) -> Dict:
     _auto_snapshot()
     invoices = parse_invoice_file(path, period)
+    raw_rows, raw_warnings = parse_invoice_workbook(path, period)
     conn = get_conn()
     try:
+        # 清旧批次的 raw_invoice 镜像（在 rollback 之前，否则 active 标记已变）
+        old = conn.execute(
+            "SELECT id FROM import_batch WHERE batch_type='invoice' AND period=? AND status='active'",
+            (period,),
+        ).fetchall()
+        for r in old:
+            conn.execute("DELETE FROM raw_invoice WHERE import_batch_id=?", (r["id"],))
         _drop_active_batch(conn, "invoice", period)
         archive = _archive_file(path, "invoice", period)
         batch_id = _new_batch(conn, "invoice", period, Path(path).name, archive, "")
@@ -124,13 +132,26 @@ def import_invoice_file(path: str, period: str) -> Dict:
                  inv["net_amount"], inv["tax_rate"], inv["tax"],
                  inv["orig_invoice_no"], inv["remark"], "import", batch_id),
             )
+        # 原始镜表双写：全部 sheet 逐行 1:1 镜像（synced=1 表示与导入一致）
+        for raw in raw_rows:
+            conn.execute(
+                """INSERT INTO raw_invoice
+                   (sheet_name, row_no, seq, invoice_no, kind, invoice_date_raw, status, voucher_no,
+                    buyer, total_amount_raw, net_amount_raw, tax_rate_raw, tax_raw, goods, remark, synced, import_batch_id)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?)""",
+                (raw["sheet_name"], raw["row_no"], raw["seq"], raw["invoice_no"], raw["kind"],
+                 raw["invoice_date_raw"], raw["status"], raw["voucher_no"], raw["buyer"],
+                 raw["total_amount_raw"], raw["net_amount_raw"], raw["tax_rate_raw"], raw["tax_raw"],
+                 raw["goods"], raw["remark"], batch_id),
+            )
         conn.commit()
     except Exception:
         conn.rollback()
         raise
     finally:
         conn.close()
-    return {"type": "invoice", "period": period, "count": len(invoices)}
+    return {"type": "invoice", "period": period, "count": len(invoices),
+            "raw_count": len(raw_rows), "warnings": raw_warnings}
 
 
 # ---------------------------------------------------------------------------

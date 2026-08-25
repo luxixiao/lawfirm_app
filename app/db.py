@@ -148,6 +148,33 @@ CREATE INDEX IF NOT EXISTS idx_collection_inv ON collection(invoice_no);
 CREATE INDEX IF NOT EXISTS idx_refund_red     ON refund(red_invoice_no);
 CREATE INDEX IF NOT EXISTS idx_batch_type     ON import_batch(batch_type, period);
 
+-- 发票台账原始镜表（方案D）：Excel 每个 sheet 逐行 1:1 镜像，数值列原样存文本、不归一化
+-- 与归一化 invoice 表解耦；导入双写、手工增删改、可「同步到 invoice」
+CREATE TABLE IF NOT EXISTS raw_invoice (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    sheet_name      TEXT NOT NULL DEFAULT '',
+    row_no          INTEGER NOT NULL DEFAULT 0,
+    seq             TEXT,
+    invoice_no      TEXT,
+    kind            TEXT,
+    invoice_date_raw TEXT,
+    status          TEXT,
+    voucher_no      TEXT,
+    buyer           TEXT,
+    total_amount_raw TEXT,
+    net_amount_raw  TEXT,
+    tax_rate_raw    TEXT,
+    tax_raw         TEXT,
+    goods           TEXT,
+    remark          TEXT,
+    synced          INTEGER NOT NULL DEFAULT 0,   -- 0=待同步 1=已同步
+    import_batch_id INTEGER,
+    created_at      TEXT DEFAULT (datetime('now','localtime'))
+);
+CREATE INDEX IF NOT EXISTS idx_raw_inv_no     ON raw_invoice(invoice_no);
+CREATE INDEX IF NOT EXISTS idx_raw_inv_synced ON raw_invoice(synced);
+CREATE INDEX IF NOT EXISTS idx_raw_inv_batch  ON raw_invoice(import_batch_id);
+
 -- 数据修改记录（含手动备注）
 CREATE TABLE IF NOT EXISTS change_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
