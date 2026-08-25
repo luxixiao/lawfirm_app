@@ -13,7 +13,7 @@ from typing import Dict, List, Optional
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
-    QCheckBox, QHBoxLayout, QLabel, QMessageBox, QVBoxLayout, QWidget,
+    QAbstractItemView, QCheckBox, QHBoxLayout, QLabel, QMessageBox, QVBoxLayout, QWidget,
 )
 
 from app.db import get_conn
@@ -106,6 +106,9 @@ class ImportVerifyView(QWidget):
         self.table.setSelectionBehavior(TableWidget.SelectionBehavior.SelectRows)
         self.table.setAlternatingRowColors(False)
         self.table.verticalHeader().setVisible(False)
+        # 性能：关闭单元格自动换行 + 像素级滚动，避免大表滚动卡顿。
+        self.table.setWordWrap(False)
+        self.table.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
         self.table.cellDoubleClicked.connect(self._cell_double_clicked)
         lay.addWidget(self.table, 1)
 
@@ -261,7 +264,7 @@ class ImportVerifyView(QWidget):
             }
 
         rows: List[Dict] = []
-        for no in sorted(set(parsed_map) | set(db_map)):
+        for i, no in enumerate(sorted(set(parsed_map) | set(db_map))):
             p = parsed_map.get(no)
             d = db_map.get(no)
             if p is None:
@@ -272,6 +275,7 @@ class ImportVerifyView(QWidget):
                     "raw_amount": None, "db_amount": d["total_amount"],
                     "raw_handlers": "—", "db_handlers": self._handlers_text(d["handlers"]),
                     "reason": "解析中缺失", "in_db": True, "src": None,
+                    "_idx": i,
                 })
                 continue
             if d is None:
@@ -283,6 +287,7 @@ class ImportVerifyView(QWidget):
                     "raw_handlers": self._handlers_text(p["handlers"]),
                     "db_handlers": "—",
                     "reason": "库中缺失", "in_db": False, "src": p,
+                    "_idx": i,
                 })
                 continue
             reason = ""
@@ -300,6 +305,7 @@ class ImportVerifyView(QWidget):
                 "raw_handlers": self._handlers_text(p["handlers"]),
                 "db_handlers": self._handlers_text(d["handlers"]),
                 "reason": reason, "in_db": True, "src": p,
+                "_idx": i,
             })
         return rows
 
@@ -334,7 +340,9 @@ class ImportVerifyView(QWidget):
                     item.setBackground(DIFF_BG)
                 self.table.setItem(r, c, item)
             self.table.setRowHeight(r, 32)
-            self.table.item(r, 0).setData(Qt.ItemDataRole.UserRole, r)
+            # 存全量行索引（self._rows 中的位置），而非筛选后的显示行号，
+            # 避免「只看差异行」开启时双击取到错误的发票溯源。
+            self.table.item(r, 0).setData(Qt.ItemDataRole.UserRole, row["_idx"])
         auto_fit_columns(self.table, max_width=200)
 
         diff_n = sum(1 for r in self._rows if r["reason"])

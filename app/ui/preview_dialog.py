@@ -13,7 +13,7 @@ from typing import Dict, List, Optional
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
-    QCheckBox, QDialog, QHBoxLayout, QLabel,
+    QAbstractItemView, QCheckBox, QDialog, QHBoxLayout, QLabel,
     QMessageBox, QVBoxLayout,
 )
 
@@ -129,6 +129,10 @@ class PreviewDialog(QDialog):
         self.table.setAlternatingRowColors(False)
         self.table.verticalHeader().setVisible(False)
         self.table.horizontalHeader().setStretchLastSection(False)
+        # 性能：关闭单元格自动换行（避免数百行滚动时逐格重排文字造成卡顿），
+        # 改用像素级滚动使大表滚动更顺滑；超长文本由双击溯源卡片查看完整内容。
+        self.table.setWordWrap(False)
+        self.table.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
         self.table.cellDoubleClicked.connect(self._cell_double_clicked)
         root.addWidget(self.table, 1)
 
@@ -156,7 +160,7 @@ class PreviewDialog(QDialog):
     def _build_rows(self) -> None:
         """构造展示行：每张发票一条，附差异原因与原始/解析文本。"""
         self._rows: List[Dict] = []
-        for inv in self._data.get("invoices", []):
+        for i, inv in enumerate(self._data.get("invoices", [])):
             sheet_name = inv.get("sheet_name") or inv.get("sheet") or "—"
             row_no = inv.get("row_no") or 0
             self._rows.append({
@@ -171,6 +175,7 @@ class PreviewDialog(QDialog):
                 "is_red": bool(inv.get("is_red")),
                 "receipt": self._receipt_text(inv),
                 "reason": _diff_reason(inv),
+                "_idx": i,
                 "_inv": inv,
             })
 
@@ -209,7 +214,9 @@ class PreviewDialog(QDialog):
                     item.setBackground(DIFF_BG)
                 self.table.setItem(r, c, item)
             self.table.setRowHeight(r, 32)
-            self.table.item(r, 0).setData(Qt.ItemDataRole.UserRole, r)
+            # 存全量行索引（self._rows 中的位置），而非筛选后的显示行号，
+            # 避免「只看差异行」开启时双击取到错误的发票溯源。
+            self.table.item(r, 0).setData(Qt.ItemDataRole.UserRole, row["_idx"])
         auto_fit_columns(self.table, max_width=240)
 
         diff_n = sum(1 for r in self._rows if r["reason"])
