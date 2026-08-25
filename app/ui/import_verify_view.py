@@ -109,6 +109,8 @@ class ImportVerifyView(QWidget):
         # 性能：关闭单元格自动换行 + 像素级滚动，避免大表滚动卡顿。
         self.table.setWordWrap(False)
         self.table.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
+        # 横向滚动同样用像素级，宽表左右滑动更顺滑（此前只设了竖向）。
+        self.table.setHorizontalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
         self.table.cellDoubleClicked.connect(self._cell_double_clicked)
         lay.addWidget(self.table, 1)
 

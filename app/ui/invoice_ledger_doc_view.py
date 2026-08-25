@@ -71,7 +71,7 @@ class InvoiceLedgerDocView(QWidget):
         self.f_status.addItem("全部", "")
         self.f_status.addItem("仅红字", "red")
         self.f_search = QLineEdit()
-        self.f_search.setPlaceholderText("搜索：发票号码 / 对方 / 金额 / 案号")
+        self.f_search.setPlaceholderText("搜索：发票号码 / 对方 / 金额 / 案号 / 经办人")
         bar.addWidget(QLabel("工作表："))
         bar.addWidget(self.f_sheet, 0)
         bar.addWidget(QLabel("状态："))
@@ -108,8 +108,8 @@ class InvoiceLedgerDocView(QWidget):
 
         self.f_sheet.currentIndexChanged.connect(self.refresh)
         self.f_status.currentIndexChanged.connect(self.refresh)
-        self.f_search.editingFinished.connect(self.refresh)
-        self.f_search.returnPressed.connect(self.refresh)
+        # 输入即筛选（与「销项发票」页一致），不依赖回车，内存过滤不重查 DB
+        self.f_search.textChanged.connect(self._apply)
 
     # ------------------------------------------------------------------ #
     def showEvent(self, event) -> None:  # noqa: N802
@@ -132,28 +132,40 @@ class InvoiceLedgerDocView(QWidget):
 
         sheet_key = self.f_sheet.currentData() or ""
         status = self.f_status.currentData() or ""
-        kw = self.f_search.text().strip()
-        rows = rl.list_raw(sheet_key=sheet_key, keyword=kw, status=status)
+        # 仅按工作表/状态取数（不含关键字），关键字改由 _apply 内存过滤，支持输入即筛
+        rows = rl.list_raw(sheet_key=sheet_key, status=status)
         self._all_rows = rows
         self._apply()
 
     def _apply(self) -> None:
+        # 关键字过滤（输入即筛，内存过滤，不重查 DB）
+        kw = self.f_search.text().strip().lower()
+        if kw:
+            view = [r for r in self._all_rows if any(
+                kw in str(r.get(f) or "").lower()
+                for f in ("invoice_no", "buyer", "amount_raw", "case_no", "handler_text")
+            )]
+        else:
+            view = self._all_rows
+
         # 排序
         if self._sort_col >= 0:
             col = self._sort_col
             rev = self._sort_order == Qt.SortOrder.DescendingOrder
             if col == 0:  # 序号
-                self._all_rows.sort(key=lambda r: _safe_int(_GETTERS[0](r)), reverse=rev)
+                view.sort(key=lambda r: _safe_int(_GETTERS[0](r)), reverse=rev)
             elif col == _AMOUNT_COL:  # 金额
-                self._all_rows.sort(key=lambda r: _parse_total(_GETTERS[col](r)), reverse=rev)
+                view.sort(key=lambda r: _parse_total(_GETTERS[col](r)), reverse=rev)
             else:
-                self._all_rows.sort(key=lambda r: str(_GETTERS[col](r)), reverse=rev)
+                view.sort(key=lambda r: str(_GETTERS[col](r)), reverse=rev)
 
-        self.table.setRowCount(len(self._all_rows))
+        self.table.setRowCount(len(view))
         self._meta.clear()
-        for r, row in enumerate(self._all_rows):
+        total = 0.0
+        for r, row in enumerate(view):
             self._meta[r] = row["id"]
             is_red = _parse_total(row.get("amount_raw")) < 0
+            total += _parse_total(row.get("amount_raw"))
             for c, getter in enumerate(_GETTERS):
                 v = getter(row)
                 item = QTableWidgetItem("" if v is None else str(v))
@@ -172,7 +184,9 @@ class InvoiceLedgerDocView(QWidget):
             self.table.horizontalHeader().setStretchLastSection(False)
         self.table.horizontalHeader().setSortIndicator(
             self._sort_col, self._sort_order) if self._sort_col >= 0 else None
-        self.lbl_stat.setText(f"共 {len(self._all_rows)} 行（数据来源：发票台账文档）")
+        self.lbl_stat.setText(
+            f"共 {len(view)} 行（数据来源：发票台账文档）；合计金额 {total:,.2f}"
+        )
 
     # ------------------------------------------------------------------ #
     # 排序
