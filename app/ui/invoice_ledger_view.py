@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import re
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QComboBox, QDialog, QDialogButtonBox, QFormLayout, QHBoxLayout, QLabel,
     QLineEdit, QMessageBox, QPlainTextEdit, QTableWidget, QTableWidgetItem,
@@ -178,7 +179,7 @@ class InvoiceLedgerView(QWidget):
                 for c in range(self.table.columnCount()):
                     it = self.table.item(r, c)
                     if it is not None:
-                        it.setBackground(Qt.GlobalColor(0xFFECEC))
+                        it.setBackground(QColor("#FFECEC"))
             self._meta[r] = row["id"]
         used = auto_fit_then_restore(self.table, "invoice_ledger", "main")
         if used:
