@@ -51,6 +51,11 @@ def _match_kw(row: dict, kw: str) -> bool:
     return any(kw in str(f or "").lower() for f in fields)
 
 
+def _fmt_money(v: float) -> str:
+    """金额格式化：千分位 + 2 位小数。"""
+    return f"{v:,.2f}"
+
+
 def _sort_key(row: dict, col: int):
     if col in _AMOUNT_COLS:
         return _parse_total(row.get(_KEYS[col]) or "")
@@ -111,8 +116,21 @@ class InvoiceLedgerView(QWidget):
         attach_persistence(self.table, "invoice_ledger", "main")
         lay.addWidget(self.table, 1)
 
-        self.lbl_stat = CaptionLabel("")
-        lay.addWidget(self.lbl_stat)
+        # ---- 底部状态栏：行数 + 三类合计（随筛选动态变化） ----
+        fbar2 = QHBoxLayout()
+        self.lbl_count = CaptionLabel("")
+        self.lbl_amt = CaptionLabel("")
+        self.lbl_tax = CaptionLabel("")
+        self.lbl_total = CaptionLabel("")
+        fbar2.addWidget(self.lbl_count)
+        fbar2.addSpacing(28)
+        fbar2.addWidget(self.lbl_amt)
+        fbar2.addSpacing(28)
+        fbar2.addWidget(self.lbl_tax)
+        fbar2.addSpacing(28)
+        fbar2.addWidget(self.lbl_total)
+        fbar2.addStretch()
+        lay.addLayout(fbar2)
 
         self._all_rows: list[dict] = []
         self._sort_col: int = -1
@@ -193,7 +211,13 @@ class InvoiceLedgerView(QWidget):
                                  Qt.SortOrder.DescendingOrder if self._sort_desc else Qt.SortOrder.AscendingOrder)
         else:
             hdr.setSortIndicator(-1, Qt.SortOrder.AscendingOrder)
-        self.lbl_stat.setText(f"共 {len(self._all_rows)} 行（数据来源：销项导入文档）")
+        total_amt = sum(_parse_total(r.get("net_amount_raw")) for r in rows)
+        total_tax = sum(_parse_total(r.get("tax_raw")) for r in rows)
+        total_sum = sum(_parse_total(r.get("total_amount_raw")) for r in rows)
+        self.lbl_count.setText(f"共 {len(rows)} 行（数据来源：销项导入文档）")
+        self.lbl_amt.setText(f"合计金额（不含税）：{_fmt_money(total_amt)}")
+        self.lbl_tax.setText(f"合计税额：{_fmt_money(total_tax)}")
+        self.lbl_total.setText(f"合计总额（价税合计）：{_fmt_money(total_sum)}")
 
     def _on_header(self, col: int) -> None:
         if self._sort_col == col:
