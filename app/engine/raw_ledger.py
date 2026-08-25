@@ -62,28 +62,33 @@ def sheet_keys() -> List[Dict]:
 
 
 def list_raw(sheet_key: str = "", keyword: str = "", status: str = "",
-             imported_only: bool = False) -> List[Dict]:
+             imported_only: bool = False, with_period: bool = True) -> List[Dict]:
     """返回 raw_ledger 行（按 sheet/row 排序）。
 
     sheet_key: ""=全部；否则按 sheet1~4 过滤。
     status:    ""=全部；"red"=仅红字（金额<0）。
     keyword:   匹配 发票号码/对方/金额文本/案号（LIKE，不区分大小写）。
     imported_only: 仅来自导入的行（import_batch_id 非空）。
+    with_period:  LEFT JOIN import_batch 带出 period（导入账期，如 "2025-01"），
+                  用于「发票台账」页按台账时间（导入账期）筛选，而非按发票自身日期。
     """
     clauses, params = [], []
     if sheet_key:
-        clauses.append("sheet_key = ?")
+        clauses.append("l.sheet_key = ?")
         params.append(sheet_key)
     if imported_only:
-        clauses.append("import_batch_id IS NOT NULL")
+        clauses.append("l.import_batch_id IS NOT NULL")
     if keyword:
-        clauses.append("(invoice_no LIKE ? OR buyer LIKE ? OR amount_raw LIKE ? OR case_no LIKE ?)")
+        clauses.append("(l.invoice_no LIKE ? OR l.buyer LIKE ? OR l.amount_raw LIKE ? OR l.case_no LIKE ?)")
         params += [f"%{keyword}%", f"%{keyword}%", f"%{keyword}%", f"%{keyword}%"]
     where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+    join = " LEFT JOIN import_batch b ON b.id = l.import_batch_id" if with_period else ""
+    sel = "l.*" + (", b.period AS period" if with_period else "")
     conn = get_conn()
     try:
         rows = conn.execute(
-            f"SELECT * FROM raw_ledger{where} ORDER BY sheet_key, row_no", params
+            f"SELECT {sel} FROM raw_ledger l{join}{where} ORDER BY l.sheet_key, l.row_no",
+            params,
         ).fetchall()
     finally:
         conn.close()

@@ -18,7 +18,6 @@ from PySide6.QtWidgets import (
 
 from app.engine import raw_ledger as rl
 from app.engine.raw_ledger import EDIT_FIELDS, sheet_label
-from app.importer.date_utils import normalize_date
 from app.ui.audit_view import AuditView
 from app.ui.column_state import attach_persistence, auto_fit_then_restore
 from app.ui.widgets import CaptionLabel, PushButton, SubtitleLabel
@@ -51,22 +50,6 @@ def _parse_total(txt) -> float:
     return _pt(txt)
 
 
-def _ym_of(r: dict) -> str:
-    """从原始日期取 YYYY-MM（用于按年月筛选）；无法解析时返回空串。
-
-    原始日期可能是 "25.1.2" 这类点分写法，需经 normalize_date 规范化。
-    prepayment（已入账未开票）用收到日期；其余用开票日期。
-    """
-    d = _date_of(r)
-    if not d:
-        return ""
-    try:
-        norm = normalize_date(d)
-    except Exception:  # noqa: BLE001 解析失败的行在「全部年份」下仍可见
-        return ""
-    return norm[:7] if len(norm) >= 7 else ""
-
-
 class InvoiceLedgerDocView(QWidget):
     def __init__(self) -> None:
         super().__init__()
@@ -93,9 +76,9 @@ class InvoiceLedgerDocView(QWidget):
         self.f_status.addItem("仅红字", "red")
         self.f_search = QLineEdit()
         self.f_search.setPlaceholderText("搜索：发票号码 / 对方 / 金额 / 案号 / 经办人")
-        bar.addWidget(QLabel("开票年份："))
+        bar.addWidget(QLabel("台账年份："))
         bar.addWidget(self.f_year, 0)
-        bar.addWidget(QLabel("开票月份："))
+        bar.addWidget(QLabel("台账月份："))
         bar.addWidget(self.f_month, 0)
         bar.addWidget(QLabel("工作表："))
         bar.addWidget(self.f_sheet, 0)
@@ -149,13 +132,14 @@ class InvoiceLedgerDocView(QWidget):
         self._refresh_sheet_combo()
         self._apply()
 
-    # ---- 年份 / 月份 下拉（两级联动，按发票/收到日期的年月）----
+    # ---- 年份 / 月份 下拉（两级联动，按导入账期 period，如 "2025-01"）----
     def _year_options(self) -> list:
-        return sorted({_ym_of(r)[:4] for r in self._all_rows if _ym_of(r)})
+        return sorted({p[:4] for r in self._all_rows
+                       if (p := (r.get("period") or ""))[:4]})
 
     def _month_options(self, year: str = "") -> list:
-        return sorted({ym for r in self._all_rows
-                       if (ym := _ym_of(r)) and ym.startswith(year)})
+        return sorted({p for r in self._all_rows
+                       if (p := (r.get("period") or "")) and p[:4] == year})
 
     def _refresh_year_combo(self) -> None:
         cur = self.f_year.currentData()
@@ -201,13 +185,13 @@ class InvoiceLedgerDocView(QWidget):
     def _apply(self) -> None:
         rows = self._all_rows
 
-        # 年月筛选（按开票日期/收到日期的年月）
-        ym = self.f_month.currentData() or self.f_year.currentData() or ""
-        if ym:
-            if len(ym) == 7:
-                rows = [r for r in rows if _ym_of(r) == ym]
-            else:
-                rows = [r for r in rows if _ym_of(r)[:4] == ym]
+        # 年月筛选（按导入账期 period，如 "2025-01"；选具体月精确匹配，仅选年则按年匹配）
+        sel_year = self.f_year.currentData() or ""
+        sel_month = self.f_month.currentData() or ""
+        if sel_month:
+            rows = [r for r in rows if (r.get("period") or "") == sel_month]
+        elif sel_year:
+            rows = [r for r in rows if (r.get("period") or "")[:4] == sel_year]
 
         # 工作表筛选（sheet_key）
         sheet_key = self.f_sheet.currentData() or ""
