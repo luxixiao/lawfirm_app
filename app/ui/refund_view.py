@@ -174,7 +174,7 @@ class RefundView(QWidget):
         # 按钮（用普通 PushButton + clicked 信号，不用 QDialogButtonBox 自动映射）
         btn_row = QHBoxLayout()
         from app.ui.widgets import PrimaryPushButton, PushButton
-        go_btn = PrimaryPushButton("去手动补录原票")
+        go_btn = PrimaryPushButton("去补录原票")
         close_btn = PushButton("关闭")
         btn_row.addStretch()
         btn_row.addWidget(close_btn)

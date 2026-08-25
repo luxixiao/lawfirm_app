@@ -48,7 +48,7 @@ NAV_GROUPS = [
         ("handler_all", "经办人发票收款情况"),
         ("prepayment", "预收款"),
         ("refund", "退款"),
-        ("manual", "手动补录"),
+        ("manual", "发票补录"),
     ]),
     ("结算", [
         ("settlement", "个人结算总表"),
