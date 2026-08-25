@@ -20,7 +20,9 @@ from app.db import get_conn
 from app.importer.archive_helper import resolve_archive
 from app.importer.ledger_import import parse_ledger_file
 from app.ui.ledger_source import show_source_for_invoice
-from app.ui.table_view import auto_fit_columns
+from app.ui.column_state import (
+    attach_persistence, auto_fit_then_restore, restore_col_widths,
+)
 from app.ui.widgets import CaptionLabel, ComboBox, PrimaryPushButton, PushButton, TableWidget
 
 RED = QColor("#C0392B")
@@ -113,6 +115,8 @@ class ImportVerifyView(QWidget):
         self.table.setHorizontalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
         self.table.cellDoubleClicked.connect(self._cell_double_clicked)
         lay.addWidget(self.table, 1)
+        # 列宽持久化：用户手动调整后的列宽记入 QSettings，跨页面/重开保留。
+        attach_persistence(self.table, "import_verify", "main")
 
         # 底部说明
         foot = CaptionLabel("双击任意行可查看该记录在原台账中的信息（含所属 sheet 与行号）。")
@@ -120,6 +124,7 @@ class ImportVerifyView(QWidget):
 
         self._rows: List[Dict] = []
         self._period = ""
+        self._need_fit = True  # 数据集合变化时才自适应列宽（切「只看异常」不重算）
         self._archive = ""  # 当前对账批次存档绝对路径（溯源卡片打开原文件用）
         self._load_periods()
 
@@ -166,6 +171,7 @@ class ImportVerifyView(QWidget):
         period = self._period
         if not period:
             self._rows = []
+            self._need_fit = True
             self._render()
             self.lbl_stat.setText("该月没有已导入的发票台账批次")
             return
@@ -183,18 +189,21 @@ class ImportVerifyView(QWidget):
         if batch is None:
             QMessageBox.information(self, "提示", f"账期 {period} 没有已导入的发票台账批次。")
             self._rows = []
+            self._need_fit = True
             self._render()
             return
         archive = (batch["archive_path"] or "").strip()
         if not archive:
             QMessageBox.information(self, "无法对账", f"该批次没有存档文件（早期版本导入），无法重读源文件对账。")
             self._rows = []
+            self._need_fit = True
             self._render()
             return
         path = resolve_archive(archive)
         if not path.exists():
             QMessageBox.information(self, "无法对账", f"存档文件不存在：\n{path}")
             self._rows = []
+            self._need_fit = True
             self._render()
             return
 
@@ -203,11 +212,13 @@ class ImportVerifyView(QWidget):
         except Exception as e:  # noqa: BLE001
             QMessageBox.critical(self, "重读源文件失败", str(e))
             self._rows = []
+            self._need_fit = True
             self._render()
             return
 
         self._rows = self._compare(batch["id"], parsed, period, str(path))
         self._archive = str(path)
+        self._need_fit = True
         self._render()
 
     def _compare(self, batch_id: int, parsed: Dict, period: str, archive: str) -> List[Dict]:
@@ -345,7 +356,13 @@ class ImportVerifyView(QWidget):
             # 存全量行索引（self._rows 中的位置），而非筛选后的显示行号，
             # 避免「只看差异行」开启时双击取到错误的发票溯源。
             self.table.item(r, 0).setData(Qt.ItemDataRole.UserRole, row["_idx"])
-        auto_fit_columns(self.table, max_width=200)
+        # 列宽：仅在数据集合变化时自适应（auto-fit 重算全部列宽较耗时），
+        # 切换「只看异常」等纯过滤不动列宽、复用上次结果，避免卡顿（C 方案）。
+        if self._need_fit:
+            auto_fit_then_restore(self.table, "import_verify", "main", max_width=200)
+            self._need_fit = False
+        else:
+            restore_col_widths(self.table, "import_verify", "main")
 
         diff_n = sum(1 for r in self._rows if r["reason"])
         total_n = len(self._rows)
