@@ -2,30 +2,31 @@
 
 - 数据源：销项导入文档（raw_invoice，仅 import_batch_id 非空的导入行）。
 - 只读：无增删改、无同步、无修改记录面板。
-- 支持：搜索（发票号/购方/备注）、点击表头排序、按来源 sheet 筛选、红字行浅红标注。
-- 排序：金额列（价税合计/不含税/税率/税额）按数值、行号按整数，其余按文本（手动实现，
+- 筛选：开票年份 + 开票月份（两级联动，与「发票收款情况」同款）、状态（全部/仅红字）、
+  搜索（发票号码 / 购方 / 金额 / 凭证号）。
+- 排序：金额列（价税合计/不含税/税率/税额）按数值，其余按文本（手动实现，
   因 PySide6 的 QTableWidgetItem 不暴露 setSortRole，无法直接按 UserRole 排序）。
+- 红字发票整行浅红标注，发票号与金额标红。
 """
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
-    QAbstractItemView, QComboBox, QHBoxLayout, QLabel, QLineEdit,
+    QAbstractItemView, QComboBox, QHBoxLayout, QLineEdit,
     QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
-from app.ui.widgets import CaptionLabel, PushButton, SubtitleLabel
+from app.ui.widgets import CaptionLabel, SubtitleLabel
 from app.ui.column_state import attach_persistence, auto_fit_then_restore
 from app.engine import raw_invoice as ri
 
-_HEADERS = ["来源sheet", "行号", "序号", "发票号码", "种类", "开票日期", "状态", "凭证号",
-            "购方名称", "价税合计", "不含税", "税率", "税额", "货物或劳务", "备注"]
+_HEADERS = ["发票号码", "种类", "开票日期", "状态", "凭证号", "购方名称",
+            "价税合计", "不含税", "税率", "税额", "货物或劳务", "备注"]
 # 列 -> raw_invoice 字段
-_KEYS = ["sheet_name", "row_no", "seq", "invoice_no", "kind", "invoice_date_raw",
-         "status", "voucher_no", "buyer", "total_amount_raw", "net_amount_raw",
-         "tax_rate_raw", "tax_raw", "goods", "remark"]
-_AMOUNT_COLS = (9, 10, 11, 12)  # 价税合计/不含税/税率/税额 按数值排序
+_KEYS = ["invoice_no", "kind", "invoice_date_raw", "status", "voucher_no", "buyer",
+         "total_amount_raw", "net_amount_raw", "tax_rate_raw", "tax_raw", "goods", "remark"]
+_AMOUNT_COLS = (6, 7, 8, 9)  # 价税合计/不含税/税率/税额 按数值排序
 
 
 def _parse_total(txt) -> float:
@@ -37,14 +38,22 @@ def _parse_total(txt) -> float:
         return 0.0
 
 
+def _ym(date_raw) -> str:
+    """从原始开票日期取 YYYY-MM；无法解析时返回空串。"""
+    s = (date_raw or "")[:7]
+    return s if len(s) == 7 and s[:4].isdigit() else ""
+
+
+def _match_kw(row: dict, kw: str) -> bool:
+    """搜索：发票号码 / 购方 / 金额 / 凭证号（不区分大小写、子串匹配）。"""
+    fields = [row.get("invoice_no"), row.get("buyer"),
+              row.get("total_amount_raw"), row.get("voucher_no")]
+    return any(kw in str(f or "").lower() for f in fields)
+
+
 def _sort_key(row: dict, col: int):
     if col in _AMOUNT_COLS:
         return _parse_total(row.get(_KEYS[col]) or "")
-    if col == 1:  # 行号按整数
-        try:
-            return int(row.get("row_no") or 0)
-        except (ValueError, TypeError):
-            return 0
     return (row.get(_KEYS[col]) or "")
 
 
@@ -58,30 +67,34 @@ class InvoiceLedgerView(QWidget):
         t = SubtitleLabel("销项发票")
         lay.addWidget(t)
         h = CaptionLabel("查看销项导入文档的全部原始信息（逐行 1:1 镜像），只读。"
-                         "红字发票整行浅红标注。支持搜索、点击表头排序、按来源 sheet 筛选。")
+                         "红字发票整行浅红标注。支持搜索、点击表头排序、按开票年月筛选。")
         lay.addWidget(h)
 
         # ---- 筛选条 ----
         fbar = QHBoxLayout()
-        fbar.addWidget(CaptionLabel("来源sheet"))
-        self.f_sheet = QComboBox()
-        self.f_sheet.addItem("全部", userData="")
-        self.f_sheet.currentIndexChanged.connect(self.refresh)
-        fbar.addWidget(self.f_sheet)
+        fbar.addWidget(CaptionLabel("开票年份"))
+        self.f_year = QComboBox()
+        self.f_year.currentIndexChanged.connect(self._on_year_changed)
+        fbar.addWidget(self.f_year)
+
+        fbar.addWidget(CaptionLabel("开票月份"))
+        self.f_month = QComboBox()
+        self.f_month.currentIndexChanged.connect(self._apply)
+        fbar.addWidget(self.f_month)
+
         fbar.addWidget(CaptionLabel("状态"))
         self.f_status = QComboBox()
         for label, val in [("全部", ""), ("仅红字", "red")]:
             self.f_status.addItem(label, userData=val)
-        self.f_status.currentIndexChanged.connect(self.refresh)
+        self.f_status.currentIndexChanged.connect(self._apply)
         fbar.addWidget(self.f_status)
+
         fbar.addWidget(CaptionLabel("搜索"))
         self.f_search = QLineEdit()
-        self.f_search.setPlaceholderText("发票号码 / 购方 / 备注")
-        self.f_search.textChanged.connect(self.refresh)
+        self.f_search.setPlaceholderText("发票号码 / 购方 / 金额 / 凭证号")
+        self.f_search.textChanged.connect(self._apply)
         fbar.addWidget(self.f_search, 1)
-        self.btn_refresh = PushButton("刷新")
-        self.btn_refresh.clicked.connect(self.refresh)
-        fbar.addWidget(self.btn_refresh)
+
         lay.addLayout(fbar)
 
         # ---- 主表 ----
@@ -101,7 +114,7 @@ class InvoiceLedgerView(QWidget):
         self.lbl_stat = CaptionLabel("")
         lay.addWidget(self.lbl_stat)
 
-        self._rows: list[dict] = []
+        self._all_rows: list[dict] = []
         self._sort_col: int = -1
         self._sort_desc: bool = False
         self.refresh()
@@ -111,30 +124,68 @@ class InvoiceLedgerView(QWidget):
         super().showEvent(event)
         self.refresh()
 
-    def _refresh_sheet_combo(self) -> None:
-        cur = self.f_sheet.currentData()
-        self.f_sheet.blockSignals(True)
-        self.f_sheet.clear()
-        self.f_sheet.addItem("全部", userData="")
-        for s in ri.distinct_sheets(imported_only=True):
-            self.f_sheet.addItem(s, userData=s)
-        idx = self.f_sheet.findData(cur)
-        if idx >= 0:
-            self.f_sheet.setCurrentIndex(idx)
-        self.f_sheet.blockSignals(False)
+    def _year_options(self) -> list[str]:
+        return sorted({_ym(r.get("invoice_date_raw"))[:4]
+                       for r in self._all_rows if _ym(r.get("invoice_date_raw"))})
+
+    def _month_options(self, year: str = "") -> list[str]:
+        return sorted({ym for r in self._all_rows
+                       if (ym := _ym(r.get("invoice_date_raw"))) and ym.startswith(year)})
+
+    def _refresh_year_combo(self) -> None:
+        cur = self.f_year.currentData()
+        self.f_year.blockSignals(True)
+        self.f_year.clear()
+        self.f_year.addItem("全部年份", userData="")
+        for y in self._year_options():
+            self.f_year.addItem(y, userData=y)
+        idx = self.f_year.findData(cur)
+        self.f_year.setCurrentIndex(idx if idx >= 0 else 0)
+        self.f_year.blockSignals(False)
+
+    def _refresh_month_combo(self) -> None:
+        cur = self.f_month.currentData()
+        year = self.f_year.currentData() or ""
+        self.f_month.blockSignals(True)
+        self.f_month.clear()
+        self.f_month.addItem("全部月份", userData="")
+        for m in self._month_options(year):
+            self.f_month.addItem(m, userData=m)
+        idx = self.f_month.findData(cur)
+        self.f_month.setCurrentIndex(idx if idx >= 0 else 0)
+        self.f_month.blockSignals(False)
+
+    def _on_year_changed(self, *_args) -> None:
+        # 年份变化 -> 重建月份下拉（仅保留该年月份），再应用筛选
+        self._refresh_month_combo()
+        self._apply()
 
     def refresh(self) -> None:
-        self._refresh_sheet_combo()
-        sheet = self.f_sheet.currentData() or ""
-        status = self.f_status.currentData() or ""
-        keyword = self.f_search.text().strip()
-        self._rows = ri.list_raw(sheet=sheet, status=status, keyword=keyword, imported_only=True)
+        self._all_rows = ri.list_raw(imported_only=True)
+        self._refresh_year_combo()
+        self._refresh_month_combo()
         self._apply()
 
     def _apply(self) -> None:
-        rows = self._rows
+        rows = self._all_rows
+
+        if self.f_status.currentData() == "red":
+            rows = [r for r in rows if _parse_total(r.get("total_amount_raw")) < 0]
+
+        ym = self.f_month.currentData() or self.f_year.currentData() or ""
+        if ym:
+            if len(ym) == 7:  # 月份 YYYY-MM
+                rows = [r for r in rows if _ym(r.get("invoice_date_raw")) == ym]
+            else:             # 年份 YYYY
+                rows = [r for r in rows if (r.get("invoice_date_raw") or "")[:4] == ym]
+
+        kw = self.f_search.text().strip().lower()
+        if kw:
+            rows = [r for r in rows if _match_kw(r, kw)]
+
         if self._sort_col >= 0:
             rows = sorted(rows, key=lambda r: _sort_key(r, self._sort_col), reverse=self._sort_desc)
+
         self._fill(rows)
         hdr = self.table.horizontalHeader()
         if self._sort_col >= 0:
@@ -142,7 +193,7 @@ class InvoiceLedgerView(QWidget):
                                  Qt.SortOrder.DescendingOrder if self._sort_desc else Qt.SortOrder.AscendingOrder)
         else:
             hdr.setSortIndicator(-1, Qt.SortOrder.AscendingOrder)
-        self.lbl_stat.setText(f"共 {len(self._rows)} 行（数据来源：销项导入文档）")
+        self.lbl_stat.setText(f"共 {len(self._all_rows)} 行（数据来源：销项导入文档）")
 
     def _on_header(self, col: int) -> None:
         if self._sort_col == col:
@@ -158,9 +209,6 @@ class InvoiceLedgerView(QWidget):
             total = _parse_total(row.get("total_amount_raw"))
             is_red = total < 0
             vals = [
-                row.get("sheet_name") or "",
-                str(row.get("row_no") or ""),
-                row.get("seq") or "",
                 row.get("invoice_no") or "",
                 row.get("kind") or "",
                 row.get("invoice_date_raw") or "",
@@ -178,7 +226,7 @@ class InvoiceLedgerView(QWidget):
                 item = QTableWidgetItem(str(v))
                 if c in _AMOUNT_COLS:
                     item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-                if is_red and c in (3, 9):  # 红字发票号与金额标红
+                if is_red and c in (0, 6):  # 红字发票号与金额标红（发票号码=0，价税合计=6）
                     item.setForeground(Qt.GlobalColor.red)
                 self.table.setItem(r, c, item)
             if is_red:
