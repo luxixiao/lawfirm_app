@@ -37,7 +37,7 @@ from app.ui.data_clear_view import DataClearView
 NAV_GROUPS = [
     ("数据", [
         ("import", "导入"),
-        ("invoice_ledger", "发票台账"),
+        ("invoice_ledger", "销项发票"),
         ("ledger", "台账数据"),
         ("batch", "导入记录"),
     ]),

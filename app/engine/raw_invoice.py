@@ -26,16 +26,20 @@ RAW_FIELDS = [
 # ---------------------------------------------------------------------------
 # 查询
 # ---------------------------------------------------------------------------
-def distinct_sheets() -> List[str]:
+def distinct_sheets(imported_only: bool = False) -> List[str]:
     conn = get_conn()
     try:
+        clauses = ["sheet_name != ''"]
+        if imported_only:
+            clauses.append("import_batch_id IS NOT NULL")
+        where = " WHERE " + " AND ".join(clauses)
         return [r["sheet_name"] for r in conn.execute(
-            "SELECT DISTINCT sheet_name FROM raw_invoice WHERE sheet_name != '' ORDER BY sheet_name")]
+            f"SELECT DISTINCT sheet_name FROM raw_invoice{where} ORDER BY sheet_name")]
     finally:
         conn.close()
 
 
-def list_raw(sheet: str = "", status: str = "", keyword: str = "") -> List[Dict]:
+def list_raw(sheet: str = "", status: str = "", keyword: str = "", imported_only: bool = False) -> List[Dict]:
     """返回 raw_invoice 行（按 sheet/row 排序）。
 
     status:
@@ -43,6 +47,8 @@ def list_raw(sheet: str = "", status: str = "", keyword: str = "") -> List[Dict]
       "red"   = 仅红字（价税合计为负）
       "pending"= 仅待同步（synced=0）
     keyword 匹配 发票号码/购方/备注（LIKE）。
+    imported_only=True 时仅返回来自销项导入的行（import_batch_id 非空），
+    排除历史手动增改的残留行。
     """
     clauses, params = [], []
     if sheet:
@@ -50,6 +56,8 @@ def list_raw(sheet: str = "", status: str = "", keyword: str = "") -> List[Dict]
         params.append(sheet)
     if status == "pending":
         clauses.append("synced = 0")
+    if imported_only:
+        clauses.append("import_batch_id IS NOT NULL")
     if keyword:
         clauses.append("(invoice_no LIKE ? OR buyer LIKE ? OR remark LIKE ?)")
         params += [f"%{keyword}%", f"%{keyword}%", f"%{keyword}%"]
@@ -57,7 +65,7 @@ def list_raw(sheet: str = "", status: str = "", keyword: str = "") -> List[Dict]
     conn = get_conn()
     try:
         rows = conn.execute(
-            f"SELECT * FROM raw_invoice{where} ORDER BY sheet_name, row_no").fetchall()
+            f"SELECT * FROM raw_invoice{where} ORDER BY sheet_name, row_no", params).fetchall()
     finally:
         conn.close()
     out = [dict(r) for r in rows]
