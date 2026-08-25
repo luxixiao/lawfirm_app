@@ -17,7 +17,8 @@ from PySide6.QtWidgets import (
 )
 
 from app.engine import raw_ledger as rl
-from app.engine.raw_ledger import EDIT_FIELDS
+from app.engine.raw_ledger import EDIT_FIELDS, sheet_label
+from app.importer.date_utils import normalize_date
 from app.ui.audit_view import AuditView
 from app.ui.column_state import attach_persistence, auto_fit_then_restore
 from app.ui.widgets import CaptionLabel, PushButton, SubtitleLabel
@@ -33,7 +34,7 @@ def _date_of(r: dict) -> str:
 _HEADERS = ["序号", "工作表", "日期", "发票号码", "对方", "金额", "经办人", "备注", "案号"]
 _GETTERS = [
     lambda r: r.get("seq") or "",
-    lambda r: r.get("sheet_name") or "",
+    lambda r: sheet_label(r.get("sheet_key")),
     _date_of,
     lambda r: r.get("invoice_no") or "",
     lambda r: r.get("buyer") or "",
@@ -48,6 +49,22 @@ _AMOUNT_COL = 5  # 金额列（按数值排序 + 红字标红）
 def _parse_total(txt) -> float:
     from app.engine.raw_ledger import _parse_total as _pt
     return _pt(txt)
+
+
+def _ym_of(r: dict) -> str:
+    """从原始日期取 YYYY-MM（用于按年月筛选）；无法解析时返回空串。
+
+    原始日期可能是 "25.1.2" 这类点分写法，需经 normalize_date 规范化。
+    prepayment（已入账未开票）用收到日期；其余用开票日期。
+    """
+    d = _date_of(r)
+    if not d:
+        return ""
+    try:
+        norm = normalize_date(d)
+    except Exception:  # noqa: BLE001 解析失败的行在「全部年份」下仍可见
+        return ""
+    return norm[:7] if len(norm) >= 7 else ""
 
 
 class InvoiceLedgerDocView(QWidget):
@@ -65,6 +82,10 @@ class InvoiceLedgerDocView(QWidget):
         # 筛选条
         bar = QHBoxLayout()
         bar.setSpacing(8)
+        self.f_year = QComboBox()
+        self.f_year.currentIndexChanged.connect(self._on_year_changed)
+        self.f_month = QComboBox()
+        self.f_month.currentIndexChanged.connect(self._apply)
         self.f_sheet = QComboBox()
         self.f_sheet.addItem("全部工作表", "")
         self.f_status = QComboBox()
@@ -72,6 +93,10 @@ class InvoiceLedgerDocView(QWidget):
         self.f_status.addItem("仅红字", "red")
         self.f_search = QLineEdit()
         self.f_search.setPlaceholderText("搜索：发票号码 / 对方 / 金额 / 案号 / 经办人")
+        bar.addWidget(QLabel("开票年份："))
+        bar.addWidget(self.f_year, 0)
+        bar.addWidget(QLabel("开票月份："))
+        bar.addWidget(self.f_month, 0)
         bar.addWidget(QLabel("工作表："))
         bar.addWidget(self.f_sheet, 0)
         bar.addWidget(QLabel("状态："))
@@ -106,8 +131,8 @@ class InvoiceLedgerDocView(QWidget):
         self._sort_col = -1
         self._sort_order = Qt.SortOrder.AscendingOrder
 
-        self.f_sheet.currentIndexChanged.connect(self.refresh)
-        self.f_status.currentIndexChanged.connect(self.refresh)
+        self.f_sheet.currentIndexChanged.connect(self._apply)
+        self.f_status.currentIndexChanged.connect(self._apply)
         # 输入即筛选（与「销项发票」页一致），不依赖回车，内存过滤不重查 DB
         self.f_search.textChanged.connect(self._apply)
 
@@ -117,52 +142,105 @@ class InvoiceLedgerDocView(QWidget):
         self.refresh()
 
     def refresh(self) -> None:
-        sheets = rl.sheet_keys()
-        # 重建工作表下拉（保留当前选择）
+        # 一次性取全部镜像行，后续筛选（年月/工作表/状态/搜索）均内存过滤，不重查 DB
+        self._all_rows = rl.list_raw()
+        self._refresh_year_combo()
+        self._refresh_month_combo()
+        self._refresh_sheet_combo()
+        self._apply()
+
+    # ---- 年份 / 月份 下拉（两级联动，按发票/收到日期的年月）----
+    def _year_options(self) -> list:
+        return sorted({_ym_of(r)[:4] for r in self._all_rows if _ym_of(r)})
+
+    def _month_options(self, year: str = "") -> list:
+        return sorted({ym for r in self._all_rows
+                       if (ym := _ym_of(r)) and ym.startswith(year)})
+
+    def _refresh_year_combo(self) -> None:
+        cur = self.f_year.currentData()
+        self.f_year.blockSignals(True)
+        self.f_year.clear()
+        self.f_year.addItem("全部年份", userData="")
+        for y in self._year_options():
+            self.f_year.addItem(y, userData=y)
+        idx = self.f_year.findData(cur)
+        self.f_year.setCurrentIndex(idx if idx >= 0 else 0)
+        self.f_year.blockSignals(False)
+
+    def _refresh_month_combo(self) -> None:
+        cur = self.f_month.currentData()
+        year = self.f_year.currentData() or ""
+        self.f_month.blockSignals(True)
+        self.f_month.clear()
+        self.f_month.addItem("全部月份", userData="")
+        for m in self._month_options(year):
+            self.f_month.addItem(m, userData=m)
+        idx = self.f_month.findData(cur)
+        self.f_month.setCurrentIndex(idx if idx >= 0 else 0)
+        self.f_month.blockSignals(False)
+
+    def _on_year_changed(self, *_args) -> None:
+        # 年份变化 -> 重建月份下拉（仅保留该年月份），再应用筛选
+        self._refresh_month_combo()
+        self._apply()
+
+    def _refresh_sheet_combo(self) -> None:
+        # 重建工作表下拉（保留当前选择），展示名用干净表类型名
         cur = self.f_sheet.currentData()
         self.f_sheet.blockSignals(True)
         self.f_sheet.clear()
         self.f_sheet.addItem("全部工作表", "")
-        for s in sheets:
+        for s in rl.sheet_keys():
             self.f_sheet.addItem(s["sheet_name"], s["sheet_key"])
         idx = self.f_sheet.findData(cur)
         if idx >= 0:
             self.f_sheet.setCurrentIndex(idx)
         self.f_sheet.blockSignals(False)
 
-        sheet_key = self.f_sheet.currentData() or ""
-        status = self.f_status.currentData() or ""
-        # 仅按工作表/状态取数（不含关键字），关键字改由 _apply 内存过滤，支持输入即筛
-        rows = rl.list_raw(sheet_key=sheet_key, status=status)
-        self._all_rows = rows
-        self._apply()
-
     def _apply(self) -> None:
+        rows = self._all_rows
+
+        # 年月筛选（按开票日期/收到日期的年月）
+        ym = self.f_month.currentData() or self.f_year.currentData() or ""
+        if ym:
+            if len(ym) == 7:
+                rows = [r for r in rows if _ym_of(r) == ym]
+            else:
+                rows = [r for r in rows if _ym_of(r)[:4] == ym]
+
+        # 工作表筛选（sheet_key）
+        sheet_key = self.f_sheet.currentData() or ""
+        if sheet_key:
+            rows = [r for r in rows if r.get("sheet_key") == sheet_key]
+
+        # 状态筛选（仅红字）
+        if self.f_status.currentData() == "red":
+            rows = [r for r in rows if _parse_total(r.get("amount_raw")) < 0]
+
         # 关键字过滤（输入即筛，内存过滤，不重查 DB）
         kw = self.f_search.text().strip().lower()
         if kw:
-            view = [r for r in self._all_rows if any(
+            rows = [r for r in rows if any(
                 kw in str(r.get(f) or "").lower()
                 for f in ("invoice_no", "buyer", "amount_raw", "case_no", "handler_text")
             )]
-        else:
-            view = self._all_rows
 
         # 排序
         if self._sort_col >= 0:
             col = self._sort_col
             rev = self._sort_order == Qt.SortOrder.DescendingOrder
             if col == 0:  # 序号
-                view.sort(key=lambda r: _safe_int(_GETTERS[0](r)), reverse=rev)
+                rows.sort(key=lambda r: _safe_int(_GETTERS[0](r)), reverse=rev)
             elif col == _AMOUNT_COL:  # 金额
-                view.sort(key=lambda r: _parse_total(_GETTERS[col](r)), reverse=rev)
+                rows.sort(key=lambda r: _parse_total(_GETTERS[col](r)), reverse=rev)
             else:
-                view.sort(key=lambda r: str(_GETTERS[col](r)), reverse=rev)
+                rows.sort(key=lambda r: str(_GETTERS[col](r)), reverse=rev)
 
-        self.table.setRowCount(len(view))
+        self.table.setRowCount(len(rows))
         self._meta.clear()
         total = 0.0
-        for r, row in enumerate(view):
+        for r, row in enumerate(rows):
             self._meta[r] = row["id"]
             is_red = _parse_total(row.get("amount_raw")) < 0
             total += _parse_total(row.get("amount_raw"))
@@ -185,7 +263,7 @@ class InvoiceLedgerDocView(QWidget):
         self.table.horizontalHeader().setSortIndicator(
             self._sort_col, self._sort_order) if self._sort_col >= 0 else None
         self.lbl_stat.setText(
-            f"共 {len(view)} 行（数据来源：发票台账文档）；合计金额 {total:,.2f}"
+            f"共 {len(rows)} 行（数据来源：发票台账文档）；合计金额 {total:,.2f}"
         )
 
     # ------------------------------------------------------------------ #

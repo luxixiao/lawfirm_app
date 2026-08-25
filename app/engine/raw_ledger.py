@@ -21,25 +21,43 @@ EDIT_FIELDS = [
 # sheet 展示顺序
 SHEET_ORDER = ["sheet1", "sheet2", "sheet3", "sheet4"]
 
+# sheet 展示名（用于「发票台账」页的工作表筛选与来源列，避免显示 Excel 原始名
+# 含账期前缀的怪名，如 "202502已开票已入账" / "2025已入账未开票"）
+SHEET_LABELS = {
+    "sheet1": "已开票已入账",
+    "sheet2": "已开票未入账",
+    "sheet3": "应收账款",
+    "sheet4": "已入账未开票",
+}
+
+
+def sheet_label(key: str) -> str:
+    """sheet_key -> 干净展示名；未知/空返回原值。"""
+    return SHEET_LABELS.get(key, key or "")
+
 
 # ---------------------------------------------------------------------------
 # 查询
 # ---------------------------------------------------------------------------
 def sheet_keys() -> List[Dict]:
-    """返回当前库中存在的 sheet（按固定顺序），含 sheet_name 展示名。"""
+    """返回当前库中存在的 sheet（按固定顺序），含干净的展示名。
+
+    展示名取自 SHEET_LABELS（已开票已入账等），不再使用 Excel 原始工作表名
+    （原始名常带账期前缀且格式不统一，如 "202502已开票已入账"）。
+    """
     conn = get_conn()
     try:
         rows = conn.execute(
-            "SELECT sheet_key, sheet_name FROM raw_ledger "
-            "WHERE import_batch_id IS NOT NULL GROUP BY sheet_key, sheet_name"
+            "SELECT DISTINCT sheet_key FROM raw_ledger "
+            "WHERE import_batch_id IS NOT NULL AND sheet_key IS NOT NULL AND sheet_key != ''"
         ).fetchall()
     finally:
         conn.close()
-    present = {r["sheet_key"]: r["sheet_name"] for r in rows}
+    present = {r["sheet_key"] for r in rows}
     out = []
     for k in SHEET_ORDER:
         if k in present:
-            out.append({"sheet_key": k, "sheet_name": present[k]})
+            out.append({"sheet_key": k, "sheet_name": SHEET_LABELS.get(k, k)})
     return out
 
 
