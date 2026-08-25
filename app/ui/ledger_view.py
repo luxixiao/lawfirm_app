@@ -2,8 +2,9 @@
 
 - 发票 / 收款 / 员工 Tab 已迁出或取消（2.2 员工与员工管理重复、2.3 发票/收款取消）；
 - 费用归类已迁至「维护 → 费用类型维护」（2.1）；
-- 修改记录仅展示发票台账（invoice / raw_invoice）的变更（2.5）。
-- 费用台账的编辑不再写入 change_log（修改记录专门记录发票台账）。
+- 修改记录 Tab 升级为「统一审计中心」（AuditView）：默认展示发票相关
+  （invoice / raw_invoice / raw_ledger），下拉可切换查看全部表的变更。
+- 费用台账编辑也写入 change_log（expense_ledger），与发票维度变更统一展示。
 """
 from __future__ import annotations
 
@@ -16,6 +17,8 @@ from PySide6.QtWidgets import (
 
 from app.ui.widgets import (CaptionLabel, PushButton, SubtitleLabel)
 from app.db import get_conn
+from app.engine.change_log import log_change
+from app.ui.audit_view import AuditView
 from app.ui.column_state import attach_persistence, auto_fit_then_restore, restore_col_widths
 
 
@@ -28,18 +31,17 @@ class LedgerView(QWidget):
 
         t = SubtitleLabel("台账数据")
         lay.addWidget(t)
-        h = CaptionLabel("费用台账的查看与编辑；下方「修改记录」仅展示发票台账（发票台账页 / 发票）的变更。")
+        h = CaptionLabel("费用台账的查看与编辑；下方「修改记录」为统一审计中心，默认展示发票相关（发票台账页 / 销项导入 / 发票）的变更，可切换查看全部。")
         lay.addWidget(h)
 
         self.tabs = QTabWidget()
         self.tab_expense = self._make_table(["账期", "经办人", "费用类型", "金额", "凭证号", "身份"], [0, 1, 2, 3, 5])
-        self.tab_log = self._make_table(["时间", "表", "记录", "字段", "旧值", "新值", "备注"], [], readonly=True)
+        self.tab_log = AuditView()  # 统一审计中心（默认下拉=发票相关）
         self.tabs.addTab(self.tab_expense, "费用")
         self.tabs.addTab(self.tab_log, "修改记录")
         lay.addWidget(self.tabs, 1)
 
         attach_persistence(self.tab_expense, "ledger", "expense")
-        attach_persistence(self.tab_log, "ledger", "log")
 
         btns = QHBoxLayout()
         self.btn_edit = PushButton("编辑所选")
@@ -93,11 +95,6 @@ class LedgerView(QWidget):
                 "SELECT period, actual_handler, expense_type, expense_amount, ticket_no, person_type, id AS key "
                 "FROM expense_ledger ORDER BY period, id"
             ).fetchall()
-            logs = conn.execute(
-                "SELECT created_at, table_name, record_id, field, old_value, new_value, note "
-                "FROM change_log WHERE table_name IN ('invoice','raw_invoice') "
-                "ORDER BY id DESC LIMIT 500"
-            ).fetchall()
         finally:
             conn.close()
         exp_display = []
@@ -105,15 +102,14 @@ class LedgerView(QWidget):
             exp_display.append([r["period"], r["actual_handler"], r["expense_type"], r["expense_amount"],
                                 r["ticket_no"], r["person_type"] or "未标", r["key"]])
         self._fill(self.tab_expense, exp_display, "expense")
-        self._fill(self.tab_log, logs, "log")
+        # 修改记录由 AuditView 自行加载（统一审计中心），无需在此填充
 
-    # ---- 编辑（仅费用；不写 change_log，修改记录专记发票台账）----
+    # ---- 编辑（费用；编辑同时写 change_log，修改记录统一展示）----
     def edit_selected(self) -> None:
-        tb = self.tabs.currentWidget()
-        if getattr(tb, "_readonly", False):
-            QMessageBox.information(self, "提示", "修改记录为只读（发票台账修改时自动生成）")
+        if self.tabs.currentWidget() is not self.tab_expense:
+            QMessageBox.information(self, "提示", "请先切到「费用」页选择一行再编辑")
             return
-        row = tb.currentRow()
+        row = self.tab_expense.currentRow()
         if row < 0:
             QMessageBox.information(self, "提示", "请先选择一行（或双击）")
             return
@@ -147,12 +143,25 @@ class LedgerView(QWidget):
         form.addRow(btns)
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
+        new_type = type_edit.text().strip()
+        new_amt = amt.value()
+        new_handler = handler_edit.text().strip()
+        new_ptype = type_combo2.currentData()
         conn = get_conn()
         try:
             conn.execute(
                 "UPDATE expense_ledger SET expense_type=?, expense_amount=?, actual_handler=?, person_type=? WHERE id=?",
-                (type_edit.text().strip(), amt.value(), handler_edit.text().strip(),
-                 type_combo2.currentData(), eid))
+                (new_type, new_amt, new_handler, new_ptype, eid))
+            # 审计：逐字段记录变更（统一审计中心可见）
+            log_change(conn, "expense_ledger", str(eid), "edit", "", "", "费用编辑")
+            for f, o, n in (
+                ("expense_type", e["expense_type"], new_type),
+                ("expense_amount", e["expense_amount"], new_amt),
+                ("actual_handler", e["actual_handler"], new_handler),
+                ("person_type", e["person_type"], new_ptype),
+            ):
+                if str(o) != str(n):
+                    log_change(conn, "expense_ledger", str(eid), f, o, n, "费用编辑")
             conn.commit()
         except Exception as ex:  # noqa: BLE001
             conn.rollback(); QMessageBox.critical(self, "失败", str(ex)); return

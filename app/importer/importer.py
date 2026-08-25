@@ -94,6 +94,50 @@ def _new_batch(conn, batch_type: str, period: str, file_name: str, archive_path:
     return cur.lastrowid
 
 
+def _raw_cell(row, header, *names) -> str:
+    """从原始行按表头取某列文本（兼容多别名）。"""
+    if not header or not row:
+        return ""
+    for n in names:
+        try:
+            i = header.index(n)
+        except ValueError:
+            continue
+        if 0 <= i < len(row):
+            return (row[i] or "").strip()
+    return ""
+
+
+def _insert_raw_ledger(conn, item: dict, batch_id: int, kind: str) -> None:
+    """把发票台账解析结果逐行 1:1 镜像进 raw_ledger（synced=1）。"""
+    seq = _raw_cell(item.get("raw_row"), item.get("header"), "序号")
+    if kind == "invoice":
+        date_raw = _raw_cell(item.get("raw_row"), item.get("header"), "开票日期", "开具日期")
+        recv_raw = ""
+        amt = item.get("total_amount") or 0.0
+        amt_raw = _raw_cell(item.get("raw_row"), item.get("header"), "金额", "开票金额")
+        handler = item.get("handler_text") or ""
+        remark_raw = item.get("remark_raw")
+        remark = remark_raw if remark_raw is not None else (item.get("remark") or "")
+    else:  # prepayment (sheet4)
+        date_raw = ""
+        recv_raw = _raw_cell(item.get("raw_row"), item.get("header"), "收到日期")
+        amt = item.get("amount") or 0.0
+        amt_raw = _raw_cell(item.get("raw_row"), item.get("header"), "金额")
+        handler = item.get("person_text") or ""
+        remark = item.get("remark") or ""
+    conn.execute(
+        """INSERT INTO raw_ledger
+           (sheet_key, sheet_name, row_no, seq, invoice_date_raw, invoice_no, buyer,
+            amount_raw, amount_num, handler_text, remark, case_no, recv_date_raw, kind, synced, import_batch_id)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?)""",
+        (item.get("sheet") or "", item.get("sheet_name") or "", item.get("row_no") or 0,
+         seq, date_raw, item.get("invoice_no") or "", item.get("buyer") or "",
+         amt_raw, amt, handler, remark, item.get("case_no") or "",
+         recv_raw, kind, batch_id),
+    )
+
+
 # ---------------------------------------------------------------------------
 # 销项文档
 # ---------------------------------------------------------------------------
@@ -266,12 +310,21 @@ def import_ledger_file(path: str, period: str,
                 data = confirmed
 
         # ---- 覆盖式导入 ----
+        # 清旧批次的 raw_ledger 镜像（在 rollback 之前，否则 active 标记已变）
+        old = conn.execute(
+            "SELECT id FROM import_batch WHERE batch_type='ledger' AND period=? AND status='active'",
+            (period,),
+        ).fetchall()
+        for r in old:
+            conn.execute("DELETE FROM raw_ledger WHERE import_batch_id=?", (r["id"],))
         _drop_active_batch(conn, "ledger", period)
         archive = _archive_file(path, "ledger", period)
         batch_id = _new_batch(conn, "ledger", period, Path(path).name, archive, "")
 
         for inv in data["invoices"]:
             no = inv["invoice_no"]
+            # 原始镜表双写：发票台账逐行 1:1 镜像（synced=1 表示与导入一致）
+            _insert_raw_ledger(conn, inv, batch_id, "invoice")
             # 发票 upsert：不存在则创建（期外发票），存在则补案号
             exist = conn.execute("SELECT case_no FROM invoice WHERE invoice_no=?", (no,)).fetchone()
             if exist:
@@ -338,6 +391,8 @@ def import_ledger_file(path: str, period: str,
                  pp["case_no"], pp["remark"], "import", batch_id,
                  pp.get("sheet_name") or "sheet4", pp.get("row_no") or 0),
             )
+            # 原始镜表双写（kind=prepayment）
+            _insert_raw_ledger(conn, pp, batch_id, "prepayment")
 
         conn.commit()
     except Exception:

@@ -23,6 +23,7 @@ from app.ui.import_view import ImportView
 from app.ui.import_verify_view import ImportVerifyView
 from app.ui.invoice_collect_view import InvoiceCollectView
 from app.ui.invoice_ledger_view import InvoiceLedgerView
+from app.ui.invoice_ledger_doc_view import InvoiceLedgerDocView
 from app.ui.ledger_view import LedgerView
 from app.ui.manual_entry_view import ManualEntryView
 from app.ui.prepayment_view import PrepaymentView
@@ -38,6 +39,7 @@ NAV_GROUPS = [
     ("数据", [
         ("import", "导入"),
         ("invoice_ledger", "销项发票"),
+        ("ledger_doc", "发票台账"),
         ("ledger", "台账数据"),
         ("batch", "导入记录"),
     ]),
@@ -91,6 +93,7 @@ class MainWindow(QMainWindow):
         self.page_snapshot = SnapshotView()
         self.page_batch = BatchView()
         self.page_invoice_ledger = InvoiceLedgerView()
+        self.page_ledger_doc = InvoiceLedgerDocView()
         self.page_expense_cat = ExpenseCatView()
         self.page_data_clear = DataClearView()
         self._pages = {
@@ -103,6 +106,7 @@ class MainWindow(QMainWindow):
             "verify": self.page_verify,
             "snapshot": self.page_snapshot, "batch": self.page_batch,
             "invoice_ledger": self.page_invoice_ledger,
+            "ledger_doc": self.page_ledger_doc,
             "expense_cat": self.page_expense_cat,
             "data_clear": self.page_data_clear,
         }

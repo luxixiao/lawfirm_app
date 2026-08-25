@@ -175,6 +175,32 @@ CREATE INDEX IF NOT EXISTS idx_raw_inv_no     ON raw_invoice(invoice_no);
 CREATE INDEX IF NOT EXISTS idx_raw_inv_synced ON raw_invoice(synced);
 CREATE INDEX IF NOT EXISTS idx_raw_inv_batch  ON raw_invoice(import_batch_id);
 
+-- 发票台账原始镜表（统一审计中心数据源之一）：Excel 每个 sheet 逐行 1:1 镜像，
+-- 覆盖 sheet1~4 全部原始列（不归一化）；导入双写、可手工编辑、编辑自动写 change_log。
+CREATE TABLE IF NOT EXISTS raw_ledger (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    sheet_key        TEXT NOT NULL DEFAULT '',     -- sheet1/sheet2/sheet3/sheet4
+    sheet_name       TEXT NOT NULL DEFAULT '',
+    row_no           INTEGER NOT NULL DEFAULT 0,
+    seq              TEXT,                          -- 序号
+    invoice_date_raw TEXT,                          -- 开票日期(原始文本)
+    invoice_no       TEXT,
+    buyer            TEXT,                          -- 对方
+    amount_raw       TEXT,                          -- 金额(原始文本)
+    amount_num       REAL,                          -- 金额(数值)
+    handler_text     TEXT,                          -- 经办人
+    remark           TEXT,                          -- 备注
+    case_no          TEXT,                          -- 案号
+    recv_date_raw    TEXT,                          -- 收到日期(sheet4 预收款)
+    kind             TEXT NOT NULL DEFAULT 'invoice',  -- invoice / prepayment
+    synced           INTEGER NOT NULL DEFAULT 1,    -- 导入即与文档一致
+    import_batch_id  INTEGER,
+    created_at       TEXT DEFAULT (datetime('now','localtime'))
+);
+CREATE INDEX IF NOT EXISTS idx_raw_ledger_no    ON raw_ledger(invoice_no);
+CREATE INDEX IF NOT EXISTS idx_raw_ledger_sheet ON raw_ledger(sheet_key);
+CREATE INDEX IF NOT EXISTS idx_raw_ledger_batch ON raw_ledger(import_batch_id);
+
 -- 数据修改记录（含手动备注）
 CREATE TABLE IF NOT EXISTS change_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
