@@ -12,32 +12,34 @@ from app.ui.table_view import BaseTableView, make_filter_widgets
 class InvoiceCollectView(BaseTableView):
     def __init__(self) -> None:
         super().__init__(
-            "发票收款总表",
+            "发票收款情况",
             ["开具日期", "发票号码", "购买方名称", "价税合计", "经办人",
-             "已收金额", "剩余应收", "备注"],
-            "每张发票的收款情况；右击查看红冲信息。",
+             "已收金额", "剩余应收", "收款日期"],
+            "每张发票的收款情况；左键点表头排序，右键点表头按列筛选；搜索框可搜购买方或发票号码；右击查看红冲信息。",
+            page_key="invoice",
         )
         self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self._ctx_menu)
+        self._enable_sort_and_filter()
 
     def _total_cols(self) -> set:
         """价税合计(3) / 已收金额(5) / 剩余应收(6)"""
         return {3, 5, 6}
 
     def _build_filters(self) -> None:
-        self.year, self.month, self.src, self.buyer, _ = make_filter_widgets(
-            self, self.filters, lambda *_: self.refresh()
+        self.year, self.month, self.src, self.search, _ = make_filter_widgets(
+            self, self.filters, lambda *_: self.refresh(), search_label="购买方/发票号"
         )
 
     def load_data(self) -> None:
         rows = invoice_rows(
             period=self.month.currentData() or self.year.currentData() or None,
-            buyer=self.buyer.text().strip() or None,
+            keyword=self.search.text().strip() or None,
             source=self.src.currentData() or None,
         )
         self._rows = [
             [r["invoice_date"], r["invoice_no"], r["buyer"], r["total_amount"],
-             r["handlers"], r["collected"], r["remain"], r["remark"]]
+             r["handlers_amount"], r["collected"], r["remain"], r["receipt_dates_str"]]
             for r in rows
         ]
         self._meta = {i: r for i, r in enumerate(rows)}

@@ -72,3 +72,28 @@ def show_invoice_handlers(parent, invoice_no: str, person_name: str | None = Non
         dlg.exec()
     finally:
         conn.close()
+
+
+def show_invoice_info(parent, invoice_no: str) -> None:
+    """查看发票信息：按「发票收款情况」同款 8 列展示该发票（待补录页右击用）"""
+    from app.engine.collection import invoice_rows
+    conn = get_conn()
+    try:
+        rows = invoice_rows(invoice_no=invoice_no)
+        if not rows:
+            QMessageBox.information(parent, "提示", f"未找到发票 {invoice_no} 的信息")
+            return
+        columns = ["开具日期", "发票号码", "购买方名称", "价税合计", "经办人",
+                   "已收金额", "剩余应收", "收款日期"]
+        data = []
+        for r in rows:
+            data.append([
+                r["invoice_date"], r["invoice_no"], r["buyer"], r["total_amount"],
+                r.get("handlers_amount") or r.get("handlers", ""),
+                r["collected"], r["remain"], r.get("receipt_dates_str", ""),
+            ])
+        dlg = _table(columns, data, f"发票信息：{invoice_no}")
+        dlg.resize(960, 380)
+        dlg.exec()
+    finally:
+        conn.close()

@@ -3,14 +3,16 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt, QDate
 from PySide6.QtWidgets import (
-    QComboBox, QDateEdit, QDialog, QDialogButtonBox, QDoubleSpinBox, QFormLayout,
-    QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPushButton, QTabWidget,
-    QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
+    QAbstractItemView, QComboBox, QDateEdit, QDialog, QDialogButtonBox, QDoubleSpinBox,
+    QFormLayout, QHBoxLayout, QLabel, QLineEdit, QMenu, QMessageBox, QPushButton,
+    QTabWidget, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
 from app.ui.widgets import (SubtitleLabel, CaptionLabel, PrimaryPushButton, PushButton)
 from app.db import get_conn
 from app.importer.parse_handler import parse_handler_column
+from app.ui.dialogs import show_invoice_info
+from app.ui.column_state import attach_persistence, restore_col_widths
 
 
 class ManualEntryView(QWidget):
@@ -53,6 +55,13 @@ class ManualEntryView(QWidget):
         self.tabs.addTab(self.tab_refunds, "补录退款")
         # 双击已补录发票 → 编辑
         self.tab_invoices.cellDoubleClicked.connect(lambda *_: self.edit_invoice())
+        # 待补录原票右键 → 查看发票信息
+        self.tab_pending.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.tab_pending.customContextMenuRequested.connect(self._pending_ctx_menu)
+        # 列宽持久化（手动调整后跨关闭/切换页面保持）
+        for name, tbl in (("pending", self.tab_pending), ("invoices", self.tab_invoices),
+                          ("collections", self.tab_collections), ("refunds", self.tab_refunds)):
+            attach_persistence(tbl, "manual", name)
         lay.addWidget(self.tabs, 1)
 
         self.refresh()
@@ -68,12 +77,21 @@ class ManualEntryView(QWidget):
                 "收款": ["发票号码", "收款金额", "收款日期", "备注"],
                 "退款": ["红字发票", "退款金额", "退款日期"]}[kind]
         t = QTableWidget(0, len(cols))
+        t.setObjectName(kind)
         t.setHorizontalHeaderLabels(cols)
         t.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         t.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         t.verticalHeader().setVisible(False)
-        t.horizontalHeader().setStretchLastSection(True)
+        # 不拉伸末列：列宽按内容自适应，确保默认展示所有内容（无省略号），过长则横向滚动
+        t.horizontalHeader().setStretchLastSection(False)
+        t.setHorizontalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
+        t.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         return t
+
+    def _apply_col_state(self, tbl: QTableWidget, name: str) -> None:
+        """列宽：有存档则恢复（手动调整后的宽度），否则按内容自适应以展示全部内容。"""
+        if not restore_col_widths(tbl, "manual", name):
+            tbl.resizeColumnsToContents()
 
     def refresh(self) -> None:
         from collections import defaultdict
@@ -110,6 +128,9 @@ class ManualEntryView(QWidget):
         self._fill(self.tab_invoices, rows, 6)
         self._fill(self.tab_collections, cols, 4)
         self._fill(self.tab_refunds, refs, 3)
+        self._apply_col_state(self.tab_invoices, "invoices")
+        self._apply_col_state(self.tab_collections, "collections")
+        self._apply_col_state(self.tab_refunds, "refunds")
         self._load_pending()
 
     # ---- 待补录原票列表 ----
@@ -138,6 +159,21 @@ class ManualEntryView(QWidget):
                 item = QTableWidgetItem("" if v is None else (f"{v:,.2f}" if isinstance(v, float) else str(v)))
                 self.tab_pending.setItem(r, c, item)
             self._pending_meta[r] = row[5]  # 红字发票号
+        self._apply_col_state(self.tab_pending, "pending")
+
+    # ---- 待补录原票右键：查看发票信息 ----
+    def _pending_ctx_menu(self, pos) -> None:
+        row = self.tab_pending.rowAt(pos.y())
+        if row < 0:
+            return
+        red_no = self._pending_meta.get(row)
+        if not red_no:
+            return
+        menu = QMenu(self)
+        act = menu.addAction("查看发票信息")
+        chosen = menu.exec(self.tab_pending.viewport().mapToGlobal(pos))
+        if chosen == act:
+            show_invoice_info(self, red_no)
 
     # ---- 补录待补录原票（预填红字发票已知信息）----
     def add_pending_orig(self) -> None:

@@ -1,6 +1,7 @@
 """预收款管理：列表 + 核销（按案号建议，手动确认，部分核销挂账）"""
 from __future__ import annotations
 
+from app.ui.column_state import attach_persistence, restore_col_widths
 from datetime import datetime
 
 from PySide6.QtCore import Qt
@@ -45,6 +46,7 @@ class PrepaymentView(QWidget):
         self.table.verticalHeader().setVisible(False)
         self.table.horizontalHeader().setStretchLastSection(True)
         lay.addWidget(self.table)
+        attach_persistence(self.table, "prepayment", "main")
 
         self.refresh()
 
@@ -79,6 +81,9 @@ class PrepaymentView(QWidget):
                 self.table.setItem(r, c, item)
             self._meta[r] = {"id": row["id"], "buyer": row["buyer"], "amount": row["amount"],
                              "case_no": row["case_no"], "remain": remain}
+
+        if restore_col_widths(self.table, "prepayment", "main"):
+            self.table.horizontalHeader().setStretchLastSection(False)
 
     # ---- 核销 ----
     def offset(self) -> None:

@@ -34,11 +34,12 @@ def _refunded_by_invoice(conn) -> Dict[str, float]:
     }
 
 
-def invoice_rows(conn=None, period: str | None = None, buyer: str | None = None,
+def invoice_rows(conn=None, period: str | None = None, keyword: str | None = None,
                  source: str | None = None, invoice_no: str | None = None) -> List[Dict]:
     """发票收款总表数据
 
-    列：开具日期、发票号码、购买方名称、价税合计、经办人、已收金额、剩余应收、备注
+    列：开具日期、发票号码、购买方名称、价税合计、经办人(含金额)、已收金额、剩余应收、收款日期
+    keyword：购买方名称 OR 发票号码 模糊检索
     """
     own = conn is None
     if own:
@@ -56,9 +57,10 @@ def invoice_rows(conn=None, period: str | None = None, buyer: str | None = None,
             else:
                 where.append("strftime('%Y-%m', invoice_date) = ?")
             params.append(period)
-        if buyer:
-            where.append("buyer LIKE ?")
-            params.append("%" + buyer + "%")
+        if keyword:
+            where.append("(buyer LIKE ? OR invoice_no LIKE ?)")
+            params.append("%" + keyword + "%")
+            params.append("%" + keyword + "%")
         if source:
             where.append("source = ?")
             params.append(source)
@@ -76,9 +78,13 @@ def invoice_rows(conn=None, period: str | None = None, buyer: str | None = None,
         for r in conn.execute(
                 "SELECT invoice_no, person_name, billing_amount FROM charge_detail ORDER BY invoice_no, id"):
             cds_by_inv.setdefault(r["invoice_no"], []).append(r)
-        dates_by_inv: Dict[str, list] = {}
-        for r in conn.execute("SELECT invoice_no, receipt_date FROM collection ORDER BY invoice_no, id"):
-            dates_by_inv.setdefault(r["invoice_no"], []).append(r["receipt_date"])
+        from collections import defaultdict
+        month_amt_by_inv: Dict[str, Dict[str, float]] = defaultdict(lambda: defaultdict(float))
+        for r in conn.execute("SELECT invoice_no, receipt_date, amount FROM collection ORDER BY invoice_no, id"):
+            no = r["invoice_no"]
+            ym = (r["receipt_date"] or "")[:7]  # YYYY-MM
+            if ym:
+                month_amt_by_inv[no][ym] += r["amount"]
 
         for inv in conn.execute(sql, params):
             no = inv["invoice_no"]
@@ -90,19 +96,23 @@ def invoice_rows(conn=None, period: str | None = None, buyer: str | None = None,
             remain = round(inv["total_amount"] - got, 2)
             cd = cds_by_inv.get(no, [])
             handlers = [r["person_name"] for r in cd]
-            # 备注 = 收款日期 + 经办人占据金额（如"2025-01 张三1000王五2000"）
-            dates = sorted(set(dates_by_inv.get(no, [])))
-            amount_parts = [f"{r['person_name']}{r['billing_amount']:g}" for r in cd]
-            remark = ("、".join(dates) + " " if dates else "") + " ".join(amount_parts)
+            # 经办人 + 开票金额（如"张三3000、王五5000"）
+            handlers_amount = "、".join(f"{r['person_name']}{r['billing_amount']:g}" for r in cd)
+            # 收款日期：按收款月份聚合金额（如"2025-2+1000、2025-3+2000"）
+            month_map = month_amt_by_inv.get(no, {})
+            receipt_dates_str = "、".join(
+                f"{ym}+{amt:g}" for ym, amt in sorted(month_map.items())
+            )
             rows.append({
                 "invoice_no": no,
                 "invoice_date": inv["invoice_date"],
                 "buyer": inv["buyer"],
                 "total_amount": inv["total_amount"],
                 "handlers": "、".join(handlers),
+                "handlers_amount": handlers_amount,
                 "collected": round(got, 2),
                 "remain": remain,
-                "remark": remark,
+                "receipt_dates_str": receipt_dates_str,
                 "is_red": is_red,
                 "orig_invoice_no": inv["orig_invoice_no"],
                 "case_no": inv["case_no"],

@@ -8,6 +8,7 @@ from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QFileDialog, QHBoxLayout, QLabel, QLineEdit, QMessageBox, QVBoxLayout, QWidget
 
 from app.ui.widgets import ComboBox, LineEdit, PrimaryPushButton, PushButton, TableWidget
+from app.ui.column_state import attach_persistence, auto_fit_then_restore
 
 RED = QColor("#C0392B")    # 红字/负数
 GREEN = QColor("#1E8449")  # 已收
@@ -29,9 +30,14 @@ def auto_fit_columns(table, max_width: int = 300, min_width: int = 70) -> None:
 class BaseTableView(QWidget):
     """基础表格页：标题 + 筛选栏 + Fluent 表格 + 导出"""
 
-    def __init__(self, title: str, columns: List[str], hint: str = "") -> None:
+    def __init__(self, title: str, columns: List[str], hint: str = "", page_key: str | None = None) -> None:
         super().__init__()
         self.columns = columns
+        self._col_page_key = page_key or title
+        self._meta: dict = {}
+        self._col_filters: dict = {}
+        self._sort_col: int | None = None
+        self._sort_asc: bool = True
         lay = QVBoxLayout(self)
         lay.setContentsMargins(28, 24, 28, 20)
         lay.setSpacing(12)
@@ -58,6 +64,7 @@ class BaseTableView(QWidget):
         self.table.setAlternatingRowColors(False)
         self.table.verticalHeader().setVisible(False)
         self.table.horizontalHeader().setStretchLastSection(True)
+        attach_persistence(self.table, self._col_page_key, "main")
         lay.addWidget(self.table, 1)
 
         # 底部
@@ -84,16 +91,60 @@ class BaseTableView(QWidget):
 
     def refresh(self) -> None:
         self.load_data()
+        if getattr(self, "_sort_col", None) is not None:
+            self._sort_rows()
         self._raw_rows = list(self._rows)
         self._apply_col_filters()
         self._render()
         self._update_filter_marks()
 
-    # ---- 表头筛选（点击表头弹多选菜单）----
+    # ---- 表头：左键排序 + 右键筛选 ----
     def _enable_col_filter(self) -> None:
+        """兼容旧名：等同于 _enable_sort_and_filter。"""
+        self._enable_sort_and_filter()
+
+    def _enable_sort_and_filter(self) -> None:
+        """左键点击表头排序（再点切换升/降序），右键表头弹列筛选菜单。"""
         if not hasattr(self, "_col_filters"):
             self._col_filters = {}
-        self.table.horizontalHeader().sectionClicked.connect(self._header_clicked)
+        self._sort_col = None
+        self._sort_asc = True
+        hdr = self.table.horizontalHeader()
+        hdr.sectionClicked.connect(self._on_header_sort)
+        hdr.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        hdr.customContextMenuRequested.connect(self._on_header_filter)
+
+    def _on_header_sort(self, col: int) -> None:
+        if self._sort_col == col:
+            self._sort_asc = not self._sort_asc
+        else:
+            self._sort_col = col
+            self._sort_asc = True
+        self._sort_rows()
+        self._apply_col_filters()
+        self._render()
+        self._update_filter_marks()
+
+    def _on_header_filter(self, pos) -> None:
+        col = self.table.horizontalHeader().columnAt(pos.x())
+        if col >= 0:
+            self._header_clicked(col)
+
+    def _sort_rows(self) -> None:
+        """按当前排序列对 self._rows 排序，并同步重排 self._meta（保持索引对齐）。"""
+        col = self._sort_col
+        if col is None:
+            return
+        pairs = list(zip(self._rows, [self._meta.get(i) for i in range(len(self._rows))]))
+
+        def keyf(p):
+            v = p[0][col]
+            if isinstance(v, (int, float)):
+                return (0, v)
+            return (1, str(v))
+        pairs.sort(key=keyf, reverse=not self._sort_asc)
+        self._rows = [p[0] for p in pairs]
+        self._meta = {i: p[1] for i, p in enumerate(pairs)}
 
     def _header_clicked(self, col: int) -> None:
         from PySide6.QtWidgets import (QCheckBox, QDialog, QDialogButtonBox, QHBoxLayout,
@@ -151,8 +202,24 @@ class BaseTableView(QWidget):
         self.refresh()
 
     def _apply_col_filters(self) -> None:
-        for c, vals in getattr(self, "_col_filters", {}).items():
-            self._rows = [r for r in self._rows if self._row_key(r[c]) in vals]
+        filters = getattr(self, "_col_filters", {})
+        if not filters:
+            return
+        new_rows = []
+        new_meta = {}
+        j = 0
+        for i, row in enumerate(self._rows):
+            keep = True
+            for col, vals in filters.items():
+                if self._row_key(row[col]) not in vals:
+                    keep = False
+                    break
+            if keep:
+                new_rows.append(row)
+                new_meta[j] = self._meta.get(i)
+                j += 1
+        self._rows = new_rows
+        self._meta = new_meta
 
     @staticmethod
     def _row_key(v) -> str:
@@ -161,14 +228,21 @@ class BaseTableView(QWidget):
         return str(v)
 
     def _update_filter_marks(self) -> None:
-        """表头列名标记 ▾（有筛选时）"""
+        """表头列名标记 ▾（有筛选时）/ ▲▼（排序时）"""
         marks = getattr(self, "_col_filters", {})
+        sort_col = getattr(self, "_sort_col", None)
+        sort_asc = getattr(self, "_sort_asc", True)
         for c in range(self.table.columnCount()):
             it = self.table.horizontalHeaderItem(c)
             if it is None:
                 continue
-            base = it.text().replace(" ▾", "")
-            it.setText(base + (" ▾" if c in marks else ""))
+            base = it.text().replace(" ▾", "").replace(" ▲", "").replace(" ▼", "")
+            suffix = ""
+            if c in marks:
+                suffix += " ▾"
+            if sort_col == c:
+                suffix += " ▲" if sort_asc else " ▼"
+            it.setText(base + suffix)
 
     def _reset_col_filters(self) -> None:
         self._col_filters = {}
@@ -208,7 +282,10 @@ class BaseTableView(QWidget):
                 item.setBackground(QColor("#F2F2F0"))
                 self.table.setItem(tr, c, item)
             self.table.setRowHeight(tr, 34)
-        auto_fit_columns(self.table)
+        used_archive = auto_fit_then_restore(self.table, self._col_page_key, "main")
+        if used_archive:
+            # 用户已手动调整过列宽：关闭末列拉伸，严格按存档宽度
+            self.table.horizontalHeader().setStretchLastSection(False)
         self.lbl_summary.setText(f"共 {len(self._rows)} 行")
 
     def _total_cols(self) -> set:

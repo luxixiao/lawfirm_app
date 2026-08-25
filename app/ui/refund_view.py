@@ -1,6 +1,7 @@
 """退款确认：红字发票判定 + 手动确认退款（可多次、可部分）+ 待补录提示"""
 from __future__ import annotations
 
+from app.ui.column_state import attach_persistence, restore_col_widths
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
@@ -75,6 +76,7 @@ class RefundView(QWidget):
         self.table.verticalHeader().setVisible(False)
         self.table.horizontalHeader().setStretchLastSection(True)
         lay.addWidget(self.table)
+        attach_persistence(self.table, "refund", "main")
 
         self.refresh()
 
@@ -134,6 +136,9 @@ class RefundView(QWidget):
             self.banner.show()
         else:
             self.banner.hide()
+
+        if restore_col_widths(self.table, "refund", "main"):
+            self.table.horizontalHeader().setStretchLastSection(False)
 
     # ---- 待补录明细 ----
     def show_pending(self) -> None:

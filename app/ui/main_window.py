@@ -38,7 +38,7 @@ NAV_GROUPS = [
         ("batch", "导入记录"),
     ]),
     ("业务", [
-        ("invoice", "发票收款总表"),
+        ("invoice", "发票收款情况"),
         ("handler_all", "经办人发票收款情况"),
         ("prepayment", "预收款"),
         ("refund", "退款"),
