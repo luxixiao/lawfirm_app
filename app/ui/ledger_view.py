@@ -15,6 +15,7 @@ from app.engine.change_log import log_change, log_changes, fetch_log
 from app.engine.expense_cat import (CATEGORIES, add_type, ensure_types, get_by_category,
                                     move_type, set_category, sync_from_ledger)
 from app.importer.parse_handler import parse_handler_column
+from app.ui.column_state import attach_persistence, auto_fit_then_restore, restore_col_widths
 
 
 def _note_input(parent: QWidget) -> QLineEdit:
@@ -73,6 +74,13 @@ class LedgerView(QWidget):
         self.tabs.addTab(self.tab_log, "修改记录")
         lay.addWidget(self.tabs, 1)
 
+        # 列宽持久化：手动调整后的列宽记录到 QSettings，关闭/切换页面后保持
+        attach_persistence(self.tab_invoice, "ledger", "invoice")
+        attach_persistence(self.tab_collection, "ledger", "collection")
+        attach_persistence(self.tab_expense, "ledger", "expense")
+        attach_persistence(self.tab_staff, "ledger", "staff")
+        attach_persistence(self.tab_log, "ledger", "log")
+
         btns = QHBoxLayout()
         self.btn_edit = PushButton("编辑所选")
         self.btn_edit.clicked.connect(self.edit_selected)
@@ -125,6 +133,9 @@ class LedgerView(QWidget):
                     item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
                 tb.setItem(r, c, item)
             meta[r] = row[-1]
+        used = auto_fit_then_restore(tb, "ledger", meta_key)
+        if used:
+            tb.horizontalHeader().setStretchLastSection(False)
 
     # ---- 加载 ----
     def refresh(self) -> None:
@@ -435,6 +446,7 @@ class LedgerView(QWidget):
         self.cat_table.setColumnWidth(0, 50)
         self.cat_table.setColumnWidth(1, 200)
         self.cat_table.setColumnWidth(2, 130)
+        attach_persistence(self.cat_table, "ledger", "category")
         v.addWidget(self.cat_table, 1)
         bar = QHBoxLayout()
         self.btn_cat_up = PushButton("上移")
@@ -488,6 +500,8 @@ class LedgerView(QWidget):
             types = get_by_category(row["category"])
             self.cat_table.setItem(r, 3, QTableWidgetItem("、".join(types)))
             self.cat_table.setRowHeight(r, 34)
+        if restore_col_widths(self.cat_table, "ledger", "category"):
+            self.cat_table.horizontalHeader().setStretchLastSection(False)
 
     def _cat_move(self, direction: int) -> None:
         rows = self.cat_table.selectionModel().selectedRows()
