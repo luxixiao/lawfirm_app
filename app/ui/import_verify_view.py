@@ -261,24 +261,27 @@ class ImportVerifyView(QWidget):
         return self._compare_invoice(parsed, period, archive)
 
     def _compare_invoice(self, parsed: Dict, period: str, archive: str) -> List[Dict]:
-        """发票信息对账（原逻辑）。"""
+        """发票信息对账：按发票号对库（源文件为权威清单，库中存在且经办人一致即通过）。"""
+        inv_nos = [inv["invoice_no"] for inv in parsed.get("invoices", [])]
         conn = get_conn()
         try:
-            db_invs = conn.execute(
-                "SELECT invoice_no, invoice_date, buyer, total_amount, src_sheet, src_row "
-                "FROM invoice WHERE source='import' AND "
-                "(strftime('%Y-%m', invoice_date)=? OR import_batch_id=?)",
-                (period, self._batch_id),
-            ).fetchall()
-            db_handlers: Dict[str, Dict[str, float]] = {}
-            for r in conn.execute(
-                "SELECT cd.invoice_no, cd.person_name, cd.billing_amount "
-                "FROM charge_detail cd JOIN invoice i ON cd.invoice_no=i.invoice_no "
-                "WHERE cd.source='import' AND "
-                "(strftime('%Y-%m', i.invoice_date)=? OR i.import_batch_id=?)",
-                (period, self._batch_id),
-            ):
-                db_handlers.setdefault(r["invoice_no"], {})[r["person_name"]] = r["billing_amount"]
+            if inv_nos:
+                ph = ",".join("?" * len(inv_nos))
+                db_invs = conn.execute(
+                    f"SELECT invoice_no, invoice_date, buyer, total_amount, src_sheet, src_row "
+                    f"FROM invoice WHERE source='import' AND invoice_no IN ({ph})",
+                    inv_nos,
+                ).fetchall()
+                db_handlers: Dict[str, Dict[str, float]] = {}
+                for r in conn.execute(
+                    f"SELECT invoice_no, person_name, billing_amount "
+                    f"FROM charge_detail WHERE source='import' AND invoice_no IN ({ph})",
+                    inv_nos,
+                ):
+                    db_handlers.setdefault(r["invoice_no"], {})[r["person_name"]] = r["billing_amount"]
+            else:
+                db_invs = []
+                db_handlers = {}
         finally:
             conn.close()
 
@@ -323,18 +326,19 @@ class ImportVerifyView(QWidget):
         return rows
 
     def _compare_handler(self, parsed: Dict, period: str, archive: str) -> List[Dict]:
-        """经办人分摊对账：源开票金额 ↔ DB charge_detail。"""
+        """经办人分摊对账：源开票金额 ↔ DB charge_detail（按发票号对库）。"""
+        inv_nos = [inv["invoice_no"] for inv in parsed.get("invoices", [])]
         conn = get_conn()
         try:
             db_cd: Dict[str, Dict[str, float]] = {}
-            for r in conn.execute(
-                "SELECT cd.invoice_no, cd.person_name, cd.billing_amount "
-                "FROM charge_detail cd JOIN invoice i ON cd.invoice_no=i.invoice_no "
-                "WHERE cd.source='import' AND "
-                "(strftime('%Y-%m', i.invoice_date)=? OR i.import_batch_id=?)",
-                (period, self._batch_id),
-            ):
-                db_cd.setdefault(r["invoice_no"], {})[r["person_name"]] = r["billing_amount"]
+            if inv_nos:
+                ph = ",".join("?" * len(inv_nos))
+                for r in conn.execute(
+                    f"SELECT invoice_no, person_name, billing_amount "
+                    f"FROM charge_detail WHERE source='import' AND invoice_no IN ({ph})",
+                    inv_nos,
+                ):
+                    db_cd.setdefault(r["invoice_no"], {})[r["person_name"]] = r["billing_amount"]
         finally:
             conn.close()
 
