@@ -202,6 +202,82 @@ def _write_collection_for_invoice(conn, inv: Dict, batch_id: int) -> None:
     _upsert_received_snapshot(conn, inv, batch_id)
 
 
+def merge_collection_for_invoice(conn, invoice_no: str, batch_id: int,
+                                 target: List[Dict]) -> None:
+    """方案1(逐行手动修正)：以 rowid 为稳定主键做行级合并，绝不整票 DELETE。
+
+    target 每项：{"rowid": int|None, "receipt_date": str, "amount": float, "person_name": str}
+    - rowid=None  → 新增行
+    - 有 rowid    → 编辑既有行（仅值变化才 UPDATE）
+    - 既有行未出现在 target 中 → 删除
+    写入范围限定在 invoice_no + source='import'，不影响其它发票，更不会误删后续月份收款。
+    """
+    existing = {
+        r["id"]: r
+        for r in conn.execute(
+            "SELECT id, receipt_date, amount, person_name FROM collection "
+            "WHERE invoice_no=? AND source='import'",
+            (invoice_no,),
+        )
+    }
+    target_ids = {t.get("id") for t in target if t.get("id")}
+    # 删除：既有但不在目标集合
+    for rid in existing:
+        if rid not in target_ids:
+            conn.execute("DELETE FROM collection WHERE id=?", (rid,))
+    # 更新 / 插入
+    for t in target:
+        rid = t.get("id")
+        date = (t.get("receipt_date") or "")[:10]
+        amt = float(t.get("amount") or 0.0)
+        person = (t.get("person_name") or "").strip()
+        if rid is None:
+            conn.execute(
+                "INSERT INTO collection "
+                "(invoice_no, amount, receipt_date, person_name, source, import_batch_id, src_sheet, src_row) "
+                "VALUES (?,?,?,?,?,?,?,?)",
+                (invoice_no, amt, date, person, "import", batch_id, "manual", 0),
+            )
+        else:
+            conn.execute(
+                "UPDATE collection SET receipt_date=?, amount=?, person_name=? WHERE id=?",
+                (date, amt, person, rid),
+            )
+
+
+def _refresh_snapshot_actual(conn, invoice_no: str, batch_id: int,
+                             expected_json: str | None = None) -> None:
+    """重算 received_snapshot.actual（保留/补写 expected），使校验与手动修正后一致。
+
+    expected_json 不传则尝试沿用已有快照的 expected；都没有则兜底为空期望。
+    """
+    if expected_json is None:
+        row = conn.execute(
+            "SELECT expected_json FROM received_snapshot "
+            "WHERE import_batch_id=? AND invoice_no=?",
+            (batch_id, invoice_no),
+        ).fetchone()
+        expected_json = row["expected_json"] if row else \
+            json.dumps({"total": 0.0, "items": []}, ensure_ascii=False)
+    act_rows = conn.execute(
+        "SELECT receipt_date, amount, person_name FROM collection "
+        "WHERE invoice_no=? AND source='import'",
+        (invoice_no,),
+    ).fetchall()
+    act_items = [
+        {"ym": (r["receipt_date"] or "")[:7], "amount": r["amount"],
+         "person": r["person_name"] or ""}
+        for r in act_rows
+    ]
+    act_total = sum(it["amount"] for it in act_items)
+    conn.execute(
+        "INSERT OR REPLACE INTO received_snapshot "
+        "(import_batch_id, invoice_no, expected_json, actual_json) VALUES (?,?,?,?)",
+        (batch_id, invoice_no, expected_json,
+         json.dumps({"total": act_total, "items": act_items}, ensure_ascii=False)),
+    )
+
+
 def _regen_charge_detail(conn, inv: Dict, batch_id: int) -> None:
     """按源重算某发票的经办人分摊（billing_amount），并清理源中已无的 import 行。
 

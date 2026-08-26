@@ -5,7 +5,7 @@
   1. 发票信息：金额/购方/经办人拆分（原逻辑）
   2. 经办人分摊：源经办人开票金额 ↔ DB charge_detail（缺失/多出/金额不符/合计不符）
   3. 已收认定：按批次读 received_snapshot，做「源声称收款 ↔ 本批次实际写入」对账（方案E）
-维度 2、3 提供「一键修正（按源重算）」，把 DB 重新对齐到源文件。
+维度 2（经办人分摊）提供「一键修正（按源重算）」；维度 3（已收认定）改为「逐行手动修正」对话框（按 id 行级合并，绝不整票删除）。
 
 只读比对 + 一键修正；双击行查看原台账溯源。
 """
@@ -17,16 +17,18 @@ from typing import Dict, List, Optional, Tuple
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
-    QAbstractItemView, QCheckBox, QComboBox, QHBoxLayout, QLabel, QMessageBox,
+    QAbstractItemView, QCheckBox, QComboBox, QDialog, QHBoxLayout, QLabel, QMessageBox,
     QVBoxLayout, QWidget,
 )
 
 from app.db import get_conn
 from app.importer.archive_helper import resolve_archive
 from app.importer.importer import (
-    _regen_charge_detail, _write_collection_for_invoice, compute_expected_receipts,
+    _regen_charge_detail, compute_expected_receipts,
+    merge_collection_for_invoice, _refresh_snapshot_actual,
 )
 from app.importer.ledger_import import parse_ledger_file
+from app.ui.collection_fix_dialog import CollectionFixDialog
 from app.ui.ledger_source import show_source_for_invoice
 from app.ui.column_state import (
     attach_persistence, auto_fit_then_restore, restore_col_widths,
@@ -63,7 +65,7 @@ class ImportVerifyView(QWidget):
         lay.addWidget(t)
         hint = CaptionLabel(
             "选择已导入的账期，系统重读存档源文件并与数据库逐维度对账；"
-            "维度 2/3 提供「一键修正（按源重算）」把数据库重新对齐到源文件。双击任意行查看原台账信息。"
+            "经办人分摊维度可「一键修正（按源重算）」，已收认定维度请选中某行后点「逐行手动修正」逐张编辑收款明细（双击任意行查看原台账信息）。"
         )
         lay.addWidget(hint)
 
@@ -84,8 +86,8 @@ class ImportVerifyView(QWidget):
         self.btn_load = PrimaryPushButton("加载对账")
         self.btn_load.clicked.connect(self.load_verify)
         bar.addWidget(self.btn_load)
-        self.btn_fix = PushButton("一键修正（按源重算）")
-        self.btn_fix.clicked.connect(self._fix)
+        self.btn_fix = PushButton("逐行手动修正")
+        self.btn_fix.clicked.connect(self._on_fix_clicked)
         bar.addWidget(self.btn_fix)
         bar.addStretch()
         lay.addLayout(bar)
@@ -176,7 +178,14 @@ class ImportVerifyView(QWidget):
 
     def _on_dim_changed(self, *_):
         dim = self.combo_dim.currentData() or "invoice"
-        self.btn_fix.setEnabled(dim in ("handler", "received"))
+        if dim == "received":
+            self.btn_fix.setText("逐行手动修正")
+            self.btn_fix.setEnabled(True)
+        elif dim == "handler":
+            self.btn_fix.setText("一键修正（按源重算）")
+            self.btn_fix.setEnabled(True)
+        else:
+            self.btn_fix.setEnabled(False)
         self._need_fit = True
         if self._period:
             self.load_verify()
@@ -537,9 +546,16 @@ class ImportVerifyView(QWidget):
     # ------------------------------------------------------------------ #
     # 一键修正
     # ------------------------------------------------------------------ #
-    def _fix(self) -> None:
+    def _on_fix_clicked(self) -> None:
         dim = self.combo_dim.currentData() or "invoice"
-        if dim not in ("handler", "received") or not self._parsed:
+        if dim == "received":
+            self._fix_collection_manual()
+        elif dim == "handler":
+            self._fix()
+
+    def _fix(self) -> None:
+        """经办人分摊维度：按源重算 charge_detail（逐发票 UPDATE/删除，安全）。"""
+        if not self._parsed:
             return
         if not self._rows:
             QMessageBox.information(self, "提示", "当前维度没有可对账的数据。")
@@ -549,18 +565,16 @@ class ImportVerifyView(QWidget):
             QMessageBox.information(self, "无需修正", "当前维度无差异，无需修正。")
             return
         if QMessageBox.question(
-            self, "确认修正", f"将按源文件重算「{dict(DIMS)[dim]}」维度下全部 {len(self._rows)} 张发票，"
-            f"覆盖数据库中对应记录（已收维度重算 collection，分摊维度重算 charge_detail）。是否继续？",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            self, "确认修正",
+            f"将按源文件重算「经办人分摊」维度下全部 {len(self._rows)} 张发票的 charge_detail，"
+            f"覆盖数据库中对应记录。是否继续？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         ) != QMessageBox.StandardButton.Yes:
             return
         conn = get_conn()
         try:
             for inv in self._parsed.get("invoices", []):
-                if dim == "handler":
-                    _regen_charge_detail(conn, inv, self._batch_id)
-                else:
-                    _write_collection_for_invoice(conn, inv, self._batch_id)
+                _regen_charge_detail(conn, inv, self._batch_id)
             conn.commit()
         except Exception as e:  # noqa: BLE001
             conn.rollback()
@@ -568,8 +582,51 @@ class ImportVerifyView(QWidget):
             return
         finally:
             conn.close()
-        QMessageBox.information(self, "修正完成", f"已按源重算「{dict(DIMS)[dim]}」维度。")
+        QMessageBox.information(self, "修正完成", "已按源重算「经办人分摊」维度。")
         self.load_verify()
+
+    def _fix_collection_manual(self) -> None:
+        """已收认定维度：选中行 → 弹逐行手动修正对话框（方案1优化版：行级合并）。"""
+        row_idx = self.table.currentRow()
+        if row_idx < 0:
+            QMessageBox.information(self, "提示", "请先在表格中选中要修正的发票行。")
+            return
+        item = self.table.item(row_idx, 0)
+        if item is None:
+            return
+        idx = item.data(Qt.ItemDataRole.UserRole)
+        row = self._rows[idx]
+        inv = row.get("src")
+        if not inv:
+            QMessageBox.information(self, "提示", "该行无源数据，无法手动修正。")
+            return
+        no = inv["invoice_no"]
+        total = inv.get("total_amount") or 0.0
+        conn = get_conn()
+        try:
+            s = conn.execute(
+                "SELECT expected_json FROM received_snapshot "
+                "WHERE import_batch_id=? AND invoice_no=?",
+                (self._batch_id, no),
+            ).fetchone()
+            if s:
+                snap = json.loads(s["expected_json"])
+                exp_items = snap.get("items", []) or []
+                exp_total = float(snap.get("total", 0.0) or 0.0)
+            else:
+                exp_total, exp_items = compute_expected_receipts(inv)
+            cur = conn.execute(
+                "SELECT id, receipt_date, amount, person_name FROM collection "
+                "WHERE invoice_no=? AND source='import' ORDER BY receipt_date",
+                (no,),
+            ).fetchall()
+        finally:
+            conn.close()
+        current_rows = [dict(r) for r in cur]
+        dlg = CollectionFixDialog(self, no, total, exp_items, current_rows,
+                                  exp_total, self._batch_id)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            self.load_verify()
 
     # ------------------------------------------------------------------ #
     # 交互
