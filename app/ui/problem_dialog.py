@@ -11,9 +11,10 @@
 from __future__ import annotations
 
 import re
+from collections import Counter, defaultdict
 
 from PySide6.QtCore import Qt, QSettings, QTimer, QPoint
-from PySide6.QtGui import QCursor
+from PySide6.QtGui import QColor, QCursor
 from PySide6.QtWidgets import (
     QComboBox, QDialog, QFrame, QGridLayout, QHBoxLayout, QHeaderView,
     QLabel, QLineEdit, QMessageBox, QSizePolicy, QSplitter, QTableWidget,
@@ -320,6 +321,9 @@ class ProblemDialog(QDialog):
     def _render_rows(self, rows: list) -> None:
         self.htable.blockSignals(True)
         self.htable.setRowCount(0)
+        # A 方案：标记同名经办人行（浅黄底色），提示"保存时将被合并"
+        name_cnt = Counter(r.get("name", "").strip() for r in rows if r.get("name", "").strip())
+        dup = {n for n, c in name_cnt.items() if c > 1}
         for r in rows:
             i = self.htable.rowCount()
             self.htable.insertRow(i)
@@ -327,6 +331,11 @@ class ProblemDialog(QDialog):
             self.htable.setItem(i, 1, QTableWidgetItem(str(r.get("bill", ""))))
             self.htable.setItem(i, 2, QTableWidgetItem(str(r.get("recv_amt", ""))))
             self.htable.setItem(i, 3, QTableWidgetItem(str(r.get("recv_date", ""))))
+            if r.get("name", "").strip() in dup:
+                for c in range(4):
+                    item = self.htable.item(i, c)
+                    if item is not None:
+                        item.setBackground(QColor("#FFF3CD"))
         self.htable.blockSignals(False)
         self._update_summary()
 
@@ -505,6 +514,57 @@ class ProblemDialog(QDialog):
         self._skip.discard(idx)
         self._set_status(idx)
 
+    # ---- A+D：同名经办人多行 -> 合并 ----
+    def _detect_dup_handlers(self, rows: list) -> set:
+        """返回出现 >1 次的经办人姓名集合（空表示无重名）。"""
+        cnt = Counter(r.get("name", "").strip() for r in rows if r.get("name", "").strip())
+        return {n for n, c in cnt.items() if c > 1}
+
+    def _confirm_merge(self, rows: list, dup_names: set) -> bool:
+        """D 方案：弹确认框，展示同名经办人将如何合并（开票额求和、收款分多期）。"""
+        agg_bill = defaultdict(float)
+        for r in rows:
+            n = r.get("name", "").strip()
+            if not n:
+                continue
+            try:
+                b = float(r.get("bill", "").replace(",", "")) if r.get("bill") else 0.0
+            except ValueError:
+                b = 0.0
+            agg_bill[n] += b
+        per_name_recv = defaultdict(list)
+        for r in rows:
+            n = r.get("name", "").strip()
+            if not n:
+                continue
+            if r.get("recv_amt", "").strip() or r.get("recv_date", "").strip():
+                per_name_recv[n].append((r.get("recv_amt", "").strip(), r.get("recv_date", "").strip()))
+        lines = []
+        for n in sorted(dup_names):
+            recv = per_name_recv.get(n, [])
+            recv_desc = "、".join(f"{d}:{a}" for a, d in recv) if recv else "无收款"
+            lines.append(f"• {n}：开票额合计 {_money(agg_bill[n])}；收款分 {len(recv)} 期（{recv_desc}）")
+        msg = ("检测到以下经办人填写了多行，将按姓名合并开票额（开票分摊每人一行），"
+               "收款按各期逐笔写入：\n\n" + "\n".join(lines) +
+               "\n\n是否确认合并？点「否」可返回继续调整。")
+        return QMessageBox.question(
+            self, "确认合并同名经办人", msg,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        ) == QMessageBox.StandardButton.Yes
+
+    @staticmethod
+    def _aggregate_handlers(handlers: list) -> list:
+        """按姓名聚合开票额，同名多行求和，保持首次出现顺序。"""
+        agg = {}
+        order = []
+        for n, b in handlers:
+            if n not in agg:
+                agg[n] = 0.0
+                order.append(n)
+            agg[n] += b
+        return [(n, agg[n]) for n in order]
+
     def _validate_invoice(self, p: dict) -> dict:
         inv_date = _norm_dt(self.inv_date.text())
         total_txt = self.inv_amount.text().strip()
@@ -514,6 +574,11 @@ class ProblemDialog(QDialog):
             raise ImportError_(f"开票总额无法解析: 「{total_txt}」") from None
 
         rows = self._read_rows()
+        # ---- A+D：同名经办人多行 -> 弹确认后按姓名聚合开票额 ----
+        dup_names = self._detect_dup_handlers(rows)
+        if dup_names and not self._confirm_merge(rows, dup_names):
+            raise ImportError_("已取消合并（同名经办人未合并），返回继续编辑")
+
         handlers: list = []
         receipts: list = []
         bill_sum = 0.0
@@ -551,15 +616,17 @@ class ProblemDialog(QDialog):
         if abs(bill_sum - total) > 0.01:
             raise ImportError_(f"经办人开票金额合计({bill_sum:g}) ≠ 开票总额({total:g})，请调整")
 
+        # ---- A：按姓名聚合开票额（同名多行合并为一行，避免 charge_detail 唯一约束冲突） ----
+        merged_handlers = self._aggregate_handlers(handlers)
         handler_text = "、".join(
-            f"{n}{int(a) if a == int(a) else a}" for n, a in handlers)
+            f"{n}{int(a) if a == int(a) else a}" for n, a in merged_handlers)
         return {
             "kind": "invoice",
             "invoice_no": p.get("invoice_no", ""),
             "invoice_date": inv_date or "",
             "total_amount": total,
             "total_amount_text": total_txt,
-            "handlers": handlers,
+            "handlers": merged_handlers,
             "handler_text": handler_text,
             "split_receipts": receipts,
             "buyer": p.get("buyer", ""),

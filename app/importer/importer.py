@@ -410,8 +410,12 @@ def import_ledger_file(path: str, period: str,
                      inv.get("sheet_name") or "", inv.get("row_no") or 0),
                 )
             # 经办人拆分（已存在则更新覆盖值，避免重导时丢失确认结果）
+            # 双人名容错：按姓名聚合开票额，避免 charge_detail(发票号,经办人) 唯一约束冲突
             ov_map = inv.get("received_overrides") or {}
-            for name, amount in inv["handlers"]:
+            _agg_h: dict = {}
+            for _n, _a in inv["handlers"]:
+                _agg_h[_n] = _agg_h.get(_n, 0.0) + _a
+            for name, amount in _agg_h.items():
                 r = conn.execute(
                     "SELECT id FROM charge_detail WHERE invoice_no=? AND person_name=?", (no, name)
                 ).fetchone()
