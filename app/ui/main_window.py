@@ -33,6 +33,7 @@ from app.ui.snapshot_view import SnapshotView
 from app.ui.staff_view import StaffView
 from app.ui.expense_cat_view import ExpenseCatView
 from app.ui.data_clear_view import DataClearView
+from app.ui.audit_view import AuditView
 
 # 分组导航： (分组标题, [(key, 显示名), ...])
 NAV_GROUPS = [
@@ -56,6 +57,7 @@ NAV_GROUPS = [
     ("维护", [
         ("staff", "员工管理"),
         ("expense_cat", "费用类型维护"),
+        ("audit", "修改记录"),
         ("data_clear", "数据清空"),
         ("verify", "导入校验"),
         ("snapshot", "快照"),
@@ -96,6 +98,7 @@ class MainWindow(QMainWindow):
         self.page_ledger_doc = InvoiceLedgerDocView()
         self.page_expense_cat = ExpenseCatView()
         self.page_data_clear = DataClearView()
+        self.page_audit = AuditView()
         self._pages = {
             "import": self.page_import, "invoice": self.page_invoice,
             "handler_all": self.page_handler_all,
@@ -109,6 +112,7 @@ class MainWindow(QMainWindow):
             "ledger_doc": self.page_ledger_doc,
             "expense_cat": self.page_expense_cat,
             "data_clear": self.page_data_clear,
+            "audit": self.page_audit,
         }
         for key, page in self._pages.items():
             page.setObjectName(key)

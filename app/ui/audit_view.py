@@ -14,7 +14,9 @@ from PySide6.QtWidgets import (
     QLineEdit, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
-from app.engine.change_log import INVOICE_RELATED, TABLE_OPTIONS, fetch_log
+from app.engine.change_log import (
+    INVOICE_RELATED, TABLE_OPTIONS, build_friendly_table, fetch_log,
+)
 from app.ui.column_state import attach_persistence
 from app.ui.widgets import CaptionLabel, PushButton
 
@@ -24,10 +26,14 @@ class AuditView(QWidget):
 
     table_name / record_id 为预设过滤（右击某行查看其历史时传入）。
     预设 record_id 时，记录搜索框与表下拉会被锁定，仅展示该行历史。
+
+    展示列：修改时间 | 修改表名 | 发票号码 | 对方 | 金额 | 经办人 | 旧值 | 新值 | 备注
+    （发票号码/对方/金额/经办人为修改前快照，由编辑入口在写日志时一并存入）
     """
 
-    _HEADERS = ["时间", "表", "记录", "字段", "旧值", "新值", "备注"]
-    _KEYS = ["created_at", "table_name", "record_id", "field", "old_value", "new_value", "note"]
+    _HEADERS = ["修改时间", "修改表名", "发票号码", "对方", "金额", "经办人", "旧值", "新值", "备注"]
+    _KEYS = ["created_at", "friendly_table", "invoice_no", "buyer", "amount", "handlers",
+             "old_value", "new_value", "note"]
 
     def __init__(self, parent: QWidget | None = None, *,
                  table_name: str | None = None, record_id: str | None = None) -> None:
@@ -120,8 +126,12 @@ class AuditView(QWidget):
         self.table.setRowCount(len(rows))
         for r, row in enumerate(rows):
             for c, key in enumerate(self._KEYS):
-                v = row[key] if key in row.keys() else ""
+                if key == "friendly_table" and not (row.get("friendly_table") or ""):
+                    # 旧记录无快照：按 table_name 回退友好名
+                    v = build_friendly_table(row.get("table_name") or "")
+                else:
+                    v = row[key] if key in row.keys() else ""
                 item = QTableWidgetItem("" if v is None else str(v))
-                if key in ("old_value", "new_value"):
+                if key in ("old_value", "new_value", "buyer", "amount", "handlers", "invoice_no"):
                     item.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
                 self.table.setItem(r, c, item)

@@ -10,7 +10,7 @@ import re
 from typing import Dict, List, Optional
 
 from app.db import get_conn
-from app.engine.change_log import log_change
+from app.engine.change_log import log_change, build_friendly_table
 
 # 可编辑字段（编辑弹窗用）
 EDIT_FIELDS = [
@@ -144,9 +144,17 @@ def update_row(rid: int, data: Dict, note: str = "") -> None:
                              (_parse_total(amt), rid))
             except ValueError:
                 pass
-        log_change(conn, "raw_ledger", str(rid), "edit", "", "", note)
+        # 修改前整行快照（供修改记录页展示发票号码/对方/金额/经办人/修改表名）
+        ctx = dict(
+            friendly_table=build_friendly_table("raw_ledger", old.get("sheet_name") or ""),
+            invoice_no=(old.get("invoice_no") or "").strip(),
+            buyer=(old.get("buyer") or "").strip(),
+            amount=(old.get("amount_raw") or "").strip(),
+            handlers=(old.get("handler_text") or "").strip(),
+        )
+        log_change(conn, "raw_ledger", str(rid), "edit", "", "", note, **ctx)
         for f, o, n in changes:
-            log_change(conn, "raw_ledger", str(rid), f, o, n, note)
+            log_change(conn, "raw_ledger", str(rid), f, o, n, note, **ctx)
         # 向下游归一化表同步（发票台账编辑 -> 发票收款情况/经办人发票收款情况）
         if (old.get("kind") or "invoice") != "prepayment":
             _sync_invoice_from_raw(conn, rid, old, changes, data)
@@ -263,7 +271,11 @@ def _sync_invoice_from_raw(conn, rid: int, old_row: Dict, changes, data: Dict) -
         else:
             # 新号已存在 -> 仅镜表已改，归一化表保持旧号，避免串数据
             log_change(conn, "raw_ledger", str(rid), "invoice_no_rename",
-                       old_no, new_no, "新发票号已存在，未级联更名（仅镜表已改）")
+                       old_no, new_no, "新发票号已存在，未级联更名（仅镜表已改）",
+                       friendly_table=build_friendly_table("raw_ledger", old_row.get("sheet_name") or ""),
+                       invoice_no=old_no, buyer=(old_row.get("buyer") or "").strip(),
+                       amount=(old_row.get("amount_raw") or "").strip(),
+                       handlers=(old_row.get("handler_text") or "").strip())
     no = effective_no
     if not no:
         return

@@ -89,7 +89,8 @@ class HandlerCollectView(BaseTableView):
 
     def _build_filters(self) -> None:
         self.year, self.month, self.src, self.keyword, _ = make_filter_widgets(
-            self, self.filters, lambda *_: self.refresh(), search_label="搜索"
+            self, self.filters, lambda *_: self.refresh(),
+            search_label="发票号码/购方名/金额/经办人"
         )
         # 经办人下拉
         lbl = QLabel("经办人")
@@ -134,7 +135,7 @@ class HandlerCollectView(BaseTableView):
     def _set_handler_type(self, invoice_no: str, person_name: str, combo) -> None:
         """按 发票+经办人 精确设置身份"""
         from app.db import get_conn
-        from app.engine.change_log import log_change
+        from app.engine.change_log import log_change, build_friendly_table
         new_pt = combo.currentData()
         if new_pt is None:
             return
@@ -149,8 +150,17 @@ class HandlerCollectView(BaseTableView):
             conn.execute(
                 "UPDATE charge_detail SET person_type=? WHERE invoice_no=? AND person_name=?",
                 (new_pt, invoice_no, person_name))
+            # 取发票对方/金额用于修改前快照展示
+            inv = conn.execute(
+                "SELECT buyer, total_amount FROM invoice WHERE invoice_no=?",
+                (invoice_no,)).fetchone()
             log_change(conn, "charge_detail", f"{invoice_no}/{person_name}", "person_type",
-                       old_pt, new_pt, "经办人总表身份修改")
+                       old_pt, new_pt, "经办人总表身份修改",
+                       friendly_table=build_friendly_table("charge_detail"),
+                       invoice_no=invoice_no,
+                       buyer=(inv["buyer"] if inv else ""),
+                       amount=(f"{inv['total_amount']:g}" if inv and inv["total_amount"] is not None else ""),
+                       handlers=person_name)
             conn.commit()
         except Exception:  # noqa: BLE001
             conn.rollback()

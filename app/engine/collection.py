@@ -39,7 +39,7 @@ def invoice_rows(conn=None, period: str | None = None, keyword: str | None = Non
     """发票收款总表数据
 
     列：开具日期、发票号码、购买方名称、价税合计、经办人(含金额)、已收金额、剩余应收、收款日期
-    keyword：购买方名称 OR 发票号码 模糊检索
+    keyword：发票号码 OR 购买方名称 OR 经办人 OR 价税合计/已收/剩余 金额 模糊检索
     """
     own = conn is None
     if own:
@@ -58,9 +58,16 @@ def invoice_rows(conn=None, period: str | None = None, keyword: str | None = Non
                 where.append("strftime('%Y-%m', invoice_date) = ?")
             params.append(period)
         if keyword:
-            where.append("(buyer LIKE ? OR invoice_no LIKE ?)")
-            params.append("%" + keyword + "%")
-            params.append("%" + keyword + "%")
+            # 发票号码/购方名/经办人/金额（价税合计·已收·剩余）
+            where.append(
+                "(buyer LIKE ? OR invoice_no LIKE ? "
+                "OR invoice_no IN (SELECT invoice_no FROM charge_detail WHERE person_name LIKE ?) "
+                "OR CAST(total_amount AS TEXT) LIKE ? "
+                "OR CAST((SELECT COALESCE(SUM(amount),0) FROM collection WHERE collection.invoice_no=invoice.invoice_no) AS TEXT) LIKE ? "
+                "OR CAST((total_amount - (SELECT COALESCE(SUM(amount),0) FROM collection WHERE collection.invoice_no=invoice.invoice_no)) AS TEXT) LIKE ?)")
+            params += ["%" + keyword + "%"] * 2          # buyer, invoice_no
+            params.append("%" + keyword + "%")            # person_name
+            params += ["%" + keyword + "%"] * 3          # total_amount, 已收, 剩余
         if source:
             where.append("source = ?")
             params.append(source)
@@ -158,7 +165,7 @@ def handler_rows(conn=None, person: str | None = None, period: str | None = None
 
     列：开具日期、发票号码、购买方名称、开票总额、经办人、开票金额、已收金额、剩余应收、备注
     一票多经办人拆多行。
-    keyword：全字段检索（发票号/购方/经办人/案号/金额）。
+    keyword：全字段检索（发票号/购方名/经办人/案号/金额：开票总额·开票金额·已收·剩余）。
     """
     own = conn is None
     if own:
@@ -195,9 +202,11 @@ def handler_rows(conn=None, person: str | None = None, period: str | None = None
             where.append(
                 "(i.invoice_no LIKE ? OR i.buyer LIKE ? OR cd.person_name LIKE ? "
                 "OR i.case_no LIKE ? OR CAST(i.total_amount AS TEXT) LIKE ? "
-                "OR CAST(cd.billing_amount AS TEXT) LIKE ?)"
+                "OR CAST(cd.billing_amount AS TEXT) LIKE ? "
+                "OR CAST((SELECT COALESCE(SUM(amount),0) FROM collection c WHERE c.invoice_no=i.invoice_no) AS TEXT) LIKE ? "
+                "OR CAST((cd.billing_amount - (SELECT COALESCE(SUM(amount),0) FROM collection c WHERE c.invoice_no=i.invoice_no)) AS TEXT) LIKE ?)"
             )
-            params.extend([kw] * 6)
+            params.extend([kw] * 8)
         if source:
             where.append("i.source = ?")
             params.append(source)

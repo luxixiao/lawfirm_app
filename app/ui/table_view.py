@@ -375,8 +375,8 @@ def make_filter_widgets(parent: QWidget, filters: QHBoxLayout,
 
     filters.addWidget(CaptionLabel(search_label))
     search = LineEdit()
-    search.setPlaceholderText("输入关键词搜索")
-    search.setFixedWidth(180)
+    search.setPlaceholderText(search_label)
+    search.setFixedWidth(220)
     search.textChanged.connect(on_change)
 
     def _on_year_changed(*_) -> None:

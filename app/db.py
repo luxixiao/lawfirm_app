@@ -210,7 +210,13 @@ CREATE TABLE IF NOT EXISTS change_log (
     old_value  TEXT,
     new_value  TEXT,
     note       TEXT DEFAULT '',
-    created_at TEXT DEFAULT (datetime('now','localtime'))
+    created_at TEXT DEFAULT (datetime('now','localtime')),
+    -- 修改前整行快照（供修改记录页展示「发票号码/对方/金额/经办人/修改表名」）
+    friendly_table TEXT DEFAULT '',
+    invoice_no TEXT DEFAULT '',
+    buyer      TEXT DEFAULT '',
+    amount     TEXT DEFAULT '',
+    handlers   TEXT DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_changelog_record ON change_log(table_name, record_id);
 
@@ -266,6 +272,11 @@ def init_db() -> None:
                 conn.execute(f"ALTER TABLE {tbl} ADD COLUMN src_sheet TEXT DEFAULT ''")
             if "src_row" not in cols:
                 conn.execute(f"ALTER TABLE {tbl} ADD COLUMN src_row INTEGER DEFAULT 0")
+        # 迁移：修改记录快照列（修改前整行上下文，供修改记录页展示）
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(change_log)")]
+        for c in ("friendly_table", "invoice_no", "buyer", "amount", "handlers"):
+            if c not in cols:
+                conn.execute(f"ALTER TABLE change_log ADD COLUMN {c} TEXT DEFAULT ''")
         conn.commit()
     finally:
         conn.close()

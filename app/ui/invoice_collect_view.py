@@ -15,7 +15,7 @@ class InvoiceCollectView(BaseTableView):
             "发票收款情况",
             ["开具日期", "发票号码", "购买方名称", "价税合计", "经办人",
              "已收金额", "剩余应收", "收款日期", "备注"],
-            "每张发票的收款情况；左键点表头排序，右键点表头按列筛选；搜索框可搜购买方或发票号码；右击查看红冲信息。",
+            "每张发票的收款情况；左键点表头排序，右键点表头按列筛选；搜索框可搜发票号码/购方名/金额/经办人；右击查看红冲信息。",
             page_key="invoice",
         )
         self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -28,7 +28,8 @@ class InvoiceCollectView(BaseTableView):
 
     def _build_filters(self) -> None:
         self.year, self.month, self.src, self.search, _ = make_filter_widgets(
-            self, self.filters, lambda *_: self.refresh(), search_label="购买方/发票号"
+            self, self.filters, lambda *_: self.refresh(),
+            search_label="发票号码/购方名/金额/经办人"
         )
 
     def load_data(self) -> None:

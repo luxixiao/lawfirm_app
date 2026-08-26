@@ -1,10 +1,9 @@
-"""台账数据页：保留费用台账的查看/编辑 与 发票台账修改记录（需求 2.2/2.3/2.5）
+"""台账数据页：费用台账的查看/编辑
 
 - 发票 / 收款 / 员工 Tab 已迁出或取消（2.2 员工与员工管理重复、2.3 发票/收款取消）；
 - 费用归类已迁至「维护 → 费用类型维护」（2.1）；
-- 修改记录 Tab 升级为「统一审计中心」（AuditView）：默认展示发票相关
-  （invoice / raw_invoice / raw_ledger），下拉可切换查看全部表的变更。
-- 费用台账编辑也写入 change_log（expense_ledger），与发票维度变更统一展示。
+- 「修改记录」已迁为独立导航项（维护组下），不在本页内嵌。
+- 费用台账编辑也写入 change_log（expense_ledger），在独立「修改记录」页统一展示。
 """
 from __future__ import annotations
 
@@ -12,13 +11,12 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFormLayout, QHBoxLayout,
     QLabel, QLineEdit, QMessageBox, QPlainTextEdit, QTableWidget, QTableWidgetItem,
-    QTabWidget, QVBoxLayout, QWidget,
+    QVBoxLayout, QWidget,
 )
 
 from app.ui.widgets import (CaptionLabel, PushButton, SubtitleLabel)
 from app.db import get_conn
 from app.engine.change_log import log_change
-from app.ui.audit_view import AuditView
 from app.ui.column_state import attach_persistence, auto_fit_then_restore, restore_col_widths
 
 
@@ -31,15 +29,11 @@ class LedgerView(QWidget):
 
         t = SubtitleLabel("台账数据")
         lay.addWidget(t)
-        h = CaptionLabel("费用台账的查看与编辑；下方「修改记录」为统一审计中心，默认展示发票相关（发票台账页 / 销项导入 / 发票）的变更，可切换查看全部。")
+        h = CaptionLabel("费用台账的查看与编辑（修改记录已移至左侧「维护 → 修改记录」独立页面）。")
         lay.addWidget(h)
 
-        self.tabs = QTabWidget()
         self.tab_expense = self._make_table(["账期", "经办人", "费用类型", "金额", "凭证号", "身份"], [0, 1, 2, 3, 5])
-        self.tab_log = AuditView()  # 统一审计中心（默认下拉=发票相关）
-        self.tabs.addTab(self.tab_expense, "费用")
-        self.tabs.addTab(self.tab_log, "修改记录")
-        lay.addWidget(self.tabs, 1)
+        lay.addWidget(self.tab_expense, 1)
 
         attach_persistence(self.tab_expense, "ledger", "expense")
 
