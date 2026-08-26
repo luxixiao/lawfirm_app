@@ -7,11 +7,11 @@
 from __future__ import annotations
 
 from app.ui.column_state import attach_persistence, restore_col_widths
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QDate, Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QDateEdit, QDialog, QDialogButtonBox, QDoubleSpinBox, QFormLayout, QHBoxLayout,
-    QLabel, QMessageBox, QPushButton, QTabWidget, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
+    QLabel, QMenu, QMessageBox, QPushButton, QTabWidget, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
 from app.ui.widgets import (SubtitleLabel, CaptionLabel, PrimaryPushButton, PushButton)
@@ -85,6 +85,9 @@ class RefundView(QWidget):
         self.tab_done = QTableWidget(0, len(DONE_HEADERS))
         self.tab_done.setHorizontalHeaderLabels(DONE_HEADERS)
         self._setup_table(self.tab_done, "done")
+        # 已确认列表：右击可修改（退款金额 / 退款日期）
+        self.tab_done.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.tab_done.customContextMenuRequested.connect(self._on_done_menu)
         self.tabs.addTab(self.tab_pending, "待确认")
         self.tabs.addTab(self.tab_done, "已确认")
         lay.addWidget(self.tabs, 1)
@@ -156,8 +159,10 @@ class RefundView(QWidget):
 
         # ---------- 已确认 ----------
         done_rows = confirmed_refunds()
+        self._done_meta = {}
         self.tab_done.setRowCount(len(done_rows))
         for r, item in enumerate(done_rows):
+            self._done_meta[r] = item
             vals = [item["red_invoice_date"] or "—", item["red_invoice_no"],
                     item["orig_invoice_date"] or "—", item["orig_invoice_no"] or "—",
                     item["handlers"] or "—", item["refund_amount"], item["refund_date"]]
@@ -307,4 +312,120 @@ class RefundView(QWidget):
             return
         finally:
             conn.close()
+        self.refresh()
+
+    # ---- 已确认列表：右击修改 ----
+    def _on_done_menu(self, pos) -> None:
+        row = self.tab_done.currentRow()
+        if row < 0:
+            return
+        if self._done_meta.get(row) is None:
+            return
+        menu = QMenu(self)
+        act = menu.addAction("修改")
+        act.triggered.connect(lambda *_: self.edit_refund(row))
+        menu.exec(self.tab_done.viewport().mapToGlobal(pos))
+
+    def edit_refund(self, row: int) -> None:
+        """修改已确认退款（仅退款金额 / 退款日期；其余字段为发票与拆分表的派生值，只读）。
+
+        保存时写 refund 表并记入修改记录（change_log），快照含发票号/对方/金额/经办人。
+        """
+        item = self._done_meta.get(row)
+        if item is None:
+            return
+        rid = item["id"]
+        no = item["red_invoice_no"]
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle(f"修改已确认退款：{no}")
+        form = QFormLayout(dlg)
+
+        info = (
+            f"红字发票：{item['red_invoice_date'] or '—'} / {no}\n"
+            f"原票：{item['orig_invoice_date'] or '—'} / {item['orig_invoice_no'] or '—'}\n"
+            f"经办人：{item['handlers'] or '—'}"
+        )
+        lbl = QLabel(info)
+        lbl.setWordWrap(True)
+        lbl.setStyleSheet("color:#555; background:#F6F6F4; border:1px solid #E0E0DE;"
+                          "border-radius:8px; padding:8px;")
+        form.addRow(lbl)
+
+        amt = QDoubleSpinBox()
+        amt.setRange(0.01, 99999999)
+        amt.setDecimals(2)
+        amt.setValue(float(item["refund_amount"] or 0))
+        form.addRow("退款金额", amt)
+
+        date = QDateEdit()
+        date.setCalendarPopup(True)
+        date.setDisplayFormat("yyyy-MM")
+        rd = (item["refund_date"] or "")[:7]
+        if rd:
+            date.setDate(QDate.fromString(rd, "yyyy-MM"))
+        else:
+            date.setDate(date.date().currentDate())
+        form.addRow("退款日期(月)", date)
+
+        btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        btns.accepted.connect(dlg.accept)
+        btns.rejected.connect(dlg.reject)
+        form.addRow(btns)
+
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        amount = round(amt.value(), 2)
+        ym = date.date().toString("yyyy-MM")
+
+        conn = get_conn()
+        try:
+            # 红字发票应退总额（用于上限校验）
+            red = conn.execute(
+                "SELECT total_amount, buyer FROM invoice WHERE invoice_no=?", (no,)
+            ).fetchone()
+            red_abs = abs(red["total_amount"]) if red else 0.0
+            buyer = red["buyer"] if red else ""
+            # 同一红字发票的其它退款（排除本条），校验累计不超应退
+            others = conn.execute(
+                "SELECT COALESCE(SUM(refund_amount),0) FROM refund "
+                "WHERE red_invoice_no=? AND id<>?", (no, rid)
+            ).fetchone()[0]
+            if others + amount > red_abs + 0.01:
+                QMessageBox.warning(self, "提示",
+                                    f"累计退款金额（含本次）超过应退金额 {red_abs:,.2f}")
+                return
+            old = conn.execute(
+                "SELECT refund_amount, refund_date FROM refund WHERE id=?", (rid,)
+            ).fetchone()
+            if abs(float(old["refund_amount"]) - amount) < 0.005 and old["refund_date"] == ym:
+                return  # 无变化
+            conn.execute(
+                "UPDATE refund SET refund_amount=?, refund_date=? WHERE id=?",
+                (amount, ym, rid),
+            )
+            # 写入修改记录（快照：发票号/对方/金额/经办人）
+            from app.engine.change_log import log_change
+            handlers = item["handlers"] or ""
+            for field, ov, nv in (
+                ("refund_amount", old["refund_amount"], amount),
+                ("refund_date", old["refund_date"], ym),
+            ):
+                if str(ov) != str(nv):
+                    log_change(conn, "refund", str(rid), field, ov, nv,
+                               "修改已确认退款",
+                               friendly_table="退款",
+                               invoice_no=no, buyer=buyer,
+                               amount=f"{amount:g}", handlers=handlers)
+            conn.commit()
+        except Exception as e:  # noqa: BLE001
+            conn.rollback()
+            QMessageBox.critical(self, "失败", str(e))
+            return
+        finally:
+            conn.close()
+
+        from qfluentwidgets import InfoBar, InfoBarPosition
+        InfoBar.success("已修改并记入修改记录", parent=self,
+                        position=InfoBarPosition.TOP_RIGHT, duration=2500)
         self.refresh()

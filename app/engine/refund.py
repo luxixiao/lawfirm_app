@@ -75,9 +75,10 @@ def evaluate_red_invoices(conn=None) -> List[Dict]:
 def confirmed_refunds(conn=None) -> List[Dict]:
     """已确认退款明细（用于「已确认」页）。
 
-    每项: {red_invoice_date, red_invoice_no, orig_invoice_date, orig_invoice_no,
+    每项: {id, red_invoice_date, red_invoice_no, orig_invoice_date, orig_invoice_no,
            handlers, refund_amount, refund_date}
     handlers 取红字发票的经办人（charge_detail），多个用"、"连接。
+    id 为 refund 表主键，供「修改」定位具体记录。
     """
     own = conn is None
     if own:
@@ -85,7 +86,7 @@ def confirmed_refunds(conn=None) -> List[Dict]:
     try:
         rows = []
         rrows = conn.execute(
-            """SELECT r.red_invoice_no, r.orig_invoice_no, r.refund_amount, r.refund_date,
+            """SELECT r.id, r.red_invoice_no, r.orig_invoice_no, r.refund_amount, r.refund_date,
                       ri.invoice_date  AS red_invoice_date,
                       oi.invoice_date  AS orig_invoice_date
                FROM refund r
@@ -99,6 +100,7 @@ def confirmed_refunds(conn=None) -> List[Dict]:
             handlers_map.setdefault(r["invoice_no"], []).append(r["person_name"])
         for r in rrows:
             rows.append({
+                "id": r["id"],
                 "red_invoice_date": r["red_invoice_date"],
                 "red_invoice_no": r["red_invoice_no"],
                 "orig_invoice_date": r["orig_invoice_date"],

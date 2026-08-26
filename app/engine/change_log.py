@@ -46,6 +46,7 @@ FRIENDLY_TABLE = {
     "expense_cat": "费用类型",
     "expense_ledger": "费用台账",
     "prepayment": "预收款",
+    "refund": "退款",
 }
 
 
@@ -77,6 +78,7 @@ TABLE_OPTIONS = [
     ("charge_detail", "charge_detail（经办人拆分）"),
     ("expense_cat", "expense_cat（费用类型）"),
     ("prepayment", "prepayment（预收款）"),
+    ("refund", "refund（退款）"),
 ]
 
 
