@@ -6,7 +6,7 @@ from PySide6.QtWidgets import QMenu
 
 from app.engine.collection import invoice_rows
 from app.ui.dialogs import show_red_relation
-from app.ui.table_view import BaseTableView, make_filter_widgets, RED
+from app.ui.table_view import BaseTableView, make_filter_widgets, RED, build_period
 
 
 class InvoiceCollectView(BaseTableView):
@@ -34,7 +34,7 @@ class InvoiceCollectView(BaseTableView):
 
     def load_data(self) -> None:
         rows = invoice_rows(
-            period=self.month.currentData() or self.year.currentData() or None,
+            period=build_period(self.year.currentData(), self.month.currentData()),
             keyword=self.search.text().strip() or None,
             source=self.src.currentData() or None,
         )

@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (
 from app.db import get_conn
 from app.engine.collection import handler_rows
 from app.ui.dialogs import show_invoice_handlers, show_red_relation
-from app.ui.table_view import BaseTableView, make_filter_widgets, RED
+from app.ui.table_view import BaseTableView, make_filter_widgets, RED, build_period
 
 
 def _to_months(receipt_dates: str) -> str:
@@ -109,7 +109,7 @@ class HandlerCollectView(BaseTableView):
     def load_data(self) -> None:
         rows = handler_rows(
             person=self.person.currentData() or None,
-            period=self.month.currentData() or self.year.currentData() or None,
+            period=build_period(self.year.currentData(), self.month.currentData()),
             keyword=self.keyword.text().strip() or None,
             source=self.src.currentData() or None,
         )

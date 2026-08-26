@@ -20,6 +20,7 @@ from app.engine import raw_ledger as rl
 from app.engine.raw_ledger import EDIT_FIELDS, sheet_label
 from app.ui.audit_view import AuditView
 from app.ui.column_state import attach_persistence, auto_fit_then_restore
+from app.ui.table_view import month_options_1_12, build_period
 from app.ui.widgets import CaptionLabel, PushButton, SubtitleLabel
 
 _RED_BG = QColor("#FFECEC")
@@ -132,14 +133,10 @@ class InvoiceLedgerDocView(QWidget):
         self._refresh_sheet_combo()
         self._apply()
 
-    # ---- 年份 / 月份 下拉（两级联动，按导入账期 period，如 "2025-01"）----
+    # ---- 年份 / 月份 下拉（组合选择：年份下拉 + 固定 1-12 月，按导入账期 period 如 "2025-01"）----
     def _year_options(self) -> list:
         return sorted({p[:4] for r in self._all_rows
                        if (p := (r.get("period") or ""))[:4]})
-
-    def _month_options(self, year: str = "") -> list:
-        return sorted({p for r in self._all_rows
-                       if (p := (r.get("period") or "")) and p[:4] == year})
 
     def _refresh_year_combo(self) -> None:
         cur = self.f_year.currentData()
@@ -154,19 +151,17 @@ class InvoiceLedgerDocView(QWidget):
 
     def _refresh_month_combo(self) -> None:
         cur = self.f_month.currentData()
-        year = self.f_year.currentData() or ""
         self.f_month.blockSignals(True)
         self.f_month.clear()
         self.f_month.addItem("全部月份", userData="")
-        for m in self._month_options(year):
-            self.f_month.addItem(m, userData=m)
+        for label, data in month_options_1_12():
+            self.f_month.addItem(label, userData=data)
         idx = self.f_month.findData(cur)
         self.f_month.setCurrentIndex(idx if idx >= 0 else 0)
         self.f_month.blockSignals(False)
 
     def _on_year_changed(self, *_args) -> None:
-        # 年份变化 -> 重建月份下拉（仅保留该年月份），再应用筛选
-        self._refresh_month_combo()
+        # 年份变化 -> 重新应用筛选（月份为固定 1-12，不随年份重建）
         self._apply()
 
     def _refresh_sheet_combo(self) -> None:
@@ -185,13 +180,15 @@ class InvoiceLedgerDocView(QWidget):
     def _apply(self) -> None:
         rows = self._all_rows
 
-        # 年月筛选（按导入账期 period，如 "2025-01"；选具体月精确匹配，仅选年则按年匹配）
-        sel_year = self.f_year.currentData() or ""
-        sel_month = self.f_month.currentData() or ""
-        if sel_month:
-            rows = [r for r in rows if (r.get("period") or "") == sel_month]
-        elif sel_year:
-            rows = [r for r in rows if (r.get("period") or "")[:4] == sel_year]
+        # 年月筛选（按导入账期 period，如 "2025-01"；组合 year+month 成 YYYY-MM / YYYY / MM）
+        period = build_period(self.f_year.currentData(), self.f_month.currentData())
+        if period:
+            if len(period) == 7:  # YYYY-MM 精确月
+                rows = [r for r in rows if (r.get("period") or "") == period]
+            elif len(period) == 4:  # 仅年份
+                rows = [r for r in rows if (r.get("period") or "")[:4] == period]
+            else:  # 仅月份（跨年匹配该月）
+                rows = [r for r in rows if (r.get("period") or "")[-2:] == period]
 
         # 工作表筛选（sheet_key）
         sheet_key = self.f_sheet.currentData() or ""

@@ -2,7 +2,7 @@
 
 - 数据源：销项导入文档（raw_invoice，仅 import_batch_id 非空的导入行）。
 - 只读：无增删改、无同步、无修改记录面板。
-- 筛选：开票年份 + 开票月份（两级联动，与「发票收款情况」同款）、状态（全部/仅红字）、
+- 筛选：开票年份 + 开票月份（年份下拉 + 固定 1-12 月组合，与「发票收款情况」同款）、状态（全部/仅红字）、
   搜索（发票号码 / 购方 / 金额 / 凭证号）。
 - 排序：金额列（价税合计/不含税/税率/税额）按数值，其余按文本（手动实现，
   因 PySide6 的 QTableWidgetItem 不暴露 setSortRole，无法直接按 UserRole 排序）。
@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
 
 from app.ui.widgets import CaptionLabel, SubtitleLabel
 from app.ui.column_state import attach_persistence, auto_fit_then_restore
+from app.ui.table_view import month_options_1_12, build_period
 from app.engine import raw_invoice as ri
 
 _HEADERS = ["发票号码", "种类", "开票日期", "状态", "凭证号", "购方名称",
@@ -146,10 +147,6 @@ class InvoiceLedgerView(QWidget):
         return sorted({_ym(r.get("invoice_date_raw"))[:4]
                        for r in self._all_rows if _ym(r.get("invoice_date_raw"))})
 
-    def _month_options(self, year: str = "") -> list[str]:
-        return sorted({ym for r in self._all_rows
-                       if (ym := _ym(r.get("invoice_date_raw"))) and ym.startswith(year)})
-
     def _refresh_year_combo(self) -> None:
         cur = self.f_year.currentData()
         self.f_year.blockSignals(True)
@@ -163,19 +160,17 @@ class InvoiceLedgerView(QWidget):
 
     def _refresh_month_combo(self) -> None:
         cur = self.f_month.currentData()
-        year = self.f_year.currentData() or ""
         self.f_month.blockSignals(True)
         self.f_month.clear()
         self.f_month.addItem("全部月份", userData="")
-        for m in self._month_options(year):
-            self.f_month.addItem(m, userData=m)
+        for label, data in month_options_1_12():
+            self.f_month.addItem(label, userData=data)
         idx = self.f_month.findData(cur)
         self.f_month.setCurrentIndex(idx if idx >= 0 else 0)
         self.f_month.blockSignals(False)
 
     def _on_year_changed(self, *_args) -> None:
-        # 年份变化 -> 重建月份下拉（仅保留该年月份），再应用筛选
-        self._refresh_month_combo()
+        # 年份变化 -> 重新应用筛选（月份为固定 1-12，不随年份重建）
         self._apply()
 
     def refresh(self) -> None:
@@ -190,12 +185,14 @@ class InvoiceLedgerView(QWidget):
         if self.f_status.currentData() == "red":
             rows = [r for r in rows if _parse_total(r.get("total_amount_raw")) < 0]
 
-        ym = self.f_month.currentData() or self.f_year.currentData() or ""
-        if ym:
-            if len(ym) == 7:  # 月份 YYYY-MM
-                rows = [r for r in rows if _ym(r.get("invoice_date_raw")) == ym]
-            else:             # 年份 YYYY
-                rows = [r for r in rows if (r.get("invoice_date_raw") or "")[:4] == ym]
+        period = build_period(self.f_year.currentData(), self.f_month.currentData())
+        if period:
+            if len(period) == 7:  # YYYY-MM 精确月
+                rows = [r for r in rows if _ym(r.get("invoice_date_raw")) == period]
+            elif len(period) == 4:  # 仅年份
+                rows = [r for r in rows if (r.get("invoice_date_raw") or "")[:4] == period]
+            else:  # 仅月份（跨年匹配该月）
+                rows = [r for r in rows if _ym(r.get("invoice_date_raw"))[5:7] == period]
 
         kw = self.f_search.text().strip().lower()
         if kw:

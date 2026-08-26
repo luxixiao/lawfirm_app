@@ -357,9 +357,10 @@ class BaseTableView(QWidget):
 
 def make_filter_widgets(parent: QWidget, filters: QHBoxLayout,
                         on_change: Callable, search_label: str = "购方") -> Tuple[ComboBox, ComboBox, ComboBox, QLineEdit, None]:
-    """年份 + 月份 两级联动 + 来源 + 搜索 筛选控件
+    """年份 + 月份 组合筛选 + 来源 + 搜索 筛选控件
 
-    年份下拉变化 → 月份下拉只显示该年月份；选「全部年份」时月份显示全部。
+    年份下拉：全部年份 + 各年份；月份下拉：全部月份 + 1-12 月（固定，不随年份联动）。
+    年份/月份独立选择，组合成 YYYY / YYYY-MM / MM 三种 period 传给查询（见 build_period）。
     返回 (year, month, src, search, None)。
     """
     from app.ui.widgets import CaptionLabel
@@ -369,13 +370,15 @@ def make_filter_widgets(parent: QWidget, filters: QHBoxLayout,
     year.addItem("全部年份", userData="")
     for y in _year_options():
         year.addItem(y, userData=y)
+    year.currentIndexChanged.connect(on_change)
     filters.addWidget(year)
 
     filters.addWidget(CaptionLabel("开票月份"))
     month = ComboBox()
     month.addItem("全部月份", userData="")
-    for m in _month_options():
-        month.addItem(m, userData=m)
+    for label, data in month_options_1_12():
+        month.addItem(label, userData=data)
+    month.currentIndexChanged.connect(on_change)
     filters.addWidget(month)
 
     filters.addWidget(CaptionLabel("来源"))
@@ -391,27 +394,36 @@ def make_filter_widgets(parent: QWidget, filters: QHBoxLayout,
     search.setFixedWidth(220)
     search.textChanged.connect(on_change)
 
-    def _on_year_changed(*_) -> None:
-        # 重建月份下拉：仅保留所选年份的月份
-        sel = year.currentData()
-        month.blockSignals(True)
-        month.clear()
-        month.addItem("全部月份", userData="")
-        for m in _month_options():
-            if not sel or m.startswith(sel + "-"):
-                month.addItem(m, userData=m)
-        month.blockSignals(False)
-        on_change()
-
-    year.currentIndexChanged.connect(_on_year_changed)
-    month.currentIndexChanged.connect(on_change)
-
     filters.addWidget(year)
     filters.addWidget(month)
     filters.addWidget(src)
     filters.addWidget(search)
     filters.addStretch()
     return year, month, src, search, None
+
+
+def month_options_1_12() -> List[Tuple[str, str]]:
+    """月份下拉固定选项：(展示 "1月".."12月", 数据 "01".."12")，与年份独立。"""
+    return [(f"{m}月", f"{m:02d}") for m in range(1, 13)]
+
+
+def build_period(year_data, month_data) -> str | None:
+    """年份 + 月份 组合成 period 字符串：
+
+    - 年+月都选 → "YYYY-MM"（精确月）
+    - 仅选年   → "YYYY"（全年）
+    - 仅选月   → "MM"（跨年匹配该月）
+    - 都不选   → None
+    """
+    y = year_data or ""
+    m = month_data or ""
+    if y and m:
+        return f"{y}-{m}"
+    if y:
+        return y
+    if m:
+        return m
+    return None
 
 
 def _year_options() -> List[str]:
@@ -422,21 +434,5 @@ def _year_options() -> List[str]:
             "SELECT DISTINCT strftime('%Y', invoice_date) AS y FROM invoice "
             "WHERE invoice_date IS NOT NULL AND invoice_date != '' "
             "AND strftime('%Y', invoice_date) IS NOT NULL ORDER BY y")]
-    finally:
-        conn.close()
-
-
-def _month_options() -> List[str]:
-    from app.db import get_conn
-    conn = get_conn()
-    try:
-        # strftime 规范化：兼容非零填充日期（如 2024-9-15 → 2024-09），
-        # 避免 substr(1,7) 把 2024-9-15 切成 "2024-9-"。
-        rows = conn.execute(
-            "SELECT DISTINCT strftime('%Y-%m', invoice_date) AS m FROM invoice "
-            "WHERE invoice_date IS NOT NULL AND invoice_date != '' "
-            "AND strftime('%Y-%m', invoice_date) IS NOT NULL ORDER BY m"
-        ).fetchall()
-        return [r["m"] for r in rows]
     finally:
         conn.close()

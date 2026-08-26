@@ -62,11 +62,13 @@ def invoice_rows(conn=None, period: str | None = None, keyword: str | None = Non
         where = []
         params: List = []
         if period:
-            # 年份（4 位）按年过滤；月份按 YYYY-MM 规范化匹配（兼容非零填充日期）
+            # 年份（4 位）按年过滤；YYYY-MM 精确月；2 位月份跨年匹配该月
             if len(period) == 4:
                 where.append("strftime('%Y', invoice_date) = ?")
-            else:
+            elif len(period) == 7:
                 where.append("strftime('%Y-%m', invoice_date) = ?")
+            else:
+                where.append("strftime('%m', invoice_date) = ?")
             params.append(period)
         if keyword:
             # 发票号码/购方名/经办人/金额（价税合计·已收·剩余）
@@ -207,11 +209,13 @@ def handler_rows(conn=None, person: str | None = None, period: str | None = None
             where.append("cd.person_name = ?")
             params.append(person)
         if period:
-            # 年份（4 位）按年过滤；月份按 YYYY-MM 规范化匹配（兼容非零填充日期）
+            # 年份（4 位）按年过滤；YYYY-MM 精确月；2 位月份跨年匹配该月
             if len(period) == 4:
                 where.append("strftime('%Y', i.invoice_date) = ?")
-            else:
+            elif len(period) == 7:
                 where.append("strftime('%Y-%m', i.invoice_date) = ?")
+            else:
+                where.append("strftime('%m', i.invoice_date) = ?")
             params.append(period)
         if keyword:
             kw = f"%{keyword}%"
