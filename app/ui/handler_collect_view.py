@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (
 from app.db import get_conn
 from app.engine.collection import handler_rows
 from app.ui.dialogs import show_invoice_handlers, show_red_relation
-from app.ui.table_view import BaseTableView, make_filter_widgets
+from app.ui.table_view import BaseTableView, make_filter_widgets, RED
 
 
 def _to_months(receipt_dates: str) -> str:
@@ -130,6 +130,11 @@ class HandlerCollectView(BaseTableView):
         # 仅身份列（索引5）可编辑（双击弹下拉），其余列保持只读
         if c != 5:
             item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+        # 已确认退款的红字发票：收款月列标红并显示退款月
+        if c == 9:
+            meta = self._meta.get(r)
+            if meta and meta.get("is_refunded"):
+                item.setForeground(RED)
         return item
 
     def _set_handler_type(self, invoice_no: str, person_name: str, combo) -> None:

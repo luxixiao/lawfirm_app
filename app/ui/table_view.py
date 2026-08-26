@@ -67,14 +67,14 @@ class BaseTableView(QWidget):
         attach_persistence(self.table, self._col_page_key, "main")
         lay.addWidget(self.table, 1)
 
-        # 底部
+        # 底部：左为汇总（随筛选/搜索变化），右为导出按钮
         bottom = QHBoxLayout()
+        self.lbl_summary = CaptionLabel("")
         self.btn_export = PrimaryPushButton("导出 Excel")
         self.btn_export.clicked.connect(self.export_excel)
-        self.lbl_summary = CaptionLabel("")
-        bottom.addWidget(self.btn_export)
-        bottom.addStretch()
         bottom.addWidget(self.lbl_summary)
+        bottom.addStretch()
+        bottom.addWidget(self.btn_export)
         lay.addLayout(bottom)
 
         self._rows: List[List] = []
@@ -286,7 +286,19 @@ class BaseTableView(QWidget):
         if used_archive:
             # 用户已手动调整过列宽：关闭末列拉伸，严格按存档宽度
             self.table.horizontalHeader().setStretchLastSection(False)
-        self.lbl_summary.setText(f"共 {len(self._rows)} 行")
+        self.lbl_summary.setText(self._summary_text())
+
+    def _summary_text(self) -> str:
+        """底部汇总文案：行数 + 各合计列求和（已随筛选/搜索变化）。
+
+        子类无需覆写；如需自定义可重写本方法。
+        """
+        parts = [f"共 {len(self._rows)} 行"]
+        for c in sorted(self._total_cols()):
+            # 过滤本列为数值的行再求和（文本列不会进 _total_cols）
+            s = sum(row[c] for row in self._rows if isinstance(row[c], (int, float)))
+            parts.append(f"{self.columns[c]} {s:,.2f}")
+        return " ｜ ".join(parts)
 
     def _total_cols(self) -> set:
         """需要合计的列索引（子类覆写）"""

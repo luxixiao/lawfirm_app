@@ -70,3 +70,44 @@ def evaluate_red_invoices(conn=None) -> List[Dict]:
     finally:
         if own:
             conn.close()
+
+
+def confirmed_refunds(conn=None) -> List[Dict]:
+    """已确认退款明细（用于「已确认」页）。
+
+    每项: {red_invoice_date, red_invoice_no, orig_invoice_date, orig_invoice_no,
+           handlers, refund_amount, refund_date}
+    handlers 取红字发票的经办人（charge_detail），多个用"、"连接。
+    """
+    own = conn is None
+    if own:
+        conn = get_conn()
+    try:
+        rows = []
+        rrows = conn.execute(
+            """SELECT r.red_invoice_no, r.orig_invoice_no, r.refund_amount, r.refund_date,
+                      ri.invoice_date  AS red_invoice_date,
+                      oi.invoice_date  AS orig_invoice_date
+               FROM refund r
+               JOIN invoice ri ON r.red_invoice_no = ri.invoice_no
+               LEFT JOIN invoice oi ON r.orig_invoice_no = oi.invoice_no
+               ORDER BY r.refund_date DESC, r.red_invoice_no"""
+        ).fetchall()
+        handlers_map: Dict[str, List[str]] = {}
+        for r in conn.execute(
+                "SELECT invoice_no, person_name FROM charge_detail ORDER BY invoice_no, id"):
+            handlers_map.setdefault(r["invoice_no"], []).append(r["person_name"])
+        for r in rrows:
+            rows.append({
+                "red_invoice_date": r["red_invoice_date"],
+                "red_invoice_no": r["red_invoice_no"],
+                "orig_invoice_date": r["orig_invoice_date"],
+                "orig_invoice_no": r["orig_invoice_no"],
+                "handlers": "、".join(handlers_map.get(r["red_invoice_no"], [])),
+                "refund_amount": r["refund_amount"],
+                "refund_date": r["refund_date"],
+            })
+        return rows
+    finally:
+        if own:
+            conn.close()

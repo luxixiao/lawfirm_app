@@ -6,7 +6,7 @@ from PySide6.QtWidgets import QMenu
 
 from app.engine.collection import invoice_rows
 from app.ui.dialogs import show_red_relation
-from app.ui.table_view import BaseTableView, make_filter_widgets
+from app.ui.table_view import BaseTableView, make_filter_widgets, RED
 
 
 class InvoiceCollectView(BaseTableView):
@@ -48,6 +48,15 @@ class InvoiceCollectView(BaseTableView):
 
     def _green_cols(self) -> set:
         return {5}
+
+    def _make_item(self, val, r: int, c: int):
+        item = super()._make_item(val, r, c)
+        # 已确认退款的红字发票：收款日期列标红并显示退款月
+        if c == 7:
+            meta = self._meta.get(r)
+            if meta and meta.get("is_refunded"):
+                item.setForeground(RED)
+        return item
 
     def _ctx_menu(self, pos) -> None:
         row = self.table.rowAt(pos.y())

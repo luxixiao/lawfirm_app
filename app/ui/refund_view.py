@@ -1,4 +1,9 @@
-"""退款确认：红字发票判定 + 手动确认退款（可多次、可部分）+ 待补录提示"""
+"""退款确认：红字发票判定 + 手动确认退款（可多次、可部分）+ 待补录提示
+
+页面分两个子页：
+- 待确认：需退款但尚未（完全）确认的红字发票（原票以前月份且已收款）。
+- 已确认：已确认退款明细（红字发票日期/号码、原票日期/号码、经办人、退款金额、退款日期）。
+"""
 from __future__ import annotations
 
 from app.ui.column_state import attach_persistence, restore_col_widths
@@ -6,12 +11,12 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QDateEdit, QDialog, QDialogButtonBox, QDoubleSpinBox, QFormLayout, QHBoxLayout,
-    QLabel, QMessageBox, QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
+    QLabel, QMessageBox, QPushButton, QTabWidget, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
 from app.ui.widgets import (SubtitleLabel, CaptionLabel, PrimaryPushButton, PushButton)
 from app.db import get_conn
-from app.engine.refund import evaluate_red_invoices
+from app.engine.refund import evaluate_red_invoices, confirmed_refunds
 
 STATUS_TEXT = {
     "no_orig": "未关联原票",
@@ -24,6 +29,9 @@ STATUS_TEXT = {
 WARN_BG = QColor("#FFF8E6")   # 待补录行底色（淡黄）
 WARN_BG_SEL = QColor("#FDF1D1")
 
+PENDING_HEADERS = ["红字发票", "红字金额", "原票号码", "原票日期", "判定", "已退金额", "剩余应退"]
+DONE_HEADERS = ["红字发票日期", "红字发票号码", "原票日期", "原票号码", "经办人", "退款金额", "退款日期"]
+
 
 class RefundView(QWidget):
     def __init__(self) -> None:
@@ -34,7 +42,8 @@ class RefundView(QWidget):
 
         t = SubtitleLabel("退款")
         lay.addWidget(t)
-        h = QLabel("红字发票退款确认。手动填写退款金额与日期，可多次确认（部分退款）。")
+        h = QLabel("红字发票退款确认。分为「待确认」（需退款未确认）与「已确认」（已确认退款明细）；"
+                   "手动填写退款金额与日期，可多次确认（部分退款）。")
         lay.addWidget(h)
 
         # ---- 待补录警告横幅 ----
@@ -61,24 +70,34 @@ class RefundView(QWidget):
         self.btn_add = QPushButton("确认退款")
         self.btn_add.setObjectName("primary")
         self.btn_add.clicked.connect(self.add_refund)
-        self.btn_view = QPushButton("查看退款明细")
-        self.btn_view.clicked.connect(self.view_refunds)
+        btn_view_pending = QPushButton("查看待补录明细 →")
+        btn_view_pending.clicked.connect(self.show_pending)
         btns.addWidget(self.btn_add)
-        btns.addWidget(self.btn_view)
+        btns.addWidget(btn_view_pending)
         btns.addStretch()
         lay.addLayout(btns)
 
-        self.table = QTableWidget(0, 7)
-        self.table.setHorizontalHeaderLabels(
-            ["红字发票", "红字金额", "原票号码", "原票日期", "判定", "已退金额", "剩余应退"])
-        self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        self.table.verticalHeader().setVisible(False)
-        self.table.horizontalHeader().setStretchLastSection(True)
-        lay.addWidget(self.table)
-        attach_persistence(self.table, "refund", "main")
+        # ---- 双子页 ----
+        self.tabs = QTabWidget()
+        self.tab_pending = QTableWidget(0, len(PENDING_HEADERS))
+        self.tab_pending.setHorizontalHeaderLabels(PENDING_HEADERS)
+        self._setup_table(self.tab_pending, "pending")
+        self.tab_done = QTableWidget(0, len(DONE_HEADERS))
+        self.tab_done.setHorizontalHeaderLabels(DONE_HEADERS)
+        self._setup_table(self.tab_done, "done")
+        self.tabs.addTab(self.tab_pending, "待确认")
+        self.tabs.addTab(self.tab_done, "已确认")
+        lay.addWidget(self.tabs, 1)
 
         self.refresh()
+
+    @staticmethod
+    def _setup_table(table: QTableWidget, key: str) -> None:
+        table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        table.verticalHeader().setVisible(False)
+        table.horizontalHeader().setStretchLastSection(True)
+        attach_persistence(table, "refund", key)
 
     def showEvent(self, event) -> None:  # noqa: N802
         """切换到本页时自动刷新数据"""
@@ -86,6 +105,7 @@ class RefundView(QWidget):
         self.refresh()
 
     def refresh(self) -> None:
+        # ---------- 待确认 ----------
         conn = get_conn()
         try:
             refunded = {
@@ -97,53 +117,63 @@ class RefundView(QWidget):
         finally:
             conn.close()
         rows = evaluate_red_invoices()
-        self.table.setRowCount(len(rows))
         self._meta = {}
-        pending = 0
-        for r, item in enumerate(rows):
+        # 待确认：需退款且仍有剩余应退（含部分退款）；原票未导入走横幅提示
+        pend_items = [
+            item for item in rows
+            if item["status"] == "need_refund"
+            and max(abs(item["red_amount"]) - refunded.get(item["red_invoice_no"], 0.0), 0.0) > 0.01
+        ]
+        self.tab_pending.setRowCount(len(pend_items))
+        for r, item in enumerate(pend_items):
             no = item["red_invoice_no"]
             done = refunded.get(no, 0.0)
             refundable = abs(item["red_amount"])
-            # 剩余应退：仅"需退款"状态计算；不退款/未判定显示 "—"（不产生应退义务）
-            if item["status"] == "need_refund":
-                remain = max(refundable - done, 0.0)
-                remain_display = f"{remain:,.2f}"
-            else:
-                remain = 0.0
-                remain_display = "—"
+            remain = max(refundable - done, 0.0)
             vals = [no, item["red_amount"], item["orig_invoice_no"] or "—",
                     item["orig_invoice_date"] or "—", STATUS_TEXT.get(item["status"], item["status"]),
-                    done, remain_display]
+                    done, remain]
             for c, v in enumerate(vals):
                 cell = QTableWidgetItem(
                     "" if v is None else (f"{v:,.2f}" if isinstance(v, float) else str(v)))
                 if isinstance(v, float) and v < 0:
                     cell.setForeground(QColor("#C0392B"))
-                if item["status"] == "orig_missing":
-                    cell.setBackground(WARN_BG)
-                    if c == 4:
-                        cell.setForeground(QColor("#7A5C00"))
-                self.table.setItem(r, c, cell)
+                self.tab_pending.setItem(r, c, cell)
             item["_remain"] = remain
             self._meta[r] = item
-            if item["status"] == "orig_missing":
-                pending += 1
 
-        # 待补录横幅
-        if pending:
-            self.banner_lbl.setText(f"⚠️ 有 {pending} 张红字发票的原正数发票未导入，"
+        # 待补录横幅（原票未导入）
+        missing = [m for m in rows if m["status"] == "orig_missing"]
+        if missing:
+            self.banner_lbl.setText(f"⚠️ 有 {len(missing)} 张红字发票的原正数发票未导入，"
                                     f"需先手动补录历史数据（补录后自动判定退款）")
             self.banner.show()
         else:
             self.banner.hide()
 
-        if restore_col_widths(self.table, "refund", "main"):
-            self.table.horizontalHeader().setStretchLastSection(False)
+        if restore_col_widths(self.tab_pending, "refund", "pending"):
+            self.tab_pending.horizontalHeader().setStretchLastSection(False)
+
+        # ---------- 已确认 ----------
+        done_rows = confirmed_refunds()
+        self.tab_done.setRowCount(len(done_rows))
+        for r, item in enumerate(done_rows):
+            vals = [item["red_invoice_date"] or "—", item["red_invoice_no"],
+                    item["orig_invoice_date"] or "—", item["orig_invoice_no"] or "—",
+                    item["handlers"] or "—", item["refund_amount"], item["refund_date"]]
+            for c, v in enumerate(vals):
+                cell = QTableWidgetItem(
+                    "" if v is None else (f"{v:,.2f}" if isinstance(v, float) else str(v)))
+                if c == 5 and isinstance(v, float):  # 退款金额
+                    cell.setForeground(QColor("#C0392B"))
+                self.tab_done.setItem(r, c, cell)
+        if restore_col_widths(self.tab_done, "refund", "done"):
+            self.tab_done.horizontalHeader().setStretchLastSection(False)
 
     # ---- 待补录明细 ----
     def show_pending(self) -> None:
         """列出所有待补录（原票未导入）的红字发票，并可跳转手动补录"""
-        pending = [m for m in self._meta.values() if m["status"] == "orig_missing"]
+        pending = [m for m in evaluate_red_invoices() if m["status"] == "orig_missing"]
         if not pending:
             QMessageBox.information(self, "提示", "没有待补录的红字发票")
             return
@@ -173,8 +203,8 @@ class RefundView(QWidget):
         lay.addWidget(tbl)
         # 按钮（用普通 PushButton + clicked 信号，不用 QDialogButtonBox 自动映射）
         btn_row = QHBoxLayout()
-        from app.ui.widgets import PrimaryPushButton, PushButton
-        go_btn = PrimaryPushButton("去补录原票")
+        from app.ui.widgets import PrimaryPushButton as PPB
+        go_btn = PPB("去补录原票")
         close_btn = PushButton("关闭")
         btn_row.addStretch()
         btn_row.addWidget(close_btn)
@@ -183,25 +213,40 @@ class RefundView(QWidget):
 
         def go_manual():
             dlg.done(QDialog.DialogCode.Accepted)
-            win = self.window()
-            if hasattr(win, "go_to_page"):
+            win = self.go_to_page_owner()
+            if win and hasattr(win, "go_to_page"):
                 win.go_to_page("manual")
 
         go_btn.clicked.connect(go_manual)
         close_btn.clicked.connect(dlg.reject)
 
         if dlg.exec() == QDialog.DialogCode.Accepted:
-            win = self.window()
-            if hasattr(win, "go_to_page"):
+            win = self.go_to_page_owner()
+            if win and hasattr(win, "go_to_page"):
                 win.go_to_page("manual")
+
+    def go_to_page_owner(self):
+        """向上找到主窗口（支持 QDialog 包裹场景）"""
+        w = self.window()
+        if w is not None and hasattr(w, "go_to_page"):
+            return w
+        # 兼容被嵌入子 widget 的情况
+        p = self.parent()
+        while p is not None:
+            if hasattr(p, "go_to_page"):
+                return p
+            p = p.parent()
+        return None
 
     # ---- 确认退款 ----
     def add_refund(self) -> None:
-        row = self.table.currentRow()
+        row = self.tab_pending.currentRow()
         if row < 0:
-            QMessageBox.information(self, "提示", "请先选择一条红字发票")
+            QMessageBox.information(self, "提示", "请先选择一条红字发票（在「待确认」页）")
             return
-        item = self._meta[row]
+        item = self._meta.get(row)
+        if item is None:
+            return
         no = item["red_invoice_no"]
         # 仅"需退款"状态可确认退款；其他状态（不退款/未判定）禁止
         if item["status"] != "need_refund":
@@ -263,29 +308,3 @@ class RefundView(QWidget):
         finally:
             conn.close()
         self.refresh()
-
-    # ---- 明细 ----
-    def view_refunds(self) -> None:
-        conn = get_conn()
-        try:
-            rows = conn.execute(
-                "SELECT red_invoice_no, orig_invoice_no, refund_amount, refund_date FROM refund ORDER BY refund_date"
-            ).fetchall()
-        finally:
-            conn.close()
-        dlg = QDialog(self)
-        dlg.setWindowTitle("退款明细")
-        dlg.resize(620, 400)
-        lay = QVBoxLayout(dlg)
-        t = QTableWidget(len(rows), 4)
-        t.setHorizontalHeaderLabels(["红字发票", "原票号码", "退款金额", "退款日期"])
-        t.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        t.verticalHeader().setVisible(False)
-        t.horizontalHeader().setStretchLastSection(True)
-        for r, row in enumerate(rows):
-            vals = [row["red_invoice_no"], row["orig_invoice_no"], row["refund_amount"], row["refund_date"]]
-            for c, v in enumerate(vals):
-                t.setItem(r, c, QTableWidgetItem("" if v is None else
-                                                 (f"{v:,.2f}" if isinstance(v, float) else str(v))))
-        lay.addWidget(t)
-        dlg.exec()

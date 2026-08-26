@@ -34,6 +34,16 @@ def _refunded_by_invoice(conn) -> Dict[str, float]:
     }
 
 
+def _refund_months_by_invoice(conn) -> Dict[str, List[str]]:
+    """{红字发票号: [退款月份 YYYY-MM, ...]}（按退款记录，可能多笔部分退款）"""
+    m: Dict[str, List[str]] = {}
+    for r in conn.execute("SELECT red_invoice_no, refund_date FROM refund"):
+        d = (r["refund_date"] or "")[:7]   # YYYY-MM
+        if d:
+            m.setdefault(r["red_invoice_no"], []).append(d)
+    return m
+
+
 def invoice_rows(conn=None, period: str | None = None, keyword: str | None = None,
                  source: str | None = None, invoice_no: str | None = None) -> List[Dict]:
     """发票收款总表数据
@@ -47,6 +57,7 @@ def invoice_rows(conn=None, period: str | None = None, keyword: str | None = Non
     try:
         collected = _collected_by_invoice(conn)
         refunded = _refunded_by_invoice(conn)
+        refund_months = _refund_months_by_invoice(conn)
 
         where = []
         params: List = []
@@ -132,11 +143,14 @@ def invoice_rows(conn=None, period: str | None = None, keyword: str | None = Non
             handlers = [r["person_name"] for r in cd]
             # 经办人 + 开票金额（如"张三3000、王五5000"）
             handlers_amount = "、".join(f"{r['person_name']}{r['billing_amount']:g}" for r in cd)
-            # 收款日期：按收款月份聚合金额（如"2025-2+1000、2025-3+2000"）
+            # 收款日期：按收款月份聚合金额（如"2025-2+1000、2025-3+2000"）；
+            # 红字发票已确认退款时，并入退款月份（标记"(退)"），由视图标红。
             month_map = month_amt_by_inv.get(no, {})
-            receipt_dates_str = "、".join(
-                f"{ym}+{amt:g}" for ym, amt in sorted(month_map.items())
-            )
+            parts = [f"{ym}+{amt:g}" for ym, amt in sorted(month_map.items())]
+            rm = refund_months.get(no, [])
+            for d in sorted(set(rm)):
+                parts.append(f"{d}(退)")
+            receipt_dates_str = "、".join(parts)
             rows.append({
                 "invoice_no": no,
                 "invoice_date": inv["invoice_date"],
@@ -149,6 +163,7 @@ def invoice_rows(conn=None, period: str | None = None, keyword: str | None = Non
                 "receipt_dates_str": receipt_dates_str,
                 "remark": remark,
                 "is_red": is_red,
+                "is_refunded": bool(rm),
                 "orig_invoice_no": inv["orig_invoice_no"],
                 "case_no": inv["case_no"],
                 "source": inv["source"],
@@ -173,6 +188,7 @@ def handler_rows(conn=None, person: str | None = None, period: str | None = None
     try:
         collected = _collected_by_invoice(conn)
         refunded = _refunded_by_invoice(conn)
+        refund_months = _refund_months_by_invoice(conn)
 
         # 红字发票映射：{原发票号: [(红冲年月 YYYY-MM, 红冲金额绝对值), ...]}
         # 用于"备注"列（原票被红冲提示）与"剩余应收"红冲抵消，逻辑对齐 invoice_rows。
@@ -247,8 +263,13 @@ def handler_rows(conn=None, person: str | None = None, period: str | None = None
             handlers = [(r["person_name"], r["billing_amount"], r["person_type"] or "",
                         r["received_override"]) for r in items]
             if is_red:
-                # 红字发票：经办人已收 = 0（退款走 refund 手动确认，不参与分摊）
-                got_map = {name: 0.0 for name, _, _, _ in handlers}
+                # 红字发票已确认退款：经办人已收 = 退款金额按开票金额比例分摊（为负），与发票维度已收=-退款 对齐
+                R = refunded.get(no, 0.0)
+                T = abs(inv["total_amount"]) or 0.0
+                got_map = {}
+                for name, billing, _pt, _ov in handlers:
+                    share = (R * abs(billing) / T) if T else 0.0
+                    got_map[name] = -round(share, 2)
             else:
                 override_map = {name: ov for name, _, _, ov in handlers if ov is not None}
                 allocated = allocate_invoice(
@@ -258,6 +279,10 @@ def handler_rows(conn=None, person: str | None = None, period: str | None = None
                 got_map = {name: got for name, got in allocated}
 
             receipt_dates = sorted({d for d, _ in receipts})
+            rm = refund_months.get(no, [])
+            if rm:
+                # 红字发票已确认退款：收款月并入退款月份（由视图标红）
+                receipt_dates = sorted(set(receipt_dates) | set(rm))
             for name, billing, ptype, _ov in handlers:
                 got = got_map.get(name, 0.0)
                 if is_red:
@@ -290,6 +315,7 @@ def handler_rows(conn=None, person: str | None = None, period: str | None = None
                     "remark": remark,
                     "receipt_dates": "、".join(receipt_dates),
                     "is_red": is_red,
+                    "is_refunded": bool(rm),
                     "orig_invoice_no": inv["orig_invoice_no"],
                     "case_no": inv["case_no"],
                     "src_sheet": inv["src_sheet"] or "",
