@@ -108,6 +108,76 @@ def _raw_cell(row, header, *names) -> str:
     return ""
 
 
+def _write_collection_for_invoice(conn, inv: Dict, batch_id: int) -> None:
+    """按发票写入收款明细（普通导入路径；split_receipts=问题行逐人收款）。
+
+    逻辑与原写库主循环一致，抽出供导入与「导入校验-一键修正」复用。
+    """
+    no = inv["invoice_no"]
+    sheet = inv.get("sheet_name") or ""
+    row = inv.get("row_no") or 0
+    conn.execute("DELETE FROM collection WHERE invoice_no=? AND source='import'", (no,))
+    if "split_receipts" in inv:
+        # 问题行修正：逐经办人写入收款（person_name 归因；空列表 = 无收款）
+        for name, amt, ym in inv["split_receipts"]:
+            conn.execute(
+                "INSERT INTO collection (invoice_no, amount, receipt_date, person_name, source, import_batch_id, src_sheet, src_row) VALUES (?,?,?,?,?,?,?,?)",
+                (no, amt, ym, name, "import", batch_id, sheet, row),
+            )
+        return
+    rem = inv["remark"]
+    if inv["is_red"]:
+        # 红字发票：不产生收款（退款走 refund 手动确认）
+        return
+    if rem["pure_date"]:
+        conn.execute(
+            "INSERT INTO collection (invoice_no, amount, receipt_date, source, import_batch_id, src_sheet, src_row) VALUES (?,?,?,?,?,?,?)",
+            (no, inv["total_amount"], rem["pure_date"], "import", batch_id, sheet, row),
+        )
+    else:
+        for ym, amt in rem["receipts"]:
+            if amt == 0:
+                amt = inv["total_amount"]
+            conn.execute(
+                "INSERT INTO collection (invoice_no, amount, receipt_date, source, import_batch_id, src_sheet, src_row) VALUES (?,?,?,?,?,?,?)",
+                (no, amt, ym, "import", batch_id, sheet, row),
+            )
+
+
+def _regen_charge_detail(conn, inv: Dict, batch_id: int) -> None:
+    """按源重算某发票的经办人分摊（billing_amount），并清理源中已无的 import 行。
+
+    供「导入校验-一键修正（经办人分摊）」复用；不动 received_override。
+    """
+    from app.engine.backfill import norm_type, staff_type_of
+    no = inv["invoice_no"]
+    sheet = inv.get("sheet_name") or ""
+    row = inv.get("row_no") or 0
+    parsed = {n: a for n, a in inv["handlers"]}
+    for name, amount in inv["handlers"]:
+        r = conn.execute(
+            "SELECT id FROM charge_detail WHERE invoice_no=? AND person_name=?", (no, name)
+        ).fetchone()
+        if r:
+            conn.execute(
+                "UPDATE charge_detail SET billing_amount=?, person_type=?, src_sheet=?, src_row=? WHERE id=?",
+                (amount, norm_type(staff_type_of(conn, name)), sheet, row, r["id"]),
+            )
+        else:
+            conn.execute(
+                "INSERT INTO charge_detail (invoice_no, person_name, billing_amount, source, "
+                "import_batch_id, person_type, src_sheet, src_row, received_override) "
+                "VALUES (?,?,?,?,?,?,?,?,?)",
+                (no, name, amount, "import", batch_id,
+                 norm_type(staff_type_of(conn, name)), sheet, row, None),
+            )
+    for r in conn.execute(
+        "SELECT id, person_name FROM charge_detail WHERE invoice_no=? AND source='import'", (no,)
+    ):
+        if r["person_name"] not in parsed:
+            conn.execute("DELETE FROM charge_detail WHERE id=?", (r["id"],))
+
+
 def _insert_raw_ledger(conn, item: dict, batch_id: int, kind: str) -> None:
     """把发票台账解析结果逐行 1:1 镜像进 raw_ledger（synced=1）。"""
     seq = _raw_cell(item.get("raw_row"), item.get("header"), "序号")
@@ -339,48 +409,26 @@ def import_ledger_file(path: str, period: str,
                      inv.get("case_no"), "import", batch_id, "",
                      inv.get("sheet_name") or "", inv.get("row_no") or 0),
                 )
-            # 经办人拆分（已存在则跳过）
+            # 经办人拆分（已存在则更新覆盖值，避免重导时丢失确认结果）
+            ov_map = inv.get("received_overrides") or {}
             for name, amount in inv["handlers"]:
                 r = conn.execute(
                     "SELECT id FROM charge_detail WHERE invoice_no=? AND person_name=?", (no, name)
                 ).fetchone()
+                ov = ov_map.get(name)  # None = 用系统推导（received_override 留空）
                 if not r:
                     conn.execute(
-                        "INSERT INTO charge_detail (invoice_no, person_name, billing_amount, source, import_batch_id, person_type, src_sheet, src_row) VALUES (?,?,?,?,?,?,?,?)",
+                        "INSERT INTO charge_detail (invoice_no, person_name, billing_amount, source, import_batch_id, person_type, src_sheet, src_row, received_override) VALUES (?,?,?,?,?,?,?,?,?)",
                         (no, name, amount, "import", batch_id,
                          norm_type(staff_type_of(conn, name)),
-                         inv.get("sheet_name") or "", inv.get("row_no") or 0),
+                         inv.get("sheet_name") or "", inv.get("row_no") or 0, ov),
+                    )
+                else:
+                    conn.execute(
+                        "UPDATE charge_detail SET received_override=? WHERE id=?", (ov, r["id"])
                     )
             # 收款明细：先删该发票 import 旧记录（以最新台账为准），再插入
-            conn.execute("DELETE FROM collection WHERE invoice_no=? AND source='import'", (no,))
-            if "split_receipts" in inv:
-                # 问题行修正：逐经办人写入收款（person_name 归因；空列表 = 无收款）
-                for name, amt, ym in inv["split_receipts"]:
-                    conn.execute(
-                        "INSERT INTO collection (invoice_no, amount, receipt_date, person_name, source, import_batch_id, src_sheet, src_row) VALUES (?,?,?,?,?,?,?,?)",
-                        (no, amt, ym, name, "import", batch_id,
-                         inv.get("sheet_name") or "", inv.get("row_no") or 0),
-                    )
-                continue
-            rem = inv["remark"]
-            if inv["is_red"]:
-                # 红字发票：不产生收款（退款走 refund 手动确认）
-                pass
-            elif rem["pure_date"]:
-                conn.execute(
-                    "INSERT INTO collection (invoice_no, amount, receipt_date, source, import_batch_id, src_sheet, src_row) VALUES (?,?,?,?,?,?,?)",
-                    (no, inv["total_amount"], rem["pure_date"], "import", batch_id,
-                     inv.get("sheet_name") or "", inv.get("row_no") or 0),
-                )
-            else:
-                for ym, amt in rem["receipts"]:
-                    if amt == 0:
-                        amt = inv["total_amount"]
-                    conn.execute(
-                        "INSERT INTO collection (invoice_no, amount, receipt_date, source, import_batch_id, src_sheet, src_row) VALUES (?,?,?,?,?,?,?)",
-                        (no, amt, ym, "import", batch_id,
-                         inv.get("sheet_name") or "", inv.get("row_no") or 0),
-                    )
+            _write_collection_for_invoice(conn, inv, batch_id)
 
         # 预收款（sheet4）
         for pp in data["prepayments"]:

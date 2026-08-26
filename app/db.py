@@ -255,6 +255,10 @@ def init_db() -> None:
         cols = [r[1] for r in conn.execute("PRAGMA table_info(collection)")]
         if "person_name" not in cols:
             conn.execute("ALTER TABLE collection ADD COLUMN person_name TEXT NOT NULL DEFAULT ''")
+        # 迁移：经办人已收覆盖（导入前确认界面可逐人直接改已收金额，存 charge_detail）
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(charge_detail)")]
+        if "received_override" not in cols:
+            conn.execute("ALTER TABLE charge_detail ADD COLUMN received_override REAL DEFAULT NULL")
         # 迁移：行级溯源（发票台账试点）— 记录原始 sheet 名与行号，供导入校验/右键溯源
         for tbl in ("invoice", "charge_detail", "collection", "prepayment"):
             cols = [r[1] for r in conn.execute(f"PRAGMA table_info({tbl})")]

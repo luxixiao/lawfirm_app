@@ -165,7 +165,7 @@ def handler_rows(conn=None, person: str | None = None, period: str | None = None
         sql = """SELECT i.invoice_no, i.invoice_date, i.buyer, i.total_amount,
                         i.orig_invoice_no, i.case_no, i.source,
                         i.src_sheet, i.src_row, i.import_batch_id,
-                        cd.person_name, cd.billing_amount, cd.person_type
+                        cd.person_name, cd.billing_amount, cd.person_type, cd.received_override
                  FROM charge_detail cd JOIN invoice i ON cd.invoice_no = i.invoice_no"""
         if where:
             sql += " WHERE " + " AND ".join(where)
@@ -193,16 +193,21 @@ def handler_rows(conn=None, person: str | None = None, period: str | None = None
             inv = items[0]
             is_red = inv["total_amount"] < 0
             receipts = receipts_by_inv.get(no, [])
-            handlers = [(r["person_name"], r["billing_amount"], r["person_type"] or "") for r in items]
+            handlers = [(r["person_name"], r["billing_amount"], r["person_type"] or "",
+                        r["received_override"]) for r in items]
             if is_red:
                 # 红字发票：经办人已收 = 0（退款走 refund 手动确认，不参与分摊）
-                got_map = {name: 0.0 for name, _, _ in handlers}
+                got_map = {name: 0.0 for name, _, _, _ in handlers}
             else:
-                allocated = allocate_invoice([(n, b) for n, b, _ in handlers], receipts)
+                override_map = {name: ov for name, _, _, ov in handlers if ov is not None}
+                allocated = allocate_invoice(
+                    [(n, b) for n, b, _, _ in handlers], receipts,
+                    override_map or None,
+                )
                 got_map = {name: got for name, got in allocated}
 
             receipt_dates = sorted({d for d, _ in receipts})
-            for name, billing, ptype in handlers:
+            for name, billing, ptype, _ov in handlers:
                 got = got_map.get(name, 0.0)
                 rows.append({
                     "invoice_no": no,
