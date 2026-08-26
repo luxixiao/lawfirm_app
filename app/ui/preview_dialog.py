@@ -14,11 +14,12 @@ from __future__ import annotations
 
 from typing import Dict, List
 
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor
+from PySide6.QtCore import Qt, QTimer, QPoint
+from PySide6.QtGui import QColor, QCursor
 from PySide6.QtWidgets import (
-    QAbstractItemView, QCheckBox, QDoubleSpinBox, QDialog, QHBoxLayout,
-    QLabel, QMessageBox, QTableWidgetItem, QVBoxLayout, QWidget,
+    QAbstractItemView, QAbstractSpinBox, QCheckBox, QDoubleSpinBox, QDialog,
+    QHBoxLayout, QLabel, QMessageBox, QSizePolicy, QTableWidgetItem, QVBoxLayout,
+    QWidget,
 )
 
 from app.db import get_conn
@@ -50,7 +51,7 @@ class HandlerReceivedEditor(QWidget):
         no = ev["invoice_no"]
         self._overrides.setdefault(no, {})
         lay = QHBoxLayout(self)
-        lay.setContentsMargins(2, 0, 2, 0)
+        lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(6)
         sys_recv = ev["system_received"]
         for name, billing in ev["handlers"]:
@@ -61,6 +62,9 @@ class HandlerReceivedEditor(QWidget):
             spin.setDecimals(2)
             spin.setSingleStep(100)
             spin.setMaximumWidth(96)
+            # 去掉金额增减按钮；输入框上下顶满单元格
+            spin.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
+            spin.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
             cur = self._overrides[no].get(name, sys_recv.get(name, 0.0))
             spin.blockSignals(True)
             spin.setValue(cur)
@@ -146,6 +150,7 @@ class PreviewDialog(QDialog):
         self.table.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
         self.table.setHorizontalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
         self.table.cellDoubleClicked.connect(self._cell_double_clicked)
+        self._init_cell_tooltip()
         root.addWidget(self.table, 1)
 
         # 汇总
@@ -200,6 +205,20 @@ class PreviewDialog(QDialog):
         self.table.setColumnWidth(4, 220)
         self.table.setColumnWidth(5, 380)
 
+        # 单元格文字被列宽裁剪时，悬停显示全文（列 5 是控件，无 item）
+        fm = self.table.fontMetrics()
+        pad = 14
+        for r in range(self.table.rowCount()):
+            for c in range(self.table.columnCount()):
+                if c == 5:
+                    continue
+                item = self.table.item(r, c)
+                if item is None:
+                    continue
+                text = item.text()
+                if text and fm.horizontalAdvance(text) > self.table.columnWidth(c) - pad:
+                    item.setData(self._TIP_ROLE, text)
+
         self.lbl_stat.setText(
             f"共 {len(self._rows)} 张：高置信自动过 {self._high} 张，"
             f"待确认（有疑问）{self._low} 张"
@@ -211,6 +230,47 @@ class PreviewDialog(QDialog):
         self.lbl_summary.setText(
             f"全量发票合计 ¥{inv_total:,.2f}　预收款 {len(pp)} 条，合计 ¥{pp_total:,.2f}"
         )
+
+    # ---- 自定义单元格 tooltip（Notion 浅灰卡片，仅当内容被列宽裁剪时悬停显示全文） ----
+    _TIP_ROLE = Qt.ItemDataRole.UserRole + 1
+
+    def _init_cell_tooltip(self) -> None:
+        self._tip = QLabel(self)
+        self._tip.setObjectName("cellTip")
+        self._tip.setWindowFlag(Qt.WindowType.ToolTip, True)
+        self._tip.hide()
+        self._tip_timer = QTimer(self)
+        self._tip_timer.setSingleShot(True)
+        self._tip_timer.timeout.connect(self._pop_tip)
+        self.table.setMouseTracking(True)
+        self.table.cellEntered.connect(self._on_cell_entered)
+        self.table.viewportEntered.connect(self._hide_tip)
+
+    def _on_cell_entered(self, row: int, col: int) -> None:
+        self._tip_timer.stop()
+        item = self.table.item(row, col)
+        if item and item.data(self._TIP_ROLE):
+            self._tip_row = row
+            self._tip_col = col
+            self._tip_timer.start(120)
+        else:
+            self._hide_tip()
+
+    def _pop_tip(self) -> None:
+        row = getattr(self, "_tip_row", -1)
+        col = getattr(self, "_tip_col", -1)
+        item = self.table.item(row, col)
+        text = item.data(self._TIP_ROLE) if item else None
+        if not text:
+            return
+        self._tip.setText(text)
+        self._tip.adjustSize()
+        self._tip.move(QCursor.pos() + QPoint(14, 18))
+        self._tip.show()
+
+    def _hide_tip(self) -> None:
+        self._tip_timer.stop()
+        self._tip.hide()
 
     def _make_item(self, v, c: int, ev: Dict):
         from PySide6.QtWidgets import QTableWidgetItem
