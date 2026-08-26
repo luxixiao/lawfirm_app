@@ -120,9 +120,11 @@ def fetch_log(limit: int = 500, *, table_name: str | None = None,
     where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
     conn = get_conn()
     try:
-        return conn.execute(
+        rows = conn.execute(
             f"SELECT * FROM change_log{where} ORDER BY id DESC LIMIT ?",
             params + [limit],
         ).fetchall()
     finally:
         conn.close()
+    # 转成 dict，避免上游误用 sqlite3.Row 的 .get()（sqlite3.Row 无 .get）
+    return [dict(r) for r in rows]

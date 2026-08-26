@@ -130,7 +130,7 @@ class AuditView(QWidget):
                     # 旧记录无快照：按 table_name 回退友好名
                     v = build_friendly_table(row.get("table_name") or "")
                 else:
-                    v = row[key] if key in row.keys() else ""
+                    v = row.get(key) or ""
                 item = QTableWidgetItem("" if v is None else str(v))
                 if key in ("old_value", "new_value", "buyer", "amount", "handlers", "invoice_no"):
                     item.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
