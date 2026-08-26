@@ -313,7 +313,25 @@ class InvoiceLedgerDocView(QWidget):
             edits[f] = le
             form.addRow(labels.get(f, f), le)
         box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        box.accepted.connect(dlg.accept)
+        from qfluentwidgets import InfoBar, InfoBarPosition
+
+        def _on_ok() -> None:
+            # 编辑前校验经办人列（与导入一致：格式合法 + 金额合计=开票总额）
+            handler_text = edits["handler_text"].text().strip()
+            amt_text = edits["amount_raw"].text().strip()
+            if handler_text:
+                try:
+                    from app.importer.parse_handler import parse_handler_column
+                    from app.engine.raw_ledger import _parse_total
+                    parse_handler_column(handler_text, _parse_total(amt_text),
+                                         edits["invoice_no"].text().strip())
+                except Exception as e:  # noqa: BLE001
+                    InfoBar.error("经办人列无法解析", str(e), parent=dlg,
+                                  position=InfoBarPosition.TOP_RIGHT, duration=4000)
+                    return
+            dlg.accept()
+
+        box.accepted.connect(_on_ok)
         box.rejected.connect(dlg.reject)
         form.addRow(box)
         if dlg.exec() != QDialog.DialogCode.Accepted:
