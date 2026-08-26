@@ -277,6 +277,13 @@ def init_db() -> None:
         for c in ("friendly_table", "invoice_no", "buyer", "amount", "handlers"):
             if c not in cols:
                 conn.execute(f"ALTER TABLE change_log ADD COLUMN {c} TEXT DEFAULT ''")
+        # 迁移：修正曾错分到 problem_fix 的发票台账镜像行（应回归源文件原始 sheet）
+        # 仅影响历史遗留数据；新导入已按源 sheet 归类，不会再产生 problem_fix 行。
+        conn.execute(
+            "UPDATE raw_ledger SET sheet_key = sheet_name "
+            "WHERE sheet_key = 'problem_fix' "
+            "AND sheet_name IN ('sheet1','sheet2','sheet3','sheet4')"
+        )
         conn.commit()
     finally:
         conn.close()

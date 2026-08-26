@@ -16,6 +16,7 @@ from typing import Dict, List, Tuple
 
 from app.db import get_conn
 from app.engine.backfill import norm_type, staff_type_of
+from app.engine.raw_ledger import SHEET_LABELS
 from app.importer.expense_import import parse_expense_file
 from app.importer.invoice_import import parse_invoice_file, parse_invoice_workbook
 from app.importer.ledger_import import parse_ledger_file
@@ -178,6 +179,42 @@ def _regen_charge_detail(conn, inv: Dict, batch_id: int) -> None:
             conn.execute("DELETE FROM charge_detail WHERE id=?", (r["id"],))
 
 
+def _inherit_existing_handlers(conn, inv: Dict) -> None:
+    """累计台账里重复出现的发票，若本次源行未写经办人金额（仅人名），
+    且库内已有该发票的具体分摊，则沿用上次金额，避免被「平均分配」。
+
+    - 新发票（库内无 charge_detail）：保持当前解析（多人无金额则均分）。
+    - 源行含金额：以本次为准，不继承。
+    - 源行纯人名 + 库内已有同集合具体分摊：用历史金额替换均分金额，
+      并回写 handler_text，使台账镜像与归一化表一致、编辑时不再被均分覆盖。
+    """
+    handlers = inv.get("handlers") or []
+    if not handlers:
+        return
+    src = (inv.get("handler_text") or "").strip()
+    # 源经办人列已写金额 -> 以本次为准
+    if any(ch.isdigit() for ch in src):
+        return
+    # 库内已有具体分摊？
+    rows = conn.execute(
+        "SELECT person_name, billing_amount FROM charge_detail "
+        "WHERE invoice_no=? AND source='import'",
+        (inv["invoice_no"],),
+    ).fetchall()
+    if not rows:
+        return
+    existing = {r["person_name"]: r["billing_amount"] for r in rows}
+    new_names = [n for n, _ in handlers]
+    # 经办人集合不一致 -> 不盲目继承，避免串数据
+    if set(new_names) != set(existing.keys()):
+        return
+    # 用历史金额替换均分金额
+    inv["handlers"] = [(n, existing.get(n, a)) for n, a in handlers]
+    inv["handler_text"] = "、".join(
+        f"{n}{int(a) if a == int(a) else a}" for n, a in inv["handlers"]
+    )
+
+
 def _insert_raw_ledger(conn, item: dict, batch_id: int, kind: str) -> None:
     """把发票台账解析结果逐行 1:1 镜像进 raw_ledger（synced=1）。"""
     seq = _raw_cell(item.get("raw_row"), item.get("header"), "序号")
@@ -290,8 +327,9 @@ def _apply_resolved(data: Dict, resolved: List[Dict]) -> None:
         d = item["data"]
         if d["kind"] == "invoice":
             data["invoices"].append({
-                "sheet": "problem_fix",
-                "sheet_name": p.get("sheet") or "问题行修正",
+                # 保留源文件原始 sheet 分类（如 sheet3=应收账款），不覆盖为 problem_fix
+                "sheet": p.get("sheet") or "problem_fix",
+                "sheet_name": SHEET_LABELS.get(p.get("sheet"), p.get("sheet") or "问题行修正"),
                 "row_no": p["row_no"],
                 "header": [],
                 "raw_row": [],
@@ -393,6 +431,8 @@ def import_ledger_file(path: str, period: str,
 
         for inv in data["invoices"]:
             no = inv["invoice_no"]
+            # 累计台账重复行未写金额时，沿用库内已有具体分摊（防「平均分配」）
+            _inherit_existing_handlers(conn, inv)
             # 原始镜表双写：发票台账逐行 1:1 镜像（synced=1 表示与导入一致）
             _insert_raw_ledger(conn, inv, batch_id, "invoice")
             # 发票 upsert：不存在则创建（期外发票），存在则补案号
