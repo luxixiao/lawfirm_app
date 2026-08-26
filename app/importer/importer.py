@@ -9,6 +9,7 @@
 """
 from __future__ import annotations
 
+import json
 import shutil
 from datetime import datetime
 from pathlib import Path
@@ -109,10 +110,66 @@ def _raw_cell(row, header, *names) -> str:
     return ""
 
 
+def compute_expected_receipts(inv: Dict) -> Tuple[float, List[Dict]]:
+    """从已解析发票推算「源声称收款」(方案E 快照 expected)。
+
+    返回 (合计, [{"ym": "YYYY-MM", "amount": float}, ...])。
+    红字=0；纯日期=全额于该日；逐期=各期金额累加(0 表示全额)。
+    """
+    total = inv.get("total_amount") or 0.0
+    if inv.get("is_red"):
+        return 0.0, []
+    rem = inv.get("remark") or {}
+    if rem.get("pure_date"):
+        ym = (rem["pure_date"] or "")[:7]
+        return total, [{"ym": ym, "amount": total}]
+    if rem.get("receipts"):
+        items: List[Dict] = []
+        s = 0.0
+        for ym, amt in rem["receipts"]:
+            a = amt if amt > 0 else total
+            s += a
+            items.append({"ym": (ym or "")[:7], "amount": a})
+        return s, items
+    return 0.0, []
+
+
+def _upsert_received_snapshot(conn, inv: Dict, batch_id: int) -> None:
+    """方案E：把某发票的「源声称收款」与「本批次实际写入收款」落 received_snapshot。
+
+    在 import 写库与「一键修正（按源重算）」后调用，保证快照与最新落库一致。
+    失败仅告警，不阻断主流程。
+    """
+    try:
+        no = inv["invoice_no"]
+        exp_total, exp_items = compute_expected_receipts(inv)
+        act_rows = conn.execute(
+            "SELECT receipt_date, amount, person_name FROM collection "
+            "WHERE source='import' AND import_batch_id=? AND invoice_no=?",
+            (batch_id, no),
+        ).fetchall()
+        act_items = [
+            {"ym": (r["receipt_date"] or "")[:7], "amount": r["amount"],
+             "person": r["person_name"] or ""}
+            for r in act_rows
+        ]
+        act_total = sum(it["amount"] for it in act_items)
+        conn.execute(
+            "INSERT OR REPLACE INTO received_snapshot "
+            "(import_batch_id, invoice_no, expected_json, actual_json) VALUES (?,?,?,?)",
+            (batch_id, no,
+             json.dumps({"total": exp_total, "items": exp_items}, ensure_ascii=False),
+             json.dumps({"total": act_total, "items": act_items}, ensure_ascii=False)),
+        )
+    except Exception as e:  # noqa: BLE001
+        print(f"[received_snapshot] upsert failed for {inv.get('invoice_no')}: {e}")
+
+
 def _write_collection_for_invoice(conn, inv: Dict, batch_id: int) -> None:
     """按发票写入收款明细（普通导入路径；split_receipts=问题行逐人收款）。
 
     逻辑与原写库主循环一致，抽出供导入与「导入校验-一键修正」复用。
+    写库后同步更新 received_snapshot（方案E）。
     """
     no = inv["invoice_no"]
     sheet = inv.get("sheet_name") or ""
@@ -125,24 +182,24 @@ def _write_collection_for_invoice(conn, inv: Dict, batch_id: int) -> None:
                 "INSERT INTO collection (invoice_no, amount, receipt_date, person_name, source, import_batch_id, src_sheet, src_row) VALUES (?,?,?,?,?,?,?,?)",
                 (no, amt, ym, name, "import", batch_id, sheet, row),
             )
-        return
-    rem = inv["remark"]
-    if inv["is_red"]:
-        # 红字发票：不产生收款（退款走 refund 手动确认）
-        return
-    if rem["pure_date"]:
-        conn.execute(
-            "INSERT INTO collection (invoice_no, amount, receipt_date, source, import_batch_id, src_sheet, src_row) VALUES (?,?,?,?,?,?,?)",
-            (no, inv["total_amount"], rem["pure_date"], "import", batch_id, sheet, row),
-        )
     else:
-        for ym, amt in rem["receipts"]:
-            if amt == 0:
-                amt = inv["total_amount"]
-            conn.execute(
-                "INSERT INTO collection (invoice_no, amount, receipt_date, source, import_batch_id, src_sheet, src_row) VALUES (?,?,?,?,?,?,?)",
-                (no, amt, ym, "import", batch_id, sheet, row),
-            )
+        rem = inv["remark"]
+        if not inv["is_red"]:
+            if rem["pure_date"]:
+                conn.execute(
+                    "INSERT INTO collection (invoice_no, amount, receipt_date, source, import_batch_id, src_sheet, src_row) VALUES (?,?,?,?,?,?,?)",
+                    (no, inv["total_amount"], rem["pure_date"], "import", batch_id, sheet, row),
+                )
+            else:
+                for ym, amt in rem["receipts"]:
+                    if amt == 0:
+                        amt = inv["total_amount"]
+                    conn.execute(
+                        "INSERT INTO collection (invoice_no, amount, receipt_date, source, import_batch_id, src_sheet, src_row) VALUES (?,?,?,?,?,?,?)",
+                        (no, amt, ym, "import", batch_id, sheet, row),
+                    )
+    # 方案E：落/更新收款认定快照，保证与本次写入一致
+    _upsert_received_snapshot(conn, inv, batch_id)
 
 
 def _regen_charge_detail(conn, inv: Dict, batch_id: int) -> None:

@@ -1,6 +1,7 @@
 """数据库连接、建表、WAL 管理"""
 from __future__ import annotations
 
+import json
 import sqlite3
 from pathlib import Path
 
@@ -220,6 +221,19 @@ CREATE TABLE IF NOT EXISTS change_log (
 );
 CREATE INDEX IF NOT EXISTS idx_changelog_record ON change_log(table_name, record_id);
 
+-- 收款认定快照（方案E：已收认定维度对账）：导入时按(批次,发票号)落
+-- 「源声称收款」(expected_json) 与「本批次实际写入的收款」(actual_json)，
+-- 供导入校验-已收认定维度做「同批次内 期望 vs 实际」对账，
+-- 避免累计台账跨月覆盖 collection 导致的误报。
+CREATE TABLE IF NOT EXISTS received_snapshot (
+    import_batch_id INTEGER NOT NULL,
+    invoice_no      TEXT NOT NULL,
+    expected_json   TEXT NOT NULL DEFAULT '{}',
+    actual_json     TEXT NOT NULL DEFAULT '{}',
+    PRIMARY KEY (import_batch_id, invoice_no)
+);
+CREATE INDEX IF NOT EXISTS idx_recv_snap_inv ON received_snapshot(invoice_no);
+
 -- 费用类型维护（全集 + 归类：报酬发放/住房公积金/保险费/汽油费/其他）
 CREATE TABLE IF NOT EXISTS expense_cat (
     expense_type TEXT PRIMARY KEY,
@@ -284,9 +298,80 @@ def init_db() -> None:
             "WHERE sheet_key = 'problem_fix' "
             "AND sheet_name IN ('sheet1','sheet2','sheet3','sheet4')"
         )
+        # 迁移：收款认定快照（方案E）全量回溯——对尚无快照的 active 批次重解析存档源，
+        # 还原「导入时源声称收款」(expected) 与「按账期窗口过滤的累计库」(actual)。
+        # 幂等：仅补齐缺快照批次；单批次失败跳过，不阻断启动。
+        _backfill_received_snapshot(conn)
         conn.commit()
     finally:
         conn.close()
+
+
+def _backfill_received_snapshot(conn) -> None:
+    """对尚无快照的 active 发票台账批次，重解析存档源补齐 received_snapshot。
+
+    仅补齐缺失批次（幂等）；解析模块不可用或单批次解析/写入失败仅打印告警并跳过，不阻断启动。
+    """
+    rows = conn.execute(
+        "SELECT id, period, archive_path FROM import_batch "
+        "WHERE batch_type='ledger' AND status='active' "
+        "AND id NOT IN (SELECT DISTINCT import_batch_id FROM received_snapshot)"
+    ).fetchall()
+    if not rows:
+        return
+    try:
+        from app.importer.archive_helper import resolve_archive
+        from app.importer.ledger_import import parse_ledger_file
+        from app.importer.importer import compute_expected_receipts
+    except Exception as e:  # noqa: BLE001
+        print(f"[init_db] backfill received_snapshot skipped (import failed): {e}")
+        return
+    for b in rows:
+        try:
+            _fill_one_received_snapshot(
+                conn, b, resolve_archive, parse_ledger_file, compute_expected_receipts
+            )
+        except Exception as e:  # noqa: BLE001
+            print(f"[init_db] backfill received_snapshot skip batch {b['id']}: {e}")
+    conn.commit()
+
+
+def _fill_one_received_snapshot(conn, b, resolve_archive, parse_ledger_file,
+                               compute_expected_receipts) -> None:
+    """补齐单个批次的收款认定快照：期望来自源文件，实际来自累计库按账期窗口过滤。"""
+    period = b["period"]
+    archive = (b["archive_path"] or "").strip()
+    if not archive:
+        return  # 早期无存档文件，无法还原源期望；校验时走兼容回退
+    path = resolve_archive(archive)
+    if not path.exists():
+        return
+    parsed = parse_ledger_file(str(path), period)
+    # 实际：累计库按月份窗口(<=账期)还原该批次导入时的视图（累计台账特性）
+    live_act: Dict[str, List[Tuple[str, float, str]]] = {}
+    for r in conn.execute(
+        "SELECT invoice_no, receipt_date, amount, person_name FROM collection "
+        "WHERE source='import' AND substr(receipt_date,1,7) <= ?",
+        (period,),
+    ):
+        no = r["invoice_no"]
+        ym = (r["receipt_date"] or "")[:7]
+        live_act.setdefault(no, []).append((ym, r["amount"], r["person_name"] or ""))
+    for inv in parsed.get("invoices", []):
+        no = inv["invoice_no"]
+        exp_total, exp_items = compute_expected_receipts(inv)
+        act_items = live_act.get(no, [])
+        act_total = sum(a for _, a, _ in act_items)
+        conn.execute(
+            "INSERT OR REPLACE INTO received_snapshot "
+            "(import_batch_id, invoice_no, expected_json, actual_json) VALUES (?,?,?,?)",
+            (b["id"], no,
+             json.dumps({"total": exp_total, "items": exp_items}, ensure_ascii=False),
+             json.dumps(
+                 {"total": act_total,
+                  "items": [{"ym": ym, "amount": a, "person": p} for ym, a, p in act_items]},
+                 ensure_ascii=False)),
+        )
 
 
 def checkpoint() -> None:

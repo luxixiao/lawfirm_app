@@ -4,14 +4,15 @@
 三个比对维度（顶部切换）：
   1. 发票信息：金额/购方/经办人拆分（原逻辑）
   2. 经办人分摊：源经办人开票金额 ↔ DB charge_detail（缺失/多出/金额不符/合计不符）
-  3. 已收认定：源备注收款 ↔ DB collection（已收认定不符/勾稽不平）
+  3. 已收认定：按批次读 received_snapshot，做「源声称收款 ↔ 本批次实际写入」对账（方案E）
 维度 2、3 提供「一键修正（按源重算）」，把 DB 重新对齐到源文件。
 
 只读比对 + 一键修正；双击行查看原台账溯源。
 """
 from __future__ import annotations
 
-from typing import Dict, List, Optional
+import json
+from typing import Dict, List, Optional, Tuple
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
@@ -23,7 +24,7 @@ from PySide6.QtWidgets import (
 from app.db import get_conn
 from app.importer.archive_helper import resolve_archive
 from app.importer.importer import (
-    _regen_charge_detail, _write_collection_for_invoice,
+    _regen_charge_detail, _write_collection_for_invoice, compute_expected_receipts,
 )
 from app.importer.ledger_import import parse_ledger_file
 from app.ui.ledger_source import show_source_for_invoice
@@ -371,19 +372,37 @@ class ImportVerifyView(QWidget):
         return rows
 
     def _compare_received(self, parsed: Dict, period: str, archive: str) -> List[Dict]:
-        """已收认定对账：源备注收款 ↔ DB collection。"""
+        """已收认定对账（方案E）：按批次读 received_snapshot，做「同批次 期望 vs 实际」对账。
+
+        期望 = 导入时源文件声称的收款（快照 expected）；实际 = 本批次 import 写入的 collection
+        （快照 actual）。缺失快照的批次（兼容）回退到「源重算期望 + 累计库按账期窗口过滤」。
+        """
         conn = get_conn()
         try:
-            db_coll: Dict[str, Dict[str, float]] = {}
+            snap_rows = conn.execute(
+                "SELECT invoice_no, expected_json, actual_json FROM received_snapshot "
+                "WHERE import_batch_id=?",
+                (self._batch_id,),
+            ).fetchall()
+            # 兼容回退：累计库按月份窗口(<=账期)还原该批次导入时的视图
+            live_act: Dict[str, List[Tuple[str, float, str]]] = {}
             for r in conn.execute(
-                "SELECT invoice_no, receipt_date, amount FROM collection "
-                "WHERE source='import'",
+                "SELECT invoice_no, receipt_date, amount, person_name FROM collection "
+                "WHERE source='import' AND substr(receipt_date,1,7) <= ?",
+                (period,),
             ):
                 no = r["invoice_no"]
                 ym = (r["receipt_date"] or "")[:7]
-                db_coll.setdefault(no, {})[ym] = db_coll.setdefault(no, {}).get(ym, 0.0) + r["amount"]
+                live_act.setdefault(no, []).append((ym, r["amount"], r["person_name"] or ""))
         finally:
             conn.close()
+
+        snap: Dict[str, Tuple[Dict, Dict]] = {}
+        for r in snap_rows:
+            try:
+                snap[r["invoice_no"]] = (json.loads(r["expected_json"]), json.loads(r["actual_json"]))
+            except Exception:  # noqa: BLE001
+                continue
 
         rows: List[Dict] = []
         for i, inv in enumerate(parsed.get("invoices", [])):
@@ -391,42 +410,41 @@ class ImportVerifyView(QWidget):
             total = inv.get("total_amount") or 0.0
             is_red = inv.get("is_red")
             rem = inv.get("remark") or {}
-            # 源期望已收
-            if is_red:
-                exp_total = 0.0
-                exp_text = "红字无收款"
-            elif rem.get("pure_date"):
-                exp_total = total
-                exp_text = f"{rem['pure_date']} {total:,.2f}"
-            elif rem.get("receipts"):
-                exp_total = 0.0
-                parts = []
-                for ym, amt in rem["receipts"]:
-                    a = amt if amt > 0 else total
-                    exp_total += a
-                    parts.append(f"{ym} {a:,.2f}")
-                exp_text = "、".join(parts)
+            # 期望（源声称）
+            if no in snap:
+                exp = snap[no][0]
+                exp_total = float(exp.get("total", 0.0) or 0.0)
+                exp_items = exp.get("items", []) or []
             else:
-                exp_total = 0.0
-                exp_text = "未收款"
-            # 源勾稽不平提示
+                exp_total, exp_items = compute_expected_receipts(inv)
+            exp_text = "、".join(f"{it['ym']} {it['amount']:,.2f}" for it in exp_items) \
+                or ("红字无收款" if is_red else "未收款")
+            # 实际（本批次落库）
+            if no in snap:
+                act = snap[no][1]
+                act_items = act.get("items", []) or []
+                act_total = float(act.get("total", 0.0) or 0.0)
+            else:
+                items = live_act.get(no, [])
+                act_total = sum(a for _, a, _ in items)
+                act_items = [{"ym": ym, "amount": a, "person": p} for ym, a, p in items]
+            act_text = "、".join(f"{it['ym']} {it['amount']:,.2f}" for it in act_items) or "—"
+
+            # 源勾稽不平提示（源自身问题，与库无关）
             src_warn = ""
             if rem.get("remaining") is not None and rem.get("receipts") and not rem.get("pure_date"):
                 if abs((exp_total + rem["remaining"]) - total) > 0.01:
                     src_warn = "源勾稽不平；"
-            # DB 实际
-            d_map = db_coll.get(no, {})
-            act_total = sum(d_map.values())
-            act_text = "、".join(f"{ym} {amt:,.2f}" for ym, amt in sorted(d_map.items())) or "—"
 
             reason = ""
             if abs(exp_total - act_total) > 0.01:
                 reason = f"{src_warn}已收认定不符(差{exp_total - act_total:,.2f})"
             elif src_warn:
                 reason = src_warn.rstrip("；")
+            in_db = no in snap or bool(live_act.get(no))
             rows.append(self._mk(no, self._src_text(inv), inv.get("buyer", ""),
                                 exp_total or None, act_total or None,
-                                exp_text, act_text, reason, no in db_coll, inv, i))
+                                exp_text, act_text, reason, in_db, inv, i))
         return rows
 
     @staticmethod
