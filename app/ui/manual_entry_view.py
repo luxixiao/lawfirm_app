@@ -12,8 +12,8 @@ from __future__ import annotations
 from PySide6.QtCore import Qt, QDate
 from PySide6.QtWidgets import (
     QAbstractItemView, QDialog, QDialogButtonBox, QDoubleSpinBox, QFormLayout,
-    QHBoxLayout, QLabel, QLineEdit, QDateEdit, QMessageBox, QPushButton, QTabWidget,
-    QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
+    QHBoxLayout, QLabel, QLineEdit, QDateEdit, QHeaderView, QMessageBox, QPushButton,
+    QTabWidget, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
 from app.db import get_conn
@@ -168,7 +168,9 @@ class ManualEntryView(QWidget):
         ]
         return {
             "invoice_no": orig_no,
-            "invoice_date": red["invoice_date"] or "",
+            # 原票尚未入库（正因缺失才补录），拿不到原票开票日期 → 留空让用户手填，
+            # 绝不能用红字发票的开票日期顶替。
+            "invoice_date": "",
             "buyer": red["buyer"] or "",
             "total_amount": abs(red["total_amount"]),
             "handlers": handlers,
@@ -209,7 +211,11 @@ class ManualEntryView(QWidget):
         detail.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         detail.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         detail.verticalHeader().setVisible(False)
-        detail.horizontalHeader().setStretchLastSection(False)
+        # 列宽均分填满窗体宽度，避免右侧留白不协调
+        detail.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        # 行高加高，确保 QDateEdit 等内嵌控件不被裁切（超出单元格行高）
+        detail.verticalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Fixed)
+        detail.verticalHeader().setDefaultSectionSize(34)
         detail.setHorizontalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
         lay.addWidget(detail, 1)
 
@@ -282,14 +288,15 @@ class ManualEntryView(QWidget):
         de = QDateEdit()
         de.setCalendarPopup(True)
         de.setDisplayFormat("yyyy-MM")
+        de.setSpecialValueText("")            # 无收款日期时显示空
+        de.setMinimumDate(QDate(2000, 1, 1))  # 早于任何真实发票日期，用作"空"哨兵
         if date:
             d = QDate.fromString(date, "yyyy-MM")
-            if d.isValid():
-                de.setDate(d)
-            else:
-                de.setDate(QDate.currentDate())
+            de.setDate(d if d.isValid() else de.minimumDate())
+        elif received > 0.001:
+            de.setDate(QDate.currentDate())   # 有已收金额才默认当前月
         else:
-            de.setDate(QDate.currentDate())
+            de.setDate(de.minimumDate())      # 收款金额为 0 → 收款日期留空
         table.setCellWidget(r, 0, ne)
         table.setCellWidget(r, 1, be)
         table.setCellWidget(r, 2, re_)
@@ -316,7 +323,8 @@ class ManualEntryView(QWidget):
                 "name": name,
                 "billing": be.value() if be else 0.0,
                 "received": re_.value() if re_ else 0.0,
-                "date": de.date().toString("yyyy-MM") if de else "",
+                # 仅当日期大于哨兵(2000-01-01)才视为有收款日期，否则回空
+                "date": de.date().toString("yyyy-MM") if (de and de.date() > QDate(2000, 1, 1)) else "",
             })
         return handlers
 

@@ -86,6 +86,17 @@ def invoice_rows(conn=None, period: str | None = None, keyword: str | None = Non
             if ym:
                 month_amt_by_inv[no][ym] += r["amount"]
 
+        # 红字发票映射：{原发票号: [(红冲年月 YYYY-MM, 红冲金额绝对值), ...]}
+        # 用于"备注"列（原票被红冲提示）与"剩余应收"红冲抵消。
+        red_map: Dict[str, List] = {}
+        for r in conn.execute(
+            "SELECT orig_invoice_no, invoice_date, total_amount FROM invoice "
+            "WHERE total_amount < 0 AND orig_invoice_no IS NOT NULL AND orig_invoice_no <> ''"
+        ):
+            red_map.setdefault(r["orig_invoice_no"], []).append(
+                (r["invoice_date"][:7] if r["invoice_date"] else "", abs(r["total_amount"]))
+            )
+
         for inv in conn.execute(sql, params):
             no = inv["invoice_no"]
             is_red = inv["total_amount"] < 0
@@ -93,7 +104,16 @@ def invoice_rows(conn=None, period: str | None = None, keyword: str | None = Non
                 got = -refunded.get(no, 0.0)  # 退款合计为负 = 已退款
             else:
                 got = collected.get(no, 0.0)
-            remain = round(inv["total_amount"] - got, 2)
+            # 红字发票冲抵：原票的剩余应收需减去红冲金额；红字发票本身记为 0（冲抵项），
+            # 使原票与红字发票的应收金额互相抵消为 0。
+            reds = red_map.get(no, [])
+            red_abs = sum(abs_amt for _ym, abs_amt in reds)
+            if is_red:
+                remain = 0.0
+                remark = ""
+            else:
+                remain = round(inv["total_amount"] - got - red_abs, 2)
+                remark = "、".join(f"{ym}被红冲" for ym, _ in reds if ym) if reds else ""
             cd = cds_by_inv.get(no, [])
             handlers = [r["person_name"] for r in cd]
             # 经办人 + 开票金额（如"张三3000、王五5000"）
@@ -113,6 +133,7 @@ def invoice_rows(conn=None, period: str | None = None, keyword: str | None = Non
                 "collected": round(got, 2),
                 "remain": remain,
                 "receipt_dates_str": receipt_dates_str,
+                "remark": remark,
                 "is_red": is_red,
                 "orig_invoice_no": inv["orig_invoice_no"],
                 "case_no": inv["case_no"],
