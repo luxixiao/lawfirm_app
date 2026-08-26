@@ -104,15 +104,22 @@ def invoice_rows(conn=None, period: str | None = None, keyword: str | None = Non
                 got = -refunded.get(no, 0.0)  # 退款合计为负 = 已退款
             else:
                 got = collected.get(no, 0.0)
-            # 红字发票冲抵：原票的剩余应收需减去红冲金额；红字发票本身记为 0（冲抵项），
-            # 使原票与红字发票的应收金额互相抵消为 0。
             reds = red_map.get(no, [])
             red_abs = sum(abs_amt for _ym, abs_amt in reds)
             if is_red:
+                # 红字发票本身是冲抵凭证，剩余应收恒为 0
                 remain = 0.0
                 remark = ""
             else:
-                remain = round(inv["total_amount"] - got - red_abs, 2)
+                if reds:
+                    # 原票被红冲：红冲金额 ≥ 已收时，原票与红字发票互相抵消，剩余应收记 0；
+                    # 部分红冲（红冲 < 已收）时，剩余应收 = 票面 − (已收 − 红冲)。
+                    if red_abs >= got - 1e-9:
+                        remain = 0.0
+                    else:
+                        remain = round(inv["total_amount"] - got + red_abs, 2)
+                else:
+                    remain = round(inv["total_amount"] - got, 2)
                 remark = "、".join(f"{ym}被红冲" for ym, _ in reds if ym) if reds else ""
             cd = cds_by_inv.get(no, [])
             handlers = [r["person_name"] for r in cd]

@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt, QDate
 from PySide6.QtWidgets import (
-    QAbstractItemView, QDialog, QDialogButtonBox, QDoubleSpinBox, QFormLayout,
+    QAbstractItemView, QAbstractSpinBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFormLayout,
     QHBoxLayout, QLabel, QLineEdit, QDateEdit, QHeaderView, QMessageBox, QPushButton,
     QTabWidget, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
@@ -194,6 +194,7 @@ class ManualEntryView(QWidget):
         amt.setRange(-99999999, 99999999)
         amt.setDecimals(2)
         amt.setValue(float(prefill.get("total_amount") or 0))
+        amt.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)  # 去上下箭头
         form.addRow("发票号码", no_edit)
         form.addRow("开票日期(YYYY-MM-DD)", date_edit)
         form.addRow("对方", buyer_edit)
@@ -211,12 +212,14 @@ class ManualEntryView(QWidget):
         detail.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         detail.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         detail.verticalHeader().setVisible(False)
-        # 列宽均分填满窗体宽度，避免右侧留白不协调
+        # 列宽均分填满窗体宽度
         detail.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-        # 行高加高，确保 QDateEdit 等内嵌控件不被裁切（超出单元格行高）
+        # 行高固定且与内嵌输入框等高，使输入框四边框正好对齐单元格四框
         detail.verticalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Fixed)
-        detail.verticalHeader().setDefaultSectionSize(34)
+        detail.verticalHeader().setDefaultSectionSize(36)
         detail.setHorizontalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
+        # 去掉单元格内边距，让输入框紧贴单元格四边
+        detail.setStyleSheet("QTableWidget::item{padding:0px;margin:0px;}")
         lay.addWidget(detail, 1)
 
         for hd in prefill.get("handlers", []) or []:
@@ -281,26 +284,48 @@ class ManualEntryView(QWidget):
         be.setRange(0, 99999999)
         be.setDecimals(2)
         be.setValue(billing)
+        be.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)  # 去上下箭头
         re_ = QDoubleSpinBox()
         re_.setRange(0, 99999999)
         re_.setDecimals(2)
         re_.setValue(received)
-        de = QDateEdit()
-        de.setCalendarPopup(True)
-        de.setDisplayFormat("yyyy-MM")
-        de.setSpecialValueText("")            # 无收款日期时显示空
-        de.setMinimumDate(QDate(2000, 1, 1))  # 早于任何真实发票日期，用作"空"哨兵
-        if date:
+        re_.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)  # 去上下箭头
+        # 日期：有值才放 QDateEdit；无值（或已收为 0）放空白 QLabel，
+        # 绝不显示哨兵日期（旧版曾把 2000-01 当真实日期写入库）。
+        has_date = bool(date) and received > 0.001
+        if has_date:
+            de = QDateEdit()
+            de.setCalendarPopup(True)
+            de.setDisplayFormat("yyyy-MM")
             d = QDate.fromString(date, "yyyy-MM")
-            de.setDate(d if d.isValid() else de.minimumDate())
-        elif received > 0.001:
-            de.setDate(QDate.currentDate())   # 有已收金额才默认当前月
+            de.setDate(d if d.isValid() else QDate.currentDate())
+            de.setFixedHeight(34)
+            date_cell = de
         else:
-            de.setDate(de.minimumDate())      # 收款金额为 0 → 收款日期留空
+            date_cell = QLabel("")
+        # 已收金额 > 0 但日期为空时，自动补出日期框（默认当月）
+        re_.valueChanged.connect(lambda v: self._ensure_date_edit(table, r, v))
+        # 让输入框四边框对齐单元格：固定高度 + 紧贴四边
+        for w in (ne, be, re_):
+            w.setFixedHeight(34)
         table.setCellWidget(r, 0, ne)
         table.setCellWidget(r, 1, be)
         table.setCellWidget(r, 2, re_)
-        table.setCellWidget(r, 3, de)
+        table.setCellWidget(r, 3, date_cell)
+
+    def _ensure_date_edit(self, table: QTableWidget, row: int, received: float) -> None:
+        """已收金额变为 > 0 时，若收款日期列还是空白占位，则补出日期框（默认当月）。"""
+        if received <= 0.001:
+            return
+        cell = table.cellWidget(row, 3)
+        if isinstance(cell, QDateEdit):
+            return
+        de = QDateEdit()
+        de.setCalendarPopup(True)
+        de.setDisplayFormat("yyyy-MM")
+        de.setDate(QDate.currentDate())
+        de.setFixedHeight(34)
+        table.setCellWidget(row, 3, de)
 
     def _del_detail_row(self, table: QTableWidget) -> None:
         r = table.currentRow()
@@ -323,8 +348,8 @@ class ManualEntryView(QWidget):
                 "name": name,
                 "billing": be.value() if be else 0.0,
                 "received": re_.value() if re_ else 0.0,
-                # 仅当日期大于哨兵(2000-01-01)才视为有收款日期，否则回空
-                "date": de.date().toString("yyyy-MM") if (de and de.date() > QDate(2000, 1, 1)) else "",
+                # 仅 QDateEdit 且日期合法才视为有收款日期，空白占位 → 回空
+                "date": de.date().toString("yyyy-MM") if isinstance(de, QDateEdit) and de.date().isValid() else "",
             })
         return handlers
 
