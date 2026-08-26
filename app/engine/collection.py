@@ -167,6 +167,17 @@ def handler_rows(conn=None, person: str | None = None, period: str | None = None
         collected = _collected_by_invoice(conn)
         refunded = _refunded_by_invoice(conn)
 
+        # 红字发票映射：{原发票号: [(红冲年月 YYYY-MM, 红冲金额绝对值), ...]}
+        # 用于"备注"列（原票被红冲提示）与"剩余应收"红冲抵消，逻辑对齐 invoice_rows。
+        red_map: Dict[str, List] = {}
+        for r in conn.execute(
+            "SELECT orig_invoice_no, invoice_date, total_amount FROM invoice "
+            "WHERE total_amount < 0 AND orig_invoice_no IS NOT NULL AND orig_invoice_no <> ''"
+        ):
+            red_map.setdefault(r["orig_invoice_no"], []).append(
+                (r["invoice_date"][:7] if r["invoice_date"] else "", abs(r["total_amount"]))
+            )
+
         where = []
         params: List = []
         if person:
@@ -221,6 +232,9 @@ def handler_rows(conn=None, person: str | None = None, period: str | None = None
             inv = items[0]
             is_red = inv["total_amount"] < 0
             receipts = receipts_by_inv.get(no, [])
+            reds = red_map.get(no, [])
+            red_abs = sum(abs_amt for _ym, abs_amt in reds)
+            inv_got = sum(amt for _d, amt in receipts)  # 发票级已收合计，用于红冲抵消判定
             handlers = [(r["person_name"], r["billing_amount"], r["person_type"] or "",
                         r["received_override"]) for r in items]
             if is_red:
@@ -237,6 +251,23 @@ def handler_rows(conn=None, person: str | None = None, period: str | None = None
             receipt_dates = sorted({d for d, _ in receipts})
             for name, billing, ptype, _ov in handlers:
                 got = got_map.get(name, 0.0)
+                if is_red:
+                    # 红字发票本身是冲抵凭证，经办人剩余应收恒为 0
+                    remain = 0.0
+                    remark = ""
+                else:
+                    if reds:
+                        # 原票被红冲：红冲金额 ≥ 发票级已收时，原票与红字互相抵消，剩余应收记 0；
+                        # 部分红冲（红冲 < 已收）时，按开票金额比例分摊红冲金额逐经办人抵消。
+                        if red_abs >= inv_got - 1e-9:
+                            remain = 0.0
+                        else:
+                            T = inv["total_amount"] or 0.0
+                            share = (red_abs * (billing / T)) if T else 0.0
+                            remain = round(billing - got + share, 2)
+                    else:
+                        remain = round(billing - got, 2)
+                    remark = "、".join(f"{ym}被红冲" for ym, _ in reds if ym) if reds else ""
                 rows.append({
                     "invoice_no": no,
                     "invoice_date": inv["invoice_date"],
@@ -246,7 +277,8 @@ def handler_rows(conn=None, person: str | None = None, period: str | None = None
                     "person_type": ptype,
                     "billing_amount": round(billing, 2),
                     "collected": round(got, 2),
-                    "remain": round(billing - got, 2),
+                    "remain": remain,
+                    "remark": remark,
                     "receipt_dates": "、".join(receipt_dates),
                     "is_red": is_red,
                     "orig_invoice_no": inv["orig_invoice_no"],
