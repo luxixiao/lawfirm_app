@@ -184,10 +184,10 @@ class PreviewDialog(QDialog):
 
         # 表格
         self.table = TableWidget(self)
-        self.table.setColumnCount(8)
+        self.table.setColumnCount(9)
         self.table.setHorizontalHeaderLabels(
-            ["发票号", "来源", "购方", "金额", "经办人分摊(开票金额)",
-             "各经办人已收(双击编辑)", "收款认定", "状态"]
+            ["发票号", "来源", "购方", "金额", "经办人分摊(开票金额/源列)",
+             "各经办人已收(双击编辑)", "收款认定", "源文件备注", "状态"]
         )
         self.table.setEditTriggers(TableWidget.EditTrigger.NoEditTriggers)
         self.table.setSelectionBehavior(TableWidget.SelectionBehavior.SelectRows)
@@ -227,14 +227,23 @@ class PreviewDialog(QDialog):
         self.table.setRowCount(0)
         self.table.setRowCount(len(rows))
         for r, ev in enumerate(rows):
+            # 经办人分摊：解析后的「姓名 开票额」+ 源文件经办人列原文（用于核对解析是否一致）
+            handler_parsed = "、".join(f"{n} {_fmt_money(b)}" for n, b in ev["handlers"]) or "—"
+            handler_src = (ev["_inv"].get("handler_text") or "").replace("\n", " ").replace("\r", "").strip()
+            col_handler = handler_parsed
+            if handler_src:
+                col_handler = f"{handler_parsed}　〔源填写〕{handler_src}"
+            # 源文件备注栏（事项常写在备注中，原样展示）
+            remark_src = (ev["_inv"].get("remark_raw") or "").replace("\n", " ").replace("\r", "").strip() or "—"
             vals = [
                 ev["invoice_no"],
                 f"{ev['sheet_label']} · 第{ev['row_no']}行",
                 ev["buyer"],
                 ev["total_amount"],
-                "、".join(f"{n} {_fmt_money(b)}" for n, b in ev["handlers"]) or "—",
+                col_handler,
                 self._received_summary(ev),  # 第 5 列：汇总文本（双击弹窗编辑）
                 ev["receipt_text"],
+                remark_src,
                 "、".join(ev["reasons"]) if ev["reasons"] else "✓ 高置信自动过",
             ]
             for c, v in enumerate(vals):
@@ -245,8 +254,9 @@ class PreviewDialog(QDialog):
             self.table.setRowHeight(r, 34)
             self.table.item(r, 0).setData(Qt.ItemDataRole.UserRole, ev["_idx_global"])
         auto_fit_columns(self.table, max_width=220)
-        self.table.setColumnWidth(4, 220)
-        self.table.setColumnWidth(5, 380)
+        self.table.setColumnWidth(4, 240)
+        self.table.setColumnWidth(5, 360)
+        self.table.setColumnWidth(7, 200)
 
         # 单元格文字被列宽裁剪时，悬停显示全文
         fm = self.table.fontMetrics()
@@ -331,7 +341,7 @@ class PreviewDialog(QDialog):
             item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         else:
             item = QTableWidgetItem(str(v))
-        if c == 7:
+        if c == 8:
             t = str(v)
             if t.startswith("✓"):
                 item.setForeground(GREEN)
