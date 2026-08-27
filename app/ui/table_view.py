@@ -189,8 +189,13 @@ class BaseTableView(QWidget):
 
     def _update_filter_marks(self) -> None:
         """已设筛选的列在表头显示漏斗图标（不改动标题文本，避免污染列布局 key）；
-        排序列仍以 ▲/▼ 文本标记。"""
+        排序列仍以 ▲/▼ 文本标记。
+
+        筛选键与排序列均为逻辑列号；表头项须按视觉列号取，故用 logicalIndex 转换，
+        否则列被重排/隐藏后漏斗图标与排序箭头会落在错误的列上。
+        """
         marks = set(self._filter.active_cols())
+        hdr = self.table.horizontalHeader()
         sort_col = getattr(self, "_sort_col", None)
         sort_asc = getattr(self, "_sort_asc", True)
         icon = _funnel_icon()
@@ -198,10 +203,11 @@ class BaseTableView(QWidget):
             it = self.table.horizontalHeaderItem(c)
             if it is None:
                 continue
-            it.setIcon(icon if c in marks else QIcon())
+            logical = hdr.logicalIndex(c)
+            it.setIcon(icon if logical in marks else QIcon())
             base = it.text().replace(" ▲", "").replace(" ▼", "")
             suffix = ""
-            if sort_col == c:
+            if sort_col == logical:
                 suffix += " ▲" if sort_asc else " ▼"
             it.setText(base + suffix)
 

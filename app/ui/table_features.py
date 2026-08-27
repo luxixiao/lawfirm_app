@@ -218,14 +218,25 @@ class TableFilter:
         self._mark_headers(table)
 
     def _mark_headers(self, table: QTableWidget) -> None:
-        """已设筛选的列在表头显示漏斗图标（不改动标题文本，避免污染列布局 key）。"""
+        """已设筛选的列在表头显示漏斗图标（不改动标题文本，避免污染列布局 key）。
+
+        注意：筛选键是逻辑列号；表头项须按视觉列号取，故用 visualIndex 转换，
+        否则列被重排/隐藏后漏斗图标会落在错误的列上。
+        """
+        hdr = table.horizontalHeader()
         active = set(self._col_filters.keys())
         icon = _funnel_icon()
         for c in range(table.columnCount()):
             it = table.horizontalHeaderItem(c)
-            if it is None:
+            if it is not None:
+                it.setIcon(QIcon())
+        for logical in active:
+            v = hdr.visualIndex(logical)
+            if v < 0:
                 continue
-            it.setIcon(icon if c in active else QIcon())
+            it = table.horizontalHeaderItem(v)
+            if it is not None:
+                it.setIcon(icon)
 
 
 class ColumnFilterDialog(QDialog):
@@ -317,7 +328,15 @@ def _column_values(table: QTableWidget, logical: int) -> List[str]:
 
 
 def open_col_filter_dialog(tf: TableFilter, table: QTableWidget, logical: int) -> None:
-    """打开某列的按列筛选弹窗并应用结果。"""
+    """打开某列的按列筛选弹窗并应用结果。
+
+    始终按所选值设置筛选；不再使用「全选 = 不筛选」自动清除。
+    原因：uniq 只是「当前已显示」(可能已被跨列搜索/其它列筛选缩窄)的子集，
+    选满当前子集就清除会让先前叠加的筛选/搜索失效，导致不应出现的行重新出现
+    （例如按发票号码筛选时，某行发票号不含关键字但其金额/购方含关键字，
+    被跨列搜索带入视图；此时选满子集误清除列筛选会让该发票号重新出现）。
+    空选择时 set_col_filter 内部已自动 clear_col，无需特判。
+    """
     title = table.horizontalHeaderItem(logical)
     title_text = title.text() if title else ""
     uniq = _column_values(table, logical)
@@ -328,10 +347,7 @@ def open_col_filter_dialog(tf: TableFilter, table: QTableWidget, logical: int) -
     )
     if dlg.exec() == QDialog.DialogCode.Accepted:
         sel = dlg.selected()
-        if len(sel) == len(uniq):
-            tf.clear_col(logical)  # 全选 = 不筛选
-        else:
-            tf.set_col_filter(logical, sel)
+        tf.set_col_filter(logical, sel)
 
 
 def populate_filter_menu(menu, tf: TableFilter, table: QTableWidget, pos) -> None:
