@@ -18,8 +18,6 @@ from PySide6.QtCore import QEvent, QObject, QPoint, QSettings, Qt
 from PySide6.QtGui import QFontMetrics
 from PySide6.QtWidgets import QHeaderView, QMenu, QTableWidget
 
-from app.ui.column_settings_dialog import open_column_settings
-
 _ORG = "lawfirm_app"
 _APP = "lawfirm_app"
 INVOICE_SAMPLE = "25332000000012014331"   # 20 位发票号
@@ -288,6 +286,7 @@ class TableColumnLayout(QObject):
             self._applying = False
 
     def open_settings(self) -> None:
+        from app.ui.column_settings_dialog import open_column_settings  # 延迟导入，避免与 column_layout 的循环依赖
         keys = self._keys()
         if self.content_w is None or len(self.content_w) != len(keys):
             self.content_w = self.mgr.measure_content_widths(self.table, keys)
