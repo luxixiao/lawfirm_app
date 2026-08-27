@@ -1,35 +1,32 @@
 """通用表格交互增强（跨所有表格复用）
 
-集中实现 5 项统一的表格行为，避免每个视图各写一遍：
+集中实现表格行为，避免每个视图各写一遍：
 
 1. 像素级滚动（横向/纵向 ScrollPerPixel）
 2. 单元格内容被压缩（省略）时，悬停显示完整内容（tooltip）
 3. 单元格被标红/标绿后，选中行时依然保持原前景色（不被反白成白字）
-4. 右键表头按列筛选（隐藏不匹配行）
+4. 右键表头多重筛选（统一引擎：多列叠加 + 跨列模糊搜索，AND 组合）
+5. 筛选列在表头显示漏斗标记（▾）区分
 
 用法：
 - 表格类（widgets.TableWidget / FrozenTableWidget）已在 __init__ 自动调用 install_common_features
 - 普通 QTableWidget 显示类表格，构造后调用：
       from app.ui.table_features import install_common_features, install_header_filter
       install_common_features(self.table)
-      install_header_filter(self.table)
+      self._filter = install_header_filter(self.table)   # 返回 TableFilter，可接搜索框
+- 搜索框并入：self._filter.bind_search_widget(search_edit); search_edit.textChanged.connect(self._filter.set_search)
 """
 from __future__ import annotations
 
+from collections import OrderedDict
+from typing import Callable, List, Optional
+
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor, QFontMetrics, QPalette
+from PySide6.QtGui import QColor, QFontMetrics, QPalette, QPainter, QPixmap
 from PySide6.QtWidgets import (
-    QAbstractItemView,
-    QCheckBox,
-    QDialog,
-    QDialogButtonBox,
-    QHBoxLayout,
-    QListWidget,
-    QListWidgetItem,
-    QStyledItemDelegate,
-    QStyleOptionViewItem,
-    QTableWidget,
-    QVBoxLayout,
+    QAbstractItemView, QCheckBox, QDialog, QDialogButtonBox, QHBoxLayout,
+    QIcon, QLineEdit, QListWidget, QListWidgetItem, QMenu, QPushButton,
+    QStyledItemDelegate, QStyleOptionViewItem, QTableWidget, QVBoxLayout,
 )
 
 
@@ -81,108 +78,304 @@ def install_common_features(table: QTableWidget) -> None:
         table.setItemDelegate(TableBehaviorDelegate(table))
 
 
-def install_header_filter(table: QTableWidget) -> None:
-    """右键表头按列筛选：列出该列唯一值，勾选后隐藏不匹配的行（req1）。
+# ---------------------------------------------------------------------------
+# 统一多重筛选引擎
+# ---------------------------------------------------------------------------
 
-    适用于任意 QTableWidget 显示类表格；基于单元格文本过滤，与数据来源无关。
-    幂等：重复调用同一张表不会重复连接，也不会触发 PySide 的
-    "Failed to disconnect (None)" RuntimeWarning。
+FUNNEL_MARK = " ▾"  # 兼容常量（保留，实际改用图标标记，避免污染表头标题文本）
+
+
+def _funnel_icon() -> QIcon:
+    """预生成漏斗图标（蓝色下三角），用于标记已设筛选的列；缓存复用。"""
+    global _FUNNEL_ICON
+    if _FUNNEL_ICON is None:
+        pm = QPixmap(14, 14)
+        pm.fill(QColor(0, 0, 0, 0))
+        p = QPainter(pm)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor("#2D7DD2"))
+        from PySide6.QtCore import QPoint
+        p.drawPolygon([QPoint(2, 3), QPoint(12, 3), QPoint(7, 11)])
+        p.end()
+        _FUNNEL_ICON = QIcon(pm)
+    return _FUNNEL_ICON
+
+
+_FUNNEL_ICON = None
+
+
+def _cell_key(v) -> str:
+    """单元格值归一化为可比较字符串（float 用 :g，None 视为空）。"""
+    if isinstance(v, float):
+        return f"{v:g}"
+    return "" if v is None else str(v)
+
+
+class TableFilter:
+    """统一多重筛选引擎：有序多列筛选 + 跨列模糊搜索，二者 AND 组合。
+
+    - 控件模式（table 绑定）：直接隐藏行（纯 QTableWidget 显示类表格）。
+    - 数据模式（table=None + reapply_cb）：调用方在渲染前用 filter_rows 过滤行数据。
+    状态按设置先后保序（OrderedDict）；清除单列 / 清除全部均支持。
     """
-    hdr = table.horizontalHeader()
-    if hdr is None:
-        return
-    # 若该表头已安装过本模块的筛选槽，直接跳过，避免重复连接
-    if getattr(hdr, "_tf_filter_installed", False):
-        return
-    hdr.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-    # 用具名槽实例连接，并将其挂在表头上保持存活（避免被 GC 回收导致连接失效）；
-    # 不使用无参 disconnect，规避 PySide "Failed to disconnect (None)" warning
-    slot = _HeaderFilterSlot(table)
-    hdr.customContextMenuRequested.connect(slot)
-    hdr._tf_filter_slot = slot
-    hdr._tf_filter_installed = True
 
-
-class _HeaderFilterSlot:
-    """表头右键筛选的可断开槽封装。
-
-    持有 table 引用并暴露 __call__，使 PySide 以该实例为 receiver 建立连接，
-    后续可用同一实例精确 disconnect，避免无参 disconnect 的 (None) warning。
-    """
-
-    def __init__(self, table: QTableWidget) -> None:
+    def __init__(self, table: Optional[QTableWidget] = None, reapply_cb: Optional[Callable] = None) -> None:
         self._table = table
+        self._reapply = reapply_cb
+        self._col_filters: "OrderedDict[int, set]" = OrderedDict()
+        self._search = ""
+        self._search_widget = None
 
-    def __call__(self, pos) -> None:
-        _header_filter_menu(self._table, pos)
+    # ---- 状态 ----
+    def set_col_filter(self, col: int, values) -> None:
+        vals = {str(v) for v in values}
+        if vals:
+            self._col_filters[col] = vals
+        else:
+            self._col_filters.pop(col, None)
+        self._changed()
+
+    def clear_col(self, col: int) -> None:
+        self._col_filters.pop(col, None)
+        self._changed()
+
+    def clear_all(self) -> None:
+        self._col_filters.clear()
+        self._search = ""
+        if self._search_widget is not None:
+            self._search_widget.blockSignals(True)
+            self._search_widget.clear()
+            self._search_widget.blockSignals(False)
+        self._changed()
+
+    def set_search(self, text: str) -> None:
+        self._search = (text or "").strip()
+        self._changed()
+
+    def bind_search_widget(self, w) -> None:
+        self._search_widget = w
+
+    def active_cols(self) -> List[int]:
+        return list(self._col_filters.keys())
+
+    def has_any(self) -> bool:
+        return bool(self._col_filters) or bool(self._search)
+
+    def _changed(self) -> None:
+        if self._reapply is not None:
+            self._reapply()
+        elif self._table is not None:
+            self.apply_to_table(self._table)
+
+    # ---- 数据模式：过滤行数据（BaseTableView 在渲染前调用） ----
+    def filter_rows(self, rows, keyf=_cell_key):
+        s = self._search.lower()
+        out = []
+        for row in rows:
+            if s:
+                hit = False
+                for v in row:
+                    if s in keyf(v).lower():
+                        hit = True
+                        break
+                if not hit:
+                    continue
+            ok = True
+            for col, vals in self._col_filters.items():
+                if keyf(row[col]) not in vals:
+                    ok = False
+                    break
+            if ok:
+                out.append(row)
+        return out
+
+    # ---- 控件模式：隐藏行（纯 QTableWidget） ----
+    def apply_to_table(self, table: QTableWidget) -> None:
+        n = table.rowCount()
+        s = self._search.lower()
+        cols = list(self._col_filters.keys())
+        for r in range(n):
+            keep = True
+            if s:
+                txt = " ".join(
+                    (table.item(r, c).text() if table.item(r, c) is not None else "")
+                    for c in range(table.columnCount())
+                ).lower()
+                if s not in txt:
+                    keep = False
+            if keep:
+                for col in cols:
+                    it = table.item(r, col)
+                    v = it.text() if it is not None else ""
+                    if v not in self._col_filters[col]:
+                        keep = False
+                        break
+            table.setRowHidden(r, not keep)
+        self._mark_headers(table)
+
+    def _mark_headers(self, table: QTableWidget) -> None:
+        """已设筛选的列在表头显示漏斗图标（不改动标题文本，避免污染列布局 key）。"""
+        active = set(self._col_filters.keys())
+        icon = _funnel_icon()
+        for c in range(table.columnCount()):
+            it = table.horizontalHeaderItem(c)
+            if it is None:
+                continue
+            it.setIcon(icon if c in active else QIcon())
 
 
-def _header_filter_menu(table: QTableWidget, pos) -> None:
-    hdr = table.horizontalHeader()
-    logical = hdr.logicalIndexAt(pos.x())
-    if logical < 0:
-        return
-    col = hdr.visualIndex(logical)  # 视觉列号（item/headerItem 均按视觉列索引用）
-    nrows = table.rowCount()
-    uniq: list = []
+class ColumnFilterDialog(QDialog):
+    """按列筛选弹窗：唯一值勾选列表 + 顶部搜索框（实时过滤候选）+ 全选/清空。"""
+
+    def __init__(self, parent, title: str, values, checked) -> None:
+        super().__init__(parent)
+        self.setWindowTitle(f"筛选：{title}")
+        self.resize(320, 460)
+        self._all = sorted(values, key=lambda s: (len(s), s))
+        self._checked = set(checked)
+        lay = QVBoxLayout(self)
+        self._search = QLineEdit()
+        self._search.setPlaceholderText("搜索筛选值…")
+        lay.addWidget(self._search)
+        self._list = QListWidget()
+        lay.addWidget(self._list, 1)
+        bar = QHBoxLayout()
+        b_all = QPushButton("全选")
+        b_none = QPushButton("清空")
+        bar.addWidget(b_all)
+        bar.addWidget(b_none)
+        bar.addStretch()
+        lay.addLayout(bar)
+        box = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        box.accepted.connect(self.accept)
+        box.rejected.connect(self.reject)
+        lay.addWidget(box)
+        self._loading = True
+        self._populate(self._all)
+        self._loading = False
+        self._list.itemChanged.connect(self._on_toggle)
+        self._search.textChanged.connect(self._on_search)
+        b_all.clicked.connect(lambda: self._set_all(True))
+        b_none.clicked.connect(lambda: self._set_all(False))
+
+    def _populate(self, vals) -> None:
+        self._loading = True
+        self._list.clear()
+        for v in vals:
+            it = QListWidgetItem(v)
+            it.setFlags(it.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            it.setCheckState(
+                Qt.CheckState.Checked if v in self._checked else Qt.CheckState.Unchecked
+            )
+            self._list.addItem(it)
+        self._loading = False
+
+    def _on_search(self, text) -> None:
+        t = (text or "").strip().lower()
+        self._populate(self._all if not t else [v for v in self._all if t in v.lower()])
+
+    def _on_toggle(self, item) -> None:
+        if self._loading:
+            return
+        v = item.text()
+        if item.checkState() == Qt.CheckState.Checked:
+            self._checked.add(v)
+        else:
+            self._checked.discard(v)
+
+    def _set_all(self, state) -> None:
+        for i in range(self._list.count()):
+            self._list.item(i).setCheckState(
+                Qt.CheckState.Checked if state else Qt.CheckState.Unchecked
+            )
+
+    def selected(self) -> set:
+        return set(self._checked)
+
+
+def _column_values(table: QTableWidget, logical: int) -> List[str]:
+    uniq: List[str] = []
     seen: set = set()
-    for r in range(nrows):
-        it = table.item(r, col)
+    for r in range(table.rowCount()):
+        it = table.item(r, logical)
         v = it.text() if it is not None else ""
         if v not in seen:
             seen.add(v)
             uniq.append(v)
-    if not uniq:
+    return uniq
+
+
+def open_filter_submenu(tf: TableFilter, table: QTableWidget, pos) -> None:
+    """表头右键筛选子菜单：筛选此列 / 清除此列筛选 / 清除全部筛选。
+
+    多重筛选：多列条件按设置先后 AND 组合（顺序见 tf.active_cols）。
+    """
+    hdr = table.horizontalHeader()
+    logical = hdr.logicalIndexAt(pos.x())
+    if logical < 0:
         return
-    uniq.sort(key=lambda s: (len(s), s))
-
-    dlg = QDialog(table.window() if table.window() else table)
-    title = table.horizontalHeaderItem(col)
-    dlg.setWindowTitle(f"按列筛选：{title.text() if title else ''}")
-    dlg.resize(300, 420)
-    lay = QVBoxLayout(dlg)
-    lst = QListWidget()
-    for v in uniq:
-        it = QListWidgetItem(v)
-        it.setFlags(it.flags() | Qt.ItemFlag.ItemIsUserCheckable)
-        it.setCheckState(Qt.CheckState.Checked)
-        lst.addItem(it)
-    lay.addWidget(lst, 1)
-
-    btns = QHBoxLayout()
-    chk = QCheckBox("全选")
-    chk.setChecked(True)
-    btns.addWidget(chk)
-    btns.addStretch()
-    box = QDialogButtonBox(
-        QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
-    )
-    box.accepted.connect(dlg.accept)
-    box.rejected.connect(dlg.reject)
-    btns.addWidget(box)
-    lay.addLayout(btns)
-
-    def _toggle(state: int) -> None:
-        for i in range(lst.count()):
-            lst.item(i).setCheckState(
-                Qt.CheckState.Checked if state else Qt.CheckState.Unchecked
-            )
-
-    chk.stateChanged.connect(_toggle)
-
-    if dlg.exec() != QDialog.DialogCode.Accepted:
+    menu = QMenu(table)
+    act_filter = menu.addAction("筛选此列…")
+    act_clear_col = menu.addAction("清除此列筛选")
+    act_clear_all = menu.addAction("清除全部筛选")
+    act_clear_col.setEnabled(logical in tf._col_filters)
+    act_clear_all.setEnabled(tf.has_any())
+    action = menu.exec(table.mapToGlobal(pos))
+    if action is None:
         return
-    sel = {
-        lst.item(i).text()
-        for i in range(lst.count())
-        if lst.item(i).checkState() == Qt.CheckState.Checked
-    }
-    if len(sel) == len(uniq):
-        # 全选 = 不筛选
-        for r in range(nrows):
-            table.setRowHidden(r, False)
-        return
-    for r in range(nrows):
-        it = table.item(r, col)
-        v = it.text() if it is not None else ""
-        table.setRowHidden(r, v not in sel)
+    if action == act_filter:
+        title = table.horizontalHeaderItem(logical)
+        title_text = title.text() if title else ""
+        uniq = _column_values(table, logical)
+        cur = tf._col_filters.get(logical)
+        dlg = ColumnFilterDialog(
+            table.window() if table.window() else table,
+            title_text, uniq, cur if cur is not None else set(uniq),
+        )
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            sel = dlg.selected()
+            if len(sel) == len(uniq):
+                tf.clear_col(logical)  # 全选 = 不筛选
+            else:
+                tf.set_col_filter(logical, sel)
+    elif action == act_clear_col:
+        tf.clear_col(logical)
+    elif action == act_clear_all:
+        tf.clear_all()
+
+
+class _FilterMenuSlot:
+    """表头右键筛选槽（供 column_layout 合并进「列设置…」菜单）。"""
+
+    def __init__(self, tf: TableFilter) -> None:
+        self._tf = tf
+
+    def __call__(self, pos) -> None:
+        open_filter_submenu(self._tf, self._tf._table, pos)
+
+
+def install_header_filter(table: QTableWidget, reapply_cb: Optional[Callable] = None) -> TableFilter:
+    """在表头启用右键多重筛选（统一引擎）。返回 TableFilter 实例（可接搜索框）。
+
+    须在 install_column_layout 之前调用，使其「按列筛选…」并入同一右键菜单。
+    幂等：重复调用同一张表不会重复连接。
+    """
+    hdr = table.horizontalHeader()
+    if hdr is None:
+        return TableFilter(table=table, reapply_cb=reapply_cb)
+    # 若该表头已安装过本模块的筛选槽，先断开旧连接再重建，避免重复菜单
+    old = getattr(hdr, "_tf_filter_slot", None)
+    if old is not None:
+        try:
+            hdr.customContextMenuRequested.disconnect(old)
+        except Exception:  # noqa: BLE001
+            pass
+    hdr.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+    tf = TableFilter(table=table, reapply_cb=reapply_cb)
+    slot = _FilterMenuSlot(tf)
+    hdr.customContextMenuRequested.connect(slot)
+    hdr._tf_filter_slot = slot
+    hdr._tf_filter_installed = True
+    return tf

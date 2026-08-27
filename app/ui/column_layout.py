@@ -14,7 +14,7 @@ from __future__ import annotations
 import json
 from typing import Dict, List, Optional
 
-from PySide6.QtCore import QEvent, QObject, QPoint, QSettings, Qt
+from PySide6.QtCore import QEvent, QObject, QPoint, QSettings, Qt, QTimer
 from PySide6.QtGui import QFontMetrics
 from PySide6.QtWidgets import QHeaderView, QMenu, QTableWidget
 
@@ -243,6 +243,7 @@ class TableColumnLayout(QObject):
         self._filter_slot = None
         self._applying = False
         self._movable = movable
+        self._win = None  # 顶层窗口（用于监听最大化/还原，触发比例重填）
 
     # ---------- 入口 ----------
     def install(self) -> "TableColumnLayout":
@@ -274,6 +275,7 @@ class TableColumnLayout(QObject):
 
     def apply(self, remeasure: bool = True) -> None:
         """渲染后调用：测量(可选)并应用布局。remeasure=False 时仅用缓存内容宽重填（拖宽/缩放时用）。"""
+        self._ensure_win()
         if self.table.columnCount() == 0:
             return
         keys = self._keys()
@@ -339,11 +341,24 @@ class TableColumnLayout(QObject):
         elif self._filter_slot is not None and action == act_filter:
             self._filter_slot(pos)
 
-    # ---------- 事件过滤（窗体缩放时重填） ----------
+    # ---------- 事件过滤（窗体缩放 / 最大化还原时重填） ----------
+    def _ensure_win(self) -> None:
+        """懒绑定顶层窗口，监听其状态变化（最大化/还原）以触发比例重填。"""
+        if self._win is None:
+            win = self.table.window()
+            if win is not None:
+                self._win = win
+                win.installEventFilter(self)
+
     def eventFilter(self, obj, event) -> bool:
+        self._ensure_win()  # 视图构造早于入窗，事件触发时再补绑窗口
         if obj is self.table and event.type() == QEvent.Type.Resize:
             if self.content_w is not None and self.table.columnCount():
                 self.apply(remeasure=False)
+        elif obj is self._win and event.type() == QEvent.Type.WindowStateChange:
+            # 最大化/还原：延迟一帧，等布局稳定后再按比例重填（已显全列除外）
+            if self.content_w is not None and self.table.columnCount():
+                QTimer.singleShot(0, lambda: self.apply(remeasure=False))
         return super().eventFilter(obj, event)
 
 

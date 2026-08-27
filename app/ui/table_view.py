@@ -9,6 +9,7 @@ from PySide6.QtWidgets import QFileDialog, QHBoxLayout, QLabel, QLineEdit, QMess
 
 from app.ui.widgets import ComboBox, LineEdit, PrimaryPushButton, PushButton, TableWidget
 from app.ui.column_layout import ColumnLayoutManager
+from app.ui.table_features import TableFilter, open_filter_submenu, _cell_key, _funnel_icon
 
 RED = QColor("#C0392B")    # 红字/负数
 GREEN = QColor("#1E8449")  # 已收
@@ -35,7 +36,7 @@ class BaseTableView(QWidget):
         self.columns = columns
         self._col_page_key = page_key or title
         self._meta: dict = {}
-        self._col_filters: dict = {}
+        self._filter = TableFilter(reapply_cb=lambda: self.refresh())
         self._sort_col: int | None = None
         self._sort_asc: bool = True
         lay = QVBoxLayout(self)
@@ -81,6 +82,9 @@ class BaseTableView(QWidget):
         self.btn_export.clicked.connect(self.export_excel)
         bottom.addWidget(self.lbl_summary)
         bottom.addStretch()
+        self.btn_clear_filter = PushButton("清除筛选")
+        self.btn_clear_filter.clicked.connect(self._reset_col_filters)
+        bottom.addWidget(self.btn_clear_filter)
         bottom.addWidget(self.btn_col_settings)
         bottom.addWidget(self.btn_export)
         lay.addLayout(bottom)
@@ -112,9 +116,7 @@ class BaseTableView(QWidget):
         self._enable_sort_and_filter()
 
     def _enable_sort_and_filter(self) -> None:
-        """左键点击表头排序（再点切换升/降序），右键表头弹列筛选菜单。"""
-        if not hasattr(self, "_col_filters"):
-            self._col_filters = {}
+        """左键点击表头排序（再点切换升/降序），右键表头弹筛选菜单（统一引擎）。"""
         self._sort_col = None
         self._sort_asc = True
         hdr = self.table.horizontalHeader()
@@ -136,12 +138,7 @@ class BaseTableView(QWidget):
         self._update_filter_marks()
 
     def _on_header_filter(self, pos) -> None:
-        hdr = self.table.horizontalHeader()
-        logical = hdr.logicalIndexAt(pos.x())
-        if logical < 0:
-            return
-        col = hdr.visualIndex(logical)  # 转回视觉列号，_header_clicked 内部再转逻辑
-        self._header_clicked(col)
+        open_filter_submenu(self._filter, self.table, pos)
 
     def _sort_rows(self) -> None:
         """按当前排序列对 self._rows 排序，并同步重排 self._meta（保持索引对齐）。"""
@@ -159,77 +156,30 @@ class BaseTableView(QWidget):
         self._rows = [p[0] for p in pairs]
         self._meta = {i: p[1] for i, p in enumerate(pairs)}
 
-    def _header_clicked(self, col: int) -> None:
-        from PySide6.QtWidgets import (QCheckBox, QDialog, QDialogButtonBox, QHBoxLayout,
-                                       QListWidget, QListWidgetItem, QVBoxLayout)
-        # 表头点击给的是视觉列号，转逻辑列号（支持列重排）
-        logical = self.table.horizontalHeader().logicalIndex(col)
-        if not self._raw_rows:
-            return
-        # 该列唯一值
-        uniq = []
-        seen = set()
-        for r in self._raw_rows:
-            v = r[logical]
-            if isinstance(v, float):
-                key = f"{v:g}"
-            else:
-                key = str(v)
-            if key not in seen:
-                seen.add(key)
-                uniq.append(key)
-        uniq.sort(key=lambda s: (len(s), s))
-        dlg = QDialog(self)
-        hdr_item = self.table.horizontalHeaderItem(logical)
-        dlg.setWindowTitle(f"筛选：{hdr_item.text() if hdr_item else ''}")
-        dlg.resize(280, 380)
-        lay = QVBoxLayout(dlg)
-        lst = QListWidget()
-        cur = self._col_filters.get(logical)
-        for v in uniq:
-            it = QListWidgetItem(v)
-            it.setFlags(it.flags() | Qt.ItemFlag.ItemIsUserCheckable)
-            it.setCheckState(Qt.CheckState.Checked if (cur is None or v in cur) else Qt.CheckState.Unchecked)
-            lst.addItem(it)
-        lay.addWidget(lst, 1)
-        btns = QHBoxLayout()
-        chk = QCheckBox("全选")
-        chk.setChecked(cur is None or len(cur) == len(uniq))
-        btns.addWidget(chk)
-        btns.addStretch()
-        okb = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        okb.accepted.connect(dlg.accept); okb.rejected.connect(dlg.reject)
-        btns.addWidget(okb)
-        lay.addLayout(btns)
-
-        def toggle(state: int) -> None:
-            for i in range(lst.count()):
-                lst.item(i).setCheckState(Qt.CheckState.Checked if state else Qt.CheckState.Unchecked)
-        chk.stateChanged.connect(toggle)
-
-        if dlg.exec() != QDialog.DialogCode.Accepted:
-            return
-        sel = [lst.item(i).text() for i in range(lst.count())
-               if lst.item(i).checkState() == Qt.CheckState.Checked]
-        if len(sel) == len(uniq):
-            self._col_filters.pop(logical, None)  # 全选=不筛
-        else:
-            self._col_filters[logical] = set(sel)
-        self.refresh()
-
     def _apply_col_filters(self) -> None:
-        filters = getattr(self, "_col_filters", {})
-        if not filters:
+        """用统一筛选引擎过滤行数据（多列 + 搜索，AND 组合），并保持 _meta 索引对齐。"""
+        if not self._filter.has_any():
             return
+        s = self._filter._search.lower()
+        col_filters = self._filter._col_filters
         new_rows = []
         new_meta = {}
         j = 0
         for i, row in enumerate(self._rows):
             keep = True
-            for col, vals in filters.items():
-                if self._row_key(row[col]) not in vals:
+            if s:
+                hit = False
+                for v in row:
+                    if s in _cell_key(v).lower():
+                        hit = True
+                        break
+                if not hit:
                     keep = False
-                    break
+            if keep:
+                for col, vals in col_filters.items():
+                    if _cell_key(row[col]) not in vals:
+                        keep = False
+                        break
             if keep:
                 new_rows.append(row)
                 new_meta[j] = self._meta.get(i)
@@ -237,32 +187,26 @@ class BaseTableView(QWidget):
         self._rows = new_rows
         self._meta = new_meta
 
-    @staticmethod
-    def _row_key(v) -> str:
-        if isinstance(v, float):
-            return f"{v:g}"
-        return str(v)
-
     def _update_filter_marks(self) -> None:
-        """表头列名标记 ▾（有筛选时）/ ▲▼（排序时）"""
-        marks = getattr(self, "_col_filters", {})
+        """已设筛选的列在表头显示漏斗图标（不改动标题文本，避免污染列布局 key）；
+        排序列仍以 ▲/▼ 文本标记。"""
+        marks = set(self._filter.active_cols())
         sort_col = getattr(self, "_sort_col", None)
         sort_asc = getattr(self, "_sort_asc", True)
+        icon = _funnel_icon()
         for c in range(self.table.columnCount()):
             it = self.table.horizontalHeaderItem(c)
             if it is None:
                 continue
-            base = it.text().replace(" ▾", "").replace(" ▲", "").replace(" ▼", "")
+            it.setIcon(icon if c in marks else QIcon())
+            base = it.text().replace(" ▲", "").replace(" ▼", "")
             suffix = ""
-            if c in marks:
-                suffix += " ▾"
             if sort_col == c:
                 suffix += " ▲" if sort_asc else " ▼"
             it.setText(base + suffix)
 
     def _reset_col_filters(self) -> None:
-        self._col_filters = {}
-        self.refresh()
+        self._filter.clear_all()  # 内部触发 refresh
 
     # ---- 列布局：顺序/宽度 持久化 + 列设置 ----
     def _on_section_moved(self, _logical: int, _old: int, _new: int) -> None:
@@ -419,11 +363,13 @@ class BaseTableView(QWidget):
 
 
 def make_filter_widgets(parent: QWidget, filters: QHBoxLayout,
-                        on_change: Callable, search_label: str = "购方") -> Tuple[ComboBox, ComboBox, ComboBox, QLineEdit, None]:
+                        on_change: Callable, search_label: str = "购方",
+                        engine=None) -> Tuple[ComboBox, ComboBox, ComboBox, QLineEdit, None]:
     """年份 + 月份 组合筛选 + 来源 + 搜索 筛选控件
 
     年份下拉：全部年份 + 各年份；月份下拉：全部月份 + 1-12 月（固定，不随年份联动）。
     年份/月份独立选择，组合成 YYYY / YYYY-MM / MM 三种 period 传给查询（见 build_period）。
+    engine 不为 None 时，搜索框并入统一筛选引擎（跨列模糊 + 与列筛选叠加），搜索不再走 DB 重载。
     返回 (year, month, src, search, None)。
     """
     from app.ui.widgets import CaptionLabel
@@ -455,7 +401,12 @@ def make_filter_widgets(parent: QWidget, filters: QHBoxLayout,
     search = LineEdit()
     search.setPlaceholderText(search_label)
     search.setFixedWidth(220)
-    search.textChanged.connect(on_change)
+    if engine is not None:
+        # 搜索并入统一引擎：跨列模糊匹配，与列筛选叠加（AND）
+        engine.bind_search_widget(search)
+        search.textChanged.connect(engine.set_search)
+    else:
+        search.textChanged.connect(on_change)
 
     filters.addWidget(year)
     filters.addWidget(month)

@@ -29,13 +29,14 @@ class InvoiceCollectView(BaseTableView):
     def _build_filters(self) -> None:
         self.year, self.month, self.src, self.search, _ = make_filter_widgets(
             self, self.filters, lambda *_: self.refresh(),
-            search_label="发票号码/购方名/金额/经办人"
+            search_label="发票号码/购方名/金额/经办人",
+            engine=self._filter,
         )
 
     def load_data(self) -> None:
         rows = invoice_rows(
             period=build_period(self.year.currentData(), self.month.currentData()),
-            keyword=self.search.text().strip() or None,
+            keyword=None,  # 搜索改由统一筛选引擎（跨列模糊，客户端）处理
             source=self.src.currentData() or None,
         )
         self._rows = [
