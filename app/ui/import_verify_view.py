@@ -33,7 +33,7 @@ from app.ui.ledger_source import show_source_for_invoice
 from app.ui.column_state import (
     attach_persistence, auto_fit_then_restore, restore_col_widths,
 )
-from app.ui.widgets import CaptionLabel, ComboBox, PrimaryPushButton, PushButton, TableWidget
+from app.ui.widgets import CaptionLabel, ComboBox, PushButton, TableWidget
 
 RED = QColor("#C0392B")
 GREEN = QColor("#1E8449")
@@ -86,9 +86,6 @@ class ImportVerifyView(QWidget):
         self.combo_dim.setCurrentIndex(0)
         self.combo_dim.currentIndexChanged.connect(self._on_dim_changed)
         bar.addWidget(self.combo_dim)
-        self.btn_load = PrimaryPushButton("加载对账")
-        self.btn_load.clicked.connect(self.load_verify)
-        bar.addWidget(self.btn_load)
         self.btn_confirm = PushButton("标记已确认异常")
         self.btn_confirm.clicked.connect(self._mark_confirmed)
         bar.addWidget(self.btn_confirm)
@@ -185,6 +182,9 @@ class ImportVerifyView(QWidget):
 
     def _on_period_changed(self, *_):
         self._period = self.combo_period.currentData() or ""
+        # 切换账期自动重跑对账（无需再点「加载对账」）
+        if self._period:
+            self.load_verify()
 
     def _on_dim_changed(self, *_):
         dim = self.combo_dim.currentData() or "invoice"

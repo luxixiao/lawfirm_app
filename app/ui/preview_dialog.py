@@ -17,7 +17,7 @@ from typing import Dict, List
 from PySide6.QtCore import Qt, QTimer, QPoint
 from PySide6.QtGui import QColor, QCursor
 from PySide6.QtWidgets import (
-    QAbstractItemView, QDialog, QDialogButtonBox, QHBoxLayout, QLabel,
+    QAbstractItemView, QCheckBox, QDialog, QDialogButtonBox, QHBoxLayout, QLabel,
     QMessageBox, QStyledItemDelegate, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
