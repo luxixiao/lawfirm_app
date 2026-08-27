@@ -84,13 +84,13 @@ def show_invoice_info(parent, invoice_no: str) -> None:
             QMessageBox.information(parent, "提示", f"未找到发票 {invoice_no} 的信息")
             return
         columns = ["开具日期", "发票号码", "购买方名称", "价税合计", "经办人",
-                   "已收金额", "剩余应收", "收款日期"]
+                   "已收金额", "剩余应收", "收退款情况"]
         data = []
         for r in rows:
             data.append([
                 r["invoice_date"], r["invoice_no"], r["buyer"], r["total_amount"],
                 r.get("handlers_amount") or r.get("handlers", ""),
-                r["collected"], r["remain"], r.get("receipt_dates_str", ""),
+                r["collected"], r["remain"], r.get("recv_refund_str", ""),
             ])
         dlg = _table(columns, data, f"发票信息：{invoice_no}")
         dlg.resize(960, 380)

@@ -14,8 +14,8 @@ class InvoiceCollectView(BaseTableView):
         super().__init__(
             "发票收款情况",
             ["开具日期", "发票号码", "购买方名称", "价税合计", "经办人",
-             "已收金额", "剩余应收", "收款日期", "备注"],
-            "每张发票的收款情况；左键点表头排序，右键点表头按列筛选；搜索框可搜发票号码/购方名/金额/经办人；右击查看红冲信息。",
+             "已收金额", "剩余应收", "收退款情况"],
+            "每张发票的收款/退款/红冲情况（收款月+金额、红冲月+金额、退款月+金额合并于一列）；左键点表头排序，右键点表头按列筛选；搜索框可搜发票号码/购方名/金额/经办人；右击查看红冲信息。当月开具并当月红冲的发票不显示收款。",
             page_key="invoice",
         )
         self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -40,8 +40,7 @@ class InvoiceCollectView(BaseTableView):
         )
         self._rows = [
             [r["invoice_date"], r["invoice_no"], r["buyer"], r["total_amount"],
-             r["handlers_amount"], r["collected"], r["remain"], r["receipt_dates_str"],
-             r["remark"]]
+             r["handlers_amount"], r["collected"], r["remain"], r["recv_refund_str"]]
             for r in rows
         ]
         self._meta = {i: r for i, r in enumerate(rows)}

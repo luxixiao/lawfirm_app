@@ -12,28 +12,6 @@ from app.ui.dialogs import show_invoice_handlers, show_red_relation
 from app.ui.table_view import BaseTableView, make_filter_widgets, RED, build_period
 
 
-def _to_months(receipt_dates: str) -> str:
-    """收款日期串 → 收款月（去重、月份补零），未收款显示「未收款」。
-
-    兼容非零填充日期（2025-1-5 → 2025-01）。
-    """
-    months = set()
-    for d in receipt_dates.split("、"):
-        d = d.strip()
-        if not d:
-            continue
-        parts = d.split("-")
-        if len(parts) >= 2:
-            try:
-                mm = int(parts[1])
-                months.add(f"{parts[0]}-{mm:02d}")
-            except ValueError:
-                months.add(parts[1])
-        else:
-            months.add(d)
-    return "、".join(sorted(months)) if months else "未收款"
-
-
 class _TypeDelegate(QStyledItemDelegate):
     """身份列（索引5）编辑委托：双击/F2 弹下拉，选择后直接写库。
 
@@ -70,8 +48,8 @@ class HandlerCollectView(BaseTableView):
         super().__init__(
             "经办人发票收款情况",
             ["开具日期", "发票号码", "购买方名称", "开票总额", "经办人",
-             "身份", "开票金额", "已收金额", "剩余应收", "收款月", "备注"],
-            "经办人维度收款情况；搜索框可检索全部字段；左键点表头排序，右键点表头按列筛选；身份列双击可修改经办人身份；右击查看台账信息 / 红冲信息 / 其他经办人金额。",
+             "身份", "开票金额", "已收金额", "剩余应收", "收退款情况"],
+            "经办人维度收款情况；搜索框可检索全部字段；左键点表头排序，右键点表头按列筛选；身份列双击可修改经办人身份；右击查看台账信息 / 红冲信息 / 其他经办人金额。收退款情况列合并收款月+金额、红冲月+金额、退款月+金额；当月开具并当月红冲的发票不显示收款。",
         )
         self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self._ctx_menu)
@@ -117,7 +95,7 @@ class HandlerCollectView(BaseTableView):
             [r["invoice_date"], r["invoice_no"], r["buyer"], r["total_amount"],
              r["person_name"], r["person_type"] or "未标",
              r["billing_amount"], r["collected"], r["remain"],
-             _to_months(r["receipt_dates"]), r.get("remark", "")]
+             r.get("recv_refund_str", "")]
             for r in rows
         ]
         self._meta = {i: r for i, r in enumerate(rows)}
