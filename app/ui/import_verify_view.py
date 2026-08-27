@@ -17,14 +17,14 @@ from typing import Dict, List, Optional, Tuple
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
-    QAbstractItemView, QCheckBox, QComboBox, QDialog, QHBoxLayout, QLabel, QMessageBox,
-    QVBoxLayout, QWidget,
+    QAbstractItemView, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QHBoxLayout,
+    QLabel, QMessageBox, QPlainTextEdit, QVBoxLayout, QWidget,
 )
 
 from app.db import get_conn
 from app.importer.archive_helper import resolve_archive
 from app.importer.importer import (
-    _regen_charge_detail, compute_expected_receipts,
+    compute_expected_receipts,
     merge_collection_for_invoice, _refresh_snapshot_actual,
 )
 from app.importer.ledger_import import parse_ledger_file
@@ -39,6 +39,8 @@ RED = QColor("#C0392B")
 GREEN = QColor("#1E8449")
 AMBER = QColor("#B7791F")
 DIFF_BG = QColor("#FDF1F0")
+CONFIRMED_BG = QColor("#EAF2FB")   # 已确认异常：淡蓝背景
+CONFIRMED_FG = QColor("#1F6FB2")   # 已确认异常：蓝字
 
 DIMS = [
     ("invoice", "发票信息"),
@@ -65,7 +67,8 @@ class ImportVerifyView(QWidget):
         lay.addWidget(t)
         hint = CaptionLabel(
             "选择已导入的账期，系统重读存档源文件并与数据库逐维度对账；"
-            "经办人分摊维度可「一键修正（按源重算）」，已收认定维度请选中某行后点「逐行手动修正」逐张编辑收款明细（双击任意行查看原台账信息）。"
+            "若某行不一致是手动改数据所致，选中该行点「标记已确认异常」并留备注即可（不计入差异数）。"
+            "已收认定维度还可选中行点「逐行手动修正」直接改收款明细（双击任意行查看原台账信息）。"
         )
         lay.addWidget(hint)
 
@@ -86,6 +89,9 @@ class ImportVerifyView(QWidget):
         self.btn_load = PrimaryPushButton("加载对账")
         self.btn_load.clicked.connect(self.load_verify)
         bar.addWidget(self.btn_load)
+        self.btn_confirm = PushButton("标记已确认异常")
+        self.btn_confirm.clicked.connect(self._mark_confirmed)
+        bar.addWidget(self.btn_confirm)
         self.btn_fix = PushButton("逐行手动修正")
         self.btn_fix.clicked.connect(self._on_fix_clicked)
         bar.addWidget(self.btn_fix)
@@ -113,12 +119,16 @@ class ImportVerifyView(QWidget):
         kpi.addStretch()
         lay.addLayout(kpi)
 
-        # 只看异常 + 统计
+        # 只看异常 + 只看已确认异常 + 统计
         bar2 = QHBoxLayout()
         self.chk_diff = QCheckBox("只看异常")
         self.chk_diff.setChecked(True)
         self.chk_diff.stateChanged.connect(self._render)
         bar2.addWidget(self.chk_diff)
+        self.chk_confirmed = QCheckBox("只看已确认异常")
+        self.chk_confirmed.setChecked(False)
+        self.chk_confirmed.stateChanged.connect(self._render)
+        bar2.addWidget(self.chk_confirmed)
         bar2.addStretch()
         self.lbl_stat = CaptionLabel("")
         bar2.addWidget(self.lbl_stat)
@@ -178,14 +188,11 @@ class ImportVerifyView(QWidget):
 
     def _on_dim_changed(self, *_):
         dim = self.combo_dim.currentData() or "invoice"
-        if dim == "received":
-            self.btn_fix.setText("逐行手动修正")
-            self.btn_fix.setEnabled(True)
-        elif dim == "handler":
-            self.btn_fix.setText("一键修正（按源重算）")
-            self.btn_fix.setEnabled(True)
-        else:
-            self.btn_fix.setEnabled(False)
+        # 已收认定维度：可「逐行手动修正」改收款明细；其余维度此按钮隐藏
+        self.btn_fix.setVisible(dim == "received")
+        self.btn_fix.setEnabled(dim == "received")
+        # 标记已确认异常：经办人/已收维度均可（手动改所致差异均可确认）
+        self.btn_confirm.setEnabled(dim in ("handler", "received"))
         self._need_fit = True
         if self._period:
             self.load_verify()
@@ -257,6 +264,7 @@ class ImportVerifyView(QWidget):
         self._batch_id = batch["id"]
         self._archive = str(path)
         self._rows = self._compare(dim, parsed, period, str(path))
+        self._attach_confirmed(period, dim)
         self._need_fit = True
         self._render()
 
@@ -488,21 +496,37 @@ class ImportVerifyView(QWidget):
         }[dim]
         self.table.setHorizontalHeaderLabels(headers)
 
+        show_confirmed_only = self.chk_confirmed.isChecked()
         only_diff = self.chk_diff.isChecked()
-        rows = [r for r in self._rows if not only_diff or r["reason"]]
+        rows = []
+        for r in self._rows:
+            if show_confirmed_only:
+                if not r.get("confirmed_note"):
+                    continue
+            else:
+                if only_diff and not r["reason"]:
+                    continue
+            rows.append(r)
         self.table.setRowCount(0)
         self.table.setRowCount(len(rows))
         for r, row in enumerate(rows):
+            confirmed = bool(row.get("confirmed_note"))
+            status = row["reason"] or "✓ 一致"
+            if confirmed:
+                note = row["confirmed_note"] or ""
+                status = "✓ 已确认异常：" + (note if len(note) <= 40 else note[:39] + "…")
             vals = [
                 row["invoice_no"], row["source"], row["buyer"],
                 row["raw_amount"], row["db_amount"],
                 row["raw_handlers"], row["db_handlers"],
-                row["reason"] or "✓ 一致",
+                status,
             ]
             for c, v in enumerate(vals):
-                item = self._make_item(v, c)
-                if row["reason"]:
+                item = self._make_item(v, c, confirmed=confirmed)
+                if row["reason"] and not confirmed:
                     item.setBackground(DIFF_BG)
+                elif confirmed:
+                    item.setBackground(CONFIRMED_BG)
                 self.table.setItem(r, c, item)
             self.table.setRowHeight(r, 32)
             self.table.item(r, 0).setData(Qt.ItemDataRole.UserRole, row["_idx"])
@@ -512,14 +536,16 @@ class ImportVerifyView(QWidget):
         else:
             restore_col_widths(self.table, "import_verify", "main")
 
-        diff_n = sum(1 for r in self._rows if r["reason"])
+        diff_n = sum(1 for r in self._rows if r["reason"] and not r.get("confirmed_note"))
+        confirmed_n = sum(1 for r in self._rows if r.get("confirmed_note"))
         total_n = len(self._rows)
         self.lbl_stat.setText(
-            f"共 {total_n} 张发票，差异 {diff_n} 张"
-            + ("（当前仅显示异常行）" if only_diff else "")
+            f"共 {total_n} 张发票，差异 {diff_n} 张，已确认异常 {confirmed_n} 张"
+            + ("（当前仅显示已确认异常）" if show_confirmed_only else
+               ("（当前仅显示异常行）" if only_diff else ""))
         )
-        amount = sum(r["raw_amount"] or 0 for r in self._rows if r["raw_amount"] is not None) \
-            + sum(r["db_amount"] or 0 for r in self._rows if r["raw_amount"] is None)
+        amount = sum(r["raw_amount"] or 0 for r in self._rows if r.get("raw_amount") is not None) \
+            + sum(r["db_amount"] or 0 for r in self._rows if r.get("raw_amount") is None)
         rate = f"{(total_n - diff_n) / total_n * 100:.1f}%" if total_n else "—"
         self.kpis["total"].setText(str(total_n))
         self.kpis["diff"].setText(str(diff_n))
@@ -527,7 +553,7 @@ class ImportVerifyView(QWidget):
         self.kpis["amount"].setText(_money(amount))
         self.kpis["rate"].setText(rate)
 
-    def _make_item(self, v, c: int):
+    def _make_item(self, v, c: int, confirmed: bool = False):
         from PySide6.QtWidgets import QTableWidgetItem
         if c in (3, 4):
             text = _money(v) if v is not None else "—"
@@ -538,7 +564,7 @@ class ImportVerifyView(QWidget):
         if c == 7:
             t = str(v)
             if t.startswith("✓"):
-                item.setForeground(GREEN)
+                item.setForeground(CONFIRMED_FG if confirmed else GREEN)
             else:
                 item.setForeground(RED)
         return item
@@ -547,43 +573,10 @@ class ImportVerifyView(QWidget):
     # 一键修正
     # ------------------------------------------------------------------ #
     def _on_fix_clicked(self) -> None:
-        dim = self.combo_dim.currentData() or "invoice"
-        if dim == "received":
-            self._fix_collection_manual()
-        elif dim == "handler":
-            self._fix()
+        self._fix_collection_manual()
 
-    def _fix(self) -> None:
-        """经办人分摊维度：按源重算 charge_detail（逐发票 UPDATE/删除，安全）。"""
-        if not self._parsed:
-            return
-        if not self._rows:
-            QMessageBox.information(self, "提示", "当前维度没有可对账的数据。")
-            return
-        diff_n = sum(1 for r in self._rows if r["reason"])
-        if diff_n == 0:
-            QMessageBox.information(self, "无需修正", "当前维度无差异，无需修正。")
-            return
-        if QMessageBox.question(
-            self, "确认修正",
-            f"将按源文件重算「经办人分摊」维度下全部 {len(self._rows)} 张发票的 charge_detail，"
-            f"覆盖数据库中对应记录。是否继续？",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-        ) != QMessageBox.StandardButton.Yes:
-            return
-        conn = get_conn()
-        try:
-            for inv in self._parsed.get("invoices", []):
-                _regen_charge_detail(conn, inv, self._batch_id)
-            conn.commit()
-        except Exception as e:  # noqa: BLE001
-            conn.rollback()
-            QMessageBox.critical(self, "修正失败", str(e))
-            return
-        finally:
-            conn.close()
-        QMessageBox.information(self, "修正完成", "已按源重算「经办人分摊」维度。")
-        self.load_verify()
+    # 经办人分摊维度不再提供「一键修正（按源重算）」：手动改数据按手动结果来，
+    # 差异通过「标记已确认异常」留备注即可（见 _mark_confirmed）。
 
     def _fix_collection_manual(self) -> None:
         """已收认定维度：选中行 → 弹逐行手动修正对话框（方案1优化版：行级合并）。"""
@@ -653,3 +646,112 @@ class ImportVerifyView(QWidget):
             return
         from app.ui.ledger_source import show_source_for_invoice
         show_source_for_invoice(self, row["invoice_no"])
+
+    # ------------------------------------------------------------------ #
+    # 已确认异常（手动改数据所致差异，留备注防误判）
+    # ------------------------------------------------------------------ #
+    def _attach_confirmed(self, period: str, dim: str) -> None:
+        notes = self._load_confirmed(period, dim)
+        for row in self._rows:
+            row["confirmed_note"] = notes.get(row["invoice_no"], "")
+
+    def _load_confirmed(self, period: str, dim: str) -> Dict[str, str]:
+        conn = get_conn()
+        try:
+            rows = conn.execute(
+                "SELECT invoice_no, note FROM anomaly_note WHERE dim=? AND period=?",
+                (dim, period),
+            ).fetchall()
+        finally:
+            conn.close()
+        return {r["invoice_no"]: r["note"] for r in rows}
+
+    def _mark_confirmed(self) -> None:
+        dim = self.combo_dim.currentData() or "invoice"
+        if dim not in ("handler", "received"):
+            QMessageBox.information(self, "提示", "当前维度不支持标记已确认异常。")
+            return
+        row_idx = self.table.currentRow()
+        if row_idx < 0:
+            QMessageBox.information(self, "提示", "请先在表格中选中要标记的行。")
+            return
+        item = self.table.item(row_idx, 0)
+        if item is None:
+            return
+        idx = item.data(Qt.ItemDataRole.UserRole)
+        row = self._rows[idx]
+        no = row["invoice_no"]
+        dlg = AnomalyConfirmDialog(
+            self, no, dim, self._period, row.get("reason", ""), row.get("confirmed_note", "")
+        )
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            self.load_verify()
+
+
+class AnomalyConfirmDialog(QDialog):
+    """标记 / 更新 / 撤销「已确认异常」备注。"""
+
+    def __init__(self, parent, invoice_no: str, dim: str, period: str,
+                 reason: str, existing_note: str) -> None:
+        super().__init__(parent)
+        self._no = invoice_no
+        self._dim = dim
+        self._period = period
+        self.setWindowTitle(f"标记已确认异常 — {invoice_no}")
+        self.resize(460, 290)
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(20, 18, 20, 18)
+        root.setSpacing(10)
+
+        root.addWidget(CaptionLabel(f"维度：{dict(DIMS).get(dim, dim)}　账期：{period}"))
+        if reason:
+            rlab = QLabel(f"当前差异原因：{reason}")
+            rlab.setWordWrap(True)
+            rlab.setObjectName("anomalyReason")
+            root.addWidget(rlab)
+        else:
+            root.addWidget(CaptionLabel("（当前无差异，仍可为该记录添加确认说明）"))
+
+        root.addWidget(CaptionLabel("确认说明（必填，记录为什么手动修改 / 无需按源重算）："))
+        self.edit = QPlainTextEdit(existing_note)
+        self.edit.setPlaceholderText("例如：经办人信息已手动修正，与源台账不一致属正常")
+        root.addWidget(self.edit, 1)
+
+        box = QDialogButtonBox()
+        self.btn_ok = box.addButton("确定", QDialogButtonBox.ButtonRole.AcceptRole)
+        self.btn_revoke = box.addButton("撤销确认", QDialogButtonBox.ButtonRole.RejectRole)
+        self.btn_cancel = box.addButton("取消", QDialogButtonBox.ButtonRole.RejectRole)
+        self.btn_revoke.setEnabled(bool(existing_note))  # 仅已确认时可撤销
+        self.btn_revoke.clicked.connect(self._revoke)
+        self.btn_cancel.clicked.connect(self.reject)
+        self.btn_ok.clicked.connect(self.accept)
+        root.addWidget(box)
+
+    def accept(self) -> None:
+        note = self.edit.toPlainText().strip()
+        if not note:
+            QMessageBox.warning(self, "需填写说明", "请填写确认说明，避免日后误判。")
+            return
+        conn = get_conn()
+        try:
+            conn.execute(
+                "INSERT OR REPLACE INTO anomaly_note (invoice_no, dim, period, note) VALUES (?,?,?,?)",
+                (self._no, self._dim, self._period, note),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        super().accept()
+
+    def _revoke(self) -> None:
+        conn = get_conn()
+        try:
+            conn.execute(
+                "DELETE FROM anomaly_note WHERE invoice_no=? AND dim=? AND period=?",
+                (self._no, self._dim, self._period),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        self.done(QDialog.DialogCode.Accepted)

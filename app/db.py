@@ -240,6 +240,18 @@ CREATE TABLE IF NOT EXISTS expense_cat (
     category     TEXT NOT NULL DEFAULT '其他',
     created_at   TEXT DEFAULT (datetime('now','localtime'))
 );
+
+-- 导入校验「已确认异常」备注：手动改数据导致的正常差异，留说明防误改/忘改。
+-- 维度 dim ∈ {invoice, handler, received}，按(发票号, 维度, 账期)唯一。
+CREATE TABLE IF NOT EXISTS anomaly_note (
+    invoice_no   TEXT NOT NULL,
+    dim          TEXT NOT NULL,
+    period       TEXT NOT NULL,
+    note         TEXT NOT NULL DEFAULT '',
+    confirmed_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+    PRIMARY KEY (invoice_no, dim, period)
+);
+CREATE INDEX IF NOT EXISTS idx_anomaly_note_period ON anomaly_note(period, dim);
 """
 
 

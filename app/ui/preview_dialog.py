@@ -4,7 +4,7 @@
 - 对每个发票评估「收款认定」「经办人分摊」两个维度的置信度；
 - 高置信（系统规则已可靠判定）→ 折叠隐藏，自动过、不打扰；
 - 低置信（无法识别/有疑问）→ 列在「待确认」清单，每张可看系统预填的
-  每经办人已收金额，并可直接改成正确的已收金额（选项 2：先按系统规则预填）；
+  每经办人已收金额，并可直接改成正确的已收金额（双击「各经办人已收」列弹窗编辑）；
 - 「全部确认入库」→ 高置信用系统值、疑点用确认值，写库时回写
   charge_detail.received_override。
 
@@ -17,9 +17,8 @@ from typing import Dict, List
 from PySide6.QtCore import Qt, QTimer, QPoint
 from PySide6.QtGui import QColor, QCursor
 from PySide6.QtWidgets import (
-    QAbstractItemView, QAbstractSpinBox, QCheckBox, QDoubleSpinBox, QDialog,
-    QHBoxLayout, QLabel, QMessageBox, QSizePolicy, QTableWidgetItem, QVBoxLayout,
-    QWidget,
+    QAbstractItemView, QDialog, QDialogButtonBox, QHBoxLayout, QLabel,
+    QMessageBox, QStyledItemDelegate, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
 from app.db import get_conn
@@ -38,44 +37,93 @@ def _fmt_money(v) -> str:
     return f"{v:,.2f}" if isinstance(v, (int, float)) else str(v or "")
 
 
-class HandlerReceivedEditor(QWidget):
-    """每经办人已收编辑器：经办人标签 + 可编辑金额框，预填系统推导值。
+class AmountDelegate(QStyledItemDelegate):
+    """金额列编辑代理：浮出 QDoubleSpinBox，尺寸贴合单元格、不裁切（方案 C）。
 
-    编辑结果实时写入 overrides[invoice_no][name]，供确认时回写。
+    平时单元格显示文本，双击/选中进入编辑才浮出编辑器；编辑器由 Qt 托管，
+    严格贴合单元格矩形，彻底规避 setCellWidget 常驻嵌入被行高裁底的缺陷。
     """
 
-    def __init__(self, ev: Dict, overrides: Dict[str, Dict[str, float]]) -> None:
-        super().__init__()
+    def createEditor(self, parent, option, index):  # noqa: N802
+        from PySide6.QtWidgets import QDoubleSpinBox, QAbstractSpinBox
+        spin = QDoubleSpinBox(parent)
+        spin.setRange(0, 9_999_999_999)
+        spin.setDecimals(2)
+        spin.setSingleStep(100)
+        spin.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)  # 紧凑、不裁底
+        return spin
+
+    def setModelData(self, editor, model, index):  # noqa: N802
+        model.setData(index, editor.value(), Qt.ItemDataRole.UserRole)
+        model.setData(index, _fmt_money(editor.value()))
+
+
+class HandlerReceivedDialog(QDialog):
+    """逐经办人已收编辑弹窗（双击预览框「各经办人已收」列触发，按需编辑，不裁切）。
+
+    内部金额列挂 AmountDelegate：平时显示文本，双击单元格才浮出数字框。
+    确定后仅把「与系统预填不同」的金额回写 overrides（与系统一致的由系统推导）。
+    """
+
+    def __init__(self, ev: Dict, overrides: Dict[str, Dict[str, float]], parent=None) -> None:
+        super().__init__(parent)
         self._ev = ev
         self._overrides = overrides
         no = ev["invoice_no"]
         self._overrides.setdefault(no, {})
-        lay = QHBoxLayout(self)
-        lay.setContentsMargins(0, 0, 0, 0)
-        lay.setSpacing(6)
-        sys_recv = ev["system_received"]
-        for name, billing in ev["handlers"]:
-            lab = QLabel(name)
-            lab.setToolTip(f"开票金额 {billing:,.2f}")
-            spin = QDoubleSpinBox()
-            spin.setRange(0, 9_999_999_999)
-            spin.setDecimals(2)
-            spin.setSingleStep(100)
-            spin.setMaximumWidth(96)
-            # 去掉金额增减按钮；输入框上下顶满单元格
-            spin.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
-            spin.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
-            cur = self._overrides[no].get(name, sys_recv.get(name, 0.0))
-            spin.blockSignals(True)
-            spin.setValue(cur)
-            spin.blockSignals(False)
-            spin.valueChanged.connect(lambda v, n=name: self._on_change(n, v))
-            lay.addWidget(lab)
-            lay.addWidget(spin)
-        lay.addStretch()
+        self.setWindowTitle(f"编辑逐经办人已收 — {no}")
+        self.resize(360, 60 + 36 * max(1, len(ev["handlers"])))
 
-    def _on_change(self, name: str, value: float) -> None:
-        self._overrides[self._ev["invoice_no"]][name] = value
+        root = QVBoxLayout(self)
+        root.setContentsMargins(18, 16, 18, 16)
+        root.setSpacing(10)
+        hint = CaptionLabel("双击「已收金额」单元格即可编辑；仅与系统预填不同的金额会被记录。")
+        root.addWidget(hint)
+
+        self.table = TableWidget(self)
+        self.table.setColumnCount(2)
+        self.table.setHorizontalHeaderLabels(["经办人", "已收金额"])
+        self.table.setEditTriggers(TableWidget.EditTrigger.NoEditTriggers)
+        self.table.setSelectionBehavior(TableWidget.SelectionBehavior.SelectRows)
+        self.table.verticalHeader().setVisible(False)
+        self.table.horizontalHeader().setStretchLastSection(True)
+        self.table.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
+        self._load()
+        root.addWidget(self.table, 1)
+
+        box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        box.accepted.connect(self.accept)
+        box.rejected.connect(self.reject)
+        root.addWidget(box)
+
+    def _load(self) -> None:
+        no = self._ev["invoice_no"]
+        sys_recv = self._ev.get("system_received", {})
+        handlers = self._ev.get("handlers", [])
+        self.table.setRowCount(len(handlers))
+        for r, (name, _billing) in enumerate(handlers):
+            name_item = QTableWidgetItem(name)
+            name_item.setFlags(name_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            self.table.setItem(r, 0, name_item)
+            cur = self._overrides[no].get(name, sys_recv.get(name, 0.0))
+            amt_item = QTableWidgetItem(_fmt_money(cur))
+            amt_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            amt_item.setData(Qt.ItemDataRole.UserRole, float(cur))
+            self.table.setItem(r, 1, amt_item)
+            self.table.setRowHeight(r, 30)
+        self.table.setItemDelegateForColumn(1, AmountDelegate(self.table))
+
+    def accept(self) -> None:
+        no = self._ev["invoice_no"]
+        sys_recv = self._ev.get("system_received", {})
+        final: Dict[str, float] = {}
+        for r in range(self.table.rowCount()):
+            name = self.table.item(r, 0).text()
+            amt = float(self.table.item(r, 1).data(Qt.ItemDataRole.UserRole) or 0.0)
+            if abs(amt - sys_recv.get(name, 0.0)) > 0.005:
+                final[name] = amt
+        self._overrides[no] = final
+        super().accept()
 
 
 class PreviewDialog(QDialog):
@@ -118,7 +166,7 @@ class PreviewDialog(QDialog):
         hint = CaptionLabel(
             "系统已按规则对每张发票做置信度判定：高置信将自动入库（不弹出）；"
             "以下仅列出「待确认（有疑问）」的发票——请核对每经办人已收金额（已按系统规则预填，"
-            "可直接改为正确值），确认后回写。勾选「显示高置信全部」可查看全部。"
+            "双击「各经办人已收」列可逐人修改），确认后回写。勾选「显示高置信全部」可查看全部。"
         )
         root.addWidget(hint)
 
@@ -139,7 +187,7 @@ class PreviewDialog(QDialog):
         self.table.setColumnCount(8)
         self.table.setHorizontalHeaderLabels(
             ["发票号", "来源", "购方", "金额", "经办人分摊(开票金额)",
-             "各经办人已收(可改)", "收款认定", "状态"]
+             "各经办人已收(双击编辑)", "收款认定", "状态"]
         )
         self.table.setEditTriggers(TableWidget.EditTrigger.NoEditTriggers)
         self.table.setSelectionBehavior(TableWidget.SelectionBehavior.SelectRows)
@@ -185,33 +233,26 @@ class PreviewDialog(QDialog):
                 ev["buyer"],
                 ev["total_amount"],
                 "、".join(f"{n} {_fmt_money(b)}" for n, b in ev["handlers"]) or "—",
-                "",  # 第 5 列放可编辑控件
+                self._received_summary(ev),  # 第 5 列：汇总文本（双击弹窗编辑）
                 ev["receipt_text"],
                 "、".join(ev["reasons"]) if ev["reasons"] else "✓ 高置信自动过",
             ]
             for c, v in enumerate(vals):
-                if c == 5:
-                    continue
                 item = self._make_item(v, c, ev)
                 if ev["conf"] == "low":
                     item.setBackground(DIFF_BG)
                 self.table.setItem(r, c, item)
-            # 第 5 列：每经办人已收编辑器
-            editor = HandlerReceivedEditor(ev, self._overrides)
-            self.table.setCellWidget(r, 5, editor)
             self.table.setRowHeight(r, 34)
             self.table.item(r, 0).setData(Qt.ItemDataRole.UserRole, ev["_idx_global"])
         auto_fit_columns(self.table, max_width=220)
         self.table.setColumnWidth(4, 220)
         self.table.setColumnWidth(5, 380)
 
-        # 单元格文字被列宽裁剪时，悬停显示全文（列 5 是控件，无 item）
+        # 单元格文字被列宽裁剪时，悬停显示全文
         fm = self.table.fontMetrics()
         pad = 14
         for r in range(self.table.rowCount()):
             for c in range(self.table.columnCount()):
-                if c == 5:
-                    continue
                 item = self.table.item(r, c)
                 if item is None:
                     continue
@@ -230,6 +271,17 @@ class PreviewDialog(QDialog):
         self.lbl_summary.setText(
             f"全量发票合计 ¥{inv_total:,.2f}　预收款 {len(pp)} 条，合计 ¥{pp_total:,.2f}"
         )
+
+    def _received_summary(self, ev: Dict) -> str:
+        """第 5 列汇总文本：override 优先，否则系统预填。"""
+        no = ev["invoice_no"]
+        ov = self._overrides.get(no, {})
+        sys_recv = ev.get("system_received", {})
+        parts = []
+        for name, _billing in ev.get("handlers", []):
+            amt = ov.get(name, sys_recv.get(name, 0.0))
+            parts.append(f"{name} {_fmt_money(amt)}")
+        return "、".join(parts) or "—"
 
     # ---- 自定义单元格 tooltip（Notion 浅灰卡片，仅当内容被列宽裁剪时悬停显示全文） ----
     _TIP_ROLE = Qt.ItemDataRole.UserRole + 1
@@ -292,7 +344,10 @@ class PreviewDialog(QDialog):
     # ------------------------------------------------------------------ #
     # 交互
     # ------------------------------------------------------------------ #
-    def _cell_double_clicked(self, r: int, _c: int) -> None:
+    def _cell_double_clicked(self, r: int, c: int) -> None:
+        if c == 5:
+            self._open_handler_received(r)
+            return
         item = self.table.item(r, 0)
         if item is None:
             return
@@ -312,6 +367,18 @@ class PreviewDialog(QDialog):
             self, header=header, raw_row=raw_row, sheet_name=sheet_name,
             row_no=row_no, archive_path=self._path, file_name=self._file_name,
         )
+
+    def _open_handler_received(self, r: int) -> None:
+        item = self.table.item(r, 0)
+        if item is None:
+            return
+        idx = item.data(Qt.ItemDataRole.UserRole)
+        if idx is None:
+            return
+        ev = self._rows[idx]
+        dlg = HandlerReceivedDialog(ev, self._overrides, self)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            self.table.item(r, 5).setText(self._received_summary(ev))
 
     def accept(self) -> None:
         """确认入库：把编辑后的每经办人已收回写为 received_overrides。"""
