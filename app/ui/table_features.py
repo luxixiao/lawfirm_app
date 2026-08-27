@@ -22,10 +22,10 @@ from collections import OrderedDict
 from typing import Callable, List, Optional
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor, QFontMetrics, QPalette, QPainter, QPixmap
+from PySide6.QtGui import QColor, QFontMetrics, QIcon, QPalette, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView, QCheckBox, QDialog, QDialogButtonBox, QHBoxLayout,
-    QIcon, QLineEdit, QListWidget, QListWidgetItem, QMenu, QPushButton,
+    QLineEdit, QListWidget, QListWidgetItem, QMenu, QPushButton,
     QStyledItemDelegate, QStyleOptionViewItem, QTableWidget, QVBoxLayout,
 )
 
