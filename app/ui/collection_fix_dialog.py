@@ -1,8 +1,14 @@
 """已收认定 · 逐行手动修正对话框（方案1优化版：行级合并，绝不整票 DELETE）。
 
 弹窗展示某发票当前 collection 收款行（可编辑），并并排显示「源声称收款」作只读参考。
-确定时按 rowid 做行级合并（改了才 UPDATE、消失才 DELETE、新增才 INSERT），
+确定时按 id 做行级合并（改了才 UPDATE、消失才 DELETE、新增才 INSERT），
 从源头消除「一键修正删光后续月份收款」的破坏性；并同步 received_snapshot.actual。
+
+UI 实现说明（方案 C：delegate 而非常驻 cellWidget）：
+- 日期 / 金额 / 经办人 三列的数据存在 QTableWidgetItem 中，平时以文本展示；
+- 金额列挂 AmountDelegate，双击进入编辑时浮出 QDoubleSpinBox（编辑器尺寸贴合单元格，
+  不裁切）；日期/经办人列用默认 QLineEdit 编辑；
+- 彻底弃用「setCellWidget 常驻嵌入 spinbox」——它会被行矩形裁掉底部，正是截断根因。
 """
 from __future__ import annotations
 
@@ -11,8 +17,9 @@ from typing import Dict, List
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QAbstractItemView, QDialog, QDialogButtonBox, QDoubleSpinBox, QHBoxLayout,
-    QLabel, QLineEdit, QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout,
+    QAbstractItemView, QAbstractSpinBox, QDialog, QDialogButtonBox, QDoubleSpinBox,
+    QHBoxLayout, QLabel, QPushButton, QStyledItemDelegate, QTableWidget, QTableWidgetItem,
+    QVBoxLayout,
 )
 
 from app.db import get_conn
@@ -23,6 +30,30 @@ from app.importer.importer import (
 
 def _money(v) -> str:
     return f"{v:,.2f}" if isinstance(v, (int, float)) else str(v or "")
+
+
+class AmountDelegate(QStyledItemDelegate):
+    """金额列编辑代理：浮出 QDoubleSpinBox，尺寸贴合单元格、不裁切。"""
+
+    def createEditor(self, parent, option, index):  # noqa: N802
+        spin = QDoubleSpinBox(parent)
+        spin.setRange(0, 9_999_999_999)
+        spin.setDecimals(2)
+        spin.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)  # 紧凑、不裁底
+        spin.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        return spin
+
+    def setEditorData(self, editor, index):  # noqa: N802
+        try:
+            val = float(index.data(Qt.ItemDataRole.EditRole) or 0.0)
+        except (TypeError, ValueError):
+            val = 0.0
+        editor.setValue(val)
+
+    def setModelData(self, editor, model, index):  # noqa: N802
+        val = editor.value()
+        model.setData(index, f"{val:.2f}", Qt.ItemDataRole.EditRole)
+        model.setData(index, val, Qt.ItemDataRole.UserRole)
 
 
 class CollectionFixDialog(QDialog):
@@ -40,7 +71,7 @@ class CollectionFixDialog(QDialog):
         self.expected_total = expected_total
         self.expected_json = json.dumps(
             {"total": expected_total, "items": expected_items}, ensure_ascii=False)
-        self.current_rows = current_rows  # [{rowid, receipt_date, amount, person_name}]
+        self.current_rows = current_rows  # [{id, receipt_date, amount, person_name}]
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(20, 16, 20, 16)
@@ -63,8 +94,15 @@ class CollectionFixDialog(QDialog):
         self.table.setColumnCount(4)
         self.table.setHorizontalHeaderLabels(
             ["收款日期 (YYYY-MM-DD)", "金额", "经办人", "操作"])
-        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        # 方案 C：双击/选中即编辑，文本常驻展示；金额列挂 delegate
+        self.table.setEditTriggers(
+            QAbstractItemView.EditTrigger.DoubleClicked
+            | QAbstractItemView.EditTrigger.SelectedClicked
+        )
         self.table.verticalHeader().setVisible(False)
+        self.table.verticalHeader().setDefaultSectionSize(32)
+        self.table.setItemDelegateForColumn(1, AmountDelegate(self.table))
+        self.table.itemChanged.connect(lambda *_: self._update_actual())
         lay.addWidget(self.table, 1)
 
         bar = QHBoxLayout()
@@ -98,29 +136,32 @@ class CollectionFixDialog(QDialog):
     def _append_row(self, rowid, date: str, amount, person: str) -> None:
         r = self.table.rowCount()
         self.table.insertRow(r)
-        date_edit = QLineEdit(date or "")
-        date_edit.setPlaceholderText("YYYY-MM-DD")
-        amt_edit = QDoubleSpinBox()
-        amt_edit.setRange(0, 9_999_999_999)
-        amt_edit.setDecimals(2)
-        amt_edit.setValue(float(amount or 0.0))
-        person_edit = QLineEdit(person or "")
+        # 日期（文本常驻，双击编辑）
+        di = QTableWidgetItem(date or "")
+        di.setData(Qt.ItemDataRole.UserRole, rowid)  # 该收款行在 collection 中的 id
+        # 金额（delegate 编辑，UserRole 存浮点）
+        ai = QTableWidgetItem(f"{float(amount or 0):.2f}")
+        ai.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        ai.setData(Qt.ItemDataRole.UserRole, float(amount or 0))
+        # 经办人（文本常驻，双击编辑）
+        pi = QTableWidgetItem(person or "")
+        self.table.setItem(r, 0, di)
+        self.table.setItem(r, 1, ai)
+        self.table.setItem(r, 2, pi)
+        # 删除按钮：矮控件不裁切，保留为 cellWidget
         del_btn = QPushButton("删除")
-        del_btn.clicked.connect(lambda _checked=False, row=r: self._del_row(row))
-        self.table.setCellWidget(r, 0, date_edit)
-        self.table.setCellWidget(r, 1, amt_edit)
-        self.table.setCellWidget(r, 2, person_edit)
+        del_btn.clicked.connect(lambda _=False, b=del_btn: self._del_row_by_widget(b))
         self.table.setCellWidget(r, 3, del_btn)
-        date_edit.setProperty("rowid", rowid)
-        self._update_actual()
 
     def _add_row(self) -> None:
         self._append_row(None, "", 0.0, "")
 
-    def _del_row(self, row: int) -> None:
-        if 0 <= row < self.table.rowCount():
-            self.table.removeRow(row)
-            self._update_actual()
+    def _del_row_by_widget(self, btn) -> None:
+        for r in range(self.table.rowCount()):
+            if self.table.cellWidget(r, 3) is btn:
+                self.table.removeRow(r)
+                self._update_actual()
+                return
 
     def _fill_from_expected(self) -> None:
         self.table.setRowCount(0)
@@ -133,9 +174,9 @@ class CollectionFixDialog(QDialog):
     def _update_actual(self) -> None:
         total = 0.0
         for r in range(self.table.rowCount()):
-            w = self.table.cellWidget(r, 1)
-            if isinstance(w, QDoubleSpinBox):
-                total += w.value()
+            it = self.table.item(r, 1)
+            if it is not None:
+                total += float(it.data(Qt.ItemDataRole.UserRole) or 0.0)
         self.lbl_actual.setText(f"实际合计：{_money(total)}")
         self.lbl_actual.setStyleSheet(
             "color:#C0392B;" if abs(total - self.expected_total) > 0.01 else "")
@@ -144,13 +185,13 @@ class CollectionFixDialog(QDialog):
     def _collect(self) -> List[Dict]:
         target = []
         for r in range(self.table.rowCount()):
-            date_w = self.table.cellWidget(r, 0)
-            amt_w = self.table.cellWidget(r, 1)
-            person_w = self.table.cellWidget(r, 2)
-            date = date_w.text().strip() if isinstance(date_w, QLineEdit) else ""
-            amt = amt_w.value() if isinstance(amt_w, QDoubleSpinBox) else 0.0
-            person = person_w.text().strip() if isinstance(person_w, QLineEdit) else ""
-            rid = date_w.property("rowid") if isinstance(date_w, QLineEdit) else None
+            di = self.table.item(r, 0)
+            ai = self.table.item(r, 1)
+            pi = self.table.item(r, 2)
+            date = di.text().strip() if di else ""
+            amt = float(ai.data(Qt.ItemDataRole.UserRole)) if ai else 0.0
+            person = pi.text().strip() if pi else ""
+            rid = di.data(Qt.ItemDataRole.UserRole) if di else None
             target.append({"id": rid, "receipt_date": date,
                            "amount": amt, "person_name": person})
         return target
