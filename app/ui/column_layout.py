@@ -163,9 +163,9 @@ class ColumnLayoutManager:
 
         hdr.blockSignals(True)
         try:
-            # 1) 显隐（按逻辑列）
+            # 1) 显隐（按逻辑列；setColumnHidden 属于 QTableWidget，非 QHeaderView）
             for c, k in enumerate(keys):
-                hdr.setColumnHidden(c, not state["visible"].get(k, True))
+                table.setColumnHidden(c, not state["visible"].get(k, True))
             # 2) 重排视觉序（冻结列已在前，由对话框保证；此处直接用 order）
             desired = [k for k in state["order"] if k in keys]
             for k in keys:
