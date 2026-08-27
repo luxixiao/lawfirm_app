@@ -8,7 +8,7 @@ from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QFileDialog, QHBoxLayout, QLabel, QLineEdit, QMessageBox, QVBoxLayout, QWidget
 
 from app.ui.widgets import ComboBox, LineEdit, PrimaryPushButton, PushButton, TableWidget
-from app.ui.column_state import attach_persistence, auto_fit_then_restore
+from app.ui.column_layout import ColumnLayoutManager
 
 RED = QColor("#C0392B")    # 红字/负数
 GREEN = QColor("#1E8449")  # 已收
@@ -63,17 +63,25 @@ class BaseTableView(QWidget):
         self.table.setSelectionBehavior(TableWidget.SelectionBehavior.SelectRows)
         self.table.setAlternatingRowColors(False)
         self.table.verticalHeader().setVisible(False)
-        self.table.horizontalHeader().setStretchLastSection(True)
-        attach_persistence(self.table, self._col_page_key, "main")
+        # 列布局管理器（显示/冻结/顺序/宽度 四态 + 严格填充），取代旧 setStretchLastSection
+        self._mgr = ColumnLayoutManager(self._col_page_key, "main")
+        self._col_content_w = None
+        hdr = self.table.horizontalHeader()
+        hdr.setSectionsMovable(True)
+        hdr.sectionMoved.connect(self._on_section_moved)
+        hdr.sectionResized.connect(self._on_section_resized)
         lay.addWidget(self.table, 1)
 
-        # 底部：左为汇总（随筛选/搜索变化），右为导出按钮
+        # 底部：左为汇总（随筛选/搜索变化），中为列设置，右为导出按钮
         bottom = QHBoxLayout()
         self.lbl_summary = CaptionLabel("")
+        self.btn_col_settings = PushButton("列设置")
+        self.btn_col_settings.clicked.connect(self._open_col_settings)
         self.btn_export = PrimaryPushButton("导出 Excel")
         self.btn_export.clicked.connect(self.export_excel)
         bottom.addWidget(self.lbl_summary)
         bottom.addStretch()
+        bottom.addWidget(self.btn_col_settings)
         bottom.addWidget(self.btn_export)
         lay.addLayout(bottom)
 
@@ -115,10 +123,12 @@ class BaseTableView(QWidget):
         hdr.customContextMenuRequested.connect(self._on_header_filter)
 
     def _on_header_sort(self, col: int) -> None:
-        if self._sort_col == col:
+        # 表头点击给的是「视觉列号」，数据索引用「逻辑列号」，需转换（支持列重排）
+        logical = self.table.horizontalHeader().logicalIndex(col)
+        if self._sort_col == logical:
             self._sort_asc = not self._sort_asc
         else:
-            self._sort_col = col
+            self._sort_col = logical
             self._sort_asc = True
         self._sort_rows()
         self._apply_col_filters()
@@ -149,13 +159,15 @@ class BaseTableView(QWidget):
     def _header_clicked(self, col: int) -> None:
         from PySide6.QtWidgets import (QCheckBox, QDialog, QDialogButtonBox, QHBoxLayout,
                                        QListWidget, QListWidgetItem, QVBoxLayout)
+        # 表头点击给的是视觉列号，转逻辑列号（支持列重排）
+        logical = self.table.horizontalHeader().logicalIndex(col)
         if not self._raw_rows:
             return
         # 该列唯一值
         uniq = []
         seen = set()
         for r in self._raw_rows:
-            v = r[col]
+            v = r[logical]
             if isinstance(v, float):
                 key = f"{v:g}"
             else:
@@ -165,11 +177,12 @@ class BaseTableView(QWidget):
                 uniq.append(key)
         uniq.sort(key=lambda s: (len(s), s))
         dlg = QDialog(self)
-        dlg.setWindowTitle(f"筛选：{self.table.horizontalHeaderItem(col).text()}")
+        hdr_item = self.table.horizontalHeaderItem(logical)
+        dlg.setWindowTitle(f"筛选：{hdr_item.text() if hdr_item else ''}")
         dlg.resize(280, 380)
         lay = QVBoxLayout(dlg)
         lst = QListWidget()
-        cur = self._col_filters.get(col)
+        cur = self._col_filters.get(logical)
         for v in uniq:
             it = QListWidgetItem(v)
             it.setFlags(it.flags() | Qt.ItemFlag.ItemIsUserCheckable)
@@ -196,9 +209,9 @@ class BaseTableView(QWidget):
         sel = [lst.item(i).text() for i in range(lst.count())
                if lst.item(i).checkState() == Qt.CheckState.Checked]
         if len(sel) == len(uniq):
-            self._col_filters.pop(col, None)  # 全选=不筛
+            self._col_filters.pop(logical, None)  # 全选=不筛
         else:
-            self._col_filters[col] = set(sel)
+            self._col_filters[logical] = set(sel)
         self.refresh()
 
     def _apply_col_filters(self) -> None:
@@ -248,10 +261,46 @@ class BaseTableView(QWidget):
         self._col_filters = {}
         self.refresh()
 
+    # ---- 列布局：顺序/宽度 持久化 + 列设置 ----
+    def _on_section_moved(self, _logical: int, _old: int, _new: int) -> None:
+        """用户拖拽表头重排后，保存新的视觉顺序。"""
+        hdr = self.table.horizontalHeader()
+        order = [self.columns[hdr.logicalIndex(v)] for v in range(self.table.columnCount())]
+        state = self._mgr.load(self.columns)
+        state["order"] = order
+        self._mgr.save(state)
+
+    def _on_section_resized(self, logical: int, _old: int, new_w: int) -> None:
+        """用户手动调列宽：记为 fixed 宽度，并立刻重排填充（其余列吸收，保持总宽=视口）。"""
+        if new_w <= 0 or self._col_content_w is None:
+            return
+        state = self._mgr.load(self.columns)
+        state["widths"][self.columns[logical]] = int(new_w)
+        self._mgr.save(state)
+        self._mgr.apply(self.table, self.columns, self._col_content_w)
+
+    def _open_col_settings(self) -> None:
+        from app.ui.column_settings_dialog import open_column_settings
+        if self._col_content_w is None:
+            self._col_content_w = self._mgr.measure_content_widths(self.table, self.columns)
+        state = self._mgr.load(self.columns)
+        hdr = self.table.horizontalHeader()
+        state["order"] = [self.columns[hdr.logicalIndex(v)] for v in range(self.table.columnCount())]
+        if open_column_settings(self, self._mgr, self.columns, state, self._col_content_w):
+            # 应用后重新测量（显隐/顺序/宽度变了），再填充
+            self._col_content_w = self._mgr.measure_content_widths(self.table, self.columns)
+            self._mgr.apply(self.table, self.columns, self._col_content_w)
+
     def showEvent(self, event) -> None:  # noqa: N802
         """导航切换显示时自动刷新（保证数据最新）"""
         super().showEvent(event)
         self.refresh()
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        """窗体尺寸变化（含 DPI/分辨率切换）时重算填充，保证始终填满且优先未显全列。"""
+        super().resizeEvent(event)
+        if getattr(self, "_col_content_w", None) is not None and self.table.columnCount():
+            self._mgr.apply(self.table, self.columns, self._col_content_w)
 
     def _render(self) -> None:
         total_cols = self._total_cols()
@@ -282,10 +331,9 @@ class BaseTableView(QWidget):
                 item.setBackground(QColor("#F2F2F0"))
                 self.table.setItem(tr, c, item)
             self.table.setRowHeight(tr, 34)
-        used_archive = auto_fit_then_restore(self.table, self._col_page_key, "main")
-        if used_archive:
-            # 用户已手动调整过列宽：关闭末列拉伸，严格按存档宽度
-            self.table.horizontalHeader().setStretchLastSection(False)
+        # 列布局：测量内容宽（封顶发票号宽）→ 应用（重排/显隐/定宽/严格填充）
+        self._col_content_w = self._mgr.measure_content_widths(self.table, self.columns)
+        self._mgr.apply(self.table, self.columns, self._col_content_w)
         self.lbl_summary.setText(self._summary_text())
 
     def _summary_text(self) -> str:
