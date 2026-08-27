@@ -85,19 +85,36 @@ def install_header_filter(table: QTableWidget) -> None:
     """右键表头按列筛选：列出该列唯一值，勾选后隐藏不匹配的行（req1）。
 
     适用于任意 QTableWidget 显示类表格；基于单元格文本过滤，与数据来源无关。
+    幂等：重复调用同一张表不会重复连接，也不会触发 PySide 的
+    "Failed to disconnect (None)" RuntimeWarning。
     """
     hdr = table.horizontalHeader()
     if hdr is None:
         return
+    # 若该表头已安装过本模块的筛选槽，直接跳过，避免重复连接
+    if getattr(hdr, "_tf_filter_installed", False):
+        return
     hdr.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-    # 仅保留本模块安装的筛选菜单，避免重复连接
-    try:
-        hdr.customContextMenuRequested.disconnect()
-    except Exception:
-        pass
-    hdr.customContextMenuRequested.connect(
-        lambda pos: _header_filter_menu(table, pos)
-    )
+    # 用具名槽实例连接，并将其挂在表头上保持存活（避免被 GC 回收导致连接失效）；
+    # 不使用无参 disconnect，规避 PySide "Failed to disconnect (None)" warning
+    slot = _HeaderFilterSlot(table)
+    hdr.customContextMenuRequested.connect(slot)
+    hdr._tf_filter_slot = slot
+    hdr._tf_filter_installed = True
+
+
+class _HeaderFilterSlot:
+    """表头右键筛选的可断开槽封装。
+
+    持有 table 引用并暴露 __call__，使 PySide 以该实例为 receiver 建立连接，
+    后续可用同一实例精确 disconnect，避免无参 disconnect 的 (None) warning。
+    """
+
+    def __init__(self, table: QTableWidget) -> None:
+        self._table = table
+
+    def __call__(self, pos) -> None:
+        _header_filter_menu(self._table, pos)
 
 
 def _header_filter_menu(table: QTableWidget, pos) -> None:
