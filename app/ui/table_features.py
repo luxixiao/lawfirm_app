@@ -119,9 +119,10 @@ class _HeaderFilterSlot:
 
 def _header_filter_menu(table: QTableWidget, pos) -> None:
     hdr = table.horizontalHeader()
-    col = hdr.columnAt(pos.x())
-    if col < 0:
+    logical = hdr.logicalIndexAt(pos.x())
+    if logical < 0:
         return
+    col = hdr.visualIndex(logical)  # 视觉列号（item/headerItem 均按视觉列索引用）
     nrows = table.rowCount()
     uniq: list = []
     seen: set = set()

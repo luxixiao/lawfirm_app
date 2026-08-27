@@ -136,9 +136,12 @@ class BaseTableView(QWidget):
         self._update_filter_marks()
 
     def _on_header_filter(self, pos) -> None:
-        col = self.table.horizontalHeader().columnAt(pos.x())
-        if col >= 0:
-            self._header_clicked(col)
+        hdr = self.table.horizontalHeader()
+        logical = hdr.logicalIndexAt(pos.x())
+        if logical < 0:
+            return
+        col = hdr.visualIndex(logical)  # 转回视觉列号，_header_clicked 内部再转逻辑
+        self._header_clicked(col)
 
     def _sort_rows(self) -> None:
         """按当前排序列对 self._rows 排序，并同步重排 self._meta（保持索引对齐）。"""
