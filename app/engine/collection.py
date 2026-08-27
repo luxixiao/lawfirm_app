@@ -1,9 +1,10 @@
 """收款聚合引擎：发票维度 + 经办人维度
 
-口径（已确认）：
-- 发票已收金额：正数发票 = Σcollection；红字发票 = −Σrefund（退款合计为负）
+口径（已确认，红冲即扣 / 自动关联红字发票）：
+- 发票已收金额（净额）：正数发票 = Σcollection − 本票红冲金额（red_abs，取自红字发票面值）；
+  红字发票本身为冲抵凭证，已收恒为 0（现金影响已体现在原票净额中）。
 - 发票剩余应收 = 价税合计 − 已收金额（统一公式，含红字发票）
-- 经办人已收：全额 = 开票金额；部分 = 平均分摊+收齐退出（split.allocate_invoice）
+- 经办人已收（净额）= 分摊收款 − 按开票金额比例分摊的红冲额；红字发票经办人已收恒为 0
 - 经办人剩余应收 = 经办人开票金额 − 经办人已收
 """
 from __future__ import annotations
@@ -56,7 +57,6 @@ def invoice_rows(conn=None, period: str | None = None, keyword: str | None = Non
         conn = get_conn()
     try:
         collected = _collected_by_invoice(conn)
-        refunded = _refunded_by_invoice(conn)
         refund_months = _refund_months_by_invoice(conn)
 
         where = []
@@ -120,24 +120,26 @@ def invoice_rows(conn=None, period: str | None = None, keyword: str | None = Non
         for inv in conn.execute(sql, params):
             no = inv["invoice_no"]
             is_red = inv["total_amount"] < 0
-            if is_red:
-                got = -refunded.get(no, 0.0)  # 退款合计为负 = 已退款
-            else:
-                got = collected.get(no, 0.0)
             reds = red_map.get(no, [])
             red_abs = sum(abs_amt for _ym, abs_amt in reds)
             if is_red:
-                # 红字发票本身是冲抵凭证，剩余应收恒为 0
+                # 红字发票本身是冲抵凭证：已收恒为 0（现金影响已体现在原票净额中），剩余应收恒为 0
+                got = 0.0
                 remain = 0.0
                 remark = ""
             else:
+                gross = collected.get(no, 0.0)
+                # 正数发票：已收净额 = 实收 − 本票红冲金额（红冲即扣，按红字发票面值自动关联）
+                got = round(gross - red_abs, 2)
+                if got < 0:
+                    got = 0.0
                 if reds:
-                    # 原票被红冲：红冲金额 ≥ 已收时，原票与红字发票互相抵消，剩余应收记 0；
-                    # 部分红冲（红冲 < 已收）时，剩余应收 = 票面 − (已收 − 红冲)。
-                    if red_abs >= got - 1e-9:
+                    # 原票被红冲：红冲金额 ≥ 实收时，原票与红字发票互相抵消，剩余应收记 0；
+                    # 部分红冲（红冲 < 实收）时，剩余应收 = 票面 − 已收净额。
+                    if red_abs >= gross - 1e-9:
                         remain = 0.0
                     else:
-                        remain = round(inv["total_amount"] - got + red_abs, 2)
+                        remain = round(inv["total_amount"] - got, 2)
                 else:
                     remain = round(inv["total_amount"] - got, 2)
                 remark = "、".join(f"{ym}被红冲" for ym, _ in reds if ym) if reds else ""
@@ -189,7 +191,6 @@ def handler_rows(conn=None, person: str | None = None, period: str | None = None
         conn = get_conn()
     try:
         collected = _collected_by_invoice(conn)
-        refunded = _refunded_by_invoice(conn)
         refund_months = _refund_months_by_invoice(conn)
 
         # 红字发票映射：{原发票号: [(红冲年月 YYYY-MM, 红冲金额绝对值), ...]}
@@ -267,20 +268,23 @@ def handler_rows(conn=None, person: str | None = None, period: str | None = None
             handlers = [(r["person_name"], r["billing_amount"], r["person_type"] or "",
                         r["received_override"]) for r in items]
             if is_red:
-                # 红字发票已确认退款：经办人已收 = 退款金额按开票金额比例分摊（为负），与发票维度已收=-退款 对齐
-                R = refunded.get(no, 0.0)
-                T = abs(inv["total_amount"]) or 0.0
-                got_map = {}
-                for name, billing, _pt, _ov in handlers:
-                    share = (R * abs(billing) / T) if T else 0.0
-                    got_map[name] = -round(share, 2)
+                # 红字发票本身是冲抵凭证：经办人已收恒为 0（现金影响已体现在原票净额中）
+                got_map = {name: 0.0 for name, _b, _pt, _ov in handlers}
             else:
                 override_map = {name: ov for name, _, _, ov in handlers if ov is not None}
                 allocated = allocate_invoice(
                     [(n, b) for n, b, _, _ in handlers], receipts,
                     override_map or None,
                 )
-                got_map = {name: got for name, got in allocated}
+                gross_map = {name: got for name, got in allocated}
+                T = inv["total_amount"] or 0.0
+                got_map = {}
+                for name, billing, _pt, _ov in handlers:
+                    gross = gross_map.get(name, 0.0)
+                    # 按开票金额比例分摊红冲额，从实收中扣减（红冲即扣）
+                    share = (red_abs * (abs(billing) / T)) if T else 0.0
+                    net = gross - share
+                    got_map[name] = max(0.0, round(net, 2))
 
             receipt_dates = sorted({d for d, _ in receipts})
             rm = refund_months.get(no, [])
@@ -295,14 +299,12 @@ def handler_rows(conn=None, person: str | None = None, period: str | None = None
                     remark = ""
                 else:
                     if reds:
-                        # 原票被红冲：红冲金额 ≥ 发票级已收时，原票与红字互相抵消，剩余应收记 0；
-                        # 部分红冲（红冲 < 已收）时，按开票金额比例分摊红冲金额逐经办人抵消。
+                        # 原票被红冲：红冲金额 ≥ 发票级实收时，原票与红字互相抵消，剩余应收记 0；
+                        # 部分红冲（红冲 < 实收）时，剩余应收 = 开票金额 − 已收净额（已扣红冲，不再重复加回）。
                         if red_abs >= inv_got - 1e-9:
                             remain = 0.0
                         else:
-                            T = inv["total_amount"] or 0.0
-                            share = (red_abs * (billing / T)) if T else 0.0
-                            remain = round(billing - got + share, 2)
+                            remain = round(billing - got, 2)
                     else:
                         remain = round(billing - got, 2)
                     remark = "、".join(f"{ym}被红冲" for ym, _ in reds if ym) if reds else ""
