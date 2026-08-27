@@ -100,6 +100,9 @@ class RefundView(QWidget):
         table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         table.verticalHeader().setVisible(False)
         table.horizontalHeader().setStretchLastSection(True)
+        from app.ui.table_features import install_common_features, install_header_filter
+        install_common_features(table)
+        install_header_filter(table)
         attach_persistence(table, "refund", key)
 
     def showEvent(self, event) -> None:  # noqa: N802

@@ -49,6 +49,9 @@ class StaffView(QWidget):
         self.table.horizontalHeader().setStretchLastSection(True)
         self.table.cellDoubleClicked.connect(lambda *_: self.edit_selected())
         attach_persistence(self.table, "staff", "main")
+        from app.ui.table_features import install_common_features, install_header_filter
+        install_common_features(self.table)
+        install_header_filter(self.table)
         lay.addWidget(self.table)
 
         self.refresh()

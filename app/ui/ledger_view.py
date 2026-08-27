@@ -63,6 +63,9 @@ class LedgerView(QWidget):
         tb.horizontalHeader().setStretchLastSection(True)
         tb._edit_cols = edit_cols
         tb._readonly = readonly
+        from app.ui.table_features import install_common_features, install_header_filter
+        install_common_features(tb)
+        install_header_filter(tb)
         return tb
 
     def _fill(self, tb: QTableWidget, rows, meta_key: str) -> None:

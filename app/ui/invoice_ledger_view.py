@@ -115,6 +115,9 @@ class InvoiceLedgerView(QWidget):
         self.table.setSortingEnabled(False)  # 排序由下方手动实现
         self.table.horizontalHeader().sectionClicked.connect(self._on_header)
         attach_persistence(self.table, "invoice_ledger", "main")
+        from app.ui.table_features import install_common_features, install_header_filter
+        install_common_features(self.table)
+        install_header_filter(self.table)
         lay.addWidget(self.table, 1)
 
         # ---- 底部状态栏：行数 + 三类合计（随筛选动态变化） ----

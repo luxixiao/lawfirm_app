@@ -19,6 +19,9 @@ def _table(columns: list, rows: list, title: str) -> QDialog:
     t.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
     t.verticalHeader().setVisible(False)
     t.horizontalHeader().setStretchLastSection(True)
+    from app.ui.table_features import install_common_features, install_header_filter
+    install_common_features(t)
+    install_header_filter(t)
     for r, row in enumerate(rows):
         for c, v in enumerate(row):
             item = QTableWidgetItem("" if v is None else str(v))

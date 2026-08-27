@@ -307,13 +307,18 @@ class BaseTableView(QWidget):
     def _make_item(self, val, r: int, c: int):
         from PySide6.QtWidgets import QTableWidgetItem
         item = QTableWidgetItem(self._fmt(val))
+        meta = self._meta.get(r)
+        row_red = bool(meta and (meta.get("is_red") or meta.get("is_voided")))
         if isinstance(val, (int, float)):
             item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             if val < 0:
                 item.setForeground(RED)
             elif val > 0 and c in self._green_cols():
                 item.setForeground(GREEN)
-        item.setData(Qt.ItemDataRole.UserRole, self._meta.get(r))
+        if row_red:
+            # 正数发票被红冲 / 红字发票：整行字体标红（委托保证选中仍红）
+            item.setForeground(RED)
+        item.setData(Qt.ItemDataRole.UserRole, meta)
         return item
 
     def _green_cols(self) -> set:

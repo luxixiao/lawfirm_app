@@ -40,6 +40,9 @@ class BatchView(QWidget):
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.verticalHeader().setVisible(False)
         self.table.horizontalHeader().setStretchLastSection(True)
+        from app.ui.table_features import install_common_features, install_header_filter
+        install_common_features(self.table)
+        install_header_filter(self.table)
         lay.addWidget(self.table)
         attach_persistence(self.table, "batch", "main")
 

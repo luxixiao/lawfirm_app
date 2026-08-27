@@ -97,6 +97,9 @@ class InvoiceLedgerDocView(QWidget):
         self.table.setWordWrap(False)
         self.table.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
         self.table.verticalHeader().setVisible(False)
+        from app.ui.table_features import install_common_features, install_header_filter
+        install_common_features(self.table)
+        install_header_filter(self.table)
         hdr = self.table.horizontalHeader()
         hdr.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         hdr.setStretchLastSection(True)

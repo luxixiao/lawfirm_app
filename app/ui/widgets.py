@@ -69,6 +69,12 @@ class LineEdit(QLineEdit):
 class TableWidget(QTableWidget):
     """表格 -> 走全局 QTableWidget 样式；兼容 qfluentwidgets 的 setBorderVisible / setBorderRadius（此处为无操作）"""
 
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        # 统一表格行为：像素级滚动 + 选中保色 + 悬停显示被压缩全文
+        from app.ui.table_features import install_common_features
+        install_common_features(self)
+
     def setBorderVisible(self, visible: bool) -> None:  # noqa: D401
         return None
 
@@ -86,6 +92,9 @@ class FrozenTableWidget(QTableWidget):
     def __init__(self, *args, frozen: int = 1, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self._frozen = max(1, frozen)
+        # 统一表格行为：像素级滚动 + 选中保色 + 悬停显示被压缩全文
+        from app.ui.table_features import install_common_features
+        install_common_features(self)
         self.horizontalScrollBar().valueChanged.connect(lambda *_: self.viewport().update())
         self.verticalScrollBar().valueChanged.connect(lambda *_: self.viewport().update())
 

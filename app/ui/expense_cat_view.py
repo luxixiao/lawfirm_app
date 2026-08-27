@@ -41,6 +41,9 @@ class ExpenseCatView(QWidget):
         self.table.setColumnWidth(1, 200)
         self.table.setColumnWidth(2, 130)
         attach_persistence(self.table, "expense_cat", "main")
+        from app.ui.table_features import install_common_features, install_header_filter
+        install_common_features(self.table)
+        install_header_filter(self.table)
         lay.addWidget(self.table, 1)
 
         bar = QHBoxLayout()

@@ -50,6 +50,9 @@ class _OffsetDialog(QDialog):
         self.table.setSortingEnabled(True)
         self.table.itemSelectionChanged.connect(self._on_sel)
         self.table.doubleClicked.connect(self.accept)
+        from app.ui.table_features import install_common_features, install_header_filter
+        install_common_features(self.table)
+        install_header_filter(self.table)
         lay.addWidget(self.table, 1)
 
         f = QFormLayout()
@@ -172,6 +175,9 @@ class PrepaymentView(QTabWidget):
         self.table_done.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table_done.verticalHeader().setVisible(False)
         self.table_done.horizontalHeader().setStretchLastSection(True)
+        from app.ui.table_features import install_common_features, install_header_filter
+        install_common_features(self.table_done)
+        install_header_filter(self.table_done)
         lay.addWidget(self.table_done)
         attach_persistence(self.table_done, "prepayment_done", "main")
 

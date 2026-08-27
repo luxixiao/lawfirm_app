@@ -3,16 +3,17 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QAbstractItemView, QComboBox, QLabel, QMenu, QStyledItemDelegate,
+    QAbstractItemView, QComboBox, QLabel, QMenu,
 )
 
 from app.db import get_conn
 from app.engine.collection import handler_rows
 from app.ui.dialogs import show_invoice_handlers, show_red_relation
+from app.ui.table_features import TableBehaviorDelegate
 from app.ui.table_view import BaseTableView, make_filter_widgets, RED, build_period
 
 
-class _TypeDelegate(QStyledItemDelegate):
+class _TypeDelegate(TableBehaviorDelegate):
     """身份列（索引5）编辑委托：双击/F2 弹下拉，选择后直接写库。
 
     替代旧的「每行常驻 QComboBox」方案——行数上千时逐行建 widget 极慢，

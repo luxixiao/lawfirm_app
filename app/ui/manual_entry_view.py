@@ -84,6 +84,9 @@ class ManualEntryView(QWidget):
         t.horizontalHeader().setStretchLastSection(False)
         t.setHorizontalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
         t.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        from app.ui.table_features import install_common_features, install_header_filter
+        install_common_features(t)
+        install_header_filter(t)
         return t
 
     def refresh(self) -> None:
@@ -212,6 +215,9 @@ class ManualEntryView(QWidget):
         detail.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         detail.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         detail.verticalHeader().setVisible(False)
+        from app.ui.table_features import install_common_features, install_header_filter
+        install_common_features(detail)
+        install_header_filter(detail)
         # 列宽均分填满窗体宽度
         detail.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         # 行高固定且与内嵌输入框等高，使输入框四边框正好对齐单元格四框

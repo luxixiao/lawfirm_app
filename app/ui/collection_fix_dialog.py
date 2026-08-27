@@ -101,6 +101,8 @@ class CollectionFixDialog(QDialog):
         )
         self.table.verticalHeader().setVisible(False)
         self.table.verticalHeader().setDefaultSectionSize(32)
+        from app.ui.table_features import install_common_features
+        install_common_features(self.table)
         self.table.setItemDelegateForColumn(1, AmountDelegate(self.table))
         self.table.itemChanged.connect(lambda *_: self._update_actual())
         lay.addWidget(self.table, 1)
