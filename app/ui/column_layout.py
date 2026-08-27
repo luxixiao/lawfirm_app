@@ -17,6 +17,7 @@ from typing import Dict, List, Optional
 from PySide6.QtCore import QEvent, QObject, QPoint, QSettings, Qt, QTimer
 from PySide6.QtGui import QFontMetrics
 from PySide6.QtWidgets import QHeaderView, QMenu, QTableWidget
+from app.ui.table_features import populate_filter_menu
 
 _ORG = "lawfirm_app"
 _APP = "lawfirm_app"
@@ -241,6 +242,7 @@ class TableColumnLayout(QObject):
         self.mgr = ColumnLayoutManager(page, name)
         self.content_w: Optional[List[int]] = None
         self._filter_slot = None
+        self._tf_filter = None
         self._applying = False
         self._movable = movable
         self._win = None  # 顶层窗口（用于监听最大化/还原，触发比例重填）
@@ -262,6 +264,7 @@ class TableColumnLayout(QObject):
                 pass
             hdr._tf_filter_installed = False
             self._filter_slot = slot
+            self._tf_filter = getattr(hdr, "_tf_filter_tf", None)
         hdr.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         hdr.customContextMenuRequested.connect(self._on_context_menu)
         return self
@@ -332,14 +335,16 @@ class TableColumnLayout(QObject):
     def _on_context_menu(self, pos: QPoint) -> None:
         menu = QMenu(self.table)
         act_settings = menu.addAction("列设置…")
-        act_filter = self._filter_slot is not None and menu.addAction("按列筛选…")
+        # 按列筛选：直接把 3 个操作摊平进同一菜单（不再嵌套「按列筛选…」子菜单），
+        # 并按条件显隐（该列未筛选则不显示「清除此列筛选」；无任何列筛选则不显示「清除全部筛选」）。
+        if self._tf_filter is not None:
+            menu.addSeparator()
+            populate_filter_menu(menu, self._tf_filter, self.table, pos)
         action = menu.exec(self.table.mapToGlobal(pos))
         if action is None:
             return
         if action == act_settings:
             self.open_settings()
-        elif self._filter_slot is not None and action == act_filter:
-            self._filter_slot(pos)
 
     # ---------- 事件过滤（窗体缩放 / 最大化还原时重填） ----------
     def _ensure_win(self) -> None:

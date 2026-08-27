@@ -161,6 +161,10 @@ class TableFilter:
     def has_any(self) -> bool:
         return bool(self._col_filters) or bool(self._search)
 
+    def has_col_filters(self) -> bool:
+        """仅判断按列筛选是否生效（不含跨列搜索，因搜索非按列筛选）。"""
+        return bool(self._col_filters)
+
     def _changed(self) -> None:
         if self._reapply is not None:
             self._reapply()
@@ -233,6 +237,7 @@ class ColumnFilterDialog(QDialog):
         self.resize(320, 460)
         self._all = sorted(values, key=lambda s: (len(s), s))
         self._checked = set(checked)
+        self._displayed: List[str] = []
         lay = QVBoxLayout(self)
         self._search = QLineEdit()
         self._search.setPlaceholderText("搜索筛选值…")
@@ -263,6 +268,7 @@ class ColumnFilterDialog(QDialog):
     def _populate(self, vals) -> None:
         self._loading = True
         self._list.clear()
+        self._displayed = list(vals)
         for v in vals:
             it = QListWidgetItem(v)
             it.setFlags(it.flags() | Qt.ItemFlag.ItemIsUserCheckable)
@@ -292,7 +298,10 @@ class ColumnFilterDialog(QDialog):
             )
 
     def selected(self) -> set:
-        return set(self._checked)
+        # 仅返回「当前可见（受弹窗内搜索过滤后的列表）且已勾选」的值。
+        # 否则搜索隐藏的项仍计入 _checked，会让 selected()==全部唯一值，
+        # 触发「全选=不筛选」而把刚设的筛选清空（即用户反馈的“用了搜索筛选不生效”）。
+        return set(self._displayed) & self._checked
 
 
 def _column_values(table: QTableWidget, logical: int) -> List[str]:
@@ -307,43 +316,50 @@ def _column_values(table: QTableWidget, logical: int) -> List[str]:
     return uniq
 
 
-def open_filter_submenu(tf: TableFilter, table: QTableWidget, pos) -> None:
-    """表头右键筛选子菜单：筛选此列 / 清除此列筛选 / 清除全部筛选。
+def open_col_filter_dialog(tf: TableFilter, table: QTableWidget, logical: int) -> None:
+    """打开某列的按列筛选弹窗并应用结果。"""
+    title = table.horizontalHeaderItem(logical)
+    title_text = title.text() if title else ""
+    uniq = _column_values(table, logical)
+    cur = tf._col_filters.get(logical)
+    dlg = ColumnFilterDialog(
+        table.window() if table.window() else table,
+        title_text, uniq, cur if cur is not None else set(uniq),
+    )
+    if dlg.exec() == QDialog.DialogCode.Accepted:
+        sel = dlg.selected()
+        if len(sel) == len(uniq):
+            tf.clear_col(logical)  # 全选 = 不筛选
+        else:
+            tf.set_col_filter(logical, sel)
 
-    多重筛选：多列条件按设置先后 AND 组合（顺序见 tf.active_cols）。
+
+def populate_filter_menu(menu, tf: TableFilter, table: QTableWidget, pos) -> None:
+    """把按列筛选的 3 个操作直接加进现有右键菜单（扁平、不嵌套），并按条件显隐：
+
+    - 筛选此列…：恒显示
+    - 清除此列筛选：仅当该列已设筛选
+    - 清除全部筛选：仅当存在任意列筛选（搜索不计入，因搜索非按列筛选）
     """
     hdr = table.horizontalHeader()
     logical = hdr.logicalIndexAt(pos.x())
     if logical < 0:
         return
-    menu = QMenu(table)
     act_filter = menu.addAction("筛选此列…")
-    act_clear_col = menu.addAction("清除此列筛选")
-    act_clear_all = menu.addAction("清除全部筛选")
-    act_clear_col.setEnabled(logical in tf._col_filters)
-    act_clear_all.setEnabled(tf.has_any())
-    action = menu.exec(table.mapToGlobal(pos))
-    if action is None:
-        return
-    if action == act_filter:
-        title = table.horizontalHeaderItem(logical)
-        title_text = title.text() if title else ""
-        uniq = _column_values(table, logical)
-        cur = tf._col_filters.get(logical)
-        dlg = ColumnFilterDialog(
-            table.window() if table.window() else table,
-            title_text, uniq, cur if cur is not None else set(uniq),
-        )
-        if dlg.exec() == QDialog.DialogCode.Accepted:
-            sel = dlg.selected()
-            if len(sel) == len(uniq):
-                tf.clear_col(logical)  # 全选 = 不筛选
-            else:
-                tf.set_col_filter(logical, sel)
-    elif action == act_clear_col:
-        tf.clear_col(logical)
-    elif action == act_clear_all:
-        tf.clear_all()
+    act_filter.triggered.connect(lambda: open_col_filter_dialog(tf, table, logical))
+    if logical in tf._col_filters:
+        act_cc = menu.addAction("清除此列筛选")
+        act_cc.triggered.connect(lambda: tf.clear_col(logical))
+    if tf.has_col_filters():
+        act_ca = menu.addAction("清除全部筛选")
+        act_ca.triggered.connect(lambda: tf.clear_all())
+
+
+def open_filter_submenu(tf: TableFilter, table: QTableWidget, pos) -> None:
+    """独立（无列布局合并）表格的表头右键筛选：直接弹出 3 个选项（扁平）。"""
+    menu = QMenu(table)
+    populate_filter_menu(menu, tf, table, pos)
+    menu.exec(table.mapToGlobal(pos))
 
 
 class _FilterMenuSlot:
@@ -377,5 +393,6 @@ def install_header_filter(table: QTableWidget, reapply_cb: Optional[Callable] = 
     slot = _FilterMenuSlot(tf)
     hdr.customContextMenuRequested.connect(slot)
     hdr._tf_filter_slot = slot
+    hdr._tf_filter_tf = tf
     hdr._tf_filter_installed = True
     return tf
