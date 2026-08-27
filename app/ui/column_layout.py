@@ -347,6 +347,10 @@ class TableColumnLayout(QObject):
         return super().eventFilter(obj, event)
 
 
-def install_column_layout(table: QTableWidget, page: str, name: str = "main") -> TableColumnLayout:
-    """便捷入口：创建并安装列布局控制器（须在 install_header_filter 之后调用）。"""
-    return TableColumnLayout(table, page, name).install()
+def install_column_layout(table: QTableWidget, page: str, name: str = "main",
+                          movable: bool = True) -> TableColumnLayout:
+    """便捷入口：创建并安装列布局控制器（须在 install_header_filter 之后调用）。
+
+    movable=False 时禁用列重排（用于内置冻结列的首列冻结表，避免拖动打乱冻结顺序）。
+    """
+    return TableColumnLayout(table, page, name, movable=movable).install()
