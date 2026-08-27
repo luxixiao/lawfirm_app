@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (
 from app.engine import raw_ledger as rl
 from app.engine.raw_ledger import EDIT_FIELDS, sheet_label
 from app.ui.audit_view import AuditView
-from app.ui.column_state import attach_persistence, auto_fit_then_restore
+from app.ui.column_layout import install_column_layout
 from app.ui.table_view import month_options_1_12, build_period
 from app.ui.widgets import CaptionLabel, PushButton, SubtitleLabel
 
@@ -111,7 +111,7 @@ class InvoiceLedgerDocView(QWidget):
         self.lbl_stat = CaptionLabel("")
         lay.addWidget(self.lbl_stat)
 
-        attach_persistence(self.table, "ledger_doc", "main")
+        self._col = install_column_layout(self.table, "ledger_doc", "main")
 
         self._all_rows: list[dict] = []
         self._meta: dict[int, int] = {}      # 显示行 -> raw_ledger.id
@@ -241,9 +241,7 @@ class InvoiceLedgerDocView(QWidget):
                 for c in range(len(_HEADERS)):
                     self.table.item(r, c).setBackground(_RED_BG)
 
-        used = auto_fit_then_restore(self.table, "ledger_doc", "main")
-        if used:
-            self.table.horizontalHeader().setStretchLastSection(False)
+        self._col.apply()
         self.table.horizontalHeader().setSortIndicator(
             self._sort_col, self._sort_order) if self._sort_col >= 0 else None
         self.lbl_stat.setText(

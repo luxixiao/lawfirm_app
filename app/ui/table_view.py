@@ -271,13 +271,20 @@ class BaseTableView(QWidget):
         self._mgr.save(state)
 
     def _on_section_resized(self, logical: int, _old: int, new_w: int) -> None:
-        """用户手动调列宽：记为 fixed 宽度，并立刻重排填充（其余列吸收，保持总宽=视口）。"""
+        """用户手动调列宽：记为 fixed 宽度，并立刻重排填充（其余列吸收，保持总宽=视口）。
+        程序化重填触发的 resize 由 _applying 屏蔽，避免把其它列误标为 fixed。"""
+        if getattr(self, "_applying", False):
+            return
         if new_w <= 0 or self._col_content_w is None:
             return
         state = self._mgr.load(self.columns)
         state["widths"][self.columns[logical]] = int(new_w)
         self._mgr.save(state)
-        self._mgr.apply(self.table, self.columns, self._col_content_w)
+        self._applying = True
+        try:
+            self._mgr.apply(self.table, self.columns, self._col_content_w)
+        finally:
+            self._applying = False
 
     def _open_col_settings(self) -> None:
         from app.ui.column_settings_dialog import open_column_settings

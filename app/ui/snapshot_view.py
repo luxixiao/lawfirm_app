@@ -1,7 +1,7 @@
 """快照管理页：保存 / 恢复 / 删除"""
 from __future__ import annotations
 
-from app.ui.column_state import attach_persistence, restore_col_widths
+from app.ui.column_layout import install_column_layout
 from PySide6.QtWidgets import (
     QHBoxLayout, QInputDialog, QLabel, QMessageBox, QPushButton, QTableWidget,
     QTableWidgetItem, QVBoxLayout, QWidget,
@@ -41,12 +41,11 @@ class SnapshotView(QWidget):
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.verticalHeader().setVisible(False)
-        self.table.horizontalHeader().setStretchLastSection(True)
         from app.ui.table_features import install_common_features, install_header_filter
         install_common_features(self.table)
         install_header_filter(self.table)
+        self._col = install_column_layout(self.table, "snapshot", "main")
         lay.addWidget(self.table)
-        attach_persistence(self.table, "snapshot", "main")
 
         self.refresh()
 
@@ -65,8 +64,7 @@ class SnapshotView(QWidget):
             self.table.setItem(r, 2, QTableWidgetItem(s["note"] or ""))
             self._meta[r] = s["id"]
 
-        if restore_col_widths(self.table, "snapshot", "main"):
-            self.table.horizontalHeader().setStretchLastSection(False)
+        self._col.apply()
 
     def save_now(self) -> None:
         name, ok = QInputDialog.getText(self, "保存快照", "快照名称：", text=f"手动快照 {self._now()}")

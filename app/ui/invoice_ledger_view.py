@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.ui.widgets import CaptionLabel, SubtitleLabel
-from app.ui.column_state import attach_persistence, auto_fit_then_restore
+from app.ui.column_layout import install_column_layout
 from app.ui.table_view import month_options_1_12, build_period
 from app.engine import raw_invoice as ri
 
@@ -114,10 +114,10 @@ class InvoiceLedgerView(QWidget):
         self.table.setWordWrap(False)
         self.table.setSortingEnabled(False)  # 排序由下方手动实现
         self.table.horizontalHeader().sectionClicked.connect(self._on_header)
-        attach_persistence(self.table, "invoice_ledger", "main")
         from app.ui.table_features import install_common_features, install_header_filter
         install_common_features(self.table)
         install_header_filter(self.table)
+        self._col = install_column_layout(self.table, "invoice_ledger", "main")
         lay.addWidget(self.table, 1)
 
         # ---- 底部状态栏：行数 + 三类合计（随筛选动态变化） ----
@@ -253,11 +253,9 @@ class InvoiceLedgerView(QWidget):
                 if is_red and c in (0, 6):  # 红字发票号与金额标红（发票号码=0，价税合计=6）
                     item.setForeground(Qt.GlobalColor.red)
                 self.table.setItem(r, c, item)
-            if is_red:
-                for c in range(self.table.columnCount()):
-                    it = self.table.item(r, c)
-                    if it is not None:
-                        it.setBackground(QColor("#FFECEC"))
-        used = auto_fit_then_restore(self.table, "invoice_ledger", "main")
-        if used:
-            self.table.horizontalHeader().setStretchLastSection(False)
+        if is_red:
+            for c in range(self.table.columnCount()):
+                it = self.table.item(r, c)
+                if it is not None:
+                    it.setBackground(QColor("#FFECEC"))
+        self._col.apply()

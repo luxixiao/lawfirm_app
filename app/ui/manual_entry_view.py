@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (
 
 from app.db import get_conn
 from app.ui.widgets import SubtitleLabel, CaptionLabel, PrimaryPushButton, PushButton
-from app.ui.column_state import attach_persistence, restore_col_widths
+from app.ui.column_layout import install_column_layout
 from app.engine.backfill_module import (
     list_pending_backfill, list_backfilled, load_invoice_detail,
     save_backfill, delete_backfill,
@@ -41,9 +41,9 @@ class ManualEntryView(QWidget):
 
         self.tabs = QTabWidget()
         self.tab_pending = self._make_table(
-            ["开票日期", "发票号码", "对方", "价税合计", "状态", "收款金额", "对应红字发票", "操作"])
+            ["开票日期", "发票号码", "对方", "价税合计", "状态", "收款金额", "对应红字发票", "操作"], "pending")
         self.tab_done = self._make_table(
-            ["开票日期", "发票号码", "对方", "价税合计", "状态", "收款金额", "补录时间", "操作"])
+            ["开票日期", "发票号码", "对方", "价税合计", "状态", "收款金额", "补录时间", "操作"], "done")
         self.tabs.addTab(self.tab_pending, "待补录发票")
         self.tabs.addTab(self.tab_done, "已补录发票")
         lay.addWidget(self.tabs, 1)
@@ -62,10 +62,6 @@ class ManualEntryView(QWidget):
         done_btns.addStretch()
         lay.addLayout(done_btns)
 
-        # 列宽持久化（手动调整后跨关闭/切换页面保持）
-        for name, tbl in (("pending", self.tab_pending), ("done", self.tab_done)):
-            attach_persistence(tbl, "manual", name)
-
         self._pending_meta: dict = {}
         self._done_meta: dict = {}
         self.refresh()
@@ -75,7 +71,7 @@ class ManualEntryView(QWidget):
         super().showEvent(event)
         self.refresh()
 
-    def _make_table(self, headers) -> QTableWidget:
+    def _make_table(self, headers, name: str) -> QTableWidget:
         t = QTableWidget(0, len(headers))
         t.setHorizontalHeaderLabels(headers)
         t.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
@@ -87,6 +83,7 @@ class ManualEntryView(QWidget):
         from app.ui.table_features import install_common_features, install_header_filter
         install_common_features(t)
         install_header_filter(t)
+        t._col = install_column_layout(t, "manual", name)
         return t
 
     def refresh(self) -> None:
@@ -109,8 +106,7 @@ class ManualEntryView(QWidget):
             btn.clicked.connect(lambda _checked=False, no=row["invoice_no"]: self.open_backfill(no))
             tbl.setCellWidget(r, 7, btn)
             self._pending_meta[r] = row["invoice_no"]
-        if not restore_col_widths(tbl, "manual", "pending"):
-            tbl.resizeColumnsToContents()
+        tbl._col.apply()
 
     # ---- 已补录 ----
     def _load_done(self) -> None:
@@ -128,8 +124,7 @@ class ManualEntryView(QWidget):
             btn.clicked.connect(lambda _checked=False, no=row["invoice_no"]: self.open_backfill(no, edit=True))
             tbl.setCellWidget(r, 7, btn)
             self._done_meta[r] = row["invoice_no"]
-        if not restore_col_widths(tbl, "manual", "done"):
-            tbl.resizeColumnsToContents()
+        tbl._col.apply()
 
     # ------------------------------------------------------------------ #
     # 打开补录弹窗（待补录点击 → 预填红字发票信息；已补录编辑 → 预填已存数据）

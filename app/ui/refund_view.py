@@ -6,7 +6,7 @@
 """
 from __future__ import annotations
 
-from app.ui.column_state import attach_persistence, restore_col_widths
+from app.ui.column_layout import install_column_layout
 from PySide6.QtCore import QDate, Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
@@ -103,7 +103,7 @@ class RefundView(QWidget):
         from app.ui.table_features import install_common_features, install_header_filter
         install_common_features(table)
         install_header_filter(table)
-        attach_persistence(table, "refund", key)
+        table._col = install_column_layout(table, "refund", key)
 
     def showEvent(self, event) -> None:  # noqa: N802
         """切换到本页时自动刷新数据"""
@@ -157,8 +157,7 @@ class RefundView(QWidget):
         else:
             self.banner.hide()
 
-        if restore_col_widths(self.tab_pending, "refund", "pending"):
-            self.tab_pending.horizontalHeader().setStretchLastSection(False)
+        self.tab_pending._col.apply()
 
         # ---------- 已确认 ----------
         done_rows = confirmed_refunds()
@@ -175,8 +174,7 @@ class RefundView(QWidget):
                 if c == 5 and isinstance(v, float):  # 退款金额
                     cell.setForeground(QColor("#C0392B"))
                 self.tab_done.setItem(r, c, cell)
-        if restore_col_widths(self.tab_done, "refund", "done"):
-            self.tab_done.horizontalHeader().setStretchLastSection(False)
+        self.tab_done._col.apply()
 
     # ---- 待补录明细 ----
     def show_pending(self) -> None:

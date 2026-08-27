@@ -30,9 +30,7 @@ from app.importer.importer import (
 from app.importer.ledger_import import parse_ledger_file
 from app.ui.collection_fix_dialog import CollectionFixDialog
 from app.ui.ledger_source import show_source_for_invoice
-from app.ui.column_state import (
-    attach_persistence, auto_fit_then_restore, restore_col_widths,
-)
+from app.ui.column_layout import install_column_layout
 from app.ui.widgets import CaptionLabel, ComboBox, PushButton, TableWidget
 
 RED = QColor("#C0392B")
@@ -146,7 +144,7 @@ class ImportVerifyView(QWidget):
         self.table.setHorizontalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
         self.table.cellDoubleClicked.connect(self._cell_double_clicked)
         lay.addWidget(self.table, 1)
-        attach_persistence(self.table, "import_verify", "main")
+        self.table._col = install_column_layout(self.table, "import_verify", "main")
 
         foot = CaptionLabel("双击任意行可查看该记录在原台账中的信息（含所属 sheet 与行号）。")
         lay.addWidget(foot)
@@ -531,10 +529,10 @@ class ImportVerifyView(QWidget):
             self.table.setRowHeight(r, 32)
             self.table.item(r, 0).setData(Qt.ItemDataRole.UserRole, row["_idx"])
         if self._need_fit:
-            auto_fit_then_restore(self.table, "import_verify", "main", max_width=200)
+            self.table._col.apply()
             self._need_fit = False
         else:
-            restore_col_widths(self.table, "import_verify", "main")
+            self.table._col.apply(remeasure=False)
 
         diff_n = sum(1 for r in self._rows if r["reason"] and not r.get("confirmed_note"))
         confirmed_n = sum(1 for r in self._rows if r.get("confirmed_note"))

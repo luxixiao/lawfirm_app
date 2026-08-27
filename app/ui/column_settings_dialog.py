@@ -13,16 +13,20 @@ from app.ui.column_layout import ColumnLayoutManager, MIN_W, SPIN_MAX
 
 
 def open_column_settings(parent, mgr: ColumnLayoutManager, keys: List[str],
-                         state: dict, content_w: List[int]) -> bool:
-    """打开列设置对话框；用户确认返回 True（mgr 已保存新状态）。"""
-    dlg = _ColSettingsDlg(parent, mgr, keys, state, content_w)
+                         state: dict, content_w: List[int], movable: bool = True) -> bool:
+    """打开列设置对话框；用户确认返回 True（mgr 已保存新状态）。
+
+    movable=False 时禁用顺序调整（用于内置冻结列的首列冻结表，避免打乱冻结顺序）。
+    """
+    dlg = _ColSettingsDlg(parent, mgr, keys, state, content_w, movable)
     return dlg.exec() == QDialog.DialogCode.Accepted
 
 
 class _ColSettingsDlg(QDialog):
     def __init__(self, parent, mgr: ColumnLayoutManager, keys: List[str],
-                 state: dict, content_w: List[int]) -> None:
+                 state: dict, content_w: List[int], movable: bool = True) -> None:
         super().__init__(parent)
+        self._movable = movable
         self.mgr = mgr
         self.keys = keys
         self.state = state
@@ -57,6 +61,9 @@ class _ColSettingsDlg(QDialog):
         move.addStretch()
         move.addWidget(self.up)
         move.addWidget(self.down)
+        if not self._movable:
+            self.up.setEnabled(False)
+            self.down.setEnabled(False)
         lay.addLayout(move)
 
         btns = QHBoxLayout()
@@ -126,8 +133,11 @@ class _ColSettingsDlg(QDialog):
             val = sp.value()
             if val != int(round(cw.get(k, val))):
                 widths[k] = val
-        # 冻结列排到最左
-        new_order = [k for k in order if frozen.get(k)] + [k for k in order if not frozen.get(k)]
+        # 冻结列排到最左（movable=False 时保持原顺序，避免打乱内置冻结表的冻结列）
+        if self._movable:
+            new_order = [k for k in order if frozen.get(k)] + [k for k in order if not frozen.get(k)]
+        else:
+            new_order = list(order)
         self.state = {"order": new_order, "visible": visible, "frozen": frozen, "widths": widths}
         self.mgr.save(self.state)
         self.accept()

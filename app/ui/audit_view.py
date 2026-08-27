@@ -17,7 +17,7 @@ from PySide6.QtWidgets import (
 from app.engine.change_log import (
     INVOICE_RELATED, TABLE_OPTIONS, build_friendly_table, fetch_log,
 )
-from app.ui.column_state import attach_persistence
+from app.ui.column_layout import install_column_layout
 from app.ui.widgets import CaptionLabel, PushButton
 
 
@@ -84,7 +84,7 @@ class AuditView(QWidget):
         self.lbl_stat = CaptionLabel("")
         lay.addWidget(self.lbl_stat)
 
-        attach_persistence(self.table, "audit")
+        self._col = install_column_layout(self.table, "audit")
 
         # 信号
         self.f_table.currentIndexChanged.connect(lambda _: self.load())
@@ -138,3 +138,4 @@ class AuditView(QWidget):
                 if key in ("old_value", "new_value", "buyer", "amount", "handlers", "invoice_no"):
                     item.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
                 self.table.setItem(r, c, item)
+        self._col.apply()

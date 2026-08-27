@@ -1,7 +1,7 @@
 """导入记录页：批次列表 + 撤销 / 重新导入"""
 from __future__ import annotations
 
-from app.ui.column_state import attach_persistence, restore_col_widths
+from app.ui.column_layout import install_column_layout
 from PySide6.QtWidgets import (
     QHBoxLayout, QLabel, QMessageBox, QPushButton, QTableWidget,
     QTableWidgetItem, QVBoxLayout, QWidget,
@@ -39,12 +39,11 @@ class BatchView(QWidget):
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.verticalHeader().setVisible(False)
-        self.table.horizontalHeader().setStretchLastSection(True)
         from app.ui.table_features import install_common_features, install_header_filter
         install_common_features(self.table)
         install_header_filter(self.table)
+        self._col = install_column_layout(self.table, "batch", "main")
         lay.addWidget(self.table)
-        attach_persistence(self.table, "batch", "main")
 
         self.refresh()
 
@@ -74,8 +73,7 @@ class BatchView(QWidget):
                 self.table.setItem(r, c, item)
             self._meta[r] = row["id"]
 
-        if restore_col_widths(self.table, "batch", "main"):
-            self.table.horizontalHeader().setStretchLastSection(False)
+        self._col.apply()
 
     def rollback_now(self) -> None:
         row = self.table.currentRow()

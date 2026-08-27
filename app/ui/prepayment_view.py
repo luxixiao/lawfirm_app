@@ -17,7 +17,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.ui.widgets import SubtitleLabel, PrimaryPushButton, PushButton
-from app.ui.column_state import attach_persistence, restore_col_widths
+from app.ui.column_layout import install_column_layout
 from app.db import get_conn
 from app.engine.collection import invoice_rows
 
@@ -53,6 +53,7 @@ class _OffsetDialog(QDialog):
         from app.ui.table_features import install_common_features, install_header_filter
         install_common_features(self.table)
         install_header_filter(self.table)
+        self._col = install_column_layout(self.table, "prepayment_offset", "main")
         lay.addWidget(self.table, 1)
 
         f = QFormLayout()
@@ -103,6 +104,7 @@ class _OffsetDialog(QDialog):
                 self.table.setItem(ri, ci, item)
         if matched:
             self.table.selectRow(0)
+        self._col.apply()
 
     def _on_sel(self) -> None:
         row = self.table.currentRow()
@@ -156,9 +158,11 @@ class PrepaymentView(QTabWidget):
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.verticalHeader().setVisible(False)
-        self.table.horizontalHeader().setStretchLastSection(True)
+        from app.ui.table_features import install_common_features, install_header_filter
+        install_common_features(self.table)
+        install_header_filter(self.table)
+        self._col = install_column_layout(self.table, "prepayment", "main")
         lay.addWidget(self.table)
-        attach_persistence(self.table, "prepayment", "main")
 
     # ---------- 已核销 ----------
     def _build_done(self) -> None:
@@ -178,8 +182,8 @@ class PrepaymentView(QTabWidget):
         from app.ui.table_features import install_common_features, install_header_filter
         install_common_features(self.table_done)
         install_header_filter(self.table_done)
+        self._col_done = install_column_layout(self.table_done, "prepayment_done", "main")
         lay.addWidget(self.table_done)
-        attach_persistence(self.table_done, "prepayment_done", "main")
 
     # ---------- 刷新 ----------
     def showEvent(self, event) -> None:  # noqa: N802
@@ -215,8 +219,7 @@ class PrepaymentView(QTabWidget):
                 self.table.setItem(r, c, item)
             self._meta[r] = {"id": row["id"], "buyer": row["buyer"], "amount": row["amount"],
                              "case_no": row["case_no"], "remain": remain}
-        if restore_col_widths(self.table, "prepayment", "main"):
-            self.table.horizontalHeader().setStretchLastSection(False)
+        self._col.apply()
 
         # 已核销：核销明细
         conn = get_conn()
@@ -243,8 +246,7 @@ class PrepaymentView(QTabWidget):
                 item = QTableWidgetItem("" if v is None else
                                         (f"{v:,.2f}" if isinstance(v, float) else str(v)))
                 self.table_done.setItem(r, c, item)
-        if restore_col_widths(self.table_done, "prepayment_done", "main"):
-            self.table_done.horizontalHeader().setStretchLastSection(False)
+        self._col_done.apply()
 
     # ---------- 核销（方案1） ----------
     def offset(self) -> None:

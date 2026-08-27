@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.ui.widgets import (CaptionLabel, PushButton, SubtitleLabel)
-from app.ui.column_state import attach_persistence, restore_col_widths
+from app.ui.column_layout import install_column_layout
 from app.db import get_conn
 from app.engine.change_log import log_change
 from app.engine.expense_cat import (CATEGORIES, add_type, ensure_types, get_by_category,
@@ -40,10 +40,10 @@ class ExpenseCatView(QWidget):
         self.table.setColumnWidth(0, 50)
         self.table.setColumnWidth(1, 200)
         self.table.setColumnWidth(2, 130)
-        attach_persistence(self.table, "expense_cat", "main")
         from app.ui.table_features import install_common_features, install_header_filter
         install_common_features(self.table)
         install_header_filter(self.table)
+        self._col = install_column_layout(self.table, "expense_cat", "main")
         lay.addWidget(self.table, 1)
 
         bar = QHBoxLayout()
@@ -101,8 +101,7 @@ class ExpenseCatView(QWidget):
             types = get_by_category(row["category"])
             self.table.setItem(r, 3, QTableWidgetItem("、".join(types)))
             self.table.setRowHeight(r, 34)
-        if restore_col_widths(self.table, "expense_cat", "main"):
-            self.table.horizontalHeader().setStretchLastSection(False)
+        self._col.apply()
 
     def _move(self, direction: int) -> None:
         rows = self.table.selectionModel().selectedRows()

@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.ui.widgets import (SubtitleLabel, CaptionLabel, PrimaryPushButton, PushButton)
-from app.ui.column_state import attach_persistence, auto_fit_then_restore
+from app.ui.column_layout import install_column_layout
 from app.db import get_conn
 from app.importer.staff_import import ImportError_, parse_staff_file
 
@@ -46,12 +46,11 @@ class StaffView(QWidget):
         self.table.setHorizontalHeaderLabels(["姓名", "类型", "状态", "入职月份", "备注"])
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        self.table.horizontalHeader().setStretchLastSection(True)
         self.table.cellDoubleClicked.connect(lambda *_: self.edit_selected())
-        attach_persistence(self.table, "staff", "main")
         from app.ui.table_features import install_common_features, install_header_filter
         install_common_features(self.table)
         install_header_filter(self.table)
+        self._col = install_column_layout(self.table, "staff", "main")
         lay.addWidget(self.table)
 
         self.refresh()
@@ -80,9 +79,7 @@ class StaffView(QWidget):
             self.table.setItem(r, 2, item)
             self.table.setItem(r, 3, QTableWidgetItem(row["hire_month"] or ""))
             self.table.setItem(r, 4, QTableWidgetItem(row["note"] or ""))
-        used = auto_fit_then_restore(self.table, "staff", "main")
-        if used:
-            self.table.horizontalHeader().setStretchLastSection(False)
+        self._col.apply()
 
     # ---- 动作 ----
     def import_staff(self) -> None:

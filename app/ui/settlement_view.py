@@ -11,7 +11,7 @@ from PySide6.QtWidgets import (
     QTabWidget, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
-from app.ui.column_state import attach_persistence, auto_fit_then_restore, restore_col_widths
+from app.ui.column_layout import install_column_layout
 from app.ui.widgets import (CaptionLabel, FrozenTableWidget, PrimaryPushButton, PushButton, SubtitleLabel)
 
 from app.engine.person_settlement import build_settlement
@@ -96,7 +96,7 @@ class SettlementView(QWidget):
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.table.verticalHeader().setVisible(False)
         self.table.horizontalHeader().setStretchLastSection(True)
-        attach_persistence(self.table, "settlement", "personal")
+        self.table._col = install_column_layout(self.table, "settlement", "personal", movable=False)
         lay.addWidget(self.table, 1)
 
         # ---- 底部：导出 + 摘要 ----
@@ -249,9 +249,7 @@ class SettlementView(QWidget):
                     if c == 0:
                         item.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
                 self.table.setItem(r, c, item)
-        used = auto_fit_then_restore(self.table, "settlement", "personal", max_width=140)
-        if used:
-            self.table.horizontalHeader().setStretchLastSection(False)
+        self.table._col.apply()
         type_txt = self.person_type.currentText()
         self.lbl_summary.setText(
             f"{name}（{type_txt}）{'·' + str(mo) + '月' if mo else '·全年'}")
@@ -544,9 +542,7 @@ class SettlementView(QWidget):
         self.r_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.r_table.verticalHeader().setVisible(False)
         self.r_table.horizontalHeader().setStretchLastSection(True)
-        for c, wd in enumerate([40, 200, 95, 95, 300]):
-            self.r_table.setColumnWidth(c, wd)
-        attach_persistence(self.r_table, "settlement", "report")
+        self.r_table._col = install_column_layout(self.r_table, "settlement", "report", movable=False)
         v.addWidget(self.r_table, 1)
         bbar = QHBoxLayout()
         self.btn_report = PushButton("导出月度结算表")
@@ -625,13 +621,7 @@ class SettlementView(QWidget):
                     note_rows.append(r)
         for r in note_rows:
             self.r_table.resizeRowToContents(r)
-        hdr = self.r_table.horizontalHeader()
-        hdr.blockSignals(True)
-        for c, wd in enumerate([40, 200, 95, 95, 300]):
-            self.r_table.setColumnWidth(c, wd)
-        hdr.blockSignals(False)
-        if restore_col_widths(self.r_table, "settlement", "report"):
-            hdr.setStretchLastSection(False)
+        self.r_table._col.apply()
         self.r_summary.setText(f"{name}（{self.r_type.currentText()}）· {year}年{month}月结算表预览（共{len(rows)}行，确认后导出）")
 
     # ---- 年度聘用结算表 Tab（预览 + 导出）----
@@ -683,11 +673,7 @@ class SettlementView(QWidget):
         self.si_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.si_table.verticalHeader().setVisible(False)
         self.si_table.horizontalHeader().setStretchLastSection(True)
-        self.si_table.setColumnWidth(0, 40)
-        self.si_table.setColumnWidth(1, 90)
-        for c in range(2, 12):
-            self.si_table.setColumnWidth(c, 95)
-        attach_persistence(self.si_table, "settlement", "staff_income")
+        self.si_table._col = install_column_layout(self.si_table, "settlement", "staff_income", movable=False)
         v.addWidget(self.si_table, 1)
         bbar = QHBoxLayout()
         self.btn_staff_income = PushButton("导出当月")
@@ -736,15 +722,7 @@ class SettlementView(QWidget):
             it.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             it.setFont(bold)
             self.si_table.setItem(last, j, it)
-        hdr = self.si_table.horizontalHeader()
-        hdr.blockSignals(True)
-        self.si_table.setColumnWidth(0, 40)
-        self.si_table.setColumnWidth(1, 90)
-        for c in range(2, 12):
-            self.si_table.setColumnWidth(c, 95)
-        hdr.blockSignals(False)
-        if restore_col_widths(self.si_table, "settlement", "staff_income"):
-            hdr.setStretchLastSection(False)
+        self.si_table._col.apply()
         self.si_summary.setText(
             f"{year}年{month}月聘用律师业务收入结算表（{len(persons)} 人）· 预览共 {len(rows)} 行+合计，确认后导出")
 
@@ -839,11 +817,7 @@ class SettlementView(QWidget):
         self.ii_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.ii_table.verticalHeader().setVisible(False)
         self.ii_table.horizontalHeader().setStretchLastSection(True)
-        self.ii_table.setColumnWidth(0, 40)
-        self.ii_table.setColumnWidth(1, 90)
-        for c in range(2, 8):
-            self.ii_table.setColumnWidth(c, 105)
-        attach_persistence(self.ii_table, "settlement", "invoice_income")
+        self.ii_table._col = install_column_layout(self.ii_table, "settlement", "invoice_income", movable=False)
         v.addWidget(self.ii_table, 1)
         bbar = QHBoxLayout()
         self.btn_ii_month = PushButton("导出当月")
@@ -892,15 +866,7 @@ class SettlementView(QWidget):
             it.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             it.setFont(bold)
             self.ii_table.setItem(last, j, it)
-        hdr = self.ii_table.horizontalHeader()
-        hdr.blockSignals(True)
-        self.ii_table.setColumnWidth(0, 40)
-        self.ii_table.setColumnWidth(1, 90)
-        for c in range(2, 8):
-            self.ii_table.setColumnWidth(c, 105)
-        hdr.blockSignals(False)
-        if restore_col_widths(self.ii_table, "settlement", "invoice_income"):
-            hdr.setStretchLastSection(False)
+        self.ii_table._col.apply()
         self.ii_summary.setText(
             f"{year}年{month}月律师收费情况表（开票收入）· {len(persons)} 人 + 合计，确认后导出")
 

@@ -17,7 +17,7 @@ from PySide6.QtWidgets import (
 from app.ui.widgets import (CaptionLabel, PushButton, SubtitleLabel)
 from app.db import get_conn
 from app.engine.change_log import log_change
-from app.ui.column_state import attach_persistence, auto_fit_then_restore, restore_col_widths
+from app.ui.column_layout import install_column_layout
 
 
 class LedgerView(QWidget):
@@ -35,7 +35,7 @@ class LedgerView(QWidget):
         self.tab_expense = self._make_table(["账期", "经办人", "费用类型", "金额", "凭证号", "身份"], [0, 1, 2, 3, 5])
         lay.addWidget(self.tab_expense, 1)
 
-        attach_persistence(self.tab_expense, "ledger", "expense")
+        self.tab_expense._col = install_column_layout(self.tab_expense, "ledger", "expense")
 
         btns = QHBoxLayout()
         self.btn_edit = PushButton("编辑所选")
@@ -80,9 +80,7 @@ class LedgerView(QWidget):
                     item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
                 tb.setItem(r, c, item)
             meta[r] = row[-1]
-        used = auto_fit_then_restore(tb, "ledger", meta_key)
-        if used:
-            tb.horizontalHeader().setStretchLastSection(False)
+        tb._col.apply()
 
     # ---- 加载 ----
     def refresh(self) -> None:
