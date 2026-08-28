@@ -18,7 +18,7 @@ from typing import Dict, List, Optional
 from PySide6.QtCore import QEvent, QObject, QPoint, QSettings, Qt, QTimer
 from PySide6.QtGui import QBrush, QFontMetrics
 from PySide6.QtWidgets import QHeaderView, QMenu, QTableWidget
-from app.ui.table_features import populate_filter_menu, set_frozen_columns, _FROZEN_BG
+from app.ui.table_features import populate_filter_menu, set_frozen_columns, _FROZEN_BG, add_sort_actions
 
 _ORG = "lawfirm_app"
 _APP = "lawfirm_app"
@@ -264,6 +264,7 @@ class TableColumnLayout(QObject):
         self._applying = False
         self._movable = movable
         self._win = None  # 顶层窗口（用于监听最大化/还原，触发比例重填）
+        self._sort_cb = None  # 右键「升序/降序」排序回调（由视图注册）
 
     # ---------- 入口 ----------
     def install(self) -> "TableColumnLayout":
@@ -296,6 +297,10 @@ class TableColumnLayout(QObject):
             t = t.replace(" ▲", "").replace(" ▼", "")
             out.append(t)
         return out
+
+    def set_sort_callback(self, cb) -> None:
+        """注册表头右键「升序/降序」排序回调 on_sort(logical, asc)。不注册则右键菜单不出现排序项。"""
+        self._sort_cb = cb
 
     def apply(self, remeasure: bool = True) -> None:
         """渲染后调用：测量(可选)并应用布局。remeasure=False 时仅用缓存内容宽重填（拖宽/缩放时用）。"""
@@ -370,6 +375,8 @@ class TableColumnLayout(QObject):
             frozen = state["frozen"].get(keys[logical], False)
             menu.addSeparator()
             act_freeze = menu.addAction("解冻此列" if frozen else "冻结此列")
+        if self._sort_cb is not None and 0 <= logical < len(keys):
+            add_sort_actions(menu, self.table, pos, self._sort_cb)
         action = menu.exec(self.table.mapToGlobal(pos))
         if action is None:
             return

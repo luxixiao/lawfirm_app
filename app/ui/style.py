@@ -131,7 +131,10 @@ QTableWidget {{
     selection-background-color: {p['bg_select']}; selection-color: {p['text']};
 }}
 QTableWidget::item {{ padding: 6px 10px; border: none; }}
-QTableWidget::item:selected {{ background: {p['bg_select']}; color: {p['text']}; }}
+QTableWidget::item:selected {{ background: {p['bg_select']}; }}
+/* 注意：此处不要写 color。选中态文字色由单元格 setForeground + TableBehaviorDelegate
+   的 initStyleOption 接管（红字/绿字选中仍保持原色）；在此写 color 会覆盖委托，
+   导致选中行红字变回普通色。普通行选中文字色由上方 selection-color 保证可读。 */
 QHeaderView::section {{
     background: {p['bg_table']}; color: {p['text_mute']}; border: none;
     border-bottom: 1px solid {p['border']}; border-right: 1px solid {p['grid']};

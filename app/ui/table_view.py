@@ -5,11 +5,14 @@ from typing import Callable, List, Tuple
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QIcon
-from PySide6.QtWidgets import QFileDialog, QHBoxLayout, QLabel, QLineEdit, QMessageBox, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QFileDialog, QHBoxLayout, QLabel, QLineEdit, QMenu, QMessageBox, QVBoxLayout, QWidget
 
 from app.ui.widgets import ComboBox, LineEdit, PrimaryPushButton, PushButton, TableWidget
 from app.ui.column_layout import ColumnLayoutManager
-from app.ui.table_features import TableFilter, open_filter_submenu, _cell_key, _funnel_icon
+from app.ui.table_features import (
+    TableFilter, open_filter_submenu, _cell_key, _funnel_icon,
+    install_common_features, add_sort_actions, populate_filter_menu,
+)
 
 RED = QColor("#C0392B")    # 红字/负数
 GREEN = QColor("#1E8449")  # 已收
@@ -64,6 +67,8 @@ class BaseTableView(QWidget):
         self.table.setSelectionBehavior(TableWidget.SelectionBehavior.SelectRows)
         self.table.setAlternatingRowColors(False)
         self.table.verticalHeader().setVisible(False)
+        # 统一单元格绘制委托（选中保色/悬停全文/冻结灰底）；幂等，重复安装无副作用。
+        install_common_features(self.table)
         # 列布局管理器（显示/冻结/顺序/宽度 四态 + 严格填充），取代旧 setStretchLastSection
         self._mgr = ColumnLayoutManager(self._col_page_key, "main")
         self._col_content_w = None
@@ -110,28 +115,29 @@ class BaseTableView(QWidget):
         self._render()
         self._update_filter_marks()
 
-    # ---- 表头：左键排序 + 右键筛选 ----
+    # ---- 表头：右键排序 + 右键筛选（不再点击表头排序） ----
     def _enable_col_filter(self) -> None:
         """兼容旧名：等同于 _enable_sort_and_filter。"""
         self._enable_sort_and_filter()
 
     def _enable_sort_and_filter(self) -> None:
-        """左键点击表头排序（再点切换升/降序），右键表头弹筛选菜单（统一引擎）。"""
+        """表头右键菜单：升序/降序排序 + 按列筛选。改「点击表头排序」为「右键排序」。"""
         self._sort_col = None
         self._sort_asc = True
         hdr = self.table.horizontalHeader()
-        hdr.sectionClicked.connect(self._on_header_sort)
         hdr.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        hdr.customContextMenuRequested.connect(self._on_header_filter)
+        hdr.customContextMenuRequested.connect(self._on_header_context_menu)
 
-    def _on_header_sort(self, col: int) -> None:
-        # 表头点击给的是「视觉列号」，数据索引用「逻辑列号」，需转换（支持列重排）
-        logical = self.table.horizontalHeader().logicalIndex(col)
-        if self._sort_col == logical:
-            self._sort_asc = not self._sort_asc
-        else:
-            self._sort_col = logical
-            self._sort_asc = True
+    def _on_header_context_menu(self, pos) -> None:
+        menu = QMenu(self.table)
+        add_sort_actions(menu, self.table, pos, self._sort_by)
+        menu.addSeparator()
+        populate_filter_menu(menu, self._filter, self.table, pos)
+        menu.exec(self.table.mapToGlobal(pos))
+
+    def _sort_by(self, logical: int, asc: bool) -> None:
+        self._sort_col = logical
+        self._sort_asc = asc
         self._sort_rows()
         self._apply_col_filters()
         self._render()

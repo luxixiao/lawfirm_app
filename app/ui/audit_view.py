@@ -85,6 +85,10 @@ class AuditView(QWidget):
         lay.addWidget(self.lbl_stat)
 
         self._col = install_column_layout(self.table, "audit")
+        self._col.set_sort_callback(self._do_sort)
+        self._rows: list = []
+        self._sort_col: int = -1
+        self._sort_asc: bool = True
 
         # 信号
         self.f_table.currentIndexChanged.connect(lambda _: self.load())
@@ -121,6 +125,7 @@ class AuditView(QWidget):
             record_id=record_id,
             keyword=keyword,
         )
+        self._rows = rows
         self._fill(rows)
         self.lbl_stat.setText(f"共 {len(rows)} 条修改记录"
                               + ("（已锁定到该行）" if self._preset_record is not None else ""))
@@ -141,3 +146,16 @@ class AuditView(QWidget):
         self._col.apply()
         # 重新叠加右键「按列筛选」（与搜索/刷新 AND 组合）：_fill 重建表格会清除 setRowHidden 状态
         self._filter.apply_to_table(self.table)
+
+    def _do_sort(self, logical: int, asc: bool) -> None:
+        """表头右键「升序/降序」排序回调：按逻辑列号对本页行重排并加原生排序标识。"""
+        self._sort_col = logical
+        self._sort_asc = asc
+        key = self._KEYS[logical]
+        rows = sorted(self._rows,
+                      key=lambda r, k=key: str(r.get(k) or ""),
+                      reverse=not asc)
+        self._fill(rows)
+        hdr = self.table.horizontalHeader()
+        hdr.setSortIndicator(logical,
+                             Qt.SortOrder.DescendingOrder if not asc else Qt.SortOrder.AscendingOrder)

@@ -112,12 +112,12 @@ class InvoiceLedgerView(QWidget):
         self.table.setHorizontalScrollMode(QTableWidget.ScrollMode.ScrollPerPixel)
         self.table.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
         self.table.setWordWrap(False)
-        self.table.setSortingEnabled(False)  # 排序由下方手动实现
-        self.table.horizontalHeader().sectionClicked.connect(self._on_header)
-        from app.ui.table_features import install_common_features, install_header_filter
+        self.table.setSortingEnabled(False)  # 排序由下方手动实现（右键表头选择升/降序）
+        from app.ui.table_features import install_common_features, install_header_filter, add_sort_actions
         install_common_features(self.table)
         self._filter = install_header_filter(self.table)
         self._col = install_column_layout(self.table, "invoice_ledger", "main")
+        self._col.set_sort_callback(self._do_sort)
         lay.addWidget(self.table, 1)
 
         # ---- 底部状态栏：行数 + 三类合计（随筛选动态变化） ----
@@ -222,19 +222,18 @@ class InvoiceLedgerView(QWidget):
         self.lbl_tax.setText(f"合计税额：{_fmt_money(total_tax)}")
         self.lbl_total.setText(f"合计总额（价税合计）：{_fmt_money(total_sum)}")
 
-    def _on_header(self, col: int) -> None:
-        if self._sort_col == col:
-            self._sort_desc = not self._sort_desc
-        else:
-            self._sort_col = col
-            self._sort_desc = False
+    def _do_sort(self, logical, asc) -> None:
+        """右键表头排序回调：按逻辑列号排序（支持列重排后保持一致）。"""
+        self._sort_col = logical
+        self._sort_desc = not asc
         self._apply()
 
     def _fill(self, rows) -> None:
         self.table.setRowCount(len(rows))
         for r, row in enumerate(rows):
             total = _parse_total(row.get("total_amount_raw"))
-            is_red = total < 0
+            # 负数发票 或 已被红冲的正数发票（status=已红冲-全额）→ 整行红字
+            is_red = total < 0 or (row.get("status") or "") == "已红冲-全额"
             vals = [
                 row.get("invoice_no") or "",
                 row.get("kind") or "",
@@ -253,12 +252,8 @@ class InvoiceLedgerView(QWidget):
                 item = QTableWidgetItem(str(v))
                 if c in _AMOUNT_COLS:
                     item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-                if is_red and c in (0, 6):  # 红字发票号与金额标红（发票号码=0，价税合计=6）
-                    item.setForeground(Qt.GlobalColor.red)
+                if is_red:
+                    # 负数 / 已红冲：整行所有字体标红（委托保证选中仍红）
+                    item.setForeground(QColor("#C0392B"))
                 self.table.setItem(r, c, item)
-        if is_red:
-            for c in range(self.table.columnCount()):
-                it = self.table.item(r, c)
-                if it is not None:
-                    it.setBackground(QColor("#FFECEC"))
         self._col.apply()

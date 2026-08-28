@@ -22,8 +22,23 @@ from app.db import get_conn
 from app.engine.collection import invoice_rows
 
 
+def _num(v):
+    """把任意金额文本/数字安全转 float（用于排序键）。"""
+    if v is None or v == "":
+        return 0.0
+    try:
+        return float(str(v).replace(",", ""))
+    except ValueError:
+        return 0.0
+
+
 class _OffsetDialog(QDialog):
     """可搜索的核销对话框：按 对方/金额/经办人/案号 过滤发票，并展示发票全部信息。"""
+
+    # 列 -> invoice_rows 字典键（用于右键排序）
+    _KEYS = ["invoice_date", "invoice_no", "buyer", "total_amount",
+             "handlers_amount", "case_no", "collected", "remain"]
+    _NUMERIC = {3, 6, 7}
 
     def __init__(self, parent, prepay_remain: float) -> None:
         super().__init__(parent)
@@ -47,13 +62,13 @@ class _OffsetDialog(QDialog):
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.verticalHeader().setVisible(False)
-        self.table.setSortingEnabled(True)
         self.table.itemSelectionChanged.connect(self._on_sel)
         self.table.doubleClicked.connect(self.accept)
         from app.ui.table_features import install_common_features, install_header_filter
         install_common_features(self.table)
         self._filter = install_header_filter(self.table)
         self._col = install_column_layout(self.table, "prepayment_offset", "main")
+        self._col.set_sort_callback(self._do_sort)
         lay.addWidget(self.table, 1)
 
         f = QFormLayout()
@@ -77,6 +92,8 @@ class _OffsetDialog(QDialog):
         finally:
             conn.close()
         self._all = [r for r in rows if r["total_amount"] > 0 and r["remain"] > 0.005]
+        self._sort_col = -1
+        self._sort_asc = True
         self._apply_filter()
 
     def _apply_filter(self) -> None:
@@ -91,6 +108,11 @@ class _OffsetDialog(QDialog):
                     matched.append(r)
         else:
             matched = self._all
+        if self._sort_col >= 0:
+            col = self._sort_col
+            num = col in self._NUMERIC
+            matched.sort(key=lambda r, c=col, n=num: _num(r.get(self._KEYS[c])) if n
+                         else str(r.get(self._KEYS[c]) or ""), reverse=not self._sort_asc)
         self._matched = matched
         self.table.setRowCount(len(matched))
         for ri, r in enumerate(matched):
@@ -105,6 +127,10 @@ class _OffsetDialog(QDialog):
         self._col.apply()
         # 重新叠加右键「按列筛选」（与搜索 AND 组合）：_apply_filter 重建表格会清除 setRowHidden 状态
         self._filter.apply_to_table(self.table)
+        if self._sort_col >= 0:
+            hdr = self.table.horizontalHeader()
+            hdr.setSortIndicator(self._sort_col,
+                                 Qt.SortOrder.DescendingOrder if not self._sort_asc else Qt.SortOrder.AscendingOrder)
         if matched:
             self.table.selectRow(0)
 
@@ -121,8 +147,18 @@ class _OffsetDialog(QDialog):
             return None, 0.0
         return self._matched[row]["invoice_no"], self.amt.value()
 
+    def _do_sort(self, logical, asc) -> None:
+        self._sort_col = logical
+        self._sort_asc = asc
+        self._apply_filter()
+
 
 class PrepaymentView(QTabWidget):
+    _PEND_KEYS = ["received_date", "buyer", "amount", "person_text", "case_no", "remark", "offset_total", "remain"]
+    _PEND_NUMERIC = {2, 6, 7}
+    _DONE_KEYS = ["p_buyer", "received_date", "p_amount", "invoice_no", "offset_amount", "offset_date", "remain"]
+    _DONE_NUMERIC = {2, 4, 6}
+
     def __init__(self) -> None:
         super().__init__()
         self.setDocumentMode(True)
@@ -136,6 +172,12 @@ class PrepaymentView(QTabWidget):
         self.addTab(self.tab_done, "已核销预收款")
 
         self._meta = {}
+        self._pend_rows: list = []
+        self._done_rows: list = []
+        self._pend_sort_col = -1
+        self._pend_sort_asc = True
+        self._done_sort_col = -1
+        self._done_sort_asc = True
 
     # ---------- 待核销 ----------
     def _build_pending(self) -> None:
@@ -164,6 +206,7 @@ class PrepaymentView(QTabWidget):
         install_common_features(self.table)
         install_header_filter(self.table)
         self._col = install_column_layout(self.table, "prepayment", "main")
+        self._col.set_sort_callback(self._do_sort_pending)
         lay.addWidget(self.table)
 
     # ---------- 已核销 ----------
@@ -185,6 +228,7 @@ class PrepaymentView(QTabWidget):
         install_common_features(self.table_done)
         self._filter_done = install_header_filter(self.table_done)
         self._col_done = install_column_layout(self.table_done, "prepayment_done", "main")
+        self._col_done.set_sort_callback(self._do_sort_done)
         lay.addWidget(self.table_done)
 
     # ---------- 刷新 ----------
@@ -205,23 +249,17 @@ class PrepaymentView(QTabWidget):
             ).fetchall()
         finally:
             conn.close()
+        rows = [dict(r) for r in rows]
 
         # 待核销：剩余余额 > 0
         pend = [r for r in rows if (r["amount"] - (r["offset_total"] or 0.0)) > 0.005]
-        self._meta = {}
-        self.table.setRowCount(len(pend))
-        for r, row in enumerate(pend):
-            offset = row["offset_total"] or 0.0
-            remain = row["amount"] - offset
-            vals = [row["received_date"], row["buyer"], row["amount"], row["person_text"],
-                    row["case_no"], row["remark"], offset, remain]
-            for c, v in enumerate(vals):
-                item = QTableWidgetItem("" if v is None else
-                                        (f"{v:,.2f}" if isinstance(v, float) else str(v)))
-                self.table.setItem(r, c, item)
-            self._meta[r] = {"id": row["id"], "buyer": row["buyer"], "amount": row["amount"],
-                             "case_no": row["case_no"], "remain": remain}
-        self._col.apply()
+        for r in pend:
+            r["offset"] = r["offset_total"] or 0.0
+            r["remain"] = r["amount"] - r["offset"]
+        self._pend_rows = pend
+        self._sort_rows_inplace(self._pend_rows, self._pend_sort_col, self._pend_sort_asc,
+                                self._PEND_KEYS, self._PEND_NUMERIC)
+        self._render_pending(self._pend_rows)
 
         # 已核销：核销明细
         conn = get_conn()
@@ -239,9 +277,36 @@ class PrepaymentView(QTabWidget):
             ).fetchall()
         finally:
             conn.close()
-        self.table_done.setRowCount(len(done))
-        for r, row in enumerate(done):
-            remain = row["p_amount"] - (row["off_total"] or 0.0)
+        done = [dict(r) for r in done]
+        for r in done:
+            r["remain"] = r["p_amount"] - (r["off_total"] or 0.0)
+        self._done_rows = done
+        self._sort_rows_inplace(self._done_rows, self._done_sort_col, self._done_sort_asc,
+                                self._DONE_KEYS, self._DONE_NUMERIC)
+        self._render_done(self._done_rows)
+        # 重新叠加右键「按列筛选」（与下拉/刷新 AND 组合）
+        self._filter_done.apply_to_table(self.table_done)
+
+    def _render_pending(self, rows) -> None:
+        self._meta = {}
+        self.table.setRowCount(len(rows))
+        for r, row in enumerate(rows):
+            offset = row["offset_total"] or 0.0
+            remain = row["amount"] - offset
+            vals = [row["received_date"], row["buyer"], row["amount"], row["person_text"],
+                    row["case_no"], row["remark"], offset, remain]
+            for c, v in enumerate(vals):
+                item = QTableWidgetItem("" if v is None else
+                                        (f"{v:,.2f}" if isinstance(v, float) else str(v)))
+                self.table.setItem(r, c, item)
+            self._meta[r] = {"id": row["id"], "buyer": row["buyer"], "amount": row["amount"],
+                             "case_no": row["case_no"], "remain": remain}
+        self._col.apply()
+
+    def _render_done(self, rows) -> None:
+        self.table_done.setRowCount(len(rows))
+        for r, row in enumerate(rows):
+            remain = row["remain"]
             vals = [row["p_buyer"], row["received_date"], row["p_amount"],
                     row["invoice_no"], row["offset_amount"], row["offset_date"] or "", remain]
             for c, v in enumerate(vals):
@@ -249,8 +314,36 @@ class PrepaymentView(QTabWidget):
                                         (f"{v:,.2f}" if isinstance(v, float) else str(v)))
                 self.table_done.setItem(r, c, item)
         self._col_done.apply()
-        # 重新叠加右键「按列筛选」（与下拉/刷新 AND 组合）
+
+    def _do_sort_pending(self, logical, asc) -> None:
+        self._pend_sort_col = logical
+        self._pend_sort_asc = asc
+        self._sort_rows_inplace(self._pend_rows, logical, asc, self._PEND_KEYS, self._PEND_NUMERIC)
+        self._render_pending(self._pend_rows)
+        self.table.horizontalHeader().setSortIndicator(
+            logical, Qt.SortOrder.DescendingOrder if not asc else Qt.SortOrder.AscendingOrder)
+
+    def _do_sort_done(self, logical, asc) -> None:
+        self._done_sort_col = logical
+        self._done_sort_asc = asc
+        self._sort_rows_inplace(self._done_rows, logical, asc, self._DONE_KEYS, self._DONE_NUMERIC)
+        self._render_done(self._done_rows)
         self._filter_done.apply_to_table(self.table_done)
+        self.table_done.horizontalHeader().setSortIndicator(
+            logical, Qt.SortOrder.DescendingOrder if not asc else Qt.SortOrder.AscendingOrder)
+
+    @staticmethod
+    def _sort_rows_inplace(rows, col, asc, keys, numeric) -> None:
+        """原地按列排序（keys 为列->字典键映射，numeric 为数值列集合）。"""
+        if col < 0 or not rows:
+            return
+
+        def keyf(r):
+            v = r.get(keys[col])
+            if col in numeric:
+                return _num(v)
+            return str(v or "")
+        rows.sort(key=keyf, reverse=not asc)
 
     # ---------- 核销（方案1） ----------
     def offset(self) -> None:

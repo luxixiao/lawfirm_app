@@ -425,6 +425,24 @@ def open_filter_submenu(tf: TableFilter, table: QTableWidget, pos) -> None:
     menu.exec(table.mapToGlobal(pos))
 
 
+def add_sort_actions(menu, table: QTableWidget, pos, on_sort) -> None:
+    """表头右键菜单追加「按<列名>升序 / 降序」两项；on_sort(logical, asc) 为排序回调。
+
+    列名自动剥离已有的 ▲/▼ 排序后缀，避免菜单重复堆叠。
+    """
+    hdr = table.horizontalHeader()
+    logical = hdr.logicalIndexAt(pos.x())
+    if logical < 0:
+        return
+    hi = hdr.horizontalHeaderItem(logical)
+    name = hi.text().replace(" ▲", "").replace(" ▼", "") if hi else f"列{logical + 1}"
+    menu.addSeparator()
+    a_asc = menu.addAction(f"按「{name}」升序")
+    a_asc.triggered.connect(lambda: on_sort(logical, True))
+    a_desc = menu.addAction(f"按「{name}」降序")
+    a_desc.triggered.connect(lambda: on_sort(logical, False))
+
+
 class _FilterMenuSlot:
     """表头右键筛选槽（供 column_layout 合并进「列设置…」菜单）。"""
 

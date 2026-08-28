@@ -23,8 +23,6 @@ from app.ui.column_layout import install_column_layout
 from app.ui.table_view import month_options_1_12, build_period
 from app.ui.widgets import CaptionLabel, PushButton, SubtitleLabel
 
-_RED_BG = QColor("#FFECEC")
-
 # 显示列定义：(表头, 取值函数)
 def _date_of(r: dict) -> str:
     if r.get("kind") == "prepayment":
@@ -97,13 +95,12 @@ class InvoiceLedgerDocView(QWidget):
         self.table.setWordWrap(False)
         self.table.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
         self.table.verticalHeader().setVisible(False)
-        from app.ui.table_features import install_common_features, install_header_filter
+        from app.ui.table_features import install_common_features, install_header_filter, add_sort_actions
         install_common_features(self.table)
         self._filter = install_header_filter(self.table)
         hdr = self.table.horizontalHeader()
         hdr.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         hdr.setStretchLastSection(True)
-        self.table.horizontalHeader().sectionClicked.connect(self._on_header)
         self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self._on_context)
         lay.addWidget(self.table, 1)
@@ -112,6 +109,7 @@ class InvoiceLedgerDocView(QWidget):
         lay.addWidget(self.lbl_stat)
 
         self._col = install_column_layout(self.table, "ledger_doc", "main")
+        self._col.set_sort_callback(self._do_sort)
 
         self._all_rows: list[dict] = []
         self._meta: dict[int, int] = {}      # 显示行 -> raw_ledger.id
@@ -234,12 +232,10 @@ class InvoiceLedgerDocView(QWidget):
                 item.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
                 if c == _AMOUNT_COL:
                     item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-                    if is_red:
-                        item.setForeground(QColor("#D44C47"))
+                if is_red:
+                    # 负数发票：整行所有字体标红（委托保证选中仍红）
+                    item.setForeground(QColor("#C0392B"))
                 self.table.setItem(r, c, item)
-            if is_red:
-                for c in range(len(_HEADERS)):
-                    self.table.item(r, c).setBackground(_RED_BG)
 
         self._col.apply()
         # 重新叠加右键「按列筛选」（与搜索/下拉 AND 组合）：_apply 重建表格会清除 setRowHidden 状态
@@ -253,14 +249,10 @@ class InvoiceLedgerDocView(QWidget):
     # ------------------------------------------------------------------ #
     # 排序
     # ------------------------------------------------------------------ #
-    def _on_header(self, col: int) -> None:
-        if self._sort_col == col:
-            self._sort_order = (Qt.SortOrder.DescendingOrder
-                                if self._sort_order == Qt.SortOrder.AscendingOrder
-                                else Qt.SortOrder.AscendingOrder)
-        else:
-            self._sort_col = col
-            self._sort_order = Qt.SortOrder.AscendingOrder
+    def _do_sort(self, logical, asc) -> None:
+        """右键表头排序回调：按逻辑列号排序（支持列重排后保持一致）。"""
+        self._sort_col = logical
+        self._sort_order = Qt.SortOrder.AscendingOrder if asc else Qt.SortOrder.DescendingOrder
         self._apply()
 
     # ------------------------------------------------------------------ #
