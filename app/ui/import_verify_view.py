@@ -5,9 +5,9 @@
   1. 发票信息：金额/购方/经办人拆分（原逻辑）
   2. 经办人分摊：源经办人开票金额 ↔ DB charge_detail（缺失/多出/金额不符/合计不符）
   3. 已收认定：按批次读 received_snapshot，做「源声称收款 ↔ 本批次实际写入」对账（方案E）
-维度 2（经办人分摊）提供「一键修正（按源重算）」；维度 3（已收认定）改为「逐行手动修正」对话框（按 id 行级合并，绝不整票删除）。
+维度 2（经办人分摊）与维度 3（已收认定）的差异，均通过「标记已确认异常」留备注处理，不再提供手动修正入口。
 
-只读比对 + 一键修正；双击行查看原台账溯源。
+只读比对；双击行查看原台账溯源。
 """
 from __future__ import annotations
 
@@ -28,7 +28,6 @@ from app.importer.importer import (
     merge_collection_for_invoice, _refresh_snapshot_actual,
 )
 from app.importer.ledger_import import parse_ledger_file
-from app.ui.collection_fix_dialog import CollectionFixDialog
 from app.ui.ledger_source import show_source_for_invoice
 from app.ui.column_layout import install_column_layout
 from app.ui.widgets import CaptionLabel, ComboBox, PushButton, TableWidget
@@ -66,7 +65,7 @@ class ImportVerifyView(QWidget):
         hint = CaptionLabel(
             "选择已导入的账期，系统重读存档源文件并与数据库逐维度对账；"
             "若某行不一致是手动改数据所致，选中该行点「标记已确认异常」并留备注即可（不计入差异数）。"
-            "已收认定维度还可选中行点「逐行手动修正」直接改收款明细（双击任意行查看原台账信息）。"
+            "双击任意行可查看该记录在原台账中的信息（含所属 sheet 与行号）。"
         )
         lay.addWidget(hint)
 
@@ -87,9 +86,6 @@ class ImportVerifyView(QWidget):
         self.btn_confirm = PushButton("标记已确认异常")
         self.btn_confirm.clicked.connect(self._mark_confirmed)
         bar.addWidget(self.btn_confirm)
-        self.btn_fix = PushButton("逐行手动修正")
-        self.btn_fix.clicked.connect(self._on_fix_clicked)
-        bar.addWidget(self.btn_fix)
         bar.addStretch()
         lay.addLayout(bar)
 
@@ -186,9 +182,6 @@ class ImportVerifyView(QWidget):
 
     def _on_dim_changed(self, *_):
         dim = self.combo_dim.currentData() or "invoice"
-        # 已收认定维度：可「逐行手动修正」改收款明细；其余维度此按钮隐藏
-        self.btn_fix.setVisible(dim == "received")
-        self.btn_fix.setEnabled(dim == "received")
         # 标记已确认异常：经办人/已收维度均可（手动改所致差异均可确认）
         self.btn_confirm.setEnabled(dim in ("handler", "received"))
         self._need_fit = True
@@ -334,7 +327,11 @@ class ImportVerifyView(QWidget):
             if abs(p["total_amount"] - d["total_amount"]) > 0.005:
                 reason = "金额不一致"
             elif self._ht(p["handlers"]) != self._ht(d["handlers"]):
-                reason = "经办人拆分不一致"
+                # 源为纯人名(自动均分)且经办人集合与库一致 → 沿用首月拆分，不报不一致
+                if self._src_names_only(p["src"]) and set(p["handlers"]) == set(d["handlers"]):
+                    reason = ""
+                else:
+                    reason = "经办人拆分不一致"
             rows.append(self._mk(no, self._src_text(p["src"]), p["buyer"] or d["buyer"],
                                 p["total_amount"], d["total_amount"],
                                 self._ht(p["handlers"]), self._ht(d["handlers"]),
@@ -376,7 +373,11 @@ class ImportVerifyView(QWidget):
             else:
                 diff = [n for n in p_handlers if abs(p_handlers[n] - d_handlers.get(n, 0.0)) > 0.005]
                 if diff:
-                    reason = "分摊金额不符:" + "、".join(sorted(diff))
+                    # 源为纯人名(自动均分)且经办人集合一致 → 沿用首月拆分，不报"分摊金额不符"
+                    if self._src_names_only(inv) and set(p_handlers) == set(d_handlers):
+                        pass
+                    else:
+                        reason = "分摊金额不符:" + "、".join(sorted(diff))
                 elif abs(sum(p_handlers.values()) - sum(d_handlers.values())) > 0.01:
                     reason = "分摊合计≠发票总额"
             rows.append(self._mk(no, self._src_text(inv), inv.get("buyer", ""),
@@ -479,6 +480,15 @@ class ImportVerifyView(QWidget):
         return "、".join(f"{n} {_money(a)}" for n, a in sorted(handlers.items()))
 
     @staticmethod
+    def _src_names_only(src: Dict) -> bool:
+        """源经办人列为纯人名（无金额）→ 解析时按均分，属「沿用首月拆分」的省略写法，
+
+        不应判为与库不一致（库内保留的是最开始描述的具体拆分）。
+        """
+        txt = (src or {}).get("handler_text") or ""
+        return not any(ch.isdigit() for ch in txt)
+
+    @staticmethod
     def _src_text(src: Dict) -> str:
         return f"{src.get('sheet_name') or src.get('sheet') or '—'} · 第{src.get('row_no') or 0}行"
 
@@ -566,58 +576,6 @@ class ImportVerifyView(QWidget):
             else:
                 item.setForeground(RED)
         return item
-
-    # ------------------------------------------------------------------ #
-    # 一键修正
-    # ------------------------------------------------------------------ #
-    def _on_fix_clicked(self) -> None:
-        self._fix_collection_manual()
-
-    # 经办人分摊维度不再提供「一键修正（按源重算）」：手动改数据按手动结果来，
-    # 差异通过「标记已确认异常」留备注即可（见 _mark_confirmed）。
-
-    def _fix_collection_manual(self) -> None:
-        """已收认定维度：选中行 → 弹逐行手动修正对话框（方案1优化版：行级合并）。"""
-        row_idx = self.table.currentRow()
-        if row_idx < 0:
-            QMessageBox.information(self, "提示", "请先在表格中选中要修正的发票行。")
-            return
-        item = self.table.item(row_idx, 0)
-        if item is None:
-            return
-        idx = item.data(Qt.ItemDataRole.UserRole)
-        row = self._rows[idx]
-        inv = row.get("src")
-        if not inv:
-            QMessageBox.information(self, "提示", "该行无源数据，无法手动修正。")
-            return
-        no = inv["invoice_no"]
-        total = inv.get("total_amount") or 0.0
-        conn = get_conn()
-        try:
-            s = conn.execute(
-                "SELECT expected_json FROM received_snapshot "
-                "WHERE import_batch_id=? AND invoice_no=?",
-                (self._batch_id, no),
-            ).fetchone()
-            if s:
-                snap = json.loads(s["expected_json"])
-                exp_items = snap.get("items", []) or []
-                exp_total = float(snap.get("total", 0.0) or 0.0)
-            else:
-                exp_total, exp_items = compute_expected_receipts(inv)
-            cur = conn.execute(
-                "SELECT id, receipt_date, amount, person_name FROM collection "
-                "WHERE invoice_no=? AND source='import' ORDER BY receipt_date",
-                (no,),
-            ).fetchall()
-        finally:
-            conn.close()
-        current_rows = [dict(r) for r in cur]
-        dlg = CollectionFixDialog(self, no, total, exp_items, current_rows,
-                                  exp_total, self._batch_id)
-        if dlg.exec() == QDialog.DialogCode.Accepted:
-            self.load_verify()
 
     # ------------------------------------------------------------------ #
     # 交互

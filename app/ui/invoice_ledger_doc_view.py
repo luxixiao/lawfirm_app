@@ -33,7 +33,7 @@ def _date_of(r: dict) -> str:
 _HEADERS = ["序号", "工作表", "日期", "发票号码", "对方", "金额", "经办人", "备注", "案号"]
 _GETTERS = [
     lambda r: r.get("seq") or "",
-    lambda r: sheet_label(r.get("sheet_key")),
+    lambda r: ((r.get("period") or "") + sheet_label(r.get("sheet_key"))),
     _date_of,
     lambda r: r.get("invoice_no") or "",
     lambda r: r.get("buyer") or "",
