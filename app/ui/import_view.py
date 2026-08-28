@@ -47,7 +47,7 @@ class ImportView(QWidget):
         lay.setContentsMargins(24, 20, 24, 20)
         lay.setSpacing(12)
 
-        t = SubtitleLabel("导入")
+        t = SubtitleLabel("导入台账")
         lay.addWidget(t)
         h = QLabel("选择台账文件，系统自动识别类型与账期。每月导入顺序：销项 → 发票台账 → 费用台账（职工清单首次导入一次即可）。")
         lay.addWidget(h)

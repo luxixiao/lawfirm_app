@@ -1,6 +1,7 @@
 """主窗口：QMainWindow + 自绘 Notion 分组侧栏 + 页面栈（多皮肤框架）
 
-- 侧栏为自绘（非 qfluentwidgets FluentWindow），分组：数据 / 业务 / 结算 / 维护。
+- 侧栏为自绘（非 qfluentwidgets FluentWindow），分组：
+  数据导入 / 台账查看 / 业务数据 / 各类报表 / 数据维护。
 - 内容区用 QStackedWidget 承载全部业务视图，逻辑零改动。
 - 侧栏底部「皮肤」下拉切换并持久化到 data/prefs.json。
 - 保留 go_to_page / show_info / staff_ready / showEvent / closeEvent 等接口，
@@ -36,30 +37,33 @@ from app.ui.data_clear_view import DataClearView
 from app.ui.audit_view import AuditView
 
 # 分组导航： (分组标题, [(key, 显示名), ...])
+# 分组口径：数据导入 / 台账查看 / 业务数据 / 各类报表 / 数据维护
 NAV_GROUPS = [
-    ("数据", [
-        ("import", "导入"),
+    ("数据导入", [
+        ("import", "导入台账"),
+        ("batch", "导入记录"),
+        ("verify", "导入校验"),
+        ("audit", "修改记录"),
+        ("manual", "发票补录"),
+    ]),
+    ("台账查看", [
         ("invoice_ledger", "销项发票"),
         ("ledger_doc", "发票台账"),
-        ("ledger", "台账数据"),
-        ("batch", "导入记录"),
+        ("expense_ledger", "费用台账"),
     ]),
-    ("业务", [
+    ("业务数据", [
         ("invoice", "发票收款情况"),
         ("handler_all", "经办人发票收款情况"),
         ("prepayment", "预收款"),
         ("refund", "退款"),
-        ("manual", "发票补录"),
     ]),
-    ("结算", [
+    ("各类报表", [
         ("settlement", "个人结算总表"),
     ]),
-    ("维护", [
+    ("数据维护", [
         ("staff", "员工管理"),
-        ("expense_cat", "费用类型维护"),
-        ("audit", "修改记录"),
-        ("data_clear", "数据清空"),
-        ("verify", "导入校验"),
+        ("expense_cat", "费用类型"),
+        ("data_clear", "数据情况"),
         ("snapshot", "快照"),
     ]),
 ]
@@ -88,7 +92,7 @@ class MainWindow(QMainWindow):
         self.page_prepayment = PrepaymentView()
         self.page_refund = RefundView()
         self.page_manual = ManualEntryView()
-        self.page_ledger = LedgerView()
+        self.page_expense_ledger = LedgerView()
         self.page_settlement = SettlementView()
         self.page_staff = StaffView()
         self.page_verify = ImportVerifyView()
@@ -103,7 +107,7 @@ class MainWindow(QMainWindow):
             "import": self.page_import, "invoice": self.page_invoice,
             "handler_all": self.page_handler_all,
             "prepayment": self.page_prepayment, "refund": self.page_refund,
-            "manual": self.page_manual, "ledger": self.page_ledger,
+            "manual": self.page_manual, "expense_ledger": self.page_expense_ledger,
             "settlement": self.page_settlement,
             "staff": self.page_staff,
             "verify": self.page_verify,

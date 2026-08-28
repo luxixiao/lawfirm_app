@@ -94,6 +94,10 @@ class FrozenTableWidget(QTableWidget):
     def __init__(self, *args, frozen: int = 1, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self._frozen = max(1, frozen)
+        # 冻结区右缘的分隔竖线：默认画（区分冻结区/滚动区）。
+        # 部分页面（如结算页）首列本身就紧贴内容，这条线会被误认成「列内右侧的图形」，
+        # 可用 setFrozenDividerVisible(False) 关掉。
+        self._frozen_divider = True
         # 自绘表头：支持排序列/冻结列底色高亮（须在设置表头标签之前替换）
         from app.ui.table_features import install_accent_header, install_common_features
         install_accent_header(self)
@@ -104,6 +108,11 @@ class FrozenTableWidget(QTableWidget):
 
     def setFrozenColumns(self, n: int) -> None:
         self._frozen = max(1, n)
+        self.viewport().update()
+
+    def setFrozenDividerVisible(self, visible: bool) -> None:
+        """是否绘制冻结区右缘的分隔竖线（默认 True）。"""
+        self._frozen_divider = bool(visible)
         self.viewport().update()
 
     def frozen_width(self) -> int:
@@ -119,9 +128,10 @@ class FrozenTableWidget(QTableWidget):
         # 无横向滚动时，主视图已正确绘制冻结列（与未滚动前完全一致），无需覆盖重绘，
         # 直接画分隔线即可——避免任何无谓的二次绘制。
         if self.horizontalScrollBar().value() == 0:
-            painter = QPainter(self.viewport())
-            painter.setPen(QColor("#DADAD7"))
-            painter.drawLine(fw, 0, fw, self.viewport().height())
+            if self._frozen_divider:
+                painter = QPainter(self.viewport())
+                painter.setPen(QColor("#DADAD7"))
+                painter.drawLine(fw, 0, fw, self.viewport().height())
             return
         # 发生横向滚动：主视图把冻结列左侧部分（及相邻列左缘）滚到了冻结区之外，
         # 需在冻结区 [0, fw] 内重绘冻结列。关键修复：每个冻结单元格先铺一层不透明底色，
@@ -152,8 +162,9 @@ class FrozenTableWidget(QTableWidget):
                 self.itemDelegate().paint(painter, opt, idx)
         painter.restore()
         # 冻结列分隔线
-        painter.setPen(QColor("#DADAD7"))
-        painter.drawLine(fw, 0, fw, self.viewport().height())
+        if self._frozen_divider:
+            painter.setPen(QColor("#DADAD7"))
+            painter.drawLine(fw, 0, fw, self.viewport().height())
 
     def mousePressEvent(self, event) -> None:  # noqa: N802
         # 点击冻结区域 → 映射为选中该行（便于阅读/右键）

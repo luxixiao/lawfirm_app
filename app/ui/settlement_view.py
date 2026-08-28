@@ -111,6 +111,7 @@ class SettlementView(QWidget):
 
         # ---- 结算总表表格（项目 × 月）----
         self.table = FrozenTableWidget(0, 14, frozen=1)
+        self.table.setFrozenDividerVisible(False)
         self.table.setHorizontalHeaderLabels(["项目"] + MONTH_LABELS + ["合计"])
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.table.verticalHeader().setVisible(False)
@@ -565,6 +566,7 @@ class SettlementView(QWidget):
             c.setStyleSheet(COMBO_QSS)
         # 4 列：项目(序号+项目合并，对齐个人结算总表写法) / 本期 / 本年累计 / 备注
         self.r_table = FrozenTableWidget(0, 4, frozen=1)
+        self.r_table.setFrozenDividerVisible(False)
         self.r_table.setHorizontalHeaderLabels(["项目", "本期", "本年累计", "备注"])
         self.r_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.r_table.setSortingEnabled(False)  # 月度结算表不提供排序功能，首列(项目)始终冻结
@@ -698,6 +700,7 @@ class SettlementView(QWidget):
             c.setStyleSheet(COMBO_QSS)
         # 12 列：序号/姓名/5 组(本月/累计)；表头两行（第一行大类跨列合并，第二行本月/累计）
         self.si_table = FrozenTableWidget(0, 12, frozen=1)
+        self.si_table.setFrozenDividerVisible(False)
         install_two_tier_header(
             self.si_table,
             lead_labels=["序号", "姓名"],
@@ -845,6 +848,7 @@ class SettlementView(QWidget):
             c.setStyleSheet(COMBO_QSS)
         # 8 列：序号/姓名/收入本月/收入累计/期末未收/开票已收/收回以前/合计收款
         self.ii_table = FrozenTableWidget(0, 8, frozen=1)
+        self.ii_table.setFrozenDividerVisible(False)
         self.ii_table.setHorizontalHeaderLabels(
             ["序号", "姓名", "收入本月", "收入累计", "期末未收",
              "本月开票本月收回", "本月收回以前应收款", "本月合计收款"])

@@ -1,7 +1,7 @@
-"""台账数据页：费用台账的查看/编辑
+"""费用台账页（原「台账数据」）：费用台账的查看/编辑
 
 - 发票 / 收款 / 员工 Tab 已迁出或取消（2.2 员工与员工管理重复、2.3 发票/收款取消）；
-- 费用归类已迁至「维护 → 费用类型维护」（2.1）；
+- 费用归类已迁至「数据维护 → 费用类型」（2.1）；
 - 「修改记录」已迁为独立导航项（维护组下），不在本页内嵌。
 - 费用台账编辑也写入 change_log（expense_ledger），在独立「修改记录」页统一展示。
 """
@@ -27,9 +27,9 @@ class LedgerView(QWidget):
         lay.setContentsMargins(28, 24, 28, 20)
         lay.setSpacing(12)
 
-        t = SubtitleLabel("台账数据")
+        t = SubtitleLabel("费用台账")
         lay.addWidget(t)
-        h = CaptionLabel("费用台账的查看与编辑（修改记录已移至左侧「维护 → 修改记录」独立页面）。")
+        h = CaptionLabel("费用台账的查看与编辑（修改记录已移至左侧「数据导入 → 修改记录」独立页面）。")
         lay.addWidget(h)
 
         self.tab_expense = self._make_table(["账期", "经办人", "费用类型", "金额", "凭证号", "身份"], [0, 1, 2, 3, 5])

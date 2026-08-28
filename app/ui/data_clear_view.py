@@ -1,4 +1,4 @@
-"""数据清空页（需求 1）：需输入「我确认清空数据」验证后才可清空
+"""数据情况页（需求 1）：需输入「我确认清空数据」验证后才可清空
 
 - 仅清空业务数据：invoice / charge_detail / collection / refund / prepayment /
   prepayment_offset / expense_ledger / raw_invoice / import_batch / change_log。
@@ -32,7 +32,7 @@ class DataClearView(QWidget):
         lay.setContentsMargins(28, 24, 28, 20)
         lay.setSpacing(14)
 
-        t = SubtitleLabel("数据清空")
+        t = SubtitleLabel("数据情况")
         lay.addWidget(t)
         h = CaptionLabel("清空全部业务数据（重新导入前使用）。基础数据将保留，详见下方说明。")
         lay.addWidget(h)

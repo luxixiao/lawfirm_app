@@ -661,7 +661,7 @@ def import_expense_file(path: str, period: str) -> Dict:
         unknown = check_unknown(conn, etypes)
         if unknown:
             raise ImportError_(
-                f"费用类型不在维护名单中（请先到「台账数据→费用归类」添加或归类）: {', '.join(sorted(set(unknown)))}"
+                f"费用类型不在维护名单中（请先到「数据维护 → 费用类型」添加或归类）: {', '.join(sorted(set(unknown)))}"
             )
 
         _drop_active_batch(conn, "expense", period)

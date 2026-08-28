@@ -1,4 +1,4 @@
-"""费用类型维护页（原「台账数据→费用归类」Tab 迁移至维护组，需求 2.1）
+"""费用类型页（原「台账数据→费用归类」Tab 迁移至数据维护组，需求 2.1）
 
 - 展示费用类型全集（来自 expense_ledger 同步），可调整归类、调整顺序、新增类型。
 - 与结算/年度聘用结算表取数逻辑一致（按 expense_cat.sort_order / category）。
@@ -26,7 +26,7 @@ class ExpenseCatView(QWidget):
         lay.setContentsMargins(28, 24, 28, 20)
         lay.setSpacing(12)
 
-        t = SubtitleLabel("费用类型维护")
+        t = SubtitleLabel("费用类型")
         lay.addWidget(t)
         h = CaptionLabel("费用类型全集与归类（报酬发放/住房公积金/保险费/汽油费/其他）。"
                           "顺序与归类会影响结算表分组。修改仅记录类型配置，不影响发票台账修改记录。")
