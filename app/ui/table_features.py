@@ -434,8 +434,8 @@ def add_sort_actions(menu, table: QTableWidget, pos, on_sort) -> None:
     logical = hdr.logicalIndexAt(pos.x())
     if logical < 0:
         return
-    hi = hdr.horizontalHeaderItem(logical)
-    name = hi.text().replace(" ▲", "").replace(" ▼", "") if hi else f"列{logical + 1}"
+    raw = hdr.model().headerData(logical, hdr.orientation(), Qt.DisplayRole)
+    name = raw.replace(" ▲", "").replace(" ▼", "") if isinstance(raw, str) else f"列{logical + 1}"
     menu.addSeparator()
     a_asc = menu.addAction(f"按「{name}」升序")
     a_asc.triggered.connect(lambda: on_sort(logical, True))
