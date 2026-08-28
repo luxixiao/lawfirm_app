@@ -22,7 +22,7 @@ from collections import OrderedDict
 from typing import Callable, List, Optional
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor, QFontMetrics, QIcon, QPalette, QPainter, QPixmap
+from PySide6.QtGui import QBrush, QColor, QFontMetrics, QIcon, QPalette, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView, QCheckBox, QDialog, QDialogButtonBox, QHBoxLayout,
     QLineEdit, QListWidget, QListWidgetItem, QMenu, QPushButton,
@@ -41,7 +41,11 @@ class TableBehaviorDelegate(QStyledItemDelegate):
     def initStyleOption(self, option: QStyleOptionViewItem, index) -> None:
         super().initStyleOption(option, index)
         fg = index.data(Qt.ItemDataRole.ForegroundRole)
-        if isinstance(fg, QColor) and fg.isValid():
+        # setForeground 实际存入的是 QBrush（QColor 会被包装），故需同时处理 QBrush。
+        # 选中（高亮）状态下把 HighlightedText 设为单元格自身前景色，红/绿字选中后仍保持原色。
+        if isinstance(fg, QBrush) and fg.color().isValid():
+            option.palette.setColor(QPalette.ColorRole.HighlightedText, fg.color())
+        elif isinstance(fg, QColor) and fg.isValid():
             option.palette.setColor(QPalette.ColorRole.HighlightedText, fg)
 
     def helpEvent(self, event, view, option, index) -> bool:

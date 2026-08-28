@@ -238,6 +238,8 @@ class BaseTableView(QWidget):
             self._mgr.apply(self.table, self.columns, self._col_content_w)
         finally:
             self._applying = False
+        # 布局变化（拖宽/双击自适应）后重绘漏斗图标与排序箭头，避免标记丢失
+        self._update_filter_marks()
 
     def _open_col_settings(self) -> None:
         from app.ui.column_settings_dialog import open_column_settings
@@ -261,6 +263,8 @@ class BaseTableView(QWidget):
         super().resizeEvent(event)
         if getattr(self, "_col_content_w", None) is not None and self.table.columnCount():
             self._mgr.apply(self.table, self.columns, self._col_content_w)
+            # 重绘漏斗图标与排序箭头，避免缩放后标记丢失
+            self._update_filter_marks()
 
     def _render(self) -> None:
         total_cols = self._total_cols()

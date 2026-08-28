@@ -120,7 +120,9 @@ class ColumnLayoutManager:
                     c["w"] += extra * c["w"] / tot
         else:
             deficit = float(W - viewport_w)
-            nf = [c for c in vis if not c.get("frozen")]
+            # 仅缩小「未冻结且未手动定宽」的列；fixed（用户拖宽/双击拟合）列是用户显式设定，
+            # 不应被自动缩回，否则双击自适应/expand 列宽后会被立即缩回，导致内容显示不全。
+            nf = [c for c in vis if not c.get("frozen") and c.get("fixed") is None]
             nfW = sum(c["w"] for c in nf)
             if nf and deficit > 0:
                 take = min(deficit, max(0.0, nfW - len(nf) * MIN_W))
@@ -129,7 +131,8 @@ class ColumnLayoutManager:
                         c["w"] = max(MIN_W, c["w"] - take * c["w"] / nfW)
                     deficit -= take
             if deficit > 0:
-                allc = vis
+                # 兜底：仅剩 fixed 列也超宽时，才动 fixed 列（极少见，宁可出现横向滚动也不破坏用户设定）
+                allc = [c for c in vis if c.get("fixed") is None]
                 allW = sum(c["w"] for c in allc)
                 if allW > 0:
                     take = min(deficit, max(0.0, allW - len(allc) * MIN_W))
@@ -273,7 +276,10 @@ class TableColumnLayout(QObject):
         out = []
         for c in range(self.table.columnCount()):
             it = self.table.horizontalHeaderItem(c)
-            out.append(it.text() if it else f"col{c}")
+            t = it.text() if it else f"col{c}"
+            # 剥离排序箭头后缀，避免「 ▲/▼」被当作列 key 污染列顺序/宽度状态
+            t = t.replace(" ▲", "").replace(" ▼", "")
+            out.append(t)
         return out
 
     def apply(self, remeasure: bool = True) -> None:
