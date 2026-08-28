@@ -351,7 +351,8 @@ class TableColumnLayout(QObject):
             self.content_w = self.mgr.measure_content_widths(self.table, keys)
             self._applying = True
             try:
-                self.mgr.apply(self.table, keys, self.content_w, reorder=self._movable)
+                self.mgr.apply(self.table, keys, self.content_w, reorder=self._movable,
+                               sorted_col=self._sort_col)
             finally:
                 self._applying = False
 
@@ -431,7 +432,8 @@ class TableColumnLayout(QObject):
         self.content_w = self.mgr.measure_content_widths(self.table, keys)
         self._applying = True
         try:
-            self.mgr.apply(self.table, keys, self.content_w, reorder=self._movable)
+            self.mgr.apply(self.table, keys, self.content_w, reorder=self._movable,
+                           sorted_col=self._sort_col)
         finally:
             self._applying = False
 

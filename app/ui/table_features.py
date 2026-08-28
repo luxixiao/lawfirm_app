@@ -21,7 +21,7 @@ from __future__ import annotations
 from collections import OrderedDict
 from typing import Callable, List, Optional
 
-from PySide6.QtCore import Qt, QRect
+from PySide6.QtCore import Qt, QPoint, QRect
 from PySide6.QtGui import QBrush, QColor, QFont, QFontMetrics, QIcon, QPalette, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView, QCheckBox, QDialog, QDialogButtonBox, QHBoxLayout,
@@ -153,58 +153,61 @@ class AccentHeaderView(QHeaderView):
         if color is None:
             # 无排序列/冻结列标记：交还原生 + 全局 QSS 绘制，观感与改造前完全一致
             super().paintSection(painter, rect, logicalIndex)
-            return
-        painter.save()
-        # 1) 背景底色（排序列强调色 / 冻结列灰底）
-        painter.fillRect(rect, color)
-        # 2) 分隔线（复刻 style.py 的 border-bottom / border-right）
-        pen = QPen(_HEADER_BORDER)
-        pen.setWidth(1)
-        painter.setPen(pen)
-        painter.drawLine(rect.bottomLeft(), rect.bottomRight())
-        painter.drawLine(rect.topRight(), rect.bottomRight())
-        # 3) 漏斗图标（已设筛选列），画在最左
-        model = self.model()
-        left = 10
-        icon = model.headerData(logicalIndex, self.orientation(), Qt.DecorationRole) if model else None
-        if isinstance(icon, QIcon) and not icon.isNull():
-            isz = 14
-            icon_y = rect.top() + (rect.height() - isz) // 2
-            icon.paint(painter, QRect(left, icon_y, isz, isz))
-            left += isz + 4
-        # 4) 文字（标题，可能含 ▲/▼ 后缀）
-        text = str(model.headerData(logicalIndex, self.orientation(), Qt.DisplayRole) or "") if model else ""
-        tcol = self.palette().color(QPalette.ColorRole.WindowText)
-        painter.setPen(tcol)
-        font = self.font()
-        font.setWeight(QFont.Weight.DemiBold)   # 对应 QSS font-weight:600
-        painter.setFont(font)
-        tr = rect.adjusted(left, 0, -10, 0)
-        painter.drawText(tr, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, text)
-        # 5) 排序三角（原生 setSortIndicator 设置的列）
-        if self.sortIndicatorSection() == logicalIndex:
+        else:
+            painter.save()
+            # 1) 背景底色（排序列强调色 / 冻结列灰底）
+            painter.fillRect(rect, color)
+            # 2) 分隔线（复刻 style.py 的 border-bottom / border-right）
+            pen = QPen(_HEADER_BORDER)
+            pen.setWidth(1)
+            painter.setPen(pen)
+            painter.drawLine(rect.bottomLeft(), rect.bottomRight())
+            painter.drawLine(rect.topRight(), rect.bottomRight())
+            # 3) 漏斗图标（已设筛选列），画在最左
+            model = self.model()
+            left = 10
+            icon = model.headerData(logicalIndex, self.orientation(), Qt.DecorationRole) if model else None
+            if isinstance(icon, QIcon) and not icon.isNull():
+                isz = 14
+                icon_y = rect.top() + (rect.height() - isz) // 2
+                icon.paint(painter, QRect(left, icon_y, isz, isz))
+                left += isz + 4
+            # 4) 文字（标题，可能含 ▲/▼ 后缀）
+            text = str(model.headerData(logicalIndex, self.orientation(), Qt.DisplayRole) or "") if model else ""
+            tcol = self.palette().color(QPalette.ColorRole.WindowText)
+            painter.setPen(tcol)
+            font = self.font()
+            font.setWeight(QFont.Weight.DemiBold)   # 对应 QSS font-weight:600
+            painter.setFont(font)
+            tr = rect.adjusted(left, 0, -10, 0)
+            painter.drawText(tr, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, text)
+            painter.restore()
+        # 5) 排序三角：QHeaderView 的 isSortIndicatorShown 默认 False，原生根本不会画，
+        #    故无论该列走自绘还是原生分支，三角统一在这里补画（避免冻结/解冻后三角消失）。
+        if self.sortIndicatorSection() == logicalIndex and not self.isSortIndicatorShown():
+            painter.save()
             self._draw_sort_triangle(painter, rect, self.sortIndicatorOrder())
-        painter.restore()
+            painter.restore()
 
     @staticmethod
     def _draw_sort_triangle(painter, rect, order) -> None:
-        d = 6
-        ax = rect.right() - 14
-        ay = rect.top() + (rect.height() - d) // 2
+        """排序方向三角：升序 ▲（尖朝上）/ 降序 ▼（尖朝下），居中靠右。
+
+        用标准等腰三角（半宽5 / 半高4，整枚 11x8），方向一眼可辨；
+        旧版是 6px 直角三角形（三条边分别贴顶/左/右），升降序几乎看不出差别。
+        """
+        half_w, half_h = 5, 4
+        cx = rect.right() - 13
+        cy = rect.top() + rect.height() // 2
         painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QColor("#8A93A6"))
+        painter.setBrush(QColor("#5A6572"))
         if order == Qt.SortOrder.DescendingOrder:
-            painter.drawPolygon([
-                QRect(ax, ay, d, d).topLeft(),
-                QRect(ax, ay, d, d).topRight(),
-                QRect(ax, ay, d, d).bottomLeft(),
-            ])
+            pts = [QPoint(cx, cy + half_h), QPoint(cx - half_w, cy - half_h),
+                   QPoint(cx + half_w, cy - half_h)]      # ▼ 尖朝下
         else:
-            painter.drawPolygon([
-                QRect(ax, ay, d, d).topLeft(),
-                QRect(ax, ay, d, d).topRight(),
-                QRect(ax, ay, d, d).bottomRight(),
-            ])
+            pts = [QPoint(cx, cy - half_h), QPoint(cx - half_w, cy + half_h),
+                   QPoint(cx + half_w, cy + half_h)]      # ▲ 尖朝上
+        painter.drawPolygon(pts)
 
 
 def install_accent_header(table: QTableWidget) -> QHeaderView:
