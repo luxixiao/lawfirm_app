@@ -5,7 +5,7 @@ from typing import List
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QDialog, QDialogButtonBox, QHBoxLayout, QLabel, QListWidget, QListWidgetItem,
+    QCheckBox, QDialog, QDialogButtonBox, QHBoxLayout, QLabel, QListWidget, QListWidgetItem,
     QPushButton, QSpinBox, QTableWidget, QTableWidgetItem, QVBoxLayout,
 )
 
@@ -82,12 +82,13 @@ class _ColSettingsDlg(QDialog):
         self.tbl.setRowCount(len(order))
         for r, k in enumerate(order):
             vis = self.state["visible"].get(k, True)
-            ci = QTableWidgetItem()
-            # 显示列只保留勾选功能：不可编辑、不可选中（避免焦点框小方块），但仍可点击勾选。
-            ci.setFlags((ci.flags() | Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled)
-                        & ~(Qt.ItemFlag.ItemIsEditable | Qt.ItemFlag.ItemIsSelectable))
-            ci.setCheckState(Qt.CheckState.Checked if vis else Qt.CheckState.Unchecked)
-            self.tbl.setItem(r, 0, ci)
+            # 用 QCheckBox widget 替代 QTableWidgetItem，彻底避开 item 绘制出的空文本区/焦点框小方块。
+            cb = QCheckBox()
+            cb.setChecked(vis)
+            cb.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            cb.setStyleSheet("QCheckBox { margin: 0px; padding: 0px; spacing: 0px; border: none; background: transparent; }"
+                             "QCheckBox::indicator { width: 16px; height: 16px; }")
+            self.tbl.setCellWidget(r, 0, cb)
             ni = QTableWidgetItem(k)
             ni.setFlags(ni.flags() & ~Qt.ItemFlag.ItemIsEditable)
             self.tbl.setItem(r, 1, ni)
@@ -123,7 +124,8 @@ class _ColSettingsDlg(QDialog):
         widths: dict = {}
         for r in range(self.tbl.rowCount()):
             k = order[r]
-            vis = self.tbl.item(r, 0).checkState() == Qt.CheckState.Checked
+            w = self.tbl.cellWidget(r, 0)
+            vis = w.isChecked() if isinstance(w, QCheckBox) else False
             visible[k] = vis
             sp = self.tbl.cellWidget(r, 2)
             val = sp.value()
