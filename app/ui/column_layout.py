@@ -57,6 +57,12 @@ class ColumnLayoutManager:
         except Exception:  # noqa: BLE001
             return state
         saved_order = [k for k in saved.get("order", []) if k in default_keys]
+        # 列集合（身份集合）必须与当前完全一致：结算总表在「年模式(14列)」与「月模式(3列)」间切换时，
+        # 旧存档列集合不同，若直接沿用会把上月模式的列序/显隐串到本年模式
+        # （表现为「第二列是2月、第三列是合计」）。集合不一致即视为过期，整份丢弃回退默认。
+        # 用「完整存档列集合」比较（而非过滤后的），以同时覆盖两种切换方向及用户曾重排的情况。
+        if set(saved.get("order", [])) != set(default_keys):
+            return self._default(default_keys)
         for k in default_keys:
             if k not in saved_order:
                 saved_order.append(k)

@@ -21,7 +21,7 @@ from __future__ import annotations
 from collections import OrderedDict
 from typing import Callable, List, Optional
 
-from PySide6.QtCore import Qt, QPoint, QRect
+from PySide6.QtCore import Qt, QPoint, QRect, QSize
 from PySide6.QtGui import QBrush, QColor, QFont, QFontMetrics, QIcon, QPalette, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView, QCheckBox, QDialog, QDialogButtonBox, QHBoxLayout,
@@ -114,6 +114,8 @@ def install_common_features(table: QTableWidget) -> None:
 _HEADER_SORT_BG = QColor("#E3F2FD")   # 浅蓝：当前排序列
 _HEADER_FROZEN_BG = QColor("#EAEAEA")  # 灰：冻结列
 _HEADER_BORDER = QColor("#E0E0E0")    # 表头分隔线
+# 两行表头默认底色（浅色皮肤 bg_table；深色皮肤需另行适配）
+_HEADER_BG = QColor("#FAFAF9")
 
 
 class AccentHeaderView(QHeaderView):
@@ -208,6 +210,119 @@ class AccentHeaderView(QHeaderView):
             pts = [QPoint(cx, cy - half_h), QPoint(cx - half_w, cy + half_h),
                    QPoint(cx + half_w, cy + half_h)]      # ▲ 尖朝上
         painter.drawPolygon(pts)
+
+
+class TwoTierHeaderView(AccentHeaderView):
+    """两行表头：第一行大类（跨其下两列合并显示），第二行细分（本月/累计）。
+
+    仅用于结构固定的表格（如年度聘用结算表）。继承 AccentHeaderView，
+    复用其 _section_colors（排序列/冻结列底色）与排序三角逻辑。
+    """
+
+    def __init__(self, orientation, parent=None):
+        super().__init__(orientation, parent)
+        self._tt_enabled = False
+        self._tt_lead = []          # 单列（序号/姓名）文案，单行居中
+        self._tt_top = []           # 每逻辑列：第一行文案（大类）；非起始列为空串
+        self._tt_bottom = []        # 每逻辑列：第二行文案（细分）
+        self._tt_group_start = set()  # 大类起始列逻辑号集合（用于合并绘制第一行）
+        self.setFixedHeight(44)
+
+    def sizeHint(self):  # noqa: N802
+        # 保证 QTableView 为两行表头预留高度
+        return QSize(self.length() if self.length() else 100, 44)
+
+    def set_tiers(self, lead_labels, groups) -> None:
+        """lead_labels: 单列文案列表（如 ['序号','姓名']）；
+        groups: [(大类名, [子项...]), ...]，每个大类下子项数为 2（本月/累计）。"""
+        self._tt_lead = list(lead_labels)
+        self._tt_top = []
+        self._tt_bottom = []
+        self._tt_group_start = set()
+        for i in range(len(lead_labels)):
+            self._tt_top.append("")
+            self._tt_bottom.append(lead_labels[i])
+        for gname, subs in groups:
+            start = len(self._tt_top)
+            self._tt_group_start.add(start)
+            for j, sub in enumerate(subs):
+                self._tt_top.append(gname if j == 0 else "")
+                self._tt_bottom.append(sub)
+        self._tt_enabled = True
+        self.viewport().update()
+
+    def paintSection(self, painter, rect, logicalIndex):  # noqa: N802
+        if painter is None:
+            return
+        if not self._tt_enabled or logicalIndex >= len(self._tt_bottom):
+            super().paintSection(painter, rect, logicalIndex)
+            return
+        painter.save()
+        # 1) 背景底色（排序列强调色 / 冻结列灰底 / 默认表头色）
+        color = self._section_colors.get(logicalIndex)
+        if color is None:
+            color = _HEADER_BG
+        painter.fillRect(rect, color)
+        # 2) 分隔线
+        pen = QPen(_HEADER_BORDER)
+        pen.setWidth(1)
+        painter.setPen(pen)
+        half = rect.height() // 2
+        painter.drawLine(rect.bottomLeft(), rect.bottomRight())  # 底边（所有列）
+        if logicalIndex in self._tt_group_start:
+            # 大类起始列：顶行合并（不画竖向分隔），仅在底行画竖向分隔（细分之间）
+            x = rect.right()
+            painter.drawLine(QPoint(x, rect.top() + half), QPoint(x, rect.bottom()))
+        else:
+            # 其余列：整列竖向分隔
+            painter.drawLine(rect.topRight(), rect.bottomRight())
+        # 3) 文字
+        txt_col = self.palette().color(QPalette.ColorRole.WindowText)
+        font = self.font()
+        font.setWeight(QFont.Weight.DemiBold)
+        if logicalIndex < len(self._tt_lead):
+            # 单列（序号/姓名）：整高居中
+            painter.setPen(txt_col)
+            painter.setFont(font)
+            painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, self._tt_bottom[logicalIndex])
+        else:
+            # 第一行：大类（仅起始列绘制，跨两列合并居中）
+            if logicalIndex in self._tt_group_start:
+                gname = self._tt_top[logicalIndex]
+                next_w = self.sectionSize(logicalIndex + 1) if logicalIndex + 1 < self.count() else 0
+                top_rect = QRect(rect.x(), rect.y(), rect.width() + next_w, half)
+                painter.setPen(txt_col)
+                painter.setFont(font)
+                painter.drawText(top_rect, Qt.AlignmentFlag.AlignCenter, gname)
+            # 第二行：细分
+            bot_rect = QRect(rect.x(), rect.y() + half, rect.width(), rect.height() - half)
+            painter.setPen(txt_col)
+            painter.setFont(font)
+            painter.drawText(bot_rect, Qt.AlignmentFlag.AlignCenter, self._tt_bottom[logicalIndex])
+        painter.restore()
+        # 4) 排序三角（如有）
+        if self.sortIndicatorSection() == logicalIndex and not self.isSortIndicatorShown():
+            painter.save()
+            self._draw_sort_triangle(painter, rect, self.sortIndicatorOrder())
+            painter.restore()
+
+
+def install_two_tier_header(table: QTableWidget, lead_labels, groups) -> "TwoTierHeaderView":
+    """把 table 横向表头替换为两行表头，并设置层级文案。
+
+    - 须在 setHorizontalHeaderLabels 之前调用（替换表头会清空已有标签）；
+    - 内部仍以「每列唯一 key」设置表头项文本（供列布局/右键菜单标识），
+      与旧式单行星号标签（如「本年收入(本月)」）保持一致，避免列状态存档错乱。
+    """
+    hdr = TwoTierHeaderView(Qt.Orientation.Horizontal, table)
+    table.setHorizontalHeader(hdr)
+    hdr.set_tiers(lead_labels, groups)
+    keys = list(lead_labels)
+    for gname, subs in groups:
+        for sub in subs:
+            keys.append(f"{gname}({sub})")
+    table.setHorizontalHeaderLabels(keys)
+    return hdr
 
 
 def install_accent_header(table: QTableWidget) -> QHeaderView:

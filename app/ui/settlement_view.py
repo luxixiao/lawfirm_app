@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.ui.column_layout import install_column_layout
+from app.ui.table_features import install_two_tier_header
 from app.ui.widgets import (CaptionLabel, FrozenTableWidget, PrimaryPushButton, PushButton, SubtitleLabel)
 
 from app.engine.person_settlement import build_settlement
@@ -275,13 +276,13 @@ class SettlementView(QWidget):
         rows.append(["一、上年结余结转"] + [None] * header_extra)
         # 二
         rec_keys = ["rec_open_cur", "rec_cur_year", "rec_prev_year", "rec_refund_cur", "rec_refund_prev"]
-        rows.append(row("二、本月收款金额", [round(sum(m[mo_][k] for k in rec_keys), 2) for mo_ in range(1, 13)], True))
+        rows.append(row("二、本月收款金额", [round(sum(m[mo_][k] for k in rec_keys), 2) for mo_ in range(1, 13)], False))
         for key, label in [("rec_open_cur", "1.本月开收"), ("rec_cur_year", "2.收本年"),
                            ("rec_prev_year", "3.收上年"), ("rec_refund_cur", "4.退本年"),
                            ("rec_refund_prev", "5.退上年")]:
             rows.append(row(label, [round(m[mo_][key], 2) for mo_ in range(1, 13)], True))
         # 三（小计 = 本月开票总额，独立计算，含预收票）
-        rows.append(row("三、本月开具发票金额", [round(m[mo_]["inv_total"], 2) for mo_ in range(1, 13)], True))
+        rows.append(row("三、本月开具发票金额", [round(m[mo_]["inv_total"], 2) for mo_ in range(1, 13)], False))
         for key, label in [("inv_open_received", "1.本月开收"), ("inv_open_uncollected", "2.本月未收"),
                            ("inv_red_cur", "3.红冲本年"), ("inv_red_prev", "4.红冲上年")]:
             rows.append(row(label, [round(m[mo_][key], 2) for mo_ in range(1, 13)], True))
@@ -292,7 +293,7 @@ class SettlementView(QWidget):
         # 六
         exp = st["expenses"]
         rows.append(row("六、减：分成报酬及费用",
-                        [round(sum(exp.get(t, {}).get(mo_, 0.0) for t in exp), 2) for mo_ in range(1, 13)], True))
+                        [round(sum(exp.get(t, {}).get(mo_, 0.0) for t in exp), 2) for mo_ in range(1, 13)], False))
         for i, etype in enumerate(self._sorted_expense_types(exp), 1):
             rows.append(row(f"{i}.{etype}", [round(exp[etype].get(mo_, 0.0), 2) for mo_ in range(1, 13)], True))
         # 修正合计列：未收款金额的合计=本年累计未收（非各月之和）
@@ -540,6 +541,7 @@ class SettlementView(QWidget):
         self.r_table = FrozenTableWidget(0, 5, frozen=1)
         self.r_table.setHorizontalHeaderLabels(["序号", "项目", "本期", "本年累计", "备注"])
         self.r_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.r_table.setSortingEnabled(False)  # 月度结算表不提供排序功能，首列(序号)始终冻结
         self.r_table.verticalHeader().setVisible(False)
         self.r_table.horizontalHeader().setStretchLastSection(True)
         self.r_table._col = install_column_layout(self.r_table, "settlement", "report", movable=False)
@@ -602,7 +604,9 @@ class SettlementView(QWidget):
                 if isinstance(val, float):
                     item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
                 if bold:
-                    item.setFont(QFont(item.font().family(), item.font().pointSize(), QFont.Weight.Bold))
+                    f = item.font()
+                    f.setBold(True)
+                    item.setFont(f)
                 self.r_table.setItem(r, c, item)
             # 备注按类别写在对应行（二收款 / 三开票）
             if nm == "本月收款金额":
@@ -664,12 +668,14 @@ class SettlementView(QWidget):
         """
         for c in (self.si_year, self.si_month):
             c.setStyleSheet(COMBO_QSS)
-        # 12 列：序号/姓名/5 组(本月/累计)
+        # 12 列：序号/姓名/5 组(本月/累计)；表头两行（第一行大类跨列合并，第二行本月/累计）
         self.si_table = FrozenTableWidget(0, 12, frozen=1)
-        heads = ["序号", "姓名"]
-        for lab in ["本年收入", "报酬发放", "住房公积金", "保险费", "汽油费"]:
-            heads += [f"{lab}(本月)", f"{lab}(累计)"]
-        self.si_table.setHorizontalHeaderLabels(heads)
+        install_two_tier_header(
+            self.si_table,
+            lead_labels=["序号", "姓名"],
+            groups=[(lab, ["本月", "累计"]) for lab in
+                    ["本年收入", "报酬发放", "住房公积金", "保险费", "汽油费"]],
+        )
         self.si_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.si_table.verticalHeader().setVisible(False)
         self.si_table.horizontalHeader().setStretchLastSection(True)
