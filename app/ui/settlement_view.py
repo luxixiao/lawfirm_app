@@ -21,6 +21,24 @@ from app.exporter.person_settlement_exporter import export_all, export_one
 MONTH_LABELS = ["1月", "2月", "3月", "4月", "5月", "6月",
                 "7月", "8月", "9月", "10月", "11月", "12月"]
 
+_CN_NUM = ("一", "二", "三", "四", "五", "六", "七", "八", "九", "十")
+
+
+def _merge_seq_name(seq, name) -> str:
+    """把「序号 + 项目」合并为一个项目名，写法对齐个人结算总表。
+
+    中文序号（一/二/三…）用「、」连接，数字序号（1/2/3…）用「.」连接；
+    缺任一侧时返回另一侧原文。
+    """
+    s = "" if seq is None else str(seq).strip()
+    n = "" if name is None else str(name).strip()
+    if not s:
+        return n
+    if not n:
+        return s
+    sep = "、" if any(ch in _CN_NUM for ch in s) else "."
+    return f"{s}{sep}{n}"
+
 
 class SettlementView(QWidget):
     def __init__(self) -> None:
@@ -213,10 +231,10 @@ class SettlementView(QWidget):
         year = self.year.currentData() or datetime.now().year
         name = self.person.currentData()
         mo = self.month.currentData()
-        # 按月份模式调整表格列
+        # 按月份模式调整表格列：选某月时显示「1~该月」各月列 + 累计合计（非仅该月）
         if mo:
-            self.table.setColumnCount(3)
-            self.table.setHorizontalHeaderLabels(["项目", f"{mo}月", "合计"])
+            self.table.setColumnCount(mo + 2)
+            self.table.setHorizontalHeaderLabels(["项目"] + MONTH_LABELS[:mo] + ["合计"])
         else:
             self.table.setColumnCount(14)
             self.table.setHorizontalHeaderLabels(["项目"] + MONTH_LABELS + ["合计"])
@@ -253,23 +271,27 @@ class SettlementView(QWidget):
         self.table._col.apply()
         type_txt = self.person_type.currentText()
         self.lbl_summary.setText(
-            f"{name}（{type_txt}）{'·' + str(mo) + '月' if mo else '·全年'}")
+            f"{name}（{type_txt}）{'·1-' + str(mo) + '月累计' if mo else '·全年'}")
 
     def _build_rows(self, st: dict, year: int) -> list:
-        """结算总表行（项目 × 1-12月 + 合计）；月份筛选时只保留该月列"""
+        """结算总表行（项目 × 月份 + 合计）。
+
+        选某月 mo 时：显示 1~mo 月各月列，合计 = 1~mo 月累计（与月度结算表「本年累计」口径一致）；
+        未选月份（全年）时：显示 1~12 月，合计 = 全年累计。
+        """
         m = st["months"]
         mo = self.month.currentData()
         if mo:
-            idxs = [mo - 1]
-            header_extra = 1  # 项目 + 1个月
+            idxs = list(range(mo))          # 1~mo 月
+            header_extra = mo + 1           # 项目 + mo 个月 + 合计
         else:
             idxs = list(range(12))
             header_extra = 13
         rows = []
         def row(label: str, vals12: list, is_sub=False):
             vals = [vals12[i] for i in idxs]
-            # 合计列 = 全年累计（单月模式也显示全年累计便于对照）
-            total = round(sum(vals12), 2)
+            # 合计 = 当前显示各月之和：全年模式=全年累计，选月模式=1~mo 月累计
+            total = round(sum(vals), 2)
             prefix = "　" if is_sub else ""
             return [prefix + label] + vals + [total]
         rows.append([f"▶ {st['staff_type']}"] + [None] * header_extra)
@@ -296,10 +318,13 @@ class SettlementView(QWidget):
                         [round(sum(exp.get(t, {}).get(mo_, 0.0) for t in exp), 2) for mo_ in range(1, 13)], False))
         for i, etype in enumerate(self._sorted_expense_types(exp), 1):
             rows.append(row(f"{i}.{etype}", [round(exp[etype].get(mo_, 0.0), 2) for mo_ in range(1, 13)], True))
-        # 修正合计列：未收款金额的合计=本年累计未收（非各月之和）
+        # 修正合计列：未收款金额为存量口径（各月本月未收的累计余额）
+        #   全年 → uncollected_total（本年累计未收）；选 mo 月 → 1~mo 月累计未收
+        uncollected_cum = (st["uncollected_total"] if not mo
+                           else round(sum(st["uncollected_month"][x] for x in range(1, mo + 1)), 2))
         for rr in rows:
             if rr and rr[0] == "四、未收款金额":
-                rr[-1] = round(st["uncollected_total"], 2)
+                rr[-1] = round(uncollected_cum, 2)
                 break
         return rows
 
@@ -538,10 +563,11 @@ class SettlementView(QWidget):
         """
         for c in (self.r_year, self.r_month, self.r_person, self.r_type):
             c.setStyleSheet(COMBO_QSS)
-        self.r_table = FrozenTableWidget(0, 5, frozen=1)
-        self.r_table.setHorizontalHeaderLabels(["序号", "项目", "本期", "本年累计", "备注"])
+        # 4 列：项目(序号+项目合并，对齐个人结算总表写法) / 本期 / 本年累计 / 备注
+        self.r_table = FrozenTableWidget(0, 4, frozen=1)
+        self.r_table.setHorizontalHeaderLabels(["项目", "本期", "本年累计", "备注"])
         self.r_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        self.r_table.setSortingEnabled(False)  # 月度结算表不提供排序功能，首列(序号)始终冻结
+        self.r_table.setSortingEnabled(False)  # 月度结算表不提供排序功能，首列(项目)始终冻结
         self.r_table.verticalHeader().setVisible(False)
         self.r_table.horizontalHeader().setStretchLastSection(True)
         self.r_table._col = install_column_layout(self.r_table, "settlement", "report", movable=False)
@@ -598,7 +624,9 @@ class SettlementView(QWidget):
         from PySide6.QtGui import QFont
         note_rows = []
         for r, (seq, nm, cur, total, bold) in enumerate(rows):
-            cells = [seq, nm, cur, total]
+            # 序号与项目合并为一列，写法对齐个人结算总表：中文序号用「、」，数字序号用「.」
+            label = _merge_seq_name(seq, nm)
+            cells = [label, cur, total]
             for c, val in enumerate(cells):
                 item = QTableWidgetItem("" if val is None else (f"{val:,.2f}" if isinstance(val, float) else str(val)))
                 if isinstance(val, float):
@@ -614,14 +642,14 @@ class SettlementView(QWidget):
                 if note:
                     it = QTableWidgetItem(note)
                     it.setForeground(Qt.GlobalColor.gray)
-                    self.r_table.setItem(r, 4, it)
+                    self.r_table.setItem(r, 3, it)
                     note_rows.append(r)
             elif nm == "本月开具发票金额":
                 note = report_note_inv(st, month)
                 if note:
                     it = QTableWidgetItem(note)
                     it.setForeground(Qt.GlobalColor.gray)
-                    self.r_table.setItem(r, 4, it)
+                    self.r_table.setItem(r, 3, it)
                     note_rows.append(r)
         for r in note_rows:
             self.r_table.resizeRowToContents(r)
