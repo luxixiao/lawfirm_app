@@ -384,7 +384,7 @@ class TableColumnLayout(QObject):
         menu = QMenu(self.table)
         act_settings = menu.addAction("列设置…")
         # 按列筛选：直接把 3 个操作摊平进同一菜单（不再嵌套「按列筛选…」子菜单），
-        # 并按条件显隐（该列未筛选则不显示「清除此列筛选」；无任何列筛选则不显示「清除全部筛选」）。
+        # 并按条件显隐（该列未筛选则不显示「清除此列筛选」；「取消全部筛选」始终显示）。
         if self._tf_filter is not None:
             menu.addSeparator()
             populate_filter_menu(menu, self._tf_filter, self.table, pos)
@@ -411,7 +411,8 @@ class TableColumnLayout(QObject):
         """右键冻结/解冻（冻结面板语义）：
 
         - 冻结某列：该列及其「左侧所有列」（当前视觉序）一并冻结；
-        - 解冻某列：仅解除该列自身的冻结（其余列保持原冻结状态）。
+        - 解冻某列：解除【所有列】的冻结（面板语义：冻结是单一边界，
+          解冻即整体取消；之前只解除选中列导致其它列仍被冻、体验割裂）。
         不再把列挪到最左（满足「冻结列留在原位」的需求）。
         """
         key = keys[logical]
@@ -427,7 +428,8 @@ class TableColumnLayout(QObject):
             for k in visual_order[:idx + 1]:
                 state["frozen"][k] = True
         else:
-            state["frozen"][key] = False
+            # 解冻任一列 → 解除全部列的冻结
+            state["frozen"] = {k: False for k in state["frozen"]}
         self.mgr.save(state)
         self.content_w = self.mgr.measure_content_widths(self.table, keys)
         self._applying = True

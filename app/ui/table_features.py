@@ -512,11 +512,12 @@ def open_col_filter_dialog(tf: TableFilter, table: QTableWidget, logical: int) -
 
 
 def populate_filter_menu(menu, tf: TableFilter, table: QTableWidget, pos) -> None:
-    """把按列筛选的 3 个操作直接加进现有右键菜单（扁平、不嵌套），并按条件显隐：
+    """    把按列筛选的 3 个操作直接加进现有右键菜单（扁平、不嵌套），并按条件显隐：
 
     - 筛选此列…：恒显示
     - 清除此列筛选：仅当该列已设筛选
-    - 清除全部筛选：仅当存在任意列筛选（搜索不计入，因搜索非按列筛选）
+    - 取消全部筛选：恒显示（即便当前无筛选，也保留以便随时一键清空；
+      搜索不计入按列筛选，故是否禁用只看是否有列筛选，这里统一常显）
     """
     hdr = table.horizontalHeader()
     logical = hdr.logicalIndexAt(pos.x())
@@ -527,9 +528,10 @@ def populate_filter_menu(menu, tf: TableFilter, table: QTableWidget, pos) -> Non
     if logical in tf._col_filters:
         act_cc = menu.addAction("清除此列筛选")
         act_cc.triggered.connect(lambda: tf.clear_col(logical))
-    if tf.has_col_filters():
-        act_ca = menu.addAction("清除全部筛选")
-        act_ca.triggered.connect(lambda: tf.clear_all())
+    # 「取消全部筛选」始终可见：之前仅在存在列筛选时才出现，被用户反馈为「选项消失了」，
+    # 故改为常显，点击后调用 clear_all（无筛选时为无副作用的空操作）。
+    act_ca = menu.addAction("取消全部筛选")
+    act_ca.triggered.connect(lambda: tf.clear_all())
 
 
 def open_filter_submenu(tf: TableFilter, table: QTableWidget, pos) -> None:
