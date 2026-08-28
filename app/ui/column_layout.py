@@ -346,11 +346,38 @@ class TableColumnLayout(QObject):
         if self._tf_filter is not None:
             menu.addSeparator()
             populate_filter_menu(menu, self._tf_filter, self.table, pos)
+        hdr = self.table.horizontalHeader()
+        logical = hdr.logicalIndexAt(pos)
+        keys = self._keys()
+        act_freeze = None
+        if self._movable and 0 <= logical < len(keys):
+            state = self.mgr.load(keys)
+            frozen = state["frozen"].get(keys[logical], False)
+            menu.addSeparator()
+            act_freeze = menu.addAction("解冻此列" if frozen else "冻结此列")
         action = menu.exec(self.table.mapToGlobal(pos))
         if action is None:
             return
         if action == act_settings:
             self.open_settings()
+        elif action is act_freeze and act_freeze is not None:
+            self._toggle_freeze(keys, logical)
+
+    def _toggle_freeze(self, keys: List[str], logical: int) -> None:
+        """右键冻结/解冻：切换 frozen 标记；冻结时把该列移到视觉最左，解冻时保留当前位置。"""
+        key = keys[logical]
+        state = self.mgr.load(keys)
+        now = not state["frozen"].get(key, False)
+        state["frozen"][key] = now
+        if now and key in state["order"]:
+            state["order"].insert(0, state["order"].pop(state["order"].index(key)))
+        self.mgr.save(state)
+        self.content_w = self.mgr.measure_content_widths(self.table, keys)
+        self._applying = True
+        try:
+            self.mgr.apply(self.table, keys, self.content_w, reorder=self._movable)
+        finally:
+            self._applying = False
 
     # ---------- 事件过滤（窗体缩放 / 最大化还原时重填） ----------
     def _ensure_win(self) -> None:
