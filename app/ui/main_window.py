@@ -58,7 +58,7 @@ NAV_GROUPS = [
         ("refund", "退款"),
     ]),
     ("各类报表", [
-        ("settlement", "个人结算总表"),
+        ("settlement", "各类报表"),
     ]),
     ("数据维护", [
         ("staff", "员工管理"),

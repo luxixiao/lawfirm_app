@@ -117,6 +117,7 @@ class SettlementView(QWidget):
         self.table.verticalHeader().setVisible(False)
         self.table.horizontalHeader().setStretchLastSection(True)
         self.table._col = install_column_layout(self.table, "settlement", "personal", movable=False)
+        self.table.horizontalHeader().set_sort_marker_visible(False)  # 纯展示表，关排序三角
         lay.addWidget(self.table, 1)
 
         # ---- 底部：导出 + 摘要 ----
@@ -573,6 +574,7 @@ class SettlementView(QWidget):
         self.r_table.verticalHeader().setVisible(False)
         self.r_table.horizontalHeader().setStretchLastSection(True)
         self.r_table._col = install_column_layout(self.r_table, "settlement", "report", movable=False)
+        self.r_table.horizontalHeader().set_sort_marker_visible(False)  # 纯展示表，关排序三角
         v.addWidget(self.r_table, 1)
         bbar = QHBoxLayout()
         self.btn_report = PushButton("导出月度结算表")
@@ -711,6 +713,7 @@ class SettlementView(QWidget):
         self.si_table.verticalHeader().setVisible(False)
         self.si_table.horizontalHeader().setStretchLastSection(True)
         self.si_table._col = install_column_layout(self.si_table, "settlement", "staff_income", movable=False)
+        self.si_table.horizontalHeader().set_sort_marker_visible(False)  # 纯展示表，关排序三角
         v.addWidget(self.si_table, 1)
         bbar = QHBoxLayout()
         self.btn_staff_income = PushButton("导出当月")
@@ -856,6 +859,7 @@ class SettlementView(QWidget):
         self.ii_table.verticalHeader().setVisible(False)
         self.ii_table.horizontalHeader().setStretchLastSection(True)
         self.ii_table._col = install_column_layout(self.ii_table, "settlement", "invoice_income", movable=False)
+        self.ii_table.horizontalHeader().set_sort_marker_visible(False)  # 纯展示表，关排序三角
         v.addWidget(self.ii_table, 1)
         bbar = QHBoxLayout()
         self.btn_ii_month = PushButton("导出当月")

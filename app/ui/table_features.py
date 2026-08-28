@@ -135,6 +135,7 @@ class AccentHeaderView(QHeaderView):
     def __init__(self, orientation, parent=None):
         super().__init__(orientation, parent)
         self._section_colors = {}          # logical -> QColor（缺省/None=交还原生绘制）
+        self._sort_marker_visible = True  # 排序直角三角是否绘制（纯展示表可关）
 
     # ---- 外部接口（协调器调用）----
     def set_section_color(self, logical: int, color) -> None:
@@ -147,6 +148,11 @@ class AccentHeaderView(QHeaderView):
 
     def reset_all_colors(self) -> None:
         self._section_colors.clear()
+        self.viewport().update()
+
+    def set_sort_marker_visible(self, visible: bool) -> None:
+        """是否绘制排序直角三角（纯展示表可关，避免首列误带排序标记）。"""
+        self._sort_marker_visible = bool(visible)
         self.viewport().update()
 
     # ---- 自绘 ----
@@ -189,7 +195,7 @@ class AccentHeaderView(QHeaderView):
             painter.restore()
         # 5) 排序三角：QHeaderView 的 isSortIndicatorShown 默认 False，原生根本不会画，
         #    故无论该列走自绘还是原生分支，三角统一在这里补画（避免冻结/解冻后三角消失）。
-        if self.sortIndicatorSection() == logicalIndex and not self.isSortIndicatorShown():
+        if self._sort_marker_visible and self.sortIndicatorSection() == logicalIndex and not self.isSortIndicatorShown():
             painter.save()
             self._draw_sort_triangle(painter, rect, self.sortIndicatorOrder())
             painter.restore()
@@ -308,7 +314,7 @@ class TwoTierHeaderView(AccentHeaderView):
             painter.drawText(bot_rect, Qt.AlignmentFlag.AlignCenter, self._tt_bottom[logicalIndex])
         painter.restore()
         # 4) 排序三角（如有）
-        if self.sortIndicatorSection() == logicalIndex and not self.isSortIndicatorShown():
+        if self._sort_marker_visible and self.sortIndicatorSection() == logicalIndex and not self.isSortIndicatorShown():
             painter.save()
             self._draw_sort_triangle(painter, rect, self.sortIndicatorOrder())
             painter.restore()

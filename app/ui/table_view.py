@@ -195,10 +195,10 @@ class BaseTableView(QWidget):
 
     def _update_filter_marks(self) -> None:
         """已设筛选的列在表头显示漏斗图标（不改动标题文本，避免污染列布局 key）；
-        排序列仍以 ▲/▼ 文本标记。
+        排序列改用自绘「贴角实心直角三角」标记（AccentHeaderView 渲染），不再用 ▲/▼ 文本后缀。
 
         筛选键与排序列均为逻辑列号；表头项须按视觉列号取，故用 logicalIndex 转换，
-        否则列被重排/隐藏后漏斗图标与排序箭头会落在错误的列上。
+        否则列被重排/隐藏后漏斗图标与排序三角会落在错误的列上。
         """
         marks = set(self._filter.active_cols())
         hdr = self.table.horizontalHeader()
@@ -211,11 +211,16 @@ class BaseTableView(QWidget):
                 continue
             logical = hdr.logicalIndex(c)
             it.setIcon(icon if logical in marks else QIcon())
+            # 标题只保留原始文案（不再挂 ▲/▼ 后缀，避免污染列布局 key）
             base = it.text().replace(" ▲", "").replace(" ▼", "")
-            suffix = ""
-            if sort_col == logical:
-                suffix += " ▲" if sort_asc else " ▼"
-            it.setText(base + suffix)
+            if base != it.text():
+                it.setText(base)
+        # 排序标记交给 AccentHeaderView 自绘直角三角（isSortIndicatorShown=False 时绘制）；
+        # 此处仅设置排序指示器的逻辑列/方向，真正的行排序由 _sort_rows 完成。
+        if isinstance(sort_col, int) and sort_col >= 0:
+            hdr.setSortIndicator(sort_col, Qt.AscendingOrder if sort_asc else Qt.DescendingOrder)
+        else:
+            hdr.setSortIndicator(-1, Qt.AscendingOrder)
 
     def _reset_col_filters(self) -> None:
         self._filter.clear_all()  # 内部触发 refresh
