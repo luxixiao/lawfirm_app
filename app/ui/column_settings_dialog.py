@@ -5,8 +5,8 @@ from typing import List
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QCheckBox, QDialog, QDialogButtonBox, QHBoxLayout, QLabel, QListWidget, QListWidgetItem,
-    QPushButton, QSpinBox, QTableWidget, QTableWidgetItem, QVBoxLayout,
+    QCheckBox, QDialog, QDialogButtonBox, QHBoxLayout, QLabel, QHeaderView, QListWidget, QListWidgetItem,
+    QPushButton, QSpinBox, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
 from app.ui.column_layout import ColumnLayoutManager, MIN_W, SPIN_MAX
@@ -44,9 +44,18 @@ class _ColSettingsDlg(QDialog):
         self.tbl.setHorizontalHeaderLabels(["显示", "列名", "宽度"])
         self.tbl.verticalHeader().setVisible(False)
         self.tbl.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        self.tbl.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
-        self.tbl.horizontalHeader().setStretchLastSection(False)
-        self.tbl.setColumnWidth(0, 50)
+        # 关掉整表选择高亮框 + 焦点框 + 网格线：消除「选中单元格出现的方框」。
+        self.tbl.setSelectionMode(QTableWidget.SelectionMode.NoSelection)
+        self.tbl.setShowGrid(False)
+        self.tbl.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.tbl.setStyleSheet(
+            "QTableWidget::item { border: none; outline: none; }"
+            "QTableWidget::item:focus { border: none; outline: none; }"
+        )
+        hdr = self.tbl.horizontalHeader()
+        hdr.setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)  # 「显示」列固定最佳宽，不允许变更
+        hdr.setStretchLastSection(False)
+        self.tbl.setColumnWidth(0, 40)
         self.tbl.setColumnWidth(1, 220)
         self.tbl.setColumnWidth(2, 90)
         self._fill()
@@ -82,13 +91,17 @@ class _ColSettingsDlg(QDialog):
         self.tbl.setRowCount(len(order))
         for r, k in enumerate(order):
             vis = self.state["visible"].get(k, True)
-            # 用 QCheckBox widget 替代 QTableWidgetItem，彻底避开 item 绘制出的空文本区/焦点框小方块。
+            # 用 QCheckBox widget（包一层 QWidget 居中），避开 item 焦点框；原生 checkbox 自带黑色描边。
             cb = QCheckBox()
             cb.setChecked(vis)
             cb.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-            cb.setStyleSheet("QCheckBox { margin: 0px; padding: 0px; spacing: 0px; border: none; background: transparent; }"
-                             "QCheckBox::indicator { width: 16px; height: 16px; }")
-            self.tbl.setCellWidget(r, 0, cb)
+            holder = QWidget()
+            hb = QHBoxLayout(holder)
+            hb.setContentsMargins(0, 0, 0, 0)
+            hb.addStretch(1)
+            hb.addWidget(cb)
+            hb.addStretch(1)
+            self.tbl.setCellWidget(r, 0, holder)
             ni = QTableWidgetItem(k)
             ni.setFlags(ni.flags() & ~Qt.ItemFlag.ItemIsEditable)
             self.tbl.setItem(r, 1, ni)
