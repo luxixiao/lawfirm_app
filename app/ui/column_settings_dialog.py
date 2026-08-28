@@ -83,7 +83,9 @@ class _ColSettingsDlg(QDialog):
         for r, k in enumerate(order):
             vis = self.state["visible"].get(k, True)
             ci = QTableWidgetItem()
-            ci.setFlags((ci.flags() | Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled) & ~Qt.ItemFlag.ItemIsEditable)
+            # 显示列只保留勾选功能：不可编辑、不可选中（避免焦点框小方块），但仍可点击勾选。
+            ci.setFlags((ci.flags() | Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled)
+                        & ~(Qt.ItemFlag.ItemIsEditable | Qt.ItemFlag.ItemIsSelectable))
             ci.setCheckState(Qt.CheckState.Checked if vis else Qt.CheckState.Unchecked)
             self.tbl.setItem(r, 0, ci)
             ni = QTableWidgetItem(k)
