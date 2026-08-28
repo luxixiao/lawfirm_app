@@ -199,21 +199,24 @@ class TableFilter:
 
     # ---- 控件模式：隐藏行（纯 QTableWidget） ----
     def apply_to_table(self, table: QTableWidget) -> None:
+        hdr = table.horizontalHeader()
         n = table.rowCount()
         s = self._search.lower()
         cols = list(self._col_filters.keys())
         for r in range(n):
             keep = True
             if s:
-                txt = " ".join(
-                    (table.item(r, c).text() if table.item(r, c) is not None else "")
-                    for c in range(table.columnCount())
-                ).lower()
-                if s not in txt:
+                parts = []
+                for c in range(table.columnCount()):
+                    vc = hdr.visualIndex(c)
+                    it = table.item(r, vc) if vc >= 0 else None
+                    parts.append(it.text() if it is not None else "")
+                if s not in " ".join(parts).lower():
                     keep = False
             if keep:
                 for col in cols:
-                    it = table.item(r, col)
+                    vc = hdr.visualIndex(col)
+                    it = table.item(r, vc) if vc >= 0 else None
                     v = it.text() if it is not None else ""
                     if v not in self._col_filters[col]:
                         keep = False
@@ -320,10 +323,20 @@ class ColumnFilterDialog(QDialog):
 
 
 def _column_values(table: QTableWidget, logical: int) -> List[str]:
+    """收集某逻辑列的候选唯一值，用于「按列筛选」弹窗。
+
+    注意：QTableWidget 按「视觉列号」存取单元格，故必须先用 visualIndex
+    把逻辑列号换算成视觉列号，否则列被拖拽重排后取到的是错误列的数据，
+    导致列筛选与搜索叠加时匹配错乱（表现为交集变空）。
+    """
+    hdr = table.horizontalHeader()
+    vcol = hdr.visualIndex(logical)
     uniq: List[str] = []
     seen: set = set()
+    if vcol < 0:
+        return uniq
     for r in range(table.rowCount()):
-        it = table.item(r, logical)
+        it = table.item(r, vcol)
         v = it.text() if it is not None else ""
         if v not in seen:
             seen.add(v)
@@ -341,7 +354,9 @@ def open_col_filter_dialog(tf: TableFilter, table: QTableWidget, logical: int) -
     被跨列搜索带入视图；此时选满子集误清除列筛选会让该发票号重新出现）。
     空选择时 set_col_filter 内部已自动 clear_col，无需特判。
     """
-    title = table.horizontalHeaderItem(logical)
+    hdr = table.horizontalHeader()
+    vcol = hdr.visualIndex(logical)
+    title = table.horizontalHeaderItem(vcol) if vcol >= 0 else None
     title_text = title.text() if title else ""
     uniq = _column_values(table, logical)
     cur = tf._col_filters.get(logical)

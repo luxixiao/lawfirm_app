@@ -1,4 +1,4 @@
-"""列设置对话框：显隐 / 冻结(常驻保护列) / 顺序 / 手动宽。"""
+"""列设置对话框：显隐 / 顺序 / 手动宽（冻结为底层保留能力，不在对话框暴露）。"""
 from __future__ import annotations
 
 from typing import List
@@ -35,21 +35,20 @@ class _ColSettingsDlg(QDialog):
         self.resize(480, 480)
 
         lay = QVBoxLayout(self)
-        tip = QLabel("「显示」控制显隐；「冻结」列常驻最左且缩窗时优先不缩（冻结必显示）；"
-                     "上下移动调整顺序；「宽度」手动锁定列宽，留默认(=内容宽)则仍自动填充。")
+        tip = QLabel("「显示」控制显隐；上下移动调整顺序；「宽度」手动锁定列宽，"
+                     "留默认(=内容宽)则仍自动填充。")
         tip.setWordWrap(True)
         lay.addWidget(tip)
 
-        self.tbl = QTableWidget(0, 4)
-        self.tbl.setHorizontalHeaderLabels(["显示", "冻结", "列名", "宽度"])
+        self.tbl = QTableWidget(0, 3)
+        self.tbl.setHorizontalHeaderLabels(["显示", "列名", "宽度"])
         self.tbl.verticalHeader().setVisible(False)
         self.tbl.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.tbl.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
         self.tbl.horizontalHeader().setStretchLastSection(False)
         self.tbl.setColumnWidth(0, 50)
-        self.tbl.setColumnWidth(1, 50)
-        self.tbl.setColumnWidth(2, 220)
-        self.tbl.setColumnWidth(3, 90)
+        self.tbl.setColumnWidth(1, 220)
+        self.tbl.setColumnWidth(2, 90)
         self._fill()
         lay.addWidget(self.tbl, 1)
 
@@ -83,21 +82,16 @@ class _ColSettingsDlg(QDialog):
         self.tbl.setRowCount(len(order))
         for r, k in enumerate(order):
             vis = self.state["visible"].get(k, True)
-            frz = self.state["frozen"].get(k, False)
             ci = QTableWidgetItem()
             ci.setFlags(ci.flags() | Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled)
             ci.setCheckState(Qt.CheckState.Checked if vis else Qt.CheckState.Unchecked)
             self.tbl.setItem(r, 0, ci)
-            fi = QTableWidgetItem()
-            fi.setFlags(fi.flags() | Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled)
-            fi.setCheckState(Qt.CheckState.Checked if frz else Qt.CheckState.Unchecked)
-            self.tbl.setItem(r, 1, fi)
-            self.tbl.setItem(r, 2, QTableWidgetItem(k))
+            self.tbl.setItem(r, 1, QTableWidgetItem(k))
             sp = QSpinBox()
             sp.setRange(MIN_W, SPIN_MAX)
             sp.setSingleStep(10)
             sp.setValue(self.state["widths"].get(k) or int(round(cw.get(k, 100))))
-            self.tbl.setCellWidget(r, 3, sp)
+            self.tbl.setCellWidget(r, 2, sp)
 
     def _move(self, d: int) -> None:
         r = self.tbl.currentRow()
@@ -119,25 +113,19 @@ class _ColSettingsDlg(QDialog):
         order = self.state["order"]
         cw = {k: self.content_w[i] for i, k in enumerate(self.keys)}
         visible: dict = {}
-        frozen: dict = {}
+        # 冻结状态沿用既有布局：对话框已移除「冻结」勾选列，不再允许在对话框内改动冻结，
+        # 仅保留底层布局里已有的 frozen 标记（避免把已冻结列误解冻）。
+        frozen: dict = dict(self.state.get("frozen", {}))
         widths: dict = {}
         for r in range(self.tbl.rowCount()):
             k = order[r]
             vis = self.tbl.item(r, 0).checkState() == Qt.CheckState.Checked
-            frz = self.tbl.item(r, 1).checkState() == Qt.CheckState.Checked
-            if frz:
-                vis = True
             visible[k] = vis
-            frozen[k] = frz
-            sp = self.tbl.cellWidget(r, 3)
+            sp = self.tbl.cellWidget(r, 2)
             val = sp.value()
             if val != int(round(cw.get(k, val))):
                 widths[k] = val
-        # 冻结列排到最左（movable=False 时保持原顺序，避免打乱内置冻结表的冻结列）
-        if self._movable:
-            new_order = [k for k in order if frozen.get(k)] + [k for k in order if not frozen.get(k)]
-        else:
-            new_order = list(order)
+        new_order = list(order)
         self.state = {"order": new_order, "visible": visible, "frozen": frozen, "widths": widths}
         self.mgr.save(self.state)
         self.accept()

@@ -116,7 +116,7 @@ class InvoiceLedgerView(QWidget):
         self.table.horizontalHeader().sectionClicked.connect(self._on_header)
         from app.ui.table_features import install_common_features, install_header_filter
         install_common_features(self.table)
-        install_header_filter(self.table)
+        self._filter = install_header_filter(self.table)
         self._col = install_column_layout(self.table, "invoice_ledger", "main")
         lay.addWidget(self.table, 1)
 
@@ -205,6 +205,9 @@ class InvoiceLedgerView(QWidget):
             rows = sorted(rows, key=lambda r: _sort_key(r, self._sort_col), reverse=self._sort_desc)
 
         self._fill(rows)
+        # 重新叠加右键「按列筛选」（与搜索框/年月/状态 AND 组合）：
+        # _fill 重建了表格会清除上一轮 setRowHidden 的隐藏状态，故需在渲染后重放列筛选。
+        self._filter.apply_to_table(self.table)
         hdr = self.table.horizontalHeader()
         if self._sort_col >= 0:
             hdr.setSortIndicator(self._sort_col,

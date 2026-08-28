@@ -99,7 +99,7 @@ class InvoiceLedgerDocView(QWidget):
         self.table.verticalHeader().setVisible(False)
         from app.ui.table_features import install_common_features, install_header_filter
         install_common_features(self.table)
-        install_header_filter(self.table)
+        self._filter = install_header_filter(self.table)
         hdr = self.table.horizontalHeader()
         hdr.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         hdr.setStretchLastSection(True)
@@ -242,6 +242,8 @@ class InvoiceLedgerDocView(QWidget):
                     self.table.item(r, c).setBackground(_RED_BG)
 
         self._col.apply()
+        # 重新叠加右键「按列筛选」（与搜索/下拉 AND 组合）：_apply 重建表格会清除 setRowHidden 状态
+        self._filter.apply_to_table(self.table)
         self.table.horizontalHeader().setSortIndicator(
             self._sort_col, self._sort_order) if self._sort_col >= 0 else None
         self.lbl_stat.setText(

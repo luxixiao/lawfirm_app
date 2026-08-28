@@ -75,7 +75,7 @@ class AuditView(QWidget):
         self.table.verticalHeader().setVisible(False)
         from app.ui.table_features import install_common_features, install_header_filter
         install_common_features(self.table)
-        install_header_filter(self.table)
+        self._filter = install_header_filter(self.table)
         hdr = self.table.horizontalHeader()
         hdr.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         hdr.setStretchLastSection(True)
@@ -139,3 +139,5 @@ class AuditView(QWidget):
                     item.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
                 self.table.setItem(r, c, item)
         self._col.apply()
+        # 重新叠加右键「按列筛选」（与搜索/刷新 AND 组合）：_fill 重建表格会清除 setRowHidden 状态
+        self._filter.apply_to_table(self.table)

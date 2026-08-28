@@ -52,7 +52,7 @@ class _OffsetDialog(QDialog):
         self.table.doubleClicked.connect(self.accept)
         from app.ui.table_features import install_common_features, install_header_filter
         install_common_features(self.table)
-        install_header_filter(self.table)
+        self._filter = install_header_filter(self.table)
         self._col = install_column_layout(self.table, "prepayment_offset", "main")
         lay.addWidget(self.table, 1)
 
@@ -102,9 +102,11 @@ class _OffsetDialog(QDialog):
                 if ci in (3, 6, 7):
                     item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
                 self.table.setItem(ri, ci, item)
+        self._col.apply()
+        # 重新叠加右键「按列筛选」（与搜索 AND 组合）：_apply_filter 重建表格会清除 setRowHidden 状态
+        self._filter.apply_to_table(self.table)
         if matched:
             self.table.selectRow(0)
-        self._col.apply()
 
     def _on_sel(self) -> None:
         row = self.table.currentRow()
@@ -181,7 +183,7 @@ class PrepaymentView(QTabWidget):
         self.table_done.horizontalHeader().setStretchLastSection(True)
         from app.ui.table_features import install_common_features, install_header_filter
         install_common_features(self.table_done)
-        install_header_filter(self.table_done)
+        self._filter_done = install_header_filter(self.table_done)
         self._col_done = install_column_layout(self.table_done, "prepayment_done", "main")
         lay.addWidget(self.table_done)
 
@@ -247,6 +249,8 @@ class PrepaymentView(QTabWidget):
                                         (f"{v:,.2f}" if isinstance(v, float) else str(v)))
                 self.table_done.setItem(r, c, item)
         self._col_done.apply()
+        # 重新叠加右键「按列筛选」（与下拉/刷新 AND 组合）
+        self._filter_done.apply_to_table(self.table_done)
 
     # ---------- 核销（方案1） ----------
     def offset(self) -> None:
