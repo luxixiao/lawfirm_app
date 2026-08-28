@@ -25,7 +25,7 @@ from app.ui.import_verify_view import ImportVerifyView
 from app.ui.invoice_collect_view import InvoiceCollectView
 from app.ui.invoice_ledger_view import InvoiceLedgerView
 from app.ui.invoice_ledger_doc_view import InvoiceLedgerDocView
-from app.ui.ledger_view import LedgerView
+from app.ui.expense_ledger_view import ExpenseLedgerView
 from app.ui.manual_entry_view import ManualEntryView
 from app.ui.prepayment_view import PrepaymentView
 from app.ui.refund_view import RefundView
@@ -92,7 +92,7 @@ class MainWindow(QMainWindow):
         self.page_prepayment = PrepaymentView()
         self.page_refund = RefundView()
         self.page_manual = ManualEntryView()
-        self.page_expense_ledger = LedgerView()
+        self.page_expense_ledger = ExpenseLedgerView()
         self.page_settlement = SettlementView()
         self.page_staff = StaffView()
         self.page_verify = ImportVerifyView()

@@ -114,6 +114,8 @@ def install_common_features(table: QTableWidget) -> None:
 _HEADER_SORT_BG = QColor("#E3F2FD")   # 浅蓝：当前排序列
 _HEADER_FROZEN_BG = QColor("#EAEAEA")  # 灰：冻结列
 _HEADER_BORDER = QColor("#E0E0E0")    # 表头分隔线
+_SORT_MARK = QColor("#1F6FEB")        # 排序角标（实心直角三角）
+_SORT_MARK_SIZE = 9                   # 角标直角边长（px）
 # 两行表头默认底色（浅色皮肤 bg_table；深色皮肤需另行适配）
 _HEADER_BG = QColor("#FAFAF9")
 
@@ -181,7 +183,8 @@ class AccentHeaderView(QHeaderView):
             font = self.font()
             font.setWeight(QFont.Weight.DemiBold)   # 对应 QSS font-weight:600
             painter.setFont(font)
-            tr = rect.adjusted(left, 0, -10, 0)
+            # 右侧留出角标位（右上角/右下角各 9px），避免文字压到排序角标
+            tr = rect.adjusted(left, 0, -(_SORT_MARK_SIZE + 5), 0)
             painter.drawText(tr, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, text)
             painter.restore()
         # 5) 排序三角：QHeaderView 的 isSortIndicatorShown 默认 False，原生根本不会画，
@@ -193,22 +196,26 @@ class AccentHeaderView(QHeaderView):
 
     @staticmethod
     def _draw_sort_triangle(painter, rect, order) -> None:
-        """排序方向三角：升序 ▲（尖朝上）/ 降序 ▼（尖朝下），居中靠右。
+        """排序角标：实心直角三角，直角边与单元格直角重合。
 
-        用标准等腰三角（半宽5 / 半高4，整枚 11x8），方向一眼可辨；
-        旧版是 6px 直角三角形（三条边分别贴顶/左/右），升降序几乎看不出差别。
+        - 升序 → 右上角：两直角边贴上边/右边，斜边朝左下；
+        - 降序 → 右下角：两直角边贴下边/右边，斜边朝左上。
+
+        用「角」而非「居中三角」定位，升降序的差别是整块区域的位置移动，
+        比旧版居中 ▲/▼（仅尖头朝向不同）一眼可辨。
         """
-        half_w, half_h = 5, 4
-        cx = rect.right() - 13
-        cy = rect.top() + rect.height() // 2
+        # 三条边各外扩 1px：让实心部分真正顶到单元格边界（QRect.right()/bottom() 是
+        # 最后一列像素，直接取会剩一条半透明的边缘），溢出由 painter 自动裁剪。
+        s = _SORT_MARK_SIZE + 1      # 直角边长
+        right = rect.right() + 1
         painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QColor("#5A6572"))
+        painter.setBrush(_SORT_MARK)
         if order == Qt.SortOrder.DescendingOrder:
-            pts = [QPoint(cx, cy + half_h), QPoint(cx - half_w, cy - half_h),
-                   QPoint(cx + half_w, cy - half_h)]      # ▼ 尖朝下
+            bottom = rect.bottom() + 1
+            pts = [QPoint(right, bottom), QPoint(right - s, bottom), QPoint(right, bottom - s)]
         else:
-            pts = [QPoint(cx, cy - half_h), QPoint(cx - half_w, cy + half_h),
-                   QPoint(cx + half_w, cy + half_h)]      # ▲ 尖朝上
+            top = rect.top()
+            pts = [QPoint(right, top), QPoint(right - s, top), QPoint(right, top + s)]
         painter.drawPolygon(pts)
 
 
