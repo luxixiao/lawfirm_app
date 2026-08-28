@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
 
 from app.ui.widgets import CaptionLabel, SubtitleLabel
 from app.ui.column_layout import install_column_layout
+from app.ui.table_features import install_accent_header
 from app.ui.table_view import month_options_1_12, build_period
 from app.engine import raw_invoice as ri
 
@@ -105,6 +106,7 @@ class InvoiceLedgerView(QWidget):
 
         # ---- 主表 ----
         self.table = QTableWidget(0, len(_HEADERS))
+        install_accent_header(self.table)
         self.table.setHorizontalHeaderLabels(_HEADERS)
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
@@ -226,6 +228,7 @@ class InvoiceLedgerView(QWidget):
         """右键表头排序回调：按逻辑列号排序（支持列重排后保持一致）。"""
         self._sort_col = logical
         self._sort_desc = not asc
+        self._col.set_sort_col(logical)
         self._apply()
 
     def _fill(self, rows) -> None:

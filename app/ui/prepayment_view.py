@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
 
 from app.ui.widgets import SubtitleLabel, PrimaryPushButton, PushButton
 from app.ui.column_layout import install_column_layout
+from app.ui.table_features import install_accent_header
 from app.db import get_conn
 from app.engine.collection import invoice_rows
 
@@ -58,6 +59,7 @@ class _OffsetDialog(QDialog):
 
         cols = ["开票日期", "发票号码", "对方", "价税合计", "经办人", "案号", "已收", "剩余应收"]
         self.table = QTableWidget(0, len(cols))
+        install_accent_header(self.table)
         self.table.setHorizontalHeaderLabels(cols)
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
@@ -150,6 +152,7 @@ class _OffsetDialog(QDialog):
     def _do_sort(self, logical, asc) -> None:
         self._sort_col = logical
         self._sort_asc = asc
+        self._col.set_sort_col(logical)
         self._apply_filter()
 
 
@@ -197,6 +200,7 @@ class PrepaymentView(QTabWidget):
         lay.addLayout(btns)
 
         self.table = QTableWidget(0, 8)
+        install_accent_header(self.table)
         self.table.setHorizontalHeaderLabels(
             ["收到日期", "对方", "金额", "经办人", "案号", "备注", "已核销", "剩余余额"])
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
@@ -218,6 +222,7 @@ class PrepaymentView(QTabWidget):
         lay.addWidget(QLabel("已做过核销的预收款及其冲抵明细。核销金额消耗预收款余额，不影响其它表。"))
 
         self.table_done = QTableWidget(0, 7)
+        install_accent_header(self.table_done)
         self.table_done.setHorizontalHeaderLabels(
             ["预收款方", "收到日期", "预收款金额", "核销到发票", "核销金额", "核销日期", "预收款剩余"])
         self.table_done.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
@@ -318,6 +323,7 @@ class PrepaymentView(QTabWidget):
     def _do_sort_pending(self, logical, asc) -> None:
         self._pend_sort_col = logical
         self._pend_sort_asc = asc
+        self._col.set_sort_col(logical)
         self._sort_rows_inplace(self._pend_rows, logical, asc, self._PEND_KEYS, self._PEND_NUMERIC)
         self._render_pending(self._pend_rows)
         self.table.horizontalHeader().setSortIndicator(
@@ -326,6 +332,7 @@ class PrepaymentView(QTabWidget):
     def _do_sort_done(self, logical, asc) -> None:
         self._done_sort_col = logical
         self._done_sort_asc = asc
+        self._col_done.set_sort_col(logical)
         self._sort_rows_inplace(self._done_rows, logical, asc, self._DONE_KEYS, self._DONE_NUMERIC)
         self._render_done(self._done_rows)
         self._filter_done.apply_to_table(self.table_done)

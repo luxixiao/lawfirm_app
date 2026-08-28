@@ -241,7 +241,7 @@ class BaseTableView(QWidget):
         self._mgr.save(state)
         self._applying = True
         try:
-            self._mgr.apply(self.table, self.columns, self._col_content_w)
+            self._mgr.apply(self.table, self.columns, self._col_content_w, sorted_col=self._sort_col)
         finally:
             self._applying = False
         # 布局变化（拖宽/双击自适应）后重绘漏斗图标与排序箭头，避免标记丢失
@@ -257,7 +257,7 @@ class BaseTableView(QWidget):
         if open_column_settings(self, self._mgr, self.columns, state, self._col_content_w):
             # 应用后重新测量（显隐/顺序/宽度变了），再填充
             self._col_content_w = self._mgr.measure_content_widths(self.table, self.columns)
-            self._mgr.apply(self.table, self.columns, self._col_content_w)
+            self._mgr.apply(self.table, self.columns, self._col_content_w, sorted_col=self._sort_col)
 
     def showEvent(self, event) -> None:  # noqa: N802
         """导航切换显示时自动刷新（保证数据最新）"""
@@ -268,7 +268,7 @@ class BaseTableView(QWidget):
         """窗体尺寸变化（含 DPI/分辨率切换）时重算填充，保证始终填满且优先未显全列。"""
         super().resizeEvent(event)
         if getattr(self, "_col_content_w", None) is not None and self.table.columnCount():
-            self._mgr.apply(self.table, self.columns, self._col_content_w)
+            self._mgr.apply(self.table, self.columns, self._col_content_w, sorted_col=self._sort_col)
             # 重绘漏斗图标与排序箭头，避免缩放后标记丢失
             self._update_filter_marks()
 
@@ -303,7 +303,7 @@ class BaseTableView(QWidget):
             self.table.setRowHeight(tr, 34)
         # 列布局：测量内容宽（封顶发票号宽）→ 应用（重排/显隐/定宽/严格填充）
         self._col_content_w = self._mgr.measure_content_widths(self.table, self.columns)
-        self._mgr.apply(self.table, self.columns, self._col_content_w)
+        self._mgr.apply(self.table, self.columns, self._col_content_w, sorted_col=self._sort_col)
         self.lbl_summary.setText(self._summary_text())
 
     def _summary_text(self) -> str:

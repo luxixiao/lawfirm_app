@@ -18,7 +18,10 @@ from typing import Dict, List, Optional
 from PySide6.QtCore import QEvent, QObject, QPoint, QSettings, Qt, QTimer
 from PySide6.QtGui import QBrush, QFontMetrics
 from PySide6.QtWidgets import QHeaderView, QMenu, QTableWidget
-from app.ui.table_features import populate_filter_menu, set_frozen_columns, _FROZEN_BG, add_sort_actions
+from app.ui.table_features import (
+    populate_filter_menu, set_frozen_columns, _FROZEN_BG,
+    add_sort_actions, AccentHeaderView, _HEADER_SORT_BG, _HEADER_FROZEN_BG,
+)
 
 _ORG = "lawfirm_app"
 _APP = "lawfirm_app"
@@ -142,16 +145,29 @@ class ColumnLayoutManager:
         return {c["key"]: int(round(c["w"])) for c in vis}
 
     # ---------- 测量 + 应用 ----------
-    def _apply_frozen_style(self, table: QTableWidget, frozen_logical: set) -> None:
-        """冻结列视觉标记：表头项铺偏灰底色；单元格灰底由 TableBehaviorDelegate 绘制。"""
+    def _apply_frozen_style(self, table: QTableWidget, frozen_logical: set,
+                            sorted_col: object = None) -> None:
+        """统一表头底色协调器（自绘 AccentHeaderView）：
+
+        - 排序列 → 强调色（最高优先，盖过冻结灰）
+        - 冻结列 → 灰底
+        - 其余   → 默认主题色
+
+        单元格灰底仍由 TableBehaviorDelegate 绘制；本函数只管表头。
+        sorted_col / frozen_logical 均为逻辑列号；循环按视觉列号遍历并换算。
+        """
         set_frozen_columns(table, frozen_logical)
         hdr = table.horizontalHeader()
+        if not isinstance(hdr, AccentHeaderView):
+            return  # 非自绘表头：跳过底色高亮（不应发生，所有表格均已接入 AccentHeaderView）
+        hdr.reset_all_colors()
+        sort_l = sorted_col if isinstance(sorted_col, int) else None
         for c in range(table.columnCount()):
-            hi = table.horizontalHeaderItem(c)
-            if hi is None:
-                continue
-            hi.setBackground(_FROZEN_BG if c in frozen_logical else QBrush())
-        table.viewport().update()
+            logical = hdr.logicalIndex(c)
+            if sort_l is not None and logical == sort_l:
+                hdr.set_section_color(logical, _HEADER_SORT_BG)
+            elif logical in frozen_logical:
+                hdr.set_section_color(logical, _HEADER_FROZEN_BG)
 
     def measure_content_widths(self, table: QTableWidget, keys: List[str]) -> List[int]:
         """临时按内容撑开（屏蔽信号），返回每逻辑列的内容宽（封顶 INVOICE_W）。
@@ -172,7 +188,7 @@ class ColumnLayoutManager:
 
     def apply(self, table: QTableWidget, keys: List[str], content_w: List[int],
               viewport_w: Optional[int] = None, state: Optional[dict] = None,
-              reorder: bool = True) -> None:
+              reorder: bool = True, sorted_col: object = None) -> None:
         """重排(视觉序) + 显隐 + 定宽 + 填充。
 
         keys: 逻辑列顺序对应的稳定 key 列表（= 各视图 self.columns）。
@@ -235,9 +251,9 @@ class ColumnLayoutManager:
                     if k in widths:
                         table.setColumnWidth(c, widths[k])
                 hdr.setStretchLastSection(False)
-            # 4) 冻结列视觉标记：表头铺灰底 + 委托灰底（偏灰）
+            # 4) 冻结列视觉标记：表头铺灰底 + 委托灰底（偏灰）；排序列叠加强调色
             frozen_logical = {c for c, k in enumerate(keys) if state["frozen"].get(k, False)}
-            self._apply_frozen_style(table, frozen_logical)
+            self._apply_frozen_style(table, frozen_logical, sorted_col)
         finally:
             hdr.blockSignals(False)
 
@@ -265,6 +281,7 @@ class TableColumnLayout(QObject):
         self._movable = movable
         self._win = None  # 顶层窗口（用于监听最大化/还原，触发比例重填）
         self._sort_cb = None  # 右键「升序/降序」排序回调（由视图注册）
+        self._sort_col = -1   # 当前排序列（逻辑列号，-1=未排序），供表头底色高亮
 
     # ---------- 入口 ----------
     def install(self) -> "TableColumnLayout":
@@ -302,6 +319,10 @@ class TableColumnLayout(QObject):
         """注册表头右键「升序/降序」排序回调 on_sort(logical, asc)。不注册则右键菜单不出现排序项。"""
         self._sort_cb = cb
 
+    def set_sort_col(self, col: int) -> None:
+        """记录当前排序列（逻辑列号），表头协调器据此铺强调色；-1 表示未排序。"""
+        self._sort_col = col
+
     def apply(self, remeasure: bool = True) -> None:
         """渲染后调用：测量(可选)并应用布局。remeasure=False 时仅用缓存内容宽重填（拖宽/缩放时用）。"""
         self._ensure_win()
@@ -312,7 +333,7 @@ class TableColumnLayout(QObject):
             self.content_w = self.mgr.measure_content_widths(self.table, keys)
         self._applying = True
         try:
-            self.mgr.apply(self.table, keys, self.content_w)
+            self.mgr.apply(self.table, keys, self.content_w, sorted_col=self._sort_col)
         finally:
             self._applying = False
 

@@ -18,6 +18,7 @@ from app.engine.change_log import (
     INVOICE_RELATED, TABLE_OPTIONS, build_friendly_table, fetch_log,
 )
 from app.ui.column_layout import install_column_layout
+from app.ui.table_features import install_accent_header
 from app.ui.widgets import CaptionLabel, PushButton
 
 
@@ -67,6 +68,7 @@ class AuditView(QWidget):
 
         # 表格
         self.table = QTableWidget(0, len(self._HEADERS))
+        install_accent_header(self.table)
         self.table.setHorizontalHeaderLabels(self._HEADERS)
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
@@ -151,6 +153,7 @@ class AuditView(QWidget):
         """表头右键「升序/降序」排序回调：按逻辑列号对本页行重排并加原生排序标识。"""
         self._sort_col = logical
         self._sort_asc = asc
+        self._col.set_sort_col(logical)
         key = self._KEYS[logical]
         rows = sorted(self._rows,
                       key=lambda r, k=key: str(r.get(k) or ""),

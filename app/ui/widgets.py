@@ -71,8 +71,10 @@ class TableWidget(QTableWidget):
 
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
+        # 自绘表头：支持排序列/冻结列底色高亮（须在设置表头标签之前替换）
+        from app.ui.table_features import install_accent_header, install_common_features
+        install_accent_header(self)
         # 统一表格行为：像素级滚动 + 选中保色 + 悬停显示被压缩全文
-        from app.ui.table_features import install_common_features
         install_common_features(self)
 
     def setBorderVisible(self, visible: bool) -> None:  # noqa: D401
@@ -92,8 +94,10 @@ class FrozenTableWidget(QTableWidget):
     def __init__(self, *args, frozen: int = 1, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self._frozen = max(1, frozen)
+        # 自绘表头：支持排序列/冻结列底色高亮（须在设置表头标签之前替换）
+        from app.ui.table_features import install_accent_header, install_common_features
+        install_accent_header(self)
         # 统一表格行为：像素级滚动 + 选中保色 + 悬停显示被压缩全文
-        from app.ui.table_features import install_common_features
         install_common_features(self)
         self.horizontalScrollBar().valueChanged.connect(lambda *_: self.viewport().update())
         self.verticalScrollBar().valueChanged.connect(lambda *_: self.viewport().update())

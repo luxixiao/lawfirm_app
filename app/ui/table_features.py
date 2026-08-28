@@ -21,11 +21,11 @@ from __future__ import annotations
 from collections import OrderedDict
 from typing import Callable, List, Optional
 
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QBrush, QColor, QFontMetrics, QIcon, QPalette, QPainter, QPixmap
+from PySide6.QtCore import Qt, QRect
+from PySide6.QtGui import QBrush, QColor, QFont, QFontMetrics, QIcon, QPalette, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView, QCheckBox, QDialog, QDialogButtonBox, QHBoxLayout,
-    QLineEdit, QListWidget, QListWidgetItem, QMenu, QPushButton,
+    QHeaderView, QLineEdit, QListWidget, QListWidgetItem, QMenu, QPushButton,
     QStyledItemDelegate, QStyleOptionViewItem, QTableWidget, QVBoxLayout,
 )
 
@@ -108,6 +108,117 @@ def install_common_features(table: QTableWidget) -> None:
     table.setHorizontalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
     if not isinstance(table.itemDelegate(), TableBehaviorDelegate):
         table.setItemDelegate(TableBehaviorDelegate(table))
+
+
+# 排序列 / 冻结列 的表头强调色（与 style.py 主题色保持一致）
+_HEADER_SORT_BG = QColor("#E3F2FD")   # 浅蓝：当前排序列
+_HEADER_FROZEN_BG = QColor("#EAEAEA")  # 灰：冻结列
+_HEADER_BORDER = QColor("#E0E0E0")    # 表头分隔线
+
+
+class AccentHeaderView(QHeaderView):
+    """表头底色高亮：支持「排序列 / 冻结列」按逻辑列单独填充底色（混合绘制）。
+
+    为什么不用 QTableWidgetItem.setBackground：全局 QSS 的
+    `QHeaderView::section { background }` 会覆盖 item 的 BackgroundRole，
+    原生 CE_Header 绘制也不读 item 背景（已 headless 验证），故只能自绘。
+
+    混合绘制（降低回归风险）：
+    - 有标记的列（排序列强调色 / 冻结列灰底）→ 本类自绘背景+边框+文字+图标+排序三角；
+    - 其余列 → 交还原生 + 全局 QSS 绘制，观感与改造前完全一致。
+    """
+
+    def __init__(self, orientation, parent=None):
+        super().__init__(orientation, parent)
+        self._section_colors = {}          # logical -> QColor（缺省/None=交还原生绘制）
+
+    # ---- 外部接口（协调器调用）----
+    def set_section_color(self, logical: int, color) -> None:
+        """设置某逻辑列表头底色；color=None 表示恢复默认。"""
+        if color is None:
+            self._section_colors.pop(logical, None)
+        else:
+            self._section_colors[logical] = color
+        self.viewport().update()
+
+    def reset_all_colors(self) -> None:
+        self._section_colors.clear()
+        self.viewport().update()
+
+    # ---- 自绘 ----
+    def paintSection(self, painter, rect, logicalIndex):
+        if painter is None:
+            return
+        color = self._section_colors.get(logicalIndex)
+        if color is None:
+            # 无排序列/冻结列标记：交还原生 + 全局 QSS 绘制，观感与改造前完全一致
+            super().paintSection(painter, rect, logicalIndex)
+            return
+        painter.save()
+        # 1) 背景底色（排序列强调色 / 冻结列灰底）
+        painter.fillRect(rect, color)
+        # 2) 分隔线（复刻 style.py 的 border-bottom / border-right）
+        pen = QPen(_HEADER_BORDER)
+        pen.setWidth(1)
+        painter.setPen(pen)
+        painter.drawLine(rect.bottomLeft(), rect.bottomRight())
+        painter.drawLine(rect.topRight(), rect.bottomRight())
+        # 3) 漏斗图标（已设筛选列），画在最左
+        model = self.model()
+        left = 10
+        icon = model.headerData(logicalIndex, self.orientation(), Qt.DecorationRole) if model else None
+        if isinstance(icon, QIcon) and not icon.isNull():
+            isz = 14
+            icon_y = rect.top() + (rect.height() - isz) // 2
+            icon.paint(painter, QRect(left, icon_y, isz, isz))
+            left += isz + 4
+        # 4) 文字（标题，可能含 ▲/▼ 后缀）
+        text = str(model.headerData(logicalIndex, self.orientation(), Qt.DisplayRole) or "") if model else ""
+        tcol = self.palette().color(QPalette.ColorRole.WindowText)
+        painter.setPen(tcol)
+        font = self.font()
+        font.setWeight(QFont.Weight.DemiBold)   # 对应 QSS font-weight:600
+        painter.setFont(font)
+        tr = rect.adjusted(left, 0, -10, 0)
+        painter.drawText(tr, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, text)
+        # 5) 排序三角（原生 setSortIndicator 设置的列）
+        if self.sortIndicatorSection() == logicalIndex:
+            self._draw_sort_triangle(painter, rect, self.sortIndicatorOrder())
+        painter.restore()
+
+    @staticmethod
+    def _draw_sort_triangle(painter, rect, order) -> None:
+        d = 6
+        ax = rect.right() - 14
+        ay = rect.top() + (rect.height() - d) // 2
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor("#8A93A6"))
+        if order == Qt.SortOrder.DescendingOrder:
+            painter.drawPolygon([
+                QRect(ax, ay, d, d).topLeft(),
+                QRect(ax, ay, d, d).topRight(),
+                QRect(ax, ay, d, d).bottomLeft(),
+            ])
+        else:
+            painter.drawPolygon([
+                QRect(ax, ay, d, d).topLeft(),
+                QRect(ax, ay, d, d).topRight(),
+                QRect(ax, ay, d, d).bottomRight(),
+            ])
+
+
+def install_accent_header(table: QTableWidget) -> QHeaderView:
+    """把 table 的横向表头替换为 AccentHeaderView（支持排序列/冻结列底色高亮）。
+
+    须在 setHorizontalHeaderLabels 之前调用（替换表头会清空已有标签）。
+    幂等：已是 AccentHeaderView 则跳过。
+    """
+    hdr = table.horizontalHeader()
+    if isinstance(hdr, AccentHeaderView):
+        return hdr
+    new_hdr = AccentHeaderView(Qt.Orientation.Horizontal, table)
+    table.setHorizontalHeader(new_hdr)
+    return new_hdr
 
 
 # ---------------------------------------------------------------------------
