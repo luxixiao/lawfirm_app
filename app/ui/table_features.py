@@ -30,13 +30,41 @@ from PySide6.QtWidgets import (
 )
 
 
+# 冻结列底色（偏灰），用于与常规列可视区分
+_FROZEN_BG = QColor("#EAEAEA")
+
+
+def set_frozen_columns(table: "QTableWidget", frozen_logical) -> None:
+    """把冻结列的逻辑列号集合写入表格的单元格绘制委托，使其铺灰底。
+
+    仅当表格已安装 TableBehaviorDelegate 时生效；其余表格（未装通用增强）忽略。
+    """
+    d = table.itemDelegate()
+    if isinstance(d, TableBehaviorDelegate):
+        d.frozen_cols = frozenset(frozen_logical)
+
+
 class TableBehaviorDelegate(QStyledItemDelegate):
     """统一单元格绘制委托：
 
     - initStyleOption：选中（高亮）状态下，把 HighlightedText 设为单元格自身前景色，
       使被标红/标绿的单元格在选中后仍保持原色（req4）。
     - helpEvent：仅当文本被压缩（显示宽度不足以容纳）时，悬停弹出完整文本 tooltip（req2）。
+    - paint：冻结列（frozen_cols）统一铺一层偏灰底色，使冻结列与常规列可视区分。
     """
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.frozen_cols = frozenset()
+
+    def paint(self, painter, option, index) -> None:
+        if index.column() in self.frozen_cols:
+            painter.save()
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(_FROZEN_BG)
+            painter.drawRect(option.rect)
+            painter.restore()
+        super().paint(painter, option, index)
 
     def initStyleOption(self, option: QStyleOptionViewItem, index) -> None:
         super().initStyleOption(option, index)

@@ -2,7 +2,8 @@
 
 存储：QSettings（HKCU\\Software\\lawfirm_app\\lawfirm_app），键 colstate/{page}/{name}。
 - 列身份用「稳定标题字符串」作 key（各视图表头标题在代码中固定，可作唯一标识）。
-- 冻结语义：常驻保护列——置最左、缩窗时优先不缩、永不被自动隐藏。不引入横向滚动。
+- 冻结语义：常驻保护列——缩窗时优先不缩、永不被自动隐藏；冻结某列即冻结「该列及其左侧所有列」
+  （冻结面板语义，不挪动列顺序）；冻结列铺偏灰底色以区分。不引入横向滚动。
 - 填充算法（严格 D 版）：窗体变宽时优先把「未显全列」撑到内容宽（封顶 INVOICE_W），
   余量再按当前宽比例分给各列；窗体变窄时优先缩非冻结列，冻结列最后才缩（下限 MIN_W）。
 - 列宽两态：auto（参与比例填充）/ fixed（用户手动拖过，锁定精确值，填充时排除它、其余吸收剩余）。
@@ -15,9 +16,9 @@ import json
 from typing import Dict, List, Optional
 
 from PySide6.QtCore import QEvent, QObject, QPoint, QSettings, Qt, QTimer
-from PySide6.QtGui import QFontMetrics
+from PySide6.QtGui import QBrush, QFontMetrics
 from PySide6.QtWidgets import QHeaderView, QMenu, QTableWidget
-from app.ui.table_features import populate_filter_menu
+from app.ui.table_features import populate_filter_menu, set_frozen_columns, _FROZEN_BG
 
 _ORG = "lawfirm_app"
 _APP = "lawfirm_app"
@@ -141,6 +142,17 @@ class ColumnLayoutManager:
         return {c["key"]: int(round(c["w"])) for c in vis}
 
     # ---------- 测量 + 应用 ----------
+    def _apply_frozen_style(self, table: QTableWidget, frozen_logical: set) -> None:
+        """冻结列视觉标记：表头项铺偏灰底色；单元格灰底由 TableBehaviorDelegate 绘制。"""
+        set_frozen_columns(table, frozen_logical)
+        hdr = table.horizontalHeader()
+        for c in range(table.columnCount()):
+            hi = table.horizontalHeaderItem(c)
+            if hi is None:
+                continue
+            hi.setBackground(_FROZEN_BG if c in frozen_logical else QBrush())
+        table.viewport().update()
+
     def measure_content_widths(self, table: QTableWidget, keys: List[str]) -> List[int]:
         """临时按内容撑开（屏蔽信号），返回每逻辑列的内容宽（封顶 INVOICE_W）。
         隐藏列会临时显示以便正确测量其理想宽，测量后恢复原状。
@@ -179,7 +191,7 @@ class ColumnLayoutManager:
             # 1) 显隐（按逻辑列；setColumnHidden 属于 QTableWidget，非 QHeaderView）
             for c, k in enumerate(keys):
                 table.setColumnHidden(c, not state["visible"].get(k, True))
-            # 2) 重排视觉序（冻结列已在前，由对话框保证；此处直接用 order）
+            # 2) 重排视觉序（冻结列不再挪到最左，按 order 原样排列即可）
             if reorder:
                 desired = [k for k in state["order"] if k in keys]
                 for k in keys:
@@ -223,6 +235,9 @@ class ColumnLayoutManager:
                     if k in widths:
                         table.setColumnWidth(c, widths[k])
                 hdr.setStretchLastSection(False)
+            # 4) 冻结列视觉标记：表头铺灰底 + 委托灰底（偏灰）
+            frozen_logical = {c for c, k in enumerate(keys) if state["frozen"].get(k, False)}
+            self._apply_frozen_style(table, frozen_logical)
         finally:
             hdr.blockSignals(False)
 
@@ -364,13 +379,26 @@ class TableColumnLayout(QObject):
             self._toggle_freeze(keys, logical)
 
     def _toggle_freeze(self, keys: List[str], logical: int) -> None:
-        """右键冻结/解冻：切换 frozen 标记；冻结时把该列移到视觉最左，解冻时保留当前位置。"""
+        """右键冻结/解冻（冻结面板语义）：
+
+        - 冻结某列：该列及其「左侧所有列」（当前视觉序）一并冻结；
+        - 解冻某列：仅解除该列自身的冻结（其余列保持原冻结状态）。
+        不再把列挪到最左（满足「冻结列留在原位」的需求）。
+        """
         key = keys[logical]
         state = self.mgr.load(keys)
         now = not state["frozen"].get(key, False)
-        state["frozen"][key] = now
-        if now and key in state["order"]:
-            state["order"].insert(0, state["order"].pop(state["order"].index(key)))
+        hdr = self.table.horizontalHeader()
+        visual_order = [keys[hdr.logicalIndex(v)] for v in range(self.table.columnCount())]
+        try:
+            idx = visual_order.index(key)
+        except ValueError:
+            idx = -1
+        if now:
+            for k in visual_order[:idx + 1]:
+                state["frozen"][k] = True
+        else:
+            state["frozen"][key] = False
         self.mgr.save(state)
         self.content_w = self.mgr.measure_content_widths(self.table, keys)
         self._applying = True
