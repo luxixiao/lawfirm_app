@@ -9,7 +9,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QRect, Qt
-from PySide6.QtGui import QColor, QPainter
+from PySide6.QtGui import QColor, QPainter, QPen, QPalette
 from PySide6.QtWidgets import (
     QLabel,
     QPushButton,
@@ -116,6 +116,16 @@ class FrozenTableWidget(QTableWidget):
         fw = self.frozen_width()
         if fw <= 0:
             return
+        # 无横向滚动时，主视图已正确绘制冻结列（与未滚动前完全一致），无需覆盖重绘，
+        # 直接画分隔线即可——避免任何无谓的二次绘制。
+        if self.horizontalScrollBar().value() == 0:
+            painter = QPainter(self.viewport())
+            painter.setPen(QColor("#DADAD7"))
+            painter.drawLine(fw, 0, fw, self.viewport().height())
+            return
+        # 发生横向滚动：主视图把冻结列左侧部分（及相邻列左缘）滚到了冻结区之外，
+        # 需在冻结区 [0, fw] 内重绘冻结列。关键修复：每个冻结单元格先铺一层不透明底色，
+        # 否则单元格背景透明时，相邻列文字会透过冻结列显示，形成「重影」。
         painter = QPainter(self.viewport())
         painter.save()
         painter.setClipRect(0, 0, fw, self.viewport().height())
@@ -123,6 +133,7 @@ class FrozenTableWidget(QTableWidget):
         last = self.rowAt(self.viewport().height() - 1)
         if last < 0:
             last = self.rowCount() - 1
+        base_bg = self.palette().color(QPalette.ColorRole.Base)
         for r in range(first, min(last + 1, self.rowCount())):
             y = self.rowViewportPosition(r)
             if y < 0:
@@ -136,6 +147,8 @@ class FrozenTableWidget(QTableWidget):
                     opt.state |= QStyle.StateFlag.State_Selected
                 if self.currentIndex() == idx:
                     opt.state |= QStyle.StateFlag.State_HasFocus
+                # 先以不透明底色铺满该冻结单元格，擦掉横向滚动泄漏进来的相邻列像素（重影根因）
+                painter.fillRect(opt.rect, base_bg)
                 self.itemDelegate().paint(painter, opt, idx)
         painter.restore()
         # 冻结列分隔线

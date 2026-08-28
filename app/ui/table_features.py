@@ -528,10 +528,10 @@ def populate_filter_menu(menu, tf: TableFilter, table: QTableWidget, pos) -> Non
     if logical in tf._col_filters:
         act_cc = menu.addAction("清除此列筛选")
         act_cc.triggered.connect(lambda: tf.clear_col(logical))
-    # 「取消全部筛选」始终可见：之前仅在存在列筛选时才出现，被用户反馈为「选项消失了」，
-    # 故改为常显，点击后调用 clear_all（无筛选时为无副作用的空操作）。
-    act_ca = menu.addAction("取消全部筛选")
-    act_ca.triggered.connect(lambda: tf.clear_all())
+    # 「取消全部筛选」仅在存在列筛选时显示（搜索不计入，因搜索非按列筛选）。
+    if tf.has_col_filters():
+        act_ca = menu.addAction("取消全部筛选")
+        act_ca.triggered.connect(lambda: tf.clear_all())
 
 
 def open_filter_submenu(tf: TableFilter, table: QTableWidget, pos) -> None:
