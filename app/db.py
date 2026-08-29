@@ -202,6 +202,36 @@ CREATE INDEX IF NOT EXISTS idx_raw_ledger_no    ON raw_ledger(invoice_no);
 CREATE INDEX IF NOT EXISTS idx_raw_ledger_sheet ON raw_ledger(sheet_key);
 CREATE INDEX IF NOT EXISTS idx_raw_ledger_batch ON raw_ledger(import_batch_id);
 
+-- 工资表原始镜表：工资文档 Excel 逐 sheet 逐行 1:1 镜像（不归一化，保留所有原始列）。
+-- 三个 sheet 列结构不同，故取并集存列：分成报酬/工资/预发经营所得 各自成列，
+-- 每行只填自己 sheet 对应的列（其余留空），以最大程度复刻源表格原貌。
+-- 账期 period 由 import_batch 带出（来自文件名，如 25.1 -> 2025-01）。
+CREATE TABLE IF NOT EXISTS raw_salary (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    sheet_key         TEXT NOT NULL DEFAULT '',   -- lawyer / partner / logistics
+    sheet_name        TEXT NOT NULL DEFAULT '',   -- 聘用律师 / 合伙人 / 后勤 (实)
+    block_no          INTEGER NOT NULL DEFAULT 1, -- 同 sheet 内第几个数据块（聘用律师含分成报酬块与工资块）
+    row_no            INTEGER NOT NULL DEFAULT 0,
+    item_type         TEXT NOT NULL DEFAULT '',   -- 金额项目：分成报酬 / 工资 / 预发经营所得
+    seq               TEXT,                        -- 编号
+    staff_name        TEXT,                        -- 姓名（已去对齐空格，如「傅  强」->「傅强」）
+    share_raw         TEXT, share_num    REAL,     -- 分成报酬
+    salary_raw        TEXT, salary_num   REAL,     -- 工资
+    partner_raw       TEXT, partner_num  REAL,     -- 预发经营所得
+    tax_raw           TEXT, tax_num      REAL,     -- 代扣个所税
+    fund_raw          TEXT, fund_num     REAL,     -- 代扣公积金
+    net_raw           TEXT, net_num      REAL,     -- 实发金额
+    pension_raw       TEXT,                        -- 养（混合类型：数值或文本如「退休」）
+    medical_raw       TEXT,                        -- 医疗
+    unemployment_raw  TEXT,                        -- 失业
+    remark            TEXT,
+    import_batch_id   INTEGER,
+    created_at        TEXT DEFAULT (datetime('now','localtime'))
+);
+CREATE INDEX IF NOT EXISTS idx_raw_salary_sheet ON raw_salary(sheet_key);
+CREATE INDEX IF NOT EXISTS idx_raw_salary_batch ON raw_salary(import_batch_id);
+CREATE INDEX IF NOT EXISTS idx_raw_salary_name  ON raw_salary(staff_name);
+
 -- 数据修改记录（含手动备注）
 CREATE TABLE IF NOT EXISTS change_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

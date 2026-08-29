@@ -21,6 +21,7 @@ from app.engine.raw_ledger import SHEET_LABELS
 from app.importer.expense_import import parse_expense_file
 from app.importer.invoice_import import parse_invoice_file, parse_invoice_workbook
 from app.importer.ledger_import import parse_ledger_file
+from app.importer.salary_import import parse_salary_file
 from app.importer.excel_reader import ImportError_
 
 ARCHIVE_ROOT = Path(__file__).resolve().parent.parent.parent / "data" / "archive"
@@ -685,3 +686,61 @@ def import_expense_file(path: str, period: str) -> Dict:
     finally:
         conn.close()
     return {"type": "expense", "period": period, "count": len(items)}
+
+
+def import_salary_file(path: str, period: str) -> Dict:
+    """导入工资表（覆盖式：同账期重导会清掉旧批次的 raw_salary 镜像）。
+
+    账期 period 由调用方从**文件名**解析（如 25.1 -> 2025-01）；
+    表内中文年月一律不参与（各 sheet 期间互不相同且与文件名不一致）。
+    """
+    _auto_snapshot()
+    data = parse_salary_file(path, period)
+    if not data["items"]:
+        raise ImportError_("未能从该文件解析出工资数据行，请确认选择的是工资表文件")
+    conn = get_conn()
+    try:
+        old = conn.execute(
+            "SELECT id FROM import_batch WHERE batch_type='salary' AND period=? AND status='active'",
+            (period,),
+        ).fetchall()
+        for r in old:
+            conn.execute("DELETE FROM raw_salary WHERE import_batch_id=?", (r["id"],))
+        _drop_active_batch(conn, "salary", period)
+        archive = _archive_file(path, "salary", period)
+        batch_id = _new_batch(conn, "salary", period, Path(path).name, archive, "")
+        for item in data["items"]:
+            _insert_raw_salary(conn, item, batch_id)
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+    return {"type": "salary", "period": period, "count": len(data["items"]),
+            "sheet_count": data["sheet_count"]}
+
+
+def _insert_raw_salary(conn, item: dict, batch_id: int) -> None:
+    """把工资表解析结果逐行 1:1 镜像进 raw_salary（保留所有原始列、不归一化）。"""
+    conn.execute(
+        """INSERT INTO raw_salary
+           (sheet_key, sheet_name, block_no, row_no, item_type, seq, staff_name,
+            share_raw, share_num, salary_raw, salary_num, partner_raw, partner_num,
+            tax_raw, tax_num, fund_raw, fund_num, net_raw, net_num,
+            pension_raw, medical_raw, unemployment_raw, remark, import_batch_id)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (item.get("sheet_key") or "", item.get("sheet_name") or "",
+         item.get("block_no") or 1, item.get("row_no") or 0,
+         item.get("item_type") or "", item.get("seq") or "",
+         item.get("staff_name") or "",
+         item.get("share_raw") or "", item.get("share_num") or 0.0,
+         item.get("salary_raw") or "", item.get("salary_num") or 0.0,
+         item.get("partner_raw") or "", item.get("partner_num") or 0.0,
+         item.get("tax_raw") or "", item.get("tax_num") or 0.0,
+         item.get("fund_raw") or "", item.get("fund_num") or 0.0,
+         item.get("net_raw") or "", item.get("net_num") or 0.0,
+         item.get("pension_raw") or "", item.get("medical_raw") or "",
+         item.get("unemployment_raw") or "", item.get("remark") or "",
+         batch_id),
+    )

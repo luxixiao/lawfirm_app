@@ -11,24 +11,35 @@ from PySide6.QtWidgets import (
 from app.ui.widgets import (SubtitleLabel, CaptionLabel, PrimaryPushButton, PushButton)
 from app.importer.importer import (
     import_expense_file, import_invoice_file, import_ledger_file,
+    import_salary_file,
 )
 from app.importer.staff_import import parse_staff_file
 from app.db import get_conn
 
 
 def guess_period(filename: str) -> str | None:
-    """从文件名解析账期：2025.1 / 2025-01 / 202501 / 2025年1月 → 2025-01"""
+    """从文件名解析账期：2025.1 / 2025-01 / 202501 / 2025年1月 → 2025-01
+
+    另支持 2 位年（工资表命名习惯，如 25.1 / 25-1）→ 2025-01。
+    仅在 4 位年匹配失败后才尝试 2 位年，对既有导入完全向后兼容。
+    """
     m = re.search(r"(\d{4})\s*[.\-年]\s*(\d{1,2})", filename)
     if m:
         return f"{int(m.group(1)):04d}-{int(m.group(2)):02d}"
     m = re.search(r"(\d{4})(\d{1,2})", filename)
     if m and int(m.group(2)) <= 12:
         return f"{int(m.group(1)):04d}-{int(m.group(2)):02d}"
+    # 2 位年：25.1 / 25-1 -> 2025-01
+    m = re.search(r"(\d{2})\s*[.\-年]\s*(\d{1,2})", filename)
+    if m and 1 <= int(m.group(2)) <= 12:
+        return f"{2000 + int(m.group(1)):04d}-{int(m.group(2)):02d}"
     return None
 
 
 def guess_type(filename: str) -> str:
-    """从文件名识别类型：invoice/ledger/expense/staff"""
+    """从文件名识别类型：invoice/ledger/expense/staff/salary"""
+    if "工资" in filename or "薪酬" in filename:
+        return "salary"
     if "费用" in filename or "支出" in filename:
         return "expense"
     if "销项" in filename or "开票" in filename:
@@ -147,6 +158,10 @@ class ImportView(QWidget):
                     )
                     msg = (f"✓ 发票台账 {period}: {r['invoice_count']} 张发票, "
                            f"{r['prepayment_count']} 条预收款")
+                elif ftype == "salary":
+                    r = import_salary_file(path, period)
+                    msg = (f"✓ 工资表 {period}: {r['count']} 行"
+                           f"（{r['sheet_count']} 个工作表）")
                 else:
                     r = import_expense_file(path, period)
                     msg = f"✓ 费用台账 {period}: {r['count']} 条费用"

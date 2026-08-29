@@ -28,6 +28,7 @@ from app.ui.invoice_collect_view import InvoiceCollectView
 from app.ui.invoice_ledger_view import InvoiceLedgerView
 from app.ui.invoice_ledger_doc_view import InvoiceLedgerDocView
 from app.ui.expense_ledger_view import ExpenseLedgerView
+from app.ui.salary_ledger_view import SalaryLedgerView
 from app.ui.manual_entry_view import ManualEntryView
 from app.ui.prepayment_view import PrepaymentView
 from app.ui.refund_view import RefundView
@@ -52,6 +53,7 @@ NAV_GROUPS = [
         ("invoice_ledger", "销项发票"),
         ("ledger_doc", "发票台账"),
         ("expense_ledger", "费用台账"),
+        ("salary_ledger", "工资表"),
     ]),
     ("业务数据", [
         ("invoice", "发票收款情况"),
@@ -98,6 +100,7 @@ class MainWindow(QMainWindow):
         self.page_refund = RefundView()
         self.page_manual = ManualEntryView()
         self.page_expense_ledger = ExpenseLedgerView()
+        self.page_salary_ledger = SalaryLedgerView()
         self.page_settlement = SettlementView()
         self.page_staff = StaffView()
         self.page_verify = ImportVerifyView()
@@ -114,6 +117,7 @@ class MainWindow(QMainWindow):
             "handler_all": self.page_handler_all,
             "prepayment": self.page_prepayment, "refund": self.page_refund,
             "manual": self.page_manual, "expense_ledger": self.page_expense_ledger,
+            "salary_ledger": self.page_salary_ledger,
             "settlement": self.page_settlement,
             "staff": self.page_staff,
             "verify": self.page_verify,
