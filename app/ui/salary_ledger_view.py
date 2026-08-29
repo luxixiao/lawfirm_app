@@ -4,33 +4,33 @@
 - 账期以**文件名**为准（如 25.1 -> 2025-01），由 import_batch 带出，不取表内中文年月。
 - 三个 sheet 列结构不同，**故按 sheet 分 Tab 各自成表**，每类只显示自己的列，
   避免出现「合伙人只有 4 列却占满 14 列」的大片空列与三类数据混排：
-    · 聘用律师：编号/姓名/项目/分成报酬/工资/代扣个所税/代扣公积金/实发金额/养/医疗/失业
-      （该 sheet 内含「分成报酬」「工资」两个数据块，用「项目」列区分）
+    · 聘用律师：编号/姓名/项目/每月工资/代扣个所税/代扣公积金/实发金额/养/医疗/失业
+      （该 sheet 内含「分成报酬」「工资」两个数据块，实为同一列，合并为「每月工资」展示，
+       用「项目」列标明来源块；数据仍按原始两块分别存储，不丢信息）
     · 合伙人：  编号/姓名/预发经营所得/实发金额
     · 后勤：    编号/姓名/工资/代扣个所税/代扣公积金/实发金额/养/医疗/失业
 - 顶部年/月/搜索为全局筛选（对所有 Tab 生效）；各 Tab 独立排序、右击编辑与修改记录。
+- 导入统一走「导入台账」页（文件名形如「工资25.1」= 工资表 2025 年 1 月）。
 """
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QAbstractItemView, QComboBox, QDialog, QDialogButtonBox, QFileDialog,
-    QFormLayout, QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLineEdit,
-    QMenu, QMessageBox, QTabWidget, QTableWidget, QTableWidgetItem,
+    QAbstractItemView, QComboBox, QDialog, QDialogButtonBox,
+    QFormLayout, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
+    QMenu, QTabWidget, QTableWidget, QTableWidgetItem,
     QVBoxLayout, QWidget,
 )
 
 from app.engine import raw_salary as rs
-from app.engine.raw_salary import EDIT_FIELDS, sheet_label
-from app.importer.importer import import_salary_file
+from app.engine.raw_salary import EDIT_FIELDS
 from app.ui.audit_view import AuditView
 from app.ui.column_layout import install_column_layout
-from app.ui.import_view import guess_period
 from app.ui.table_features import (
     install_accent_header, install_common_features, install_header_filter,
 )
 from app.ui.table_view import month_options_1_12, build_period
-from app.ui.widgets import CaptionLabel, PushButton, SubtitleLabel
+from app.ui.widgets import CaptionLabel, SubtitleLabel
 
 # 编辑弹窗字段中文名
 FIELD_LABELS = {
@@ -46,9 +46,15 @@ def _g(field: str):
     return lambda r: r.get(field) or ""
 
 
+def _monthly_wage(r: dict) -> str:
+    """聘用律师 sheet 的「分成报酬」与「工资」实为同一列（都是当月工资），
+    取两者中非空的那个合并展示；数据仍按原始两块分别存储，不丢信息。"""
+    return (r.get("share_raw") or "").strip() or (r.get("salary_raw") or "").strip()
+
+
 # 各 sheet 的列定义（列结构不同，故分开定义）
 _HEADERS = {
-    "lawyer": ["编号", "姓名", "项目", "分成报酬", "工资",
+    "lawyer": ["编号", "姓名", "项目", "每月工资",
                "代扣个所税", "代扣公积金", "实发金额", "养", "医疗", "失业"],
     "partner": ["编号", "姓名", "预发经营所得", "实发金额"],
     "logistics": ["编号", "姓名", "工资", "代扣个所税", "代扣公积金", "实发金额",
@@ -56,8 +62,8 @@ _HEADERS = {
 }
 
 _GETTERS = {
-    "lawyer": [_g("seq"), _g("staff_name"), _g("item_type"), _g("share_raw"),
-               _g("salary_raw"), _g("tax_raw"), _g("fund_raw"), _g("net_raw"),
+    "lawyer": [_g("seq"), _g("staff_name"), _g("item_type"), _monthly_wage,
+               _g("tax_raw"), _g("fund_raw"), _g("net_raw"),
                _g("pension_raw"), _g("medical_raw"), _g("unemployment_raw")],
     "partner": [_g("seq"), _g("staff_name"), _g("partner_raw"), _g("net_raw")],
     "logistics": [_g("seq"), _g("staff_name"), _g("salary_raw"), _g("tax_raw"),
@@ -67,7 +73,7 @@ _GETTERS = {
 
 # 金额列（右对齐 + 按数值排序）
 _AMOUNT_COLS = {
-    "lawyer": {3, 4, 5, 6, 7},
+    "lawyer": {3, 4, 5, 6},
     "partner": {2, 3},
     "logistics": {2, 3, 4, 5},
 }
@@ -275,15 +281,6 @@ class SalaryLedgerView(QWidget):
         bar.addWidget(self.f_search, 1)
         lay.addLayout(bar)
 
-        # 操作条
-        ops = QHBoxLayout()
-        ops.setSpacing(8)
-        self.btn_import = PushButton("导入工资表")
-        self.btn_import.clicked.connect(self._on_import)
-        ops.addWidget(self.btn_import)
-        ops.addStretch(1)
-        lay.addLayout(ops)
-
         # 分 sheet 标签
         self.tabs = QTabWidget()
         self._tabs: dict[str, _SheetTab] = {}
@@ -349,38 +346,4 @@ class SalaryLedgerView(QWidget):
             tab.set_rows([r for r in rows if r.get("sheet_key") == key])
             tab.apply_keyword(kw)
 
-    # ------------------------------------------------------------------ #
-    # 导入
-    # ------------------------------------------------------------------ #
-    def _on_import(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(
-            self, "选择工资表文件", "",
-            "Excel 文件 (*.xls *.xlsx *.xlsm);;所有文件 (*.*)")
-        if not path:
-            return
-        fname = path.replace("\\", "/").split("/")[-1]
-        period = guess_period(fname)
-        if not period:
-            QMessageBox.warning(
-                self, "无法识别账期",
-                f"文件名「{fname}」无法识别账期。\n\n"
-                "工资表以**文件名**为准记账期，请命名为如：25.1（2025年1月）或 2025.1。")
-            return
-        text, ok = QInputDialog.getText(self, "确认账期", "账期（YYYY-MM）：", text=period)
-        if not ok or not text.strip():
-            return
-        period = text.strip()
-        ret = QMessageBox.question(
-            self, "确认导入",
-            f"账期：{period}\n文件：{fname}\n\n同账期重导会覆盖旧数据，确定导入？")
-        if ret != QMessageBox.StandardButton.Yes:
-            return
-        try:
-            r = import_salary_file(path, period)
-        except Exception as e:  # noqa: BLE001
-            QMessageBox.warning(self, "导入失败", str(e))
-            return
-        QMessageBox.information(
-            self, "导入成功",
-            f"账期 {period}：共 {r['count']} 行，{r['sheet_count']} 个工作表")
-        self.refresh()
+    # 注：导入已统一到「导入台账」页（文件名形如「工资25.1」），本页不再自带导入。

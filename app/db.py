@@ -232,6 +232,18 @@ CREATE INDEX IF NOT EXISTS idx_raw_salary_sheet ON raw_salary(sheet_key);
 CREATE INDEX IF NOT EXISTS idx_raw_salary_batch ON raw_salary(import_batch_id);
 CREATE INDEX IF NOT EXISTS idx_raw_salary_name  ON raw_salary(staff_name);
 
+-- 导入日志（持久化：程序关闭后仍可查看历史导入记录，不再随会话清空）
+CREATE TABLE IF NOT EXISTS import_log (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    imported_at TEXT NOT NULL,                    -- YYYY-MM-DD HH:MM:SS
+    file_name   TEXT NOT NULL DEFAULT '',
+    batch_type  TEXT NOT NULL DEFAULT '',         -- invoice/ledger/expense/staff/salary
+    period      TEXT NOT NULL DEFAULT '',
+    ok          INTEGER NOT NULL DEFAULT 1,       -- 1=成功 0=失败
+    message     TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_import_log_at ON import_log(imported_at);
+
 -- 数据修改记录（含手动备注）
 CREATE TABLE IF NOT EXISTS change_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

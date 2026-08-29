@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+from datetime import datetime
 
 from PySide6.QtWidgets import (
     QFileDialog, QHBoxLayout, QLabel, QMessageBox, QPlainTextEdit,
@@ -60,7 +61,10 @@ class ImportView(QWidget):
 
         t = SubtitleLabel("导入台账")
         lay.addWidget(t)
-        h = QLabel("选择台账文件，系统自动识别类型与账期。每月导入顺序：销项 → 发票台账 → 费用台账（职工清单首次导入一次即可）。")
+        h = QLabel("选择台账文件，系统自动识别类型与账期。每月导入顺序："
+                   "销项 → 发票台账 → 费用台账 → 工资表（职工清单首次导入一次即可）。\n"
+                   "命名示例：工资表写作「工资25.1」= 工资表 2025 年 1 月；"
+                   "账期一律以文件名为准，导入日志会持久保存、关闭程序也不丢失。")
         lay.addWidget(h)
 
         btns = QHBoxLayout()
@@ -78,9 +82,49 @@ class ImportView(QWidget):
         self.log.setReadOnly(True)
         self.log.setPlaceholderText("导入日志…")
         lay.addWidget(self.log, 1)
+        self._history_loaded = False
 
-    def _log(self, msg: str) -> None:
-        self.log.appendPlainText(msg)
+    def showEvent(self, event) -> None:  # noqa: N802
+        super().showEvent(event)
+        # 首次显示时回读历史日志（持久化在 import_log 表），程序关闭后不会丢
+        if not self._history_loaded:
+            self._history_loaded = True
+            self._load_history()
+
+    def _load_history(self) -> None:
+        try:
+            conn = get_conn()
+            try:
+                rows = conn.execute(
+                    "SELECT imported_at, message FROM import_log "
+                    "ORDER BY id DESC LIMIT 300").fetchall()
+            finally:
+                conn.close()
+        except Exception:  # noqa: BLE001 - 历史读取失败不影响导入功能
+            return
+        for r in reversed(rows):
+            self.log.appendPlainText(f"[{r['imported_at']}] {r['message']}")
+        if rows:
+            self.log.appendPlainText("")  # 与本次会话日志之间留一行分隔
+
+    def _log(self, msg: str, *, ok: bool = True, file_name: str = "",
+             batch_type: str = "", period: str = "") -> None:
+        """追加一行日志，并持久化到 import_log 表（关闭程序后仍可回看）。"""
+        stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        self.log.appendPlainText(f"[{stamp}] {msg}")
+        try:
+            conn = get_conn()
+            try:
+                conn.execute(
+                    "INSERT INTO import_log (imported_at, file_name, batch_type, period, ok, message) "
+                    "VALUES (?,?,?,?,?,?)",
+                    (stamp, file_name, batch_type, period, 1 if ok else 0, msg),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+        except Exception:  # noqa: BLE001 - 日志落库失败绝不影响导入主流程
+            pass
 
     # ---- 单文件 ----
     def import_file(self) -> None:
@@ -106,9 +150,10 @@ class ImportView(QWidget):
                 self._do_import(f, quiet=True)
                 ok += 1
             except Exception as e:  # noqa: BLE001
-                self._log(f"✗ {os.path.basename(f)}: {e}")
+                self._log(f"✗ {os.path.basename(f)}: {e}", ok=False,
+                          file_name=os.path.basename(f))
                 fail += 1
-        self._log(f"批量导入完成: 成功 {ok}，失败 {fail}")
+        self._log(f"批量导入完成: 成功 {ok}，失败 {fail}", batch_type="batch")
         QMessageBox.information(self, "批量导入", f"成功 {ok} 个，失败 {fail} 个（详见日志）")
 
     # ---- 执行 ----
@@ -166,11 +211,13 @@ class ImportView(QWidget):
                     r = import_expense_file(path, period)
                     msg = f"✓ 费用台账 {period}: {r['count']} 条费用"
         except Exception as e:  # noqa: BLE001
-            self._log(f"✗ {fname}: {e}")
+            self._log(f"✗ {fname}: {e}", ok=False, file_name=fname,
+                      batch_type=ftype, period=period or "")
             if not quiet:
                 QMessageBox.warning(self, "导入失败", str(e))
             return
-        self._log(msg)
+        self._log(msg, ok=True, file_name=fname, batch_type=ftype,
+                  period=period or "")
         if not quiet:
             QMessageBox.information(self, "导入成功", msg)
 
