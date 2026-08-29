@@ -279,6 +279,35 @@ CREATE TABLE IF NOT EXISTS tax_declaration (
 CREATE INDEX IF NOT EXISTS idx_tax_decl_year ON tax_declaration(year);
 CREATE INDEX IF NOT EXISTS idx_tax_decl_name ON tax_declaration(staff_name);
 
+-- 费用扣除（每年一份「1-12 月」个税费用扣除情况）。
+-- 与个税申报表不同：该表**没有税局字段编号行**，故以**列名关键词**为主锚点匹配；
+-- 未知/新增列同样存入 extra_json，缺列留空，重名列自动加序号，格式变动不影响导入。
+CREATE TABLE IF NOT EXISTS tax_deduction (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    year        TEXT NOT NULL,                    -- 年份（一年一份），如 "2025"
+    staff_name  TEXT,                              -- 姓名
+    basic_deduction   REAL DEFAULT 0,              -- 累计减除费用
+    special_deduction REAL DEFAULT 0,              -- 累计专项扣除
+    additional_total  REAL DEFAULT 0,              -- 累计专项附加扣除（合计列）
+    child_edu     REAL DEFAULT 0,                  -- 累计子女教育支出扣除
+    education     REAL DEFAULT 0,                  -- 累计继续教育支出扣除
+    housing_loan  REAL DEFAULT 0,                  -- 累计住房贷款利息支出扣除
+    housing_rent  REAL DEFAULT 0,                  -- 累计住房租金支出扣除
+    elderly       REAL DEFAULT 0,                  -- 累计赡养老人支出扣除
+    infant        REAL DEFAULT 0,                  -- 累计3岁以下婴幼儿照护
+    pension       REAL DEFAULT 0,                  -- 累计个人养老金
+    other_deduction REAL DEFAULT 0,                -- 累计其他扣除
+    donation      REAL DEFAULT 0,                  -- 累计准予扣除的捐赠
+    other_income  REAL DEFAULT 0,                  -- 其他单位累计收入
+    other_deduct  REAL DEFAULT 0,                  -- 其他单位累计扣除
+    other_relief  REAL DEFAULT 0,                  -- 其他单位累计减免税额
+    extra_json    TEXT,                            -- 未知/新增/重名列 {"列名": 原始值}
+    file_name     TEXT NOT NULL DEFAULT '',
+    imported_at   TEXT DEFAULT (datetime('now','localtime'))
+);
+CREATE INDEX IF NOT EXISTS idx_tax_ded_year ON tax_deduction(year);
+CREATE INDEX IF NOT EXISTS idx_tax_ded_name ON tax_deduction(staff_name);
+
 -- 数据修改记录（含手动备注）
 CREATE TABLE IF NOT EXISTS change_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
