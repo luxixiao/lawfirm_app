@@ -244,6 +244,41 @@ CREATE TABLE IF NOT EXISTS import_log (
 );
 CREATE INDEX IF NOT EXISTS idx_import_log_at ON import_log(imported_at);
 
+-- 个税申报数据（每年 11 月导出的「1-11 月累计」申报表，一年一份）。
+-- 税局导出表格式每年可能变（增列/减列/换序），故采用**弹性取值**：
+--   核心字段按税局「字段编号」映射（编号体系稳定），未知/新增列存入 extra_json，缺列留空。
+CREATE TABLE IF NOT EXISTS tax_declaration (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    year        TEXT NOT NULL,                    -- 申报年份（每年一份），如 "2025"
+    seq         TEXT,                              -- 1  序号
+    staff_name  TEXT,                              -- 2  姓名
+    -- 累计情况（税局编号 22 / 23 / 24）
+    income            REAL DEFAULT 0,              -- 22 累计收入额
+    basic_deduction   REAL DEFAULT 0,              -- 23 累计减除费用
+    special_deduction REAL DEFAULT 0,              -- 24 累计专项扣除
+    -- 累计专项附加扣除（25 ~ 30）
+    child_edu    REAL DEFAULT 0,                   -- 25 子女教育
+    elderly      REAL DEFAULT 0,                   -- 26 赡养老人
+    housing_loan REAL DEFAULT 0,                   -- 27 住房贷款利息
+    housing_rent REAL DEFAULT 0,                   -- 28 住房租金
+    education    REAL DEFAULT 0,                   -- 29 继续教育
+    infant       REAL DEFAULT 0,                   -- 30 3岁以下婴幼儿照护
+    -- 税款计算（35 ~ 41）
+    taxable      REAL DEFAULT 0,                   -- 35 应纳税所得额
+    tax_rate     TEXT,                             -- 36 税率/预扣率（原文，可能是 "-"）
+    quick_ded    REAL DEFAULT 0,                   -- 37 速算扣除数
+    payable      REAL DEFAULT 0,                   -- 38 应纳税额
+    relief       REAL DEFAULT 0,                   -- 39 减免税额
+    paid         REAL DEFAULT 0,                   -- 40 已缴税额
+    refill       REAL DEFAULT 0,                   -- 41 应补/退税额
+    net_paid     REAL DEFAULT 0,                   -- （无编号列）实际已纳税额
+    extra_json   TEXT,                             -- 未知/新增列 {"列名": 原始值}
+    file_name    TEXT NOT NULL DEFAULT '',
+    imported_at  TEXT DEFAULT (datetime('now','localtime'))
+);
+CREATE INDEX IF NOT EXISTS idx_tax_decl_year ON tax_declaration(year);
+CREATE INDEX IF NOT EXISTS idx_tax_decl_name ON tax_declaration(staff_name);
+
 -- 数据修改记录（含手动备注）
 CREATE TABLE IF NOT EXISTS change_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

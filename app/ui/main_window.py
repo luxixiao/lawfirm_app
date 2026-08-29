@@ -30,6 +30,7 @@ from app.ui.invoice_ledger_doc_view import InvoiceLedgerDocView
 from app.ui.expense_ledger_view import ExpenseLedgerView
 from app.ui.salary_ledger_view import SalaryLedgerView
 from app.ui.salary_summary_view import SalarySummaryView
+from app.ui.tax_declaration_view import TaxDeclarationView
 from app.ui.manual_entry_view import ManualEntryView
 from app.ui.prepayment_view import PrepaymentView
 from app.ui.refund_view import RefundView
@@ -64,6 +65,7 @@ NAV_GROUPS = [
     ]),
     ("工资个税", [
         ("salary_summary", "工资累计"),
+        ("tax_declaration", "1-11月个税申报"),
     ]),
     ("各类报表", [
         ("settlement", "各类报表"),
@@ -103,6 +105,7 @@ class MainWindow(QMainWindow):
         self.page_expense_ledger = ExpenseLedgerView()
         self.page_salary_ledger = SalaryLedgerView()
         self.page_salary_summary = SalarySummaryView()
+        self.page_tax_declaration = TaxDeclarationView()
         self.page_settlement = SettlementView()
         self.page_staff = StaffView()
         self.page_verify = ImportVerifyView()
@@ -131,6 +134,7 @@ class MainWindow(QMainWindow):
             "data_clear": self.page_data_clear,
             "audit": self.page_audit,
             "salary_summary": self.page_salary_summary,
+            "tax_declaration": self.page_tax_declaration,
         }
         for key, page in self._pages.items():
             page.setObjectName(key)
