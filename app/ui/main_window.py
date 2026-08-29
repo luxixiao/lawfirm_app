@@ -29,6 +29,7 @@ from app.ui.invoice_ledger_view import InvoiceLedgerView
 from app.ui.invoice_ledger_doc_view import InvoiceLedgerDocView
 from app.ui.expense_ledger_view import ExpenseLedgerView
 from app.ui.salary_ledger_view import SalaryLedgerView
+from app.ui.salary_summary_view import SalarySummaryView
 from app.ui.manual_entry_view import ManualEntryView
 from app.ui.prepayment_view import PrepaymentView
 from app.ui.refund_view import RefundView
@@ -62,7 +63,7 @@ NAV_GROUPS = [
         ("refund", "退款"),
     ]),
     ("工资个税", [
-        ("payroll", "建设中"),
+        ("salary_summary", "工资累计"),
     ]),
     ("各类报表", [
         ("settlement", "各类报表"),
@@ -101,6 +102,7 @@ class MainWindow(QMainWindow):
         self.page_manual = ManualEntryView()
         self.page_expense_ledger = ExpenseLedgerView()
         self.page_salary_ledger = SalaryLedgerView()
+        self.page_salary_summary = SalarySummaryView()
         self.page_settlement = SettlementView()
         self.page_staff = StaffView()
         self.page_verify = ImportVerifyView()
@@ -111,7 +113,8 @@ class MainWindow(QMainWindow):
         self.page_expense_cat = ExpenseCatView()
         self.page_data_clear = DataClearView()
         self.page_audit = AuditView()
-        self.page_payroll = _PlaceholderPage("工资个税模块建设中")
+        # 注：原「工资个税」占位的 payroll 页已由真正的 SalarySummaryView 取代，
+        # _PlaceholderPage 类保留备用（后续若新增未实现模块可直接复用）。
         self._pages = {
             "import": self.page_import, "invoice": self.page_invoice,
             "handler_all": self.page_handler_all,
@@ -127,7 +130,7 @@ class MainWindow(QMainWindow):
             "expense_cat": self.page_expense_cat,
             "data_clear": self.page_data_clear,
             "audit": self.page_audit,
-            "payroll": self.page_payroll,
+            "salary_summary": self.page_salary_summary,
         }
         for key, page in self._pages.items():
             page.setObjectName(key)
