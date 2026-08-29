@@ -93,23 +93,19 @@ QLabel#cellTip {{
 }}
 #sidebar QLabel#skinLabel {{ color: {p['text_faint']}; font-size: 11px; padding: 0 0 4px 0; }}
 
-/* ===== 方案 C 双栏侧栏（图标 Rail + sub panel） ===== */
-#rail QPushButton#railBtn {{
-    background: transparent; border: none; border-radius: 9px; padding: 8px; margin: 0 6px;
-}}
-#rail QPushButton#railBtn:hover {{ background: {p['bg_hover']}; }}
-#rail QPushButton#railBtn:checked {{ background: {p['bg_select']}; }}
-#rail QPushButton#railToggle {{
-    background: transparent; border: none; border-radius: 9px;
-    color: {p['text_faint']}; font-size: 18px; padding: 6px; margin: 0 14px;
-}}
-#rail QPushButton#railToggle:hover {{ background: {p['bg_hover']}; color: {p['text']}; }}
-#subPanel QPushButton#subHeader {{
+/* ===== 方案 A 折叠侧栏（单列分组 + 收起为图标列） ===== */
+#sidebar QPushButton#groupHeaderBtn {{
     background: transparent; border: none; border-radius: 7px;
-    text-align: left; padding: 16px 14px 10px 14px;
-    color: {p['text_faint']}; font-size: 11px; font-weight: 700;
+    text-align: left; padding: 9px 12px; color: {p['text']}; font-size: 13px; font-weight: 600;
 }}
-#subPanel QPushButton#subHeader:hover {{ background: {p['bg_hover']}; }}
+#sidebar QPushButton#groupHeaderBtn:hover {{ background: {p['bg_hover']}; }}
+#sidebar QPushButton#groupToggle {{
+    background: transparent; border: none; border-radius: 8px;
+    color: {p['text_faint']}; font-size: 16px; padding: 6px 10px;
+}}
+#sidebar QPushButton#groupToggle:hover {{ background: {p['bg_hover']}; color: {p['text']}; }}
+#sidebar QScrollArea {{ background: transparent; border: none; }}
+#sidebar QWidget#scrollContent {{ background: transparent; }}
 
 /* ===== 页面标题（视图自带，保留选择器兼容） ===== */
 #pageTitle {{ font-size: 20px; font-weight: 700; color: {p['text']}; }}

@@ -1,8 +1,8 @@
 """主窗口：QMainWindow + 自绘 Notion 分组侧栏 + 页面栈（多皮肤框架）
 
-- 侧栏为自绘（非 qfluentwidgets FluentWindow），方案 C 双栏：
-  左图标 Rail（数据导入 / 台账查看 / 业务数据 / 工资个税 / 各类报表 / 数据维护）
-  + 右 sub panel 显示当前大类子项，可整体收起、子项可折叠。
+- 侧栏为自绘（非 qfluentwidgets FluentWindow），方案 A 折叠分组：
+  单列 6 大类（数据导入 / 台账查看 / 业务数据 / 工资个税 / 各类报表 / 数据维护），
+  标题行（图标+组名）点击可独立折叠子项；整体可收起为 60px 图标列。
 - 内容区用 QStackedWidget 承载全部业务视图，逻辑零改动。
 - 侧栏底部「皮肤」下拉切换并持久化到 data/prefs.json。
 - 保留 go_to_page / show_info / staff_ready / showEvent / closeEvent 等接口，

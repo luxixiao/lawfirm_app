@@ -1,21 +1,23 @@
-"""方案 C 双栏侧栏：常驻图标 Rail（一级大类）+ 右 sub panel（二级子项）。
+"""方案 A 折叠侧栏：单列分组，大类标题行（图标+文字）可独立折叠子项，整体可收起为图标列。
 
-- 左 Rail：6 个大类图标按钮（互斥高亮），底部「收起/展开」按钮。
-- 右 sub panel：当前大类的标题（可点击折叠子项）+ 该大类子项按钮 + 底部挂件（皮肤切换等）。
-- 收起：隐藏右栏，只留 56px 图标 Rail；收起/上次大类状态用 QSettings 持久化。
+- 展开（240px）：各大类纵向排列，标题行显示「图标 + 大类名」，点击标题切换该组子项显示；
+  子项为该大类下的页面入口。底部挂件（皮肤切换等）常驻。
+- 收起（60px）：只显示大类图标（文字清空、图标居中），子项与底部挂件隐藏；
+  点大类图标 = 展开回宽态并展开该组子项。
+- 各组折叠状态 + 整体收起状态用 QSettings 持久化。
 - 图标取自 qfluentwidgets 的 FluentIcon，用 getattr 防御，拼写缺失自动回退，绝不抛异常。
 """
 from __future__ import annotations
 
-from PySide6.QtCore import QSettings, Qt, Signal, QSize
+from PySide6.QtCore import QSettings, Signal, QSize
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
-    QButtonGroup, QHBoxLayout, QPushButton, QVBoxLayout, QWidget,
+    QButtonGroup, QFrame, QPushButton, QScrollArea, QVBoxLayout, QWidget,
 )
 from qfluentwidgets import FluentIcon as FIC
 
-RAIL_W = 56
-SUB_W = 200
+W_EXPAND = 240
+W_COLLAPSE = 60
 ICON_SIZE = 22
 
 # 大类 -> FluentIcon 枚举名（用 getattr 防御，避免拼写错误导致崩溃）
@@ -28,6 +30,9 @@ GROUP_ICON = {
     "数据维护": "SETTING",
 }
 _ICON_FALLBACK = "DOCUMENT"
+
+# 收起态：图标居中（内联样式优先级高于全局 QSS）
+_ICON_ONLY_QSS = "text-align: center; padding-left: 0; padding-right: 0;"
 
 
 def _icon(name: str) -> QIcon:
@@ -53,86 +58,65 @@ class SidebarWidget(QWidget):
         self._key_to_group = {k: t for t, items in nav_groups for k, _ in items}
         self._settings = QSettings("lawfirm", "sidebar")
         self._collapsed = bool(self._settings.value("collapsed", False))
-        self._current_group = self._group_titles[0]
-        self._rail_buttons: dict[str, QPushButton] = {}
+        # 各组子项折叠状态（持久化时用 | 拼接被折叠的组名）
+        saved = self._settings.value("collapsed_groups", "", type=str)
+        folded = {t for t in (saved.split("|") if saved else []) if t}
+        self._folded = {t: (t in folded) for t in self._group_titles}
+        self._header_buttons: dict[str, QPushButton] = {}
+        self._items_widgets: dict[str, QWidget] = {}
         self._item_buttons: dict[str, QPushButton] = {}
+        self._item_group = QButtonGroup(self)
+        self._item_group.setExclusive(True)
         self._bottom = bottom_widget
         self._init_ui()
-
-        last = self._settings.value("last_group", self._group_titles[0], type=str)
-        if last not in self._group_titles:
-            last = self._group_titles[0]
-        self.show_group(last)
         self.set_collapsed(self._collapsed)
 
     # ------------------------------------------------------------------ #
     # UI 构建
     # ------------------------------------------------------------------ #
     def _init_ui(self) -> None:
-        root = QHBoxLayout(self)
+        root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        # ---- 左 Rail（图标列）----
-        self.rail = QWidget()
-        self.rail.setObjectName("rail")
-        self.rail.setFixedWidth(RAIL_W)
-        rail_layout = QVBoxLayout(self.rail)
-        rail_layout.setContentsMargins(0, 10, 0, 10)
-        rail_layout.setSpacing(6)
-        self._rail_group = QButtonGroup(self)
-        self._rail_group.setExclusive(True)
-        for title in self._group_titles:
-            btn = QPushButton()
-            btn.setObjectName("railBtn")
-            btn.setCheckable(True)
-            btn.setToolTip(title)
-            btn.setIcon(_icon(GROUP_ICON.get(title, _ICON_FALLBACK)))
-            btn.setIconSize(QSize(ICON_SIZE, ICON_SIZE))
-            btn.clicked.connect(lambda _checked=False, t=title: self._on_rail(t))
-            self._rail_group.addButton(btn)
-            self._rail_buttons[title] = btn
-            rail_layout.addWidget(btn)
-        rail_layout.addStretch(1)
+        # 顶部：整体收起 / 展开
         self.toggle_btn = QPushButton()
-        self.toggle_btn.setObjectName("railToggle")
+        self.toggle_btn.setObjectName("groupToggle")
         self.toggle_btn.setToolTip("收起 / 展开侧边栏")
         self.toggle_btn.clicked.connect(self._on_toggle)
-        rail_layout.addWidget(self.toggle_btn)
+        root.addWidget(self.toggle_btn)
 
-        # ---- 右 sub panel（子项）----
-        self.sub = QWidget()
-        self.sub.setObjectName("subPanel")
-        self.sub.setFixedWidth(SUB_W)
-        sub_layout = QVBoxLayout(self.sub)
-        sub_layout.setContentsMargins(0, 0, 0, 0)
-        sub_layout.setSpacing(0)
-
-        self.header = QPushButton()
-        self.header.setObjectName("subHeader")
-        self.header.clicked.connect(self._on_header_toggle)
-        sub_layout.addWidget(self.header)
-
-        self.items_widget = QWidget()
-        self.items_layout = QVBoxLayout(self.items_widget)
-        self.items_layout.setContentsMargins(8, 4, 8, 4)
-        self.items_layout.setSpacing(2)
-        sub_layout.addWidget(self.items_widget)
-        sub_layout.addStretch(1)
+        # 分组区（可滚动，避免 6 组 18 项在小窗口下溢出）
+        self.scroll = QScrollArea()
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setFrameShape(QFrame.Shape.NoFrame)
+        container = QWidget()
+        container.setObjectName("scrollContent")
+        self.groups_layout = QVBoxLayout(container)
+        self.groups_layout.setContentsMargins(8, 4, 8, 4)
+        self.groups_layout.setSpacing(2)
+        for title, items in self.nav_groups:
+            self._add_group(title, items)
+        self.groups_layout.addStretch(1)
+        self.scroll.setWidget(container)
+        root.addWidget(self.scroll, 1)
 
         if self._bottom is not None:
-            sub_layout.addWidget(self._bottom)
+            root.addWidget(self._bottom)
 
-        root.addWidget(self.rail)
-        root.addWidget(self.sub)
+    def _add_group(self, title: str, items) -> None:
+        header = QPushButton(title)
+        header.setObjectName("groupHeaderBtn")
+        header.setIcon(_icon(GROUP_ICON.get(title, _ICON_FALLBACK)))
+        header.setIconSize(QSize(ICON_SIZE, ICON_SIZE))
+        header.clicked.connect(lambda _checked=False, t=title: self._on_header(t))
+        self._header_buttons[title] = header
+        self.groups_layout.addWidget(header)
 
-    def _build_items(self, title: str) -> None:
-        for btn in list(self._item_buttons.values()):
-            btn.deleteLater()
-        self._item_buttons.clear()
-        self._item_group = QButtonGroup(self)
-        self._item_group.setExclusive(True)
-        items = next(items for t, items in self.nav_groups if t == title)
+        box = QWidget()
+        lay = QVBoxLayout(box)
+        lay.setContentsMargins(10, 0, 0, 6)
+        lay.setSpacing(2)
         for key, label in items:
             btn = QPushButton(label)
             btn.setObjectName("navItem")
@@ -140,37 +124,60 @@ class SidebarWidget(QWidget):
             btn.clicked.connect(lambda _checked=False, k=key: self.itemSelected.emit(k))
             self._item_group.addButton(btn)
             self._item_buttons[key] = btn
-            self.items_layout.addWidget(btn)
-        self.header.setText(title)
-        self._current_group = title
+            lay.addWidget(btn)
+        self._items_widgets[title] = box
+        self.groups_layout.addWidget(box)
 
     # ------------------------------------------------------------------ #
     # 交互
     # ------------------------------------------------------------------ #
-    def _on_rail(self, title: str) -> None:
-        self.show_group(title)
+    def _on_header(self, title: str) -> None:
+        """点标题：收起态先展开整体并展开该组；展开态切换该组子项。"""
+        if self._collapsed:
+            self.set_collapsed(False)
+            self._folded[title] = False
+            self._apply_fold()
+            self._save_folded()
+            return
+        self._folded[title] = not self._folded[title]
+        self._apply_fold()
+        self._save_folded()
         self.groupSelected.emit(title)
 
-    def show_group(self, title: str) -> None:
-        if title not in self._group_titles:
-            return
-        self._build_items(title)
-        self._set_active_rail(title)
-        self.items_widget.setVisible(True)
-        self._settings.setValue("last_group", title)
+    def _apply_fold(self) -> None:
+        for title, box in self._items_widgets.items():
+            box.setVisible((not self._collapsed) and (not self._folded[title]))
 
-    def _set_active_rail(self, title: str) -> None:
-        btn = self._rail_buttons.get(title)
-        if btn is not None:
-            btn.setChecked(True)
+    def _save_folded(self) -> None:
+        folded = "|".join(t for t in self._group_titles if self._folded[t])
+        self._settings.setValue("collapsed_groups", folded)
 
-    def set_active_group(self, title: str) -> None:
-        self._set_active_rail(title)
+    def _on_toggle(self) -> None:
+        self.set_collapsed(not self._collapsed)
+
+    def set_collapsed(self, b: bool) -> None:
+        """整体收起 / 展开：切宽度、标题文字、子项与底部挂件可见性。"""
+        self._collapsed = bool(b)
+        self.setFixedWidth(W_COLLAPSE if self._collapsed else W_EXPAND)
+        # 收起态：标题文字清空 + 图标居中；展开态：恢复组名与普通对齐
+        for title, btn in self._header_buttons.items():
+            btn.setText("" if self._collapsed else title)
+            btn.setStyleSheet(_ICON_ONLY_QSS if self._collapsed else "")
+        if self._bottom is not None:
+            self._bottom.setVisible(not self._collapsed)
+        self.toggle_btn.setText("›" if self._collapsed else "‹")
+        self._apply_fold()
+        self._settings.setValue("collapsed", self._collapsed)
+        self.collapseToggled.emit(self._collapsed)
 
     def activate(self, key: str, group: str) -> None:
-        """由主窗口在切换页面时调用：确保右侧显示对应大类并高亮子项。"""
-        if group != self._current_group:
-            self.show_group(group)
+        """由主窗口切页时调用：确保整体展开、该组子项可见并高亮子项。"""
+        if self._collapsed:
+            self.set_collapsed(False)
+        if self._folded.get(group):
+            self._folded[group] = False
+            self._apply_fold()
+            self._save_folded()
         self.set_active_item(key)
 
     def set_active_item(self, key: str) -> None:
@@ -178,18 +185,12 @@ class SidebarWidget(QWidget):
         if btn is not None:
             btn.setChecked(True)
 
-    def _on_header_toggle(self) -> None:
-        self.items_widget.setVisible(not self.items_widget.isVisible())
-
-    def _on_toggle(self) -> None:
-        self.set_collapsed(not self._collapsed)
-
-    def set_collapsed(self, b: bool) -> None:
-        self._collapsed = bool(b)
-        self.sub.setVisible(not self._collapsed)
-        self._settings.setValue("collapsed", self._collapsed)
-        # 展开态显示「‹」提示可收起；收起态显示「›」提示可展开
-        self.toggle_btn.setText("‹" if not self._collapsed else "›")
+    def set_active_group(self, title: str) -> None:
+        """方案 A 无独立 Rail，接口保留（展开该组以便定位）。"""
+        if title in self._folded and self._folded[title]:
+            self._folded[title] = False
+            self._apply_fold()
+            self._save_folded()
 
     def key_to_group(self, key: str):
         return self._key_to_group.get(key)
