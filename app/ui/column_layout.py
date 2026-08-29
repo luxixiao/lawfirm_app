@@ -447,19 +447,29 @@ class TableColumnLayout(QObject):
 
     # ---------- 事件过滤（窗体缩放 / 最大化还原时重填） ----------
     def _ensure_win(self) -> None:
-        """懒绑定顶层窗口，监听其状态变化（最大化/还原）以触发比例重填。"""
-        if self._win is None:
-            win = self.table.window()
-            if win is not None:
-                self._win = win
-                win.installEventFilter(self)
+        """懒绑定顶层窗口，监听其状态变化（最大化/还原）以触发比例重填。
+
+        用 getattr 兜底：极少数场景下（如进程加载过旧版字节码、或 PySide 重包装
+        对象导致 __init__ 未跑）self._win / self.table 可能尚未初始化，此时不应让
+        事件过滤器抛异常拖垮整个 UI，而是静默跳过本帧绑定，下一帧再试。
+        """
+        win = getattr(self, "_win", None)
+        if win is not None:
+            return
+        table = getattr(self, "table", None)
+        if table is None:
+            return
+        win = table.window()
+        if win is not None:
+            self._win = win
+            win.installEventFilter(self)
 
     def eventFilter(self, obj, event) -> bool:
         self._ensure_win()  # 视图构造早于入窗，事件触发时再补绑窗口
         if obj is self.table and event.type() == QEvent.Type.Resize:
             if self.content_w is not None and self.table.columnCount():
                 self.apply(remeasure=False)
-        elif obj is self._win and event.type() == QEvent.Type.WindowStateChange:
+        elif obj is getattr(self, "_win", None) and event.type() == QEvent.Type.WindowStateChange:
             # 最大化/还原：延迟一帧，等布局稳定后再按比例重填（已显全列除外）
             if self.content_w is not None and self.table.columnCount():
                 QTimer.singleShot(0, lambda: self.apply(remeasure=False))
