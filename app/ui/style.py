@@ -104,6 +104,15 @@ QLabel#cellTip {{
     color: {p['text_faint']}; font-size: 16px; padding: 6px 10px;
 }}
 #sidebar QPushButton#groupToggle:hover {{ background: {p['bg_hover']}; color: {p['text']}; }}
+#sidebar QPushButton#groupPin {{
+    background: transparent; border: 1px solid {p['border']}; border-radius: 7px;
+    color: {p['text_mute']}; font-size: 12px; padding: 4px 10px;
+}}
+#sidebar QPushButton#groupPin:hover {{ background: {p['bg_hover']}; color: {p['text']}; }}
+#sidebar QPushButton#groupPin:checked {{
+    background: {p['bg_select']}; color: {p['text']}; font-weight: 600;
+    border-color: {p['text_faint']};
+}}
 #sidebar QScrollArea {{ background: transparent; border: none; }}
 #sidebar QWidget#scrollContent {{ background: transparent; }}
 
