@@ -1,7 +1,8 @@
 """主窗口：QMainWindow + 自绘 Notion 分组侧栏 + 页面栈（多皮肤框架）
 
-- 侧栏为自绘（非 qfluentwidgets FluentWindow），分组：
-  数据导入 / 台账查看 / 业务数据 / 各类报表 / 数据维护。
+- 侧栏为自绘（非 qfluentwidgets FluentWindow），方案 C 双栏：
+  左图标 Rail（数据导入 / 台账查看 / 业务数据 / 工资个税 / 各类报表 / 数据维护）
+  + 右 sub panel 显示当前大类子项，可整体收起、子项可折叠。
 - 内容区用 QStackedWidget 承载全部业务视图，逻辑零改动。
 - 侧栏底部「皮肤」下拉切换并持久化到 data/prefs.json。
 - 保留 go_to_page / show_info / staff_ready / showEvent / closeEvent 等接口，
@@ -18,6 +19,7 @@ from qfluentwidgets import InfoBar, InfoBarPosition
 
 from app.db import get_conn
 from app.ui import style
+from app.ui.sidebar import SidebarWidget
 from app.ui.batch_view import BatchView
 from app.ui.handler_collect_view import HandlerCollectView
 from app.ui.import_view import ImportView
@@ -56,6 +58,9 @@ NAV_GROUPS = [
         ("handler_all", "经办人发票收款情况"),
         ("prepayment", "预收款"),
         ("refund", "退款"),
+    ]),
+    ("工资个税", [
+        ("payroll", "建设中"),
     ]),
     ("各类报表", [
         ("settlement", "各类报表"),
@@ -103,6 +108,7 @@ class MainWindow(QMainWindow):
         self.page_expense_cat = ExpenseCatView()
         self.page_data_clear = DataClearView()
         self.page_audit = AuditView()
+        self.page_payroll = _PlaceholderPage("工资个税模块建设中")
         self._pages = {
             "import": self.page_import, "invoice": self.page_invoice,
             "handler_all": self.page_handler_all,
@@ -117,6 +123,7 @@ class MainWindow(QMainWindow):
             "expense_cat": self.page_expense_cat,
             "data_clear": self.page_data_clear,
             "audit": self.page_audit,
+            "payroll": self.page_payroll,
         }
         for key, page in self._pages.items():
             page.setObjectName(key)
@@ -139,40 +146,19 @@ class MainWindow(QMainWindow):
         content_layout.setSpacing(0)
         content_layout.addWidget(self.stack)
 
-        root.addWidget(self._build_sidebar_widget())
+        self._key_to_group = {k: t for t, items in NAV_GROUPS for k, _ in items}
+        self.skin_box = self._build_skin_box()
+        self.sidebar = SidebarWidget(NAV_GROUPS, bottom_widget=self.skin_box)
+        self.sidebar.itemSelected.connect(self.select)
+
+        root.addWidget(self.sidebar)
         root.addWidget(content, 1)
 
     # ------------------------------------------------------------------ #
-    # 侧栏（自绘）
+    # 侧栏（方案 C 双栏，见 app/ui/sidebar.py）
     # ------------------------------------------------------------------ #
-    def _build_sidebar_widget(self) -> QWidget:
-        sidebar = QWidget()
-        sidebar.setObjectName("sidebar")
-        sidebar.setFixedWidth(232)
-        layout = QVBoxLayout(sidebar)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
-
-        self._nav_group = QButtonGroup(self)
-        self._nav_group.setExclusive(True)
-        self._nav_buttons: dict[str, QPushButton] = {}
-
-        for group_title, items in NAV_GROUPS:
-            header = QLabel(group_title)
-            header.setObjectName("groupHeader")
-            layout.addWidget(header)
-            for key, label in items:
-                btn = QPushButton(label)
-                btn.setObjectName("navItem")
-                btn.setCheckable(True)
-                btn.clicked.connect(lambda _checked=False, k=key: self.select(k))
-                self._nav_group.addButton(btn)
-                self._nav_buttons[key] = btn
-                layout.addWidget(btn)
-
-        layout.addStretch(1)
-
-        # 底部：皮肤切换
+    def _build_skin_box(self) -> QWidget:
+        """原侧栏底部的皮肤切换挂件，现挂到双栏侧栏右栏底部。"""
         skin_box = QWidget()
         skin_layout = QVBoxLayout(skin_box)
         skin_layout.setContentsMargins(16, 8, 16, 16)
@@ -185,9 +171,7 @@ class MainWindow(QMainWindow):
         self.skin_combo.currentIndexChanged.connect(self._on_skin_changed)
         skin_layout.addWidget(skin_label)
         skin_layout.addWidget(self.skin_combo)
-        layout.addWidget(skin_box)
-
-        return sidebar
+        return skin_box
 
     def _apply_current_skin_to_combo(self) -> None:
         current = style.load_skin_pref()
@@ -213,14 +197,15 @@ class MainWindow(QMainWindow):
         刷新由页面的 showEvent 负责：setCurrentWidget 切换必然触发新页
         showEvent（各视图 showEvent 内已调用 refresh），这里不再显式刷新，
         避免每次点开页面「select + showEvent」双重刷新导致卡顿。
+        同时联动双栏侧栏：确保右侧显示对应大类并高亮子项。
         """
         page = self._pages.get(key)
         if page is None:
             return
         self.stack.setCurrentWidget(page)
-        btn = self._nav_buttons.get(key)
-        if btn is not None:
-            btn.setChecked(True)
+        grp = self._key_to_group.get(key)
+        if grp is not None:
+            self.sidebar.activate(key, grp)
 
     def go_to_page(self, key: str) -> None:
         """兼容旧接口：供其他视图通过 window().go_to_page(...) 调用。"""
@@ -255,3 +240,17 @@ class MainWindow(QMainWindow):
         from app.db import checkpoint
         checkpoint()
         super().closeEvent(event)
+
+
+class _PlaceholderPage(QWidget):
+    """暂未实现模块的占位页（如工资个税）。"""
+
+    def __init__(self, text: str) -> None:
+        super().__init__()
+        lay = QVBoxLayout(self)
+        lay.addStretch(1)
+        lab = QLabel(text)
+        lab.setObjectName("placeholder")
+        lab.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lay.addWidget(lab)
+        lay.addStretch(1)

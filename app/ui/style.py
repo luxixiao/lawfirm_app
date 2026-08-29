@@ -93,6 +93,24 @@ QLabel#cellTip {{
 }}
 #sidebar QLabel#skinLabel {{ color: {p['text_faint']}; font-size: 11px; padding: 0 0 4px 0; }}
 
+/* ===== 方案 C 双栏侧栏（图标 Rail + sub panel） ===== */
+#rail QPushButton#railBtn {{
+    background: transparent; border: none; border-radius: 9px; padding: 8px; margin: 0 6px;
+}}
+#rail QPushButton#railBtn:hover {{ background: {p['bg_hover']}; }}
+#rail QPushButton#railBtn:checked {{ background: {p['bg_select']}; }}
+#rail QPushButton#railToggle {{
+    background: transparent; border: none; border-radius: 9px;
+    color: {p['text_faint']}; font-size: 18px; padding: 6px; margin: 0 14px;
+}}
+#rail QPushButton#railToggle:hover {{ background: {p['bg_hover']}; color: {p['text']}; }}
+#subPanel QPushButton#subHeader {{
+    background: transparent; border: none; border-radius: 7px;
+    text-align: left; padding: 16px 14px 10px 14px;
+    color: {p['text_faint']}; font-size: 11px; font-weight: 700;
+}}
+#subPanel QPushButton#subHeader:hover {{ background: {p['bg_hover']}; }}
+
 /* ===== 页面标题（视图自带，保留选择器兼容） ===== */
 #pageTitle {{ font-size: 20px; font-weight: 700; color: {p['text']}; }}
 #pageHint  {{ color: {p['text_mute']}; font-size: 12px; }}
