@@ -82,6 +82,12 @@ def build_settlement(year: int, person: str | None = None, person_type: str | No
         conn.close()
 
 
+def build_settlement_conn(conn, year: int, person: str | None = None,
+                          person_type: str | None = None) -> Dict:
+    """同 build_settlement，但使用调用方提供的连接（供分成计算引擎等复用口径，不自行开连接）。"""
+    return _compute(conn, year, person, person_type)
+
+
 def _new_st(conn, name: str, override: str | None = None) -> Dict:
     """标准人员结构（override=身份，优先于人员类型）"""
     return {

@@ -358,6 +358,37 @@ CREATE TABLE IF NOT EXISTS anomaly_note (
     PRIMARY KEY (invoice_no, dim, period)
 );
 CREATE INDEX IF NOT EXISTS idx_anomaly_note_period ON anomaly_note(period, dim);
+
+-- ============ 分成计算（内嵌类 Excel 引擎，spec: calc_engine_spec.md）============
+-- 表格主表：content 为 JSON 整表（方案甲）
+-- {"version":1,"rows":..,"cols":..,"cells":{"r,c":{"raw":..,"kind":..}},"params":{..},"col_headers":[..]}
+-- workbook_id 预埋工作簿层（本期恒为 1，日后加 calc_workbook 表无需迁数据）。
+-- updated_by/updated_at：DB 在 Seafile 同步范围内，展示"最后编辑人/时间"提示后写覆盖风险。
+CREATE TABLE IF NOT EXISTS calc_sheet (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    workbook_id INTEGER NOT NULL DEFAULT 1,
+    name        TEXT    NOT NULL,
+    sheet_order INTEGER NOT NULL DEFAULT 0,
+    updated_by  TEXT    DEFAULT '',
+    created     TEXT    DEFAULT (datetime('now','localtime')),
+    updated_at  TEXT    DEFAULT (datetime('now','localtime')),
+    content     TEXT    NOT NULL DEFAULT '{}'
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_calc_sheet_name ON calc_sheet(name);
+CREATE INDEX IF NOT EXISTS idx_calc_sheet_wb ON calc_sheet(workbook_id, sheet_order);
+
+-- 自定义指标（B 层）：definition 公式模板，$职工/$年/$月 占位
+-- 例：DATA($职工,"业务收入",$年,$月)*0.3
+CREATE TABLE IF NOT EXISTS calc_indicator (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    name        TEXT NOT NULL,
+    definition  TEXT NOT NULL,
+    note        TEXT DEFAULT '',
+    updated_by  TEXT DEFAULT '',
+    created     TEXT DEFAULT (datetime('now','localtime')),
+    updated_at  TEXT DEFAULT (datetime('now','localtime'))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_calc_ind_name ON calc_indicator(name);
 """
 
 
