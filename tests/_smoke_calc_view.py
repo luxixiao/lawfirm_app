@@ -1,0 +1,135 @@
+"""calc_sheet_view 无头 UI 冒烟（offscreen）— 验证 网格填充/求值显示/编辑回写。
+
+运行（须有 PySide6，无需 qfluentwidgets）：
+    QT_QPA_PLATFORM=offscreen python tests/_smoke_calc_view.py
+"""
+import sys
+import tempfile
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+
+import sqlite3  # noqa: E402
+
+# ---- 先把 DB 指到临时库，再导入引擎 ----
+TMP = Path(tempfile.mkdtemp(prefix="calc_smoke_")) / "smoke.db"
+import app.db as appdb  # noqa: E402
+appdb.DB_PATH = TMP
+
+from app.db import SCHEMA  # noqa: E402
+from app.engine import calc_sheet as cs  # noqa: E402
+
+_conn = sqlite3.connect(TMP)
+_conn.row_factory = sqlite3.Row
+_conn.executescript(SCHEMA)
+_conn.commit()
+_conn.close()
+
+# ---- 种子：一张计算表（参数 + 公式 + 跨格引用）----
+sid = cs.create_sheet("冒烟表", updated_by="smoke")
+content = cs.default_content(5, 3)
+content["params"] = {"k": 0.3}
+content["cells"] = {
+    "0,0": {"raw": "基数", "kind": "text"},
+    "0,1": {"raw": "100", "kind": "number"},
+    "1,0": {"raw": '=B1*PARAM("k")', "kind": "formula"},
+}
+cs.save_content(sid, content, updated_by="smoke")
+
+# ---- offscreen 构造 UI ----
+import os
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+from PySide6.QtWidgets import QApplication  # noqa: E402
+
+app = QApplication.instance() or QApplication([])
+from app.ui.calc_sheet_view import CalcSheetView  # noqa: E402
+
+view = CalcSheetView()
+view.resize(1000, 600)
+view.show()
+app.processEvents()
+
+fails = []
+
+
+def check(label, cond, detail=""):
+    if not cond:
+        fails.append(f"{label} {detail}".strip())
+
+
+# 列表自动选中 → 网格填充
+check("列表 1 项", view.list.count() == 1, f"got={view.list.count()}")
+check("已选 sheet", view.sheet_id == sid, f"got={view.sheet_id}")
+it = view.table.item(1, 0)
+check("公式格显示计算值 30", it is not None and it.text() == "30",
+      f"got={it.text() if it else None}")
+check("数字格显示 100", view.table.item(0, 1).text() == "100")
+check("文本格显示 基数", view.table.item(0, 0).text() == "基数")
+
+# 选中格 → 公式栏显示原文
+view.table.setCurrentCell(1, 0)
+app.processEvents()
+check("公式栏显示 raw", view.fx.text() == '=B1*PARAM("k")', f"got={view.fx.text()!r}")
+check("坐标标签 A2", view.lbl_cell.text() == "A2", f"got={view.lbl_cell.text()}")
+
+# 查看模式默认只读
+check("默认查看模式", not view.edit_mode)
+check("查看模式公式栏只读", view.fx.isReadOnly())
+
+# 编辑：写入公式 → 自动保存 → 重算显示
+view._set_mode(True)
+check("编辑模式公式栏可写", not view.fx.isReadOnly())
+view._write_cell(2, 0, "=B1*2")
+app.processEvents()
+it2 = view.table.item(2, 0)
+check("新公式显示 200", it2 is not None and it2.text() == "200",
+      f"got={it2.text() if it2 else None}")
+# 已落库
+back = cs.get_sheet(sid)
+check("编辑已存库", back["content"]["cells"]["2,0"]["raw"] == "=B1*2")
+check("updated_by 已刷新", back["updated_by"] != "", f"got={back['updated_by']!r}")
+
+# 改参数值 → 结果联动
+c2 = back["content"]
+c2["params"]["k"] = 0.5
+cs.save_content(sid, c2, updated_by="smoke")
+view._load_sheet()
+app.processEvents()
+check("参数 0.5 后公式=50", view.table.item(1, 0).text() == "50",
+      f"got={view.table.item(1, 0).text()}")
+
+# 错误值红色显示
+view._write_cell(3, 0, "=1/0")
+app.processEvents()
+it3 = view.table.item(3, 0)
+check("除零显示 #DIV/0!", it3 is not None and it3.text() == "#DIV/0!",
+      f"got={it3.text() if it3 else None}")
+
+# TSV 值粘贴（2×2 区域）
+from PySide6.QtWidgets import QApplication as _Q  # noqa: E402
+_Q.clipboard().setText("10\t20\n30\t40")
+view.table.setCurrentCell(4, 0)
+view.paste_tsv()
+app.processEvents()
+check("粘贴 20→(4,1)", view.table.item(4, 1).text() == "20",
+      f"got={view.table.item(4, 1).text() if view.table.item(4, 1) else None}")
+check("粘贴自动加行 40→(5,1)", view.table.item(5, 1).text() == "40",
+      f"got={view.table.item(5, 1).text() if view.table.item(5, 1) else None}")
+check("粘贴数字右对齐值", view.table.item(4, 0).text() == "10")
+
+# 像素冒烟：grab 非空白
+img = view.grab()
+qi = img.toImage()
+nonwhite = 0
+for x in range(0, qi.width(), 40):
+    for y in range(0, qi.height(), 40):
+        c = qi.pixelColor(x, y)
+        if c.red() < 240 or c.green() < 240 or c.blue() < 240:
+            nonwhite += 1
+check("像素非全白", nonwhite > 5, f"nonwhite={nonwhite}")
+out = ROOT / "tests" / "_smoke_calc_view.png"
+img.save(str(out))
+
+print("SMOKE PASS" if not fails else "SMOKE FAILED:\n" + "\n".join(fails))
+sys.exit(0 if not fails else 1)
