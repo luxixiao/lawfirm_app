@@ -84,21 +84,31 @@ QLabel#cellTip {{
     padding: 16px 16px 6px 16px;
 }}
 #sidebar QPushButton#navItem {{
-    background: transparent; border: none; border-radius: 7px;
-    text-align: left; padding: 9px 12px; color: {p['text']}; font-size: 13px;
+    background: transparent; border: none; border-radius: 6px;
+    text-align: left; padding: 0 8px 0 36px; min-height: 31px;
+    color: {p['text_mute']}; font-size: 13px;
 }}
-#sidebar QPushButton#navItem:hover {{ background: {p['bg_hover']}; }}
+#sidebar QPushButton#navItem:hover {{ background: {p['bg_hover']}; color: {p['text']}; }}
 #sidebar QPushButton#navItem:checked {{
     background: {p['bg_select']}; color: {p['text']}; font-weight: 600;
+}}
+/* 键盘焦点：Qt 无 :focus-visible，统一用浅底 + 描边，避免几何跳动 */
+#sidebar QPushButton#navItem:focus,
+#sidebar QPushButton#groupHeaderBtn:focus,
+#sidebar QPushButton#groupToggle:focus,
+#sidebar QPushButton#groupPin:focus {{
+    outline: none; background: {p['bg_hover']}; color: {p['text']};
 }}
 #sidebar QLabel#skinLabel {{ color: {p['text_faint']}; font-size: 11px; padding: 0 0 4px 0; }}
 
 /* ===== 方案 A 折叠侧栏（单列分组 + 收起为图标列） ===== */
+/* 大类行由 NavHeaderButton 自绘（图标/文字/chevron/hover/press 全自绘），
+   这里只声明透明底无边框，避免套用全局 QPushButton 样式。
+   注意：不要给 #groupHeaderBtn 加 :hover —— 会与自绘的 hover 插值打架。 */
 #sidebar QPushButton#groupHeaderBtn {{
-    background: transparent; border: none; border-radius: 7px;
-    text-align: left; padding: 9px 12px; color: {p['text']}; font-size: 13px; font-weight: 600;
+    background: transparent; border: none; border-radius: 6px;
+    text-align: left; padding: 0; color: {p['text']}; font-size: 13px;
 }}
-#sidebar QPushButton#groupHeaderBtn:hover {{ background: {p['bg_hover']}; }}
 #sidebar QPushButton#groupToggle {{
     background: transparent; border: none; border-radius: 8px;
     color: {p['text_faint']}; font-size: 16px; padding: 6px 10px;
@@ -271,9 +281,23 @@ SKINS = {
 }
 
 
+_current_skin = DEFAULT_SKIN
+
+
+def current_skin() -> str:
+    return _current_skin
+
+
+def palette() -> dict:
+    """当前皮肤的调色板（自绘控件按状态取色用）。"""
+    return PALETTES.get(_current_skin, PALETTES[DEFAULT_SKIN])
+
+
 def apply_skin(app, name: str) -> None:
     """在运行时切换皮肤（app 为 QApplication 实例）。"""
+    global _current_skin
     name = name if name in SKINS else DEFAULT_SKIN
+    _current_skin = name
     app.setStyleSheet(SKINS[name]["qss"])
 
 
@@ -286,16 +310,42 @@ def available_skins():
     return [(k, v["label"]) for k, v in SKINS.items()]
 
 
-def load_skin_pref() -> str:
+def _load_prefs() -> dict:
     try:
         if PREFS_PATH.exists():
             data = json.loads(PREFS_PATH.read_text(encoding="utf-8"))
-            name = data.get("skin")
-            if name in SKINS:
-                return name
+            return data if isinstance(data, dict) else {}
     except Exception:
         pass
-    return DEFAULT_SKIN
+    return {}
+
+
+def load_skin_pref() -> str:
+    name = _load_prefs().get("skin")
+    return name if name in SKINS else DEFAULT_SKIN
+
+
+# ---------------------------------------------------------------------------
+# 动效开关（reduced motion）
+# 关闭后所有侧栏动画降为瞬时到位（保留颜色变化，去掉位移与缩放）。
+# ---------------------------------------------------------------------------
+def motion_enabled() -> bool:
+    return bool(_load_prefs().get("motion", True))
+
+
+def set_motion_enabled(enabled: bool) -> None:
+    data = _load_prefs()
+    data["motion"] = bool(enabled)
+    try:
+        PREFS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        PREFS_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=2),
+                              encoding="utf-8")
+    except Exception:
+        pass
+
+
+# 模块加载即对齐持久化偏好：自绘控件在 apply_skin() 之前取色也不会错
+_current_skin = load_skin_pref()
 
 
 def save_skin_pref(name: str) -> None:

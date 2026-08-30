@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QApplication, QComboBox, QHBoxLayout, QLabel, QMainWindow, QPushButton,
+    QApplication, QCheckBox, QComboBox, QHBoxLayout, QLabel, QMainWindow, QPushButton,
     QStackedWidget, QVBoxLayout, QWidget, QButtonGroup,
 )
 from qfluentwidgets import InfoBar, InfoBarPosition
@@ -192,6 +192,12 @@ class MainWindow(QMainWindow):
         self.skin_combo.currentIndexChanged.connect(self._on_skin_changed)
         skin_layout.addWidget(skin_label)
         skin_layout.addWidget(self.skin_combo)
+
+        self.motion_box = QCheckBox("动效")
+        self.motion_box.setChecked(style.motion_enabled())
+        self.motion_box.setToolTip("关闭可减少画面移动，适合前庭敏感用户")
+        self.motion_box.toggled.connect(self._on_motion_toggled)
+        skin_layout.addWidget(self.motion_box)
         return skin_box
 
     def _apply_current_skin_to_combo(self) -> None:
@@ -208,6 +214,14 @@ class MainWindow(QMainWindow):
         if app is not None:
             style.apply_skin(app, name)
         style.save_skin_pref(name)
+
+    def _on_motion_toggled(self, enabled: bool) -> None:
+        style.set_motion_enabled(enabled)
+        self.sidebar.apply_motion_pref()
+        if enabled:
+            self.show_info("动效已开启", success=True)
+        else:
+            self.show_info("动效已关闭：界面切换将瞬时到位", success=True)
 
     # ------------------------------------------------------------------ #
     # 对外接口（保持与旧 FluentWindow 版兼容）
