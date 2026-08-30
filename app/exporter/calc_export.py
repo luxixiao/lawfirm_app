@@ -11,13 +11,11 @@
 from __future__ import annotations
 
 import re
-from pathlib import Path
-from typing import Optional
 
 from app.engine.calc_eval import CalcEvaluator
 from app.engine.calc_formula import ErrVal, classify_cell
 
-# DATA( / PARAM( 调用；DATA_PARAM 判定含混合公式
+# DATA( / PARAM( 调用；含混合公式（如 =A1+DATA(...)）一并判为"填值"
 _DATA_PARAM_RE = re.compile(r"\bDATA\s*\(|\bPARAM\s*\(", re.IGNORECASE)
 
 
@@ -80,15 +78,3 @@ def _safe_title(name: str) -> str:
 def suggest_filename(sheet_name: str, with_formula: bool = True) -> str:
     suffix = "" if with_formula else "（仅值）"
     return f"{_safe_title(sheet_name)}{suffix}.xlsx"
-
-
-def export_sheet_to_dir(sheet_id: int, directory: str, with_formula: bool = True,
-                        conn=None) -> Optional[str]:
-    """按表名生成文件名导出到指定目录（供 UI 一行调用）。"""
-    ev = CalcEvaluator(conn, sheet_id)
-    name = ev.cur_sheet()
-    ev.close()
-    if not name:
-        return None
-    target = Path(directory) / suggest_filename(name, with_formula)
-    return export_sheet(sheet_id, str(target), with_formula=with_formula, conn=conn)

@@ -12,13 +12,13 @@ indicator_usage_count）独立导出，供无头测试。
 from __future__ import annotations
 
 import json
+import os
 import re
 from typing import Dict, List, Optional
 
-from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QComboBox, QDialog, QDialogButtonBox, QFormLayout, QHBoxLayout,
-    QInputDialog, QLabel, QLineEdit, QMessageBox, QPlainTextEdit,
+    QLabel, QLineEdit, QMessageBox, QPlainTextEdit,
     QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout,
 )
 
@@ -63,6 +63,20 @@ def validate_indicator_name(name: str, exclude_self: str = "") -> Optional[str]:
         return None if not row else f"指标名已存在：{name}"
     finally:
         conn.close()
+
+
+def validate_param_name(name: str) -> Optional[str]:
+    """参数名校验（spec §11.3）：非空、≤50、不含引号、不与内置函数重名。"""
+    name = (name or "").strip()
+    if not name:
+        return "参数名不能为空"
+    if len(name) > 50:
+        return "参数名过长（≤50 字符）"
+    if '"' in name:
+        return "参数名不能含双引号"
+    if name.upper() in {r.upper() for r in _RESERVED}:
+        return f"参数名不能与内置函数重名：{name}"
+    return None
 
 
 def validate_indicator_definition(definition: str) -> Optional[str]:
@@ -280,8 +294,15 @@ class ParamDialog(QDialog):
         for r in range(self.table.rowCount()):
             name = (self.table.item(r, 0).text() if self.table.item(r, 0) else "").strip()
             raw = (self.table.item(r, 1).text() if self.table.item(r, 1) else "").strip()
-            if not name:
+            if not name and not raw:
                 continue
+            err = validate_param_name(name)
+            if err:
+                QMessageBox.warning(self, "参数校验失败", f"第 {r + 1} 行：{err}")
+                return
+            if name in out:
+                QMessageBox.warning(self, "参数校验失败", f"第 {r + 1} 行：参数名重复：{name}")
+                return
             try:
                 out[name] = float(raw)
             except ValueError:
@@ -388,7 +409,7 @@ class IndicatorManagerDialog(QDialog):
                 conn.execute(
                     "INSERT INTO calc_indicator(name, definition, note, updated_by) "
                     "VALUES(?,?,?,?)",
-                    (name, definition, note, __import__("os").environ.get("USERNAME", "")))
+                    (name, definition, note, os.environ.get("USERNAME", "")))
                 conn.commit()
             finally:
                 conn.close()

@@ -20,7 +20,7 @@ from app.engine import calc_sheet as cs  # noqa: E402
 from app.ui.calc_dialogs import (  # noqa: E402
     DataRefDialog, IndicatorManagerDialog, ParamDialog,
     build_data_formula, indicator_usage_count,
-    validate_indicator_definition, validate_indicator_name,
+    validate_indicator_definition, validate_indicator_name, validate_param_name,
 )
 
 _conn = sqlite3.connect(TMP)
@@ -77,7 +77,11 @@ check("定义 合法", validate_indicator_definition('DATA($职工,"开票金额
 check("定义 语法错", validate_indicator_definition('DATA($职工,"开票金额",$年') is not None)
 check("定义 未知占位", validate_indicator_definition('DATA($部门,"开票金额",$年)') is not None)
 check("定义 空拒绝", validate_indicator_definition("") is not None)
-check("引用扫描 1 格", indicator_usage_count("净分成"), 1)
+check("参数名 合法", validate_param_name("提成比例") is None)
+check("参数名 禁空", validate_param_name("") is not None)
+check("参数名 禁函数重名", validate_param_name("SUM") is not None)
+check("参数名 禁引号", validate_param_name('a"b') is not None)
+check("引用扫描 1 格", indicator_usage_count("净分成") == 1)
 check("引用扫描 未用=0", indicator_usage_count("不存在的") == 0)
 
 # ===== DataRefDialog =====
