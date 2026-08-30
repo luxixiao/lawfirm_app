@@ -21,6 +21,7 @@ from app.db import get_conn
 from app.ui import style
 from app.ui.sidebar import SidebarWidget
 from app.ui.batch_view import BatchView
+from app.ui.calc_sheet_view import CalcSheetView
 from app.ui.handler_collect_view import HandlerCollectView
 from app.ui.import_view import ImportView
 from app.ui.import_verify_view import ImportVerifyView
@@ -68,6 +69,9 @@ NAV_GROUPS = [
         ("salary_summary", "工资累计"),
         ("tax_declaration", "1-11月个税申报"),
         ("tax_deduction", "费用扣除"),
+    ]),
+    ("分成计算", [
+        ("calc", "计算表"),
     ]),
     ("各类报表", [
         ("settlement", "各类报表"),
@@ -119,6 +123,7 @@ class MainWindow(QMainWindow):
         self.page_expense_cat = ExpenseCatView()
         self.page_data_clear = DataClearView()
         self.page_audit = AuditView()
+        self.page_calc = CalcSheetView()
         # 注：原「工资个税」占位的 payroll 页已由真正的 SalarySummaryView 取代，
         # _PlaceholderPage 类保留备用（后续若新增未实现模块可直接复用）。
         self._pages = {
@@ -139,6 +144,7 @@ class MainWindow(QMainWindow):
             "salary_summary": self.page_salary_summary,
             "tax_declaration": self.page_tax_declaration,
             "tax_deduction": self.page_tax_deduction,
+            "calc": self.page_calc,
         }
         for key, page in self._pages.items():
             page.setObjectName(key)
