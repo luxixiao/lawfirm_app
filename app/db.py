@@ -344,6 +344,7 @@ CREATE INDEX IF NOT EXISTS idx_recv_snap_inv ON received_snapshot(invoice_no);
 CREATE TABLE IF NOT EXISTS expense_cat (
     expense_type TEXT PRIMARY KEY,
     category     TEXT NOT NULL DEFAULT '其他',
+    sort_order   INTEGER NOT NULL DEFAULT 0,   -- 全局顺序 = 分类顺序 + 类内顺序
     created_at   TEXT DEFAULT (datetime('now','localtime'))
 );
 
@@ -358,6 +359,26 @@ CREATE TABLE IF NOT EXISTS anomaly_note (
     PRIMARY KEY (invoice_no, dim, period)
 );
 CREATE INDEX IF NOT EXISTS idx_anomaly_note_period ON anomaly_note(period, dim);
+
+-- ============ 员工类型定义（可自定义，员工管理页「员工类型」Tab 维护）============
+-- 结算口径：只有 合伙 / 聘用 / 兼职 三类参与业务收入计算
+-- （person_settlement 按类型名判断：合伙=开票净额，聘用/兼职=收款净额，其余=0）。
+-- 故这三个为 is_builtin=1：禁止删除与改名（改名会断结算口径），说明可改。
+-- 自定义类型（如"顾问""实习"）仅作身份标签，不参与业务收入计算。
+CREATE TABLE IF NOT EXISTS staff_type_def (
+    name        TEXT PRIMARY KEY,
+    is_builtin  INTEGER NOT NULL DEFAULT 0,
+    note        TEXT DEFAULT '',
+    sort_order  INTEGER NOT NULL DEFAULT 0,
+    created_at  TEXT DEFAULT (datetime('now','localtime'))
+);
+
+-- 费用分类说明（分类固定 5 类，说明可自定义填写，供费用类型页分组展示）
+CREATE TABLE IF NOT EXISTS expense_category (
+    name        TEXT PRIMARY KEY,
+    note        TEXT DEFAULT '',
+    sort_order  INTEGER NOT NULL DEFAULT 0
+);
 
 -- ============ 分成计算（内嵌类 Excel 引擎，spec: calc_engine_spec.md）============
 -- 表格主表：content 为 JSON 整表（方案甲）

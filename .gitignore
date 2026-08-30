@@ -5,3 +5,5 @@ __pycache__/
 data/
 # 个人结算总表导出
 个人结算总表_*.xlsx
+# UI 无头冒烟截图产物
+tests/_smoke_*.png

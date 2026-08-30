@@ -242,6 +242,20 @@ QLabel#sourceVal {{
 }}
 QLabel#sourceEmpty {{ color: {p['text_faint']}; font-style: italic; }}
 
+/* ===== 费用类型分类卡片（费用类型页） ===== */
+QFrame#card {{
+    background: {p['bg_table']}; border: 1px solid {p['border']};
+    border-radius: 10px;
+}}
+QLabel#cardTitle {{ color: {p['text']}; font-size: 13px; font-weight: 700; }}
+QFrame#card QListWidget {{
+    background: {p['bg']}; border: 1px solid {p['border']};
+    border-radius: 8px; padding: 4px; outline: none;
+}}
+QFrame#card QListWidget::item {{ padding: 5px 8px; border-radius: 5px; }}
+QFrame#card QListWidget::item:hover {{ background: {p['bg_hover']}; }}
+QFrame#card QListWidget::item:selected {{ background: {p['bg_select']}; color: {p['text']}; }}
+
 /* ===== 消息框 / 弹窗 ===== */
 QMessageBox, QDialog {{ background: {p['bg']}; }}
 QMessageBox QLabel {{ font-size: 13px; }}
