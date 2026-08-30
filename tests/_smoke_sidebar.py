@@ -17,7 +17,9 @@ style.PREFS_PATH = TMP / "prefs.json"      # 动效开关写临时文件，不�
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtCore import QRectF, Qt  # noqa: E402
 from PySide6.QtGui import QColor, QImage, QPainter  # noqa: E402
-from PySide6.QtWidgets import QApplication, QLabel, QVBoxLayout, QWidget  # noqa: E402
+from PySide6.QtWidgets import (  # noqa: E402
+    QApplication, QLabel, QPushButton, QVBoxLayout, QWidget,
+)
 from PySide6.QtTest import QTest  # noqa: E402
 
 app = QApplication.instance() or QApplication([])
@@ -100,6 +102,13 @@ for n in names:
 check("子项共 10 个", len(w._item_buttons) == 10, f"got={len(w._item_buttons)}")
 check("子项可勾选", all(b.isCheckable() for b in w._item_buttons.values()))
 
+# effect 只能有一层：嵌套 effect 会让 Qt 对同一 widget 再开 painter，
+# 刷 "A paint device can only be painted by one painter at a time"
+holders = [wd for wd in [w] + w.findChildren(QWidget) if wd.graphicsEffect() is not None]
+check("effect 仅 7 个 GroupPanel（无嵌套）", len(holders) == 7, f"got={len(holders)}")
+check("effect 不挂在大类按钮上",
+      all(w._header_buttons[n].graphicsEffect() is None for n in names))
+
 # ===== 3. 收起 / 展开（无动画路径） =====
 w.set_collapsed(True, animate=False)
 app.processEvents()
@@ -144,12 +153,14 @@ check("折叠后高度归零", panel.maximumHeight() == 0, f"got={panel.maximumH
 check("折叠后透明度 0", abs(panel._eff.opacity()) < 0.01, f"got={panel._eff.opacity()}")
 
 panel.set_open(True, animate=True)
+app.processEvents()
+w.grab()                 # 动画进行中抓取：若 effect 嵌套，这里会触发双 painter 告警
 QTest.qWait(400)
 check("展开后可见", panel.isVisible())
 check("展开后高度复位", panel.maximumHeight() == 16777215, f"got={panel.maximumHeight()}")
 check("展开后高度>0", panel.height() > 0, f"h={panel.height()}")
 check("展开后透明度 1", abs(panel._eff.opacity() - 1.0) < 0.01)
-check("子项透明度复位", all(abs(e.opacity() - 1.0) < 0.01 for e in panel._item_effects))
+check("子项可见", all(w.isVisible() for w in panel.findChildren(QPushButton)))
 
 # 连点不叠加：连续两次切换后状态自洽
 panel.set_open(False, animate=False)

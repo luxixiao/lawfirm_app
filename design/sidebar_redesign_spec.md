@@ -183,7 +183,7 @@ MOTION = {
 |---|---|
 | 展开 | 220ms `OutQuart`：子项容器 `maximumHeight` 0 → `sizeHint().height()`，同时 opacity 0 → 1 |
 | 收起 | 160ms `InOutCubic`：反向；**无错峰** |
-| 子项错峰 | 仅展开时：每项延迟 `index × 18ms`，位移 4px 上移 + 淡入；**最多 6 项封顶**（总 stagger ≤ 108ms） |
+| 子项错峰 | ~~每项延迟 18ms 淡入~~ **已取消**：见 §7 偏差 1，逐条出现的观感由高度增长天然产生 |
 | Chevron | 180ms `OutCubic`，0°（朝右）↔ 90°（朝下），与展开动画并行 |
 | 标题态 | 展开后标题文字 `text` + 600；收起后回 `text_mute` + 500 |
 | **坑 1** | 动画结束必须 `setMaximumHeight(QWIDGETSIZE_MAX)`，否则后续子项增删会被截断 |
@@ -262,9 +262,14 @@ hover / press / chevron 动画到位；组折叠后 `maximumHeight` 复位为 `Q
 
 ### 与规格的两处偏差（有意）
 
-1. **子项错峰只有透明度、没有 4px 位移**。在 `QVBoxLayout` 内动画子项 `pos` 会与布局管理器冲突
-   （每次 activate 都会重置位置），要位移必须给每个子项再套一层容器，成本高、收益低。
-   实观感上错峰淡入已足够，故 §3.3 的位移 4px **未实现**。
+1. **子项错峰整体取消（既不做 4px 位移，也不给子项单独加淡入）**。
+   原方案给每个子项按钮挂 `QGraphicsOpacityEffect`，与容器的 effect 形成**嵌套 effect**，
+   结果是 Qt 对带 effect 的子树做离屏重绘时又开了一个 painter，真机刷
+   `QPainter::begin: A paint device can only be painted by one painter at a time` +
+   `QPainter::translate: Painter not active`。
+   **规则：整条侧栏只允许 GroupPanel 一层 effect**。逐条出现的观感由高度增长天然产生，实测够用。
+   另：`NavHeaderButton.paintEvent` 增加 `p.isActive()` 防御，被离屏重绘占用时直接返回，不再刷告警。
+   （4px 位移本身也不可行：在 `QVBoxLayout` 内动画子项 `pos` 会被布局每次 activate 重置。）
 2. **展开时文字淡入未单独延迟 80ms**，与整体 240ms 宽度动画同步淡入，视觉无差异。
 
 ### 待用户确认（信息架构问题，非缺陷）

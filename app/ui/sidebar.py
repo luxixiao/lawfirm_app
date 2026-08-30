@@ -47,8 +47,6 @@ MOTION = {
     "rail_out": (180, QEasingCurve.Type.OutCubic),
     "chevron": (180, QEasingCurve.Type.OutCubic),
     "label": (120, QEasingCurve.Type.OutCubic),
-    "item": (100, QEasingCurve.Type.OutCubic),
-    "stagger": 18,
 }
 
 
@@ -177,6 +175,10 @@ class NavHeaderButton(QPushButton):
     def paintEvent(self, event) -> None:  # noqa: N802
         pal = style.palette()
         p = QPainter(self)
+        if not p.isActive():
+            # 被 QGraphicsEffect / render() 离屏重绘占用时不应再画，避免 Qt 告警
+            p.end()
+            return
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
 
         # 背景：bg_side → bg_hover（hover）→ bg_select（press）
@@ -226,7 +228,13 @@ class NavHeaderButton(QPushButton):
 
 
 # --------------------------------------------------------------------------- #
-# 子项容器（高度 + 透明度动画，展开时子项错峰淡入）
+# 子项容器（高度 + 透明度动画）
+#
+# 重要：**整条侧栏只允许容器这一层 QGraphicsOpacityEffect**。
+# 早先给每个子项按钮也挂了 effect（做错峰淡入），形成嵌套 effect——
+# Qt 对带 effect 的子树做离屏重绘时会给同一 widget 再开一个 painter，
+# 于是刷 "QPainter::begin: A paint device can only be painted by one painter at a time"。
+# 改为只用一层；逐条出现的观感由高度增长天然产生。
 # --------------------------------------------------------------------------- #
 class GroupPanel(QWidget):
     def __init__(self, parent=None) -> None:
@@ -240,15 +248,9 @@ class GroupPanel(QWidget):
         self._eff = QGraphicsOpacityEffect(self)
         self._eff.setOpacity(1.0)
         self.setGraphicsEffect(self._eff)
-        self._item_effects: list = []
-        self._item_anims: list = []
 
     def add_item(self, btn: QPushButton) -> None:
         self.layout().addWidget(btn)
-        eff = QGraphicsOpacityEffect(btn)
-        eff.setOpacity(1.0)
-        btn.setGraphicsEffect(eff)
-        self._item_effects.append(eff)
 
     def is_open(self) -> bool:
         return self._open
@@ -261,9 +263,6 @@ class GroupPanel(QWidget):
         if self._anim is not None:
             self._anim.stop()
             self._anim = None
-        for a in self._item_anims:
-            a.stop()
-        self._item_anims.clear()
 
         if open_:
             # 先放开高度量出目标值，再回到起点做动画
@@ -287,33 +286,11 @@ class GroupPanel(QWidget):
         grp.finished.connect(lambda: self._finish(open_))
         grp.start()
 
-        if open_:
-            self._stagger_items()
-
-    def _stagger_items(self) -> None:
-        """子项错峰淡入（每项延迟 18ms，最多 6 项）；收起不做错峰。"""
-        for i, eff in enumerate(self._item_effects[:6]):
-            eff.setOpacity(0.0)
-            a = QPropertyAnimation(eff, b"opacity", self)
-            a.setStartValue(0.0)
-            a.setEndValue(1.0)
-            a.setDuration(_dur("item"))
-            a.setEasingCurve(_curve("item"))
-            delay = QTimer(self)
-            delay.setSingleShot(True)
-            delay.setInterval(i * MOTION["stagger"])
-            delay.timeout.connect(a.start)
-            delay.start()
-            self._item_anims.append(a)
-            self._item_anims.append(delay)      # 一并持有，避免被 GC 提前回收
-
     def _finish(self, open_: bool) -> None:
         self._anim = None
         self.setMaximumHeight(16777215 if open_ else 0)
         self.setVisible(open_)
         self._eff.setOpacity(1.0 if open_ else 0.0)
-        for eff in self._item_effects:
-            eff.setOpacity(1.0)
 
 
 # --------------------------------------------------------------------------- #
@@ -342,7 +319,6 @@ class SidebarWidget(QWidget):
         self._item_group = QButtonGroup(self)
         self._item_group.setExclusive(True)
         self._bottom = bottom_widget
-        self._bottom_eff = None
         self._width_anim = None
         self._enter_timer = QTimer(self)
         self._enter_timer.setSingleShot(True)
@@ -392,10 +368,8 @@ class SidebarWidget(QWidget):
         self.scroll.setWidget(container)
         root.addWidget(self.scroll, 1)
 
+        # 底部挂件直接显隐，不再叠 effect（effect 只在 GroupPanel 用一层）
         if self._bottom is not None:
-            self._bottom_eff = QGraphicsOpacityEffect(self._bottom)
-            self._bottom_eff.setOpacity(1.0)
-            self._bottom.setGraphicsEffect(self._bottom_eff)
             root.addWidget(self._bottom)
 
     def _add_group(self, title: str, items) -> None:
@@ -485,8 +459,6 @@ class SidebarWidget(QWidget):
             btn.set_text_visible(not self._collapsed, animate=animate)
         if self._bottom is not None:
             self._bottom.setVisible(not self._collapsed)
-            if self._bottom_eff is not None:
-                self._bottom_eff.setOpacity(1.0 if not self._collapsed else 0.0)
         self.toggle_btn.setText("›" if self._collapsed else "‹")
         self.pin_btn.setVisible(not self._collapsed)
         self.pin_btn.setChecked(self._pinned)
