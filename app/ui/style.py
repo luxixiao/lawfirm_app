@@ -281,9 +281,6 @@ SKINS = {
 }
 
 
-_current_skin = DEFAULT_SKIN
-
-
 def current_skin() -> str:
     return _current_skin
 
