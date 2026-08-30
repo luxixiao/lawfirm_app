@@ -17,14 +17,15 @@ import os
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import (
-    QAbstractItemView, QApplication, QHBoxLayout, QInputDialog, QLabel,
-    QLineEdit, QListWidget, QMessageBox, QPushButton, QSplitter, QTableWidget,
-    QTableWidgetItem, QVBoxLayout, QWidget,
+    QAbstractItemView, QApplication, QDialog, QHBoxLayout, QInputDialog,
+    QLabel, QLineEdit, QListWidget, QMessageBox, QPushButton, QSplitter,
+    QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
 from app.engine import calc_sheet as cs
 from app.engine.calc_eval import CalcEvaluator
 from app.engine.calc_formula import ErrVal, classify_cell
+from app.ui.calc_dialogs import DataRefDialog, IndicatorManagerDialog, ParamDialog
 from app.ui.widgets import CaptionLabel, SubtitleLabel
 
 _ERR_RED = QColor("#C0392B")
@@ -52,7 +53,16 @@ class GridTable(QTableWidget):
 
     def __init__(self, *a, **kw):
         super().__init__(*a, **kw)
-        self.raw_provider = None  # callable(r0, c0) -> raw | None
+        self.raw_provider = None   # callable(r0, c0) -> raw | None
+        self.paste_callback = None  # Ctrl+V → TSV 值粘贴
+
+    def keyPressEvent(self, event):  # noqa: N802 (Qt override)
+        if (self.paste_callback is not None
+                and event.key() == Qt.Key.Key_V
+                and event.modifiers() & Qt.KeyboardModifier.ControlModifier):
+            self.paste_callback()
+            return
+        super().keyPressEvent(event)
 
     def edit(self, index, trigger, event):  # noqa: N802 (Qt override)
         if self.raw_provider is not None:
@@ -125,6 +135,18 @@ class CalcSheetView(QWidget):
         bar.addWidget(QLabel("模式："))
         bar.addWidget(self.btn_view_mode)
         bar.addWidget(self.btn_edit_mode)
+        self.btn_ref = QPushButton("插入数据引用")
+        self.btn_param = QPushButton("参数")
+        self.btn_ind = QPushButton("指标管理")
+        self.btn_ref.setToolTip("选 职工+指标+账期，生成 =DATA(...) 写入当前格")
+        self.btn_param.setToolTip("本表命名参数，供 PARAM(\"名称\") 引用")
+        self.btn_ind.setToolTip("自定义指标：在 DATA() 指标下拉中出现")
+        self.btn_ref.clicked.connect(self._on_insert_ref)
+        self.btn_param.clicked.connect(self._on_params)
+        self.btn_ind.clicked.connect(self._on_indicators)
+        bar.addWidget(self.btn_ref)
+        bar.addWidget(self.btn_param)
+        bar.addWidget(self.btn_ind)
         bar.addStretch(1)
         self.btn_add_row = QPushButton("+行")
         self.btn_add_col = QPushButton("+列")
@@ -146,6 +168,7 @@ class CalcSheetView(QWidget):
 
         self.table = GridTable(0, 0)
         self.table.raw_provider = self._raw_of
+        self.table.paste_callback = self.paste_tsv
         self.table.setWordWrap(False)
         self.table.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
         self.table.setHorizontalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
@@ -329,8 +352,37 @@ class CalcSheetView(QWidget):
         else:
             self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
             self.fx.setReadOnly(True)
-        for b in (self.btn_add_row, self.btn_add_col):
+        for b in (self.btn_add_row, self.btn_add_col, self.btn_ref, self.btn_param):
             b.setEnabled(edit)
+
+    # ------------------------------------------------------------------ #
+    # 选择器 / 参数 / 指标管理
+    # ------------------------------------------------------------------ #
+    def _on_insert_ref(self) -> None:
+        if not self.edit_mode or self.sheet_id is None:
+            return
+        dlg = DataRefDialog(self)
+        if dlg.exec() != QDialog.DialogCode.Accepted or not dlg.formula:
+            return
+        r, c = self.table.currentRow(), self.table.currentColumn()
+        if r < 0 or c < 0:
+            r, c = 0, 0
+        self._write_cell(r, c, dlg.formula)
+
+    def _on_params(self) -> None:
+        if self.sheet_id is None:
+            return
+        dlg = ParamDialog(self.content.get("params") or {}, parent=self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        self.content["params"] = dlg.params
+        self._recalc_fill()
+
+    def _on_indicators(self) -> None:
+        dlg = IndicatorManagerDialog(self)
+        dlg.exec()
+        if dlg.changed:
+            self._load_sheet()   # 重建求值器，新指标即时生效
 
     def _on_item_changed(self, item: QTableWidgetItem) -> None:
         if self._filling or not self.edit_mode or self.sheet_id is None:
