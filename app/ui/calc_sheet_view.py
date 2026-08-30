@@ -17,14 +17,15 @@ import os
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import (
-    QAbstractItemView, QApplication, QDialog, QHBoxLayout, QInputDialog,
-    QLabel, QLineEdit, QListWidget, QMessageBox, QPushButton, QSplitter,
-    QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
+    QAbstractItemView, QApplication, QDialog, QFileDialog, QHBoxLayout,
+    QInputDialog, QLabel, QLineEdit, QListWidget, QMessageBox, QPushButton,
+    QSplitter, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
 from app.engine import calc_sheet as cs
 from app.engine.calc_eval import CalcEvaluator
 from app.engine.calc_formula import ErrVal, classify_cell
+from app.exporter.calc_export import export_sheet, suggest_filename
 from app.ui.calc_dialogs import DataRefDialog, IndicatorManagerDialog, ParamDialog
 from app.ui.widgets import CaptionLabel, SubtitleLabel
 
@@ -144,9 +145,15 @@ class CalcSheetView(QWidget):
         self.btn_ref.clicked.connect(self._on_insert_ref)
         self.btn_param.clicked.connect(self._on_params)
         self.btn_ind.clicked.connect(self._on_indicators)
+        self.btn_export = QPushButton("导出Excel")
+        self.btn_export.setToolTip(
+            "带公式：纯单元格引用公式保留为真实公式，DATA/PARAM 与跨表引用填值\n"
+            "不带公式：全部填计算值")
+        self.btn_export.clicked.connect(self._on_export)
         bar.addWidget(self.btn_ref)
         bar.addWidget(self.btn_param)
         bar.addWidget(self.btn_ind)
+        bar.addWidget(self.btn_export)
         bar.addStretch(1)
         self.btn_add_row = QPushButton("+行")
         self.btn_add_col = QPushButton("+列")
@@ -383,6 +390,33 @@ class CalcSheetView(QWidget):
         dlg.exec()
         if dlg.changed:
             self._load_sheet()   # 重建求值器，新指标即时生效
+
+    # ------------------------------------------------------------------ #
+    # 导出
+    # ------------------------------------------------------------------ #
+    def _on_export(self) -> None:
+        if self.sheet_id is None:
+            return
+        choices = ["带公式（DATA/跨表引用填值）", "不带公式（仅计算值）"]
+        mode, ok = QInputDialog.getItem(
+            self, "导出 Excel", "导出方式：", choices, 0, False)
+        if not ok:
+            return
+        with_formula = mode == choices[0]
+        rec = cs.get_sheet(self.sheet_id)
+        default = suggest_filename(rec["name"] if rec else "计算表", with_formula)
+        path, _ = QFileDialog.getSaveFileName(
+            self, "导出 Excel", default, "Excel 文件 (*.xlsx)")
+        if not path:
+            return
+        if not path.lower().endswith(".xlsx"):
+            path += ".xlsx"
+        try:
+            export_sheet(self.sheet_id, path, with_formula=with_formula)
+        except Exception as e:  # noqa: BLE001
+            QMessageBox.warning(self, "导出失败", str(e))
+            return
+        QMessageBox.information(self, "导出完成", f"已导出：\n{path}")
 
     def _on_item_changed(self, item: QTableWidgetItem) -> None:
         if self._filling or not self.edit_mode or self.sheet_id is None:
