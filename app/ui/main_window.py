@@ -1,10 +1,13 @@
-"""主窗口：QMainWindow + 自绘 Notion 分组侧栏 + 页面栈（多皮肤框架）
+"""主窗口：无边框 FramelessWindow + 自绘 Notion 分组侧栏 + 页面栈（多皮肤框架）
 
+- 窗口框架改为 qframelesswindow.FramelessWindow（无系统标题栏），自建一条 Notion 风
+  细标题栏（AppTitleBar，继承库的 TitleBar 以获得拖拽/双击最大化/最小最大关闭按钮），
+  保留最大化/最小化/关闭按钮且交互全部由库兜底。
 - 侧栏为自绘（非 qfluentwidgets FluentWindow），方案 A 折叠分组：
   单列 6 大类（数据导入 / 台账查看 / 业务数据 / 工资个税 / 各类报表 / 数据维护），
   标题行（图标+组名）点击可独立折叠子项；整体可收起为 60px 图标列。
 - 内容区用 QStackedWidget 承载全部业务视图，逻辑零改动。
-- 侧栏底部「皮肤」下拉切换并持久化到 data/prefs.json。
+- 侧栏底部「皮肤」下拉切换并持久化到 data/prefs.json；皮肤切换同步刷新标题栏配色。
 - 保留 go_to_page / show_info / staff_ready / showEvent / closeEvent 等接口，
   以保证 refund_view 等视图里的 window().go_to_page(...) 继续可用。
 """
@@ -12,10 +15,12 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QApplication, QCheckBox, QComboBox, QHBoxLayout, QLabel, QMainWindow, QPushButton,
+    QApplication, QCheckBox, QComboBox, QHBoxLayout, QLabel, QPushButton,
     QStackedWidget, QVBoxLayout, QWidget, QButtonGroup,
 )
 from qfluentwidgets import InfoBar, InfoBarPosition
+from qframelesswindow import FramelessWindow
+from qframelesswindow.titlebar import TitleBar
 
 from app.db import get_conn
 from app.ui import style
@@ -85,10 +90,33 @@ NAV_GROUPS = [
 ]
 
 
-class MainWindow(QMainWindow):
+class AppTitleBar(TitleBar):
+    """无边框窗口的自定义标题栏：继承库 TitleBar（自带最小/最大/关闭按钮 + 拖拽 + 双击最大化），
+    左侧追加程序标题，整体 Notion 风，配色跟随皮肤。"""
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setFixedHeight(36)
+        self.titleLabel = QLabel("律所开票收款统计")
+        self.titleLabel.setObjectName("titleBarTitle")
+        self.hBoxLayout.insertWidget(0, self.titleLabel, 0, Qt.AlignLeft)
+        self.apply_skin()
+
+    def apply_skin(self) -> None:
+        p = style.palette()
+        bg = p.get("bg", "#ffffff")
+        text = p.get("text", "#1f1f1f")
+        self.setStyleSheet(f"background:{bg}; border:none;")
+        self.titleLabel.setStyleSheet(
+            f"color:{text}; font:13px 'Microsoft YaHei'; padding-left:12px;"
+        )
+
+
+class MainWindow(FramelessWindow):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("律所开票收款统计")
+        self.setTitleBar(AppTitleBar(self))
         self.resize(1280, 820)
         # 不给主窗口设大下限：某些页面（宽表格）的 minimumSizeHint 可达 1700+，
         # 会超过 1600 宽的屏幕，Windows 拒绝设置几何并反复重试，刷 setGeometry 告警。
@@ -154,7 +182,6 @@ class MainWindow(QMainWindow):
 
     def _build_layout(self) -> None:
         central = QWidget()
-        self.setCentralWidget(central)
         root = QHBoxLayout(central)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
@@ -180,6 +207,12 @@ class MainWindow(QMainWindow):
 
         root.addWidget(self.sidebar)
         root.addWidget(content, 1)
+
+        # FramelessWindow 是 QWidget：内容放进自身布局，顶部为标题栏留白
+        self.root_layout = QVBoxLayout(self)
+        self.root_layout.setContentsMargins(0, self.titleBar.height(), 0, 0)
+        self.root_layout.setSpacing(0)
+        self.root_layout.addWidget(central, 1)
 
     # ------------------------------------------------------------------ #
     # 侧栏（方案 C 双栏，见 app/ui/sidebar.py）
@@ -220,6 +253,8 @@ class MainWindow(QMainWindow):
         if app is not None:
             style.apply_skin(app, name)
         style.save_skin_pref(name)
+        if getattr(self, "titleBar", None) is not None:
+            self.titleBar.apply_skin()
 
     def _on_motion_toggled(self, enabled: bool) -> None:
         style.set_motion_enabled(enabled)
