@@ -135,12 +135,14 @@ class AppTitleBar(TitleBar):
 
     def apply_skin(self) -> None:
         p = style.palette()
-        bg = p.get("bg", "#ffffff")
+        # 标题栏底色取侧栏色：它在侧栏正上方，用 bg_side 与左侧侧栏无缝衔接；
+        # 右侧落在内容区(bg)之上，有 1px 分隔线过渡，比纯白 bg 更协调。
+        bar_bg = p.get("bg_side", "#F7F7F5")
         text = p.get("text", "#1f1f1f")
         border = p.get("border", "#E9E9E7")
         # border-bottom 与内容区分层；分隔线色取中性描边
         self.setStyleSheet(
-            f"background:{bg}; border:none; border-bottom:1px solid {border};"
+            f"background:{bar_bg}; border:none; border-bottom:1px solid {border};"
         )
         self.titleLabel.setStyleSheet(
             f"color:{text}; font:13px 'Microsoft YaHei'; padding-left:12px;"
