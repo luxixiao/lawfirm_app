@@ -160,7 +160,7 @@ check("展开后可见", panel.isVisible())
 check("展开后高度复位", panel.maximumHeight() == 16777215, f"got={panel.maximumHeight()}")
 check("展开后高度>0", panel.height() > 0, f"h={panel.height()}")
 check("展开后透明度 1", abs(panel._eff.opacity() - 1.0) < 0.01)
-check("子项可见", all(w.isVisible() for w in panel.findChildren(QPushButton)))
+check("子项可见", all(btn.isVisible() for btn in panel.findChildren(QPushButton)))
 
 # 连点不叠加：连续两次切换后状态自洽
 panel.set_open(False, animate=False)
@@ -177,6 +177,9 @@ w.set_collapsed(False, animate=True)
 QTest.qWait(400)
 check("宽度动画展开到 240", w.width() == sb.W_EXPAND, f"got={w.width()}")
 check("动画结束后已固定宽度", w.minimumWidth() == sb.W_EXPAND, f"got={w.minimumWidth()}")
+check("动画后 min=max（单一状态量，不残留 min/max 分叉）",
+      w.minimumWidth() == w.maximumWidth() == sb.W_EXPAND,
+      f"min={w.minimumWidth()} max={w.maximumWidth()}")
 
 # ===== 7. 防抖：鼠标掠过不应立即展开/收起 =====
 w.set_collapsed(True, animate=False)
@@ -210,7 +213,35 @@ dark_ink = ink_pixels("各类报表")
 check("深色皮肤图标仍绘制", dark_ink > 60, f"ink={dark_ink}")
 style.apply_skin(app, "notion_light")
 
-# ===== 10. 像素冒烟 =====
+# ===== 10. 布局回归：宽表格页面不应把主窗口最小宽度撑爆 =====
+# 现象：QStackedWidget 的 minimumSizeHint 取所有页面的最大值，宽表格页能顶到 1700+，
+# 超过 1600 宽的屏幕后 Windows 拒绝 setGeometry 并反复重试，刷 QWindowsWindow 告警。
+from PySide6.QtWidgets import (  # noqa: E402
+    QHBoxLayout, QMainWindow, QStackedWidget, QTableWidget, QTableWidgetItem,
+)
+
+win = QMainWindow()
+stack = QStackedWidget()
+page = QWidget()                      # 模拟多表并排的宽页面（结算页那类）
+row = QHBoxLayout(page)
+for _ in range(3):
+    t = QTableWidget(3, 12)
+    for c in range(12):
+        t.setHorizontalHeaderItem(c, QTableWidgetItem(f"列标题-{c}-加长"))
+    row.addWidget(t)
+page.setMinimumWidth(1700)            # 复现：页面自身最小宽度大于屏幕
+stack.addWidget(page)
+win.setCentralWidget(stack)
+app.processEvents()
+before = win.minimumSizeHint().width()
+check("宽页面确实会顶大主窗口最小宽度（复现告警成因）", before > 1600, f"before={before}")
+# main_window 的实际修复：显式给主窗口设最小尺寸，覆盖布局算出来的巨大值
+win.setMinimumSize(1100, 650)
+app.processEvents()
+check("显式最小宽度生效，不再要求 1700+", win.minimumWidth() == 1100,
+      f"got={win.minimumWidth()}")
+
+# ===== 11. 像素冒烟 =====
 w.set_collapsed(False, animate=False)
 app.processEvents()
 img = w.grab()

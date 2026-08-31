@@ -301,6 +301,15 @@ class SidebarWidget(QWidget):
     itemSelected = Signal(str)
     collapseToggled = Signal(bool)
 
+    # 宽度动画属性：setter 内部走 setFixedWidth，只有一个状态量
+    def _get_rail(self) -> int:
+        return self.width()
+
+    def _set_rail(self, v: int) -> None:
+        self.setFixedWidth(int(v))
+
+    railWidth = Property(int, _get_rail, _set_rail)
+
     def __init__(self, nav_groups, bottom_widget=None, parent=None):
         super().__init__(parent)
         self.setObjectName("sidebar")
@@ -473,25 +482,21 @@ class SidebarWidget(QWidget):
         if self._width_anim is not None:
             self._width_anim.stop()
             self._width_anim = None
-        self.setMinimumWidth(self.width())
-        self.setMaximumWidth(self.width())
+        # 只动一个自定义属性（内部 setFixedWidth），不再动 minimumWidth/maximumWidth：
+        # 那两条属性动画会让侧栏在动画期间同时持有不同的 min/max 并参与父布局的
+        # minimumSizeHint 计算，诱发主窗口几何反复重算。
         key = "rail_out" if self._collapsed else "rail_in"
-        grp = QParallelAnimationGroup(self)
-        for prop in (b"minimumWidth", b"maximumWidth"):
-            a = QPropertyAnimation(self, prop, self)
-            a.setStartValue(self.width())
-            a.setEndValue(target)
-            a.setDuration(_dur(key))
-            a.setEasingCurve(_curve(key))
-            grp.addAnimation(a)
-        grp.finished.connect(lambda: self._finish_width(target))
-        self._width_anim = grp
-        grp.start()
+        a = QPropertyAnimation(self, b"railWidth", self)
+        a.setStartValue(self.width())
+        a.setEndValue(target)
+        a.setDuration(_dur(key))
+        a.setEasingCurve(_curve(key))
+        a.finished.connect(lambda: self._finish_width(target))
+        self._width_anim = a
+        a.start()
 
     def _finish_width(self, target: int) -> None:
         self._width_anim = None
-        self.setMinimumWidth(0)
-        self.setMaximumWidth(16777215)
         self.setFixedWidth(target)
 
     # ------------------------------------------------------------------ #

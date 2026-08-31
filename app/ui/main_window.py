@@ -90,6 +90,9 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("律所开票收款统计")
         self.resize(1280, 820)
+        # 不给主窗口设大下限：某些页面（宽表格）的 minimumSizeHint 可达 1700+，
+        # 会超过 1600 宽的屏幕，Windows 拒绝设置几何并反复重试，刷 setGeometry 告警。
+        self.setMinimumSize(1100, 650)
 
         self._build_pages()
         self._build_layout()
@@ -157,6 +160,9 @@ class MainWindow(QMainWindow):
         root.setSpacing(0)
 
         self.stack = QStackedWidget()
+        # QStackedWidget 的 minimumSizeHint = 所有页面里最大的那个，宽表格页面会把它顶到
+        # 1700+，进而把主窗口最小宽度撑得比屏幕还宽。显式归零，让页面自己出滚动条。
+        self.stack.setMinimumSize(0, 0)
         for page in self._pages.values():
             self.stack.addWidget(page)
 
