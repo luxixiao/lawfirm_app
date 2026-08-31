@@ -29,7 +29,9 @@ conn.commit()
 conn.close()
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-from PySide6.QtWidgets import QApplication, QDialog, QMessageBox  # noqa: E402
+from PySide6.QtWidgets import (  # noqa: E402
+    QApplication, QDialog, QMessageBox, QPushButton,
+)
 
 app = QApplication.instance() or QApplication([])
 
@@ -191,7 +193,28 @@ check("刷新后报酬发放 3 项", card("报酬发放").list.count() == 3,
       f"got={card('报酬发放').list.count()}")
 check("底部统计", view.hint.text().startswith("共 8 个费用类型"), f"got={view.hint.text()}")
 
-# ===== 12. 像素冒烟 =====
+# ===== 12. 卡片按钮文字不得被裁（以文字最小宽为准，而非默认 sizeHint） =====
+# 窄窗口下 5 个按钮一行最容易被挤爆：新增/上移/下移/移动/删除
+def _btn_min(b: QPushButton) -> int:
+    fm = b.fontMetrics()
+    extra = 40 if b.menu() is not None else 26
+    return fm.horizontalAdvance(b.text()) + extra
+
+for vw in (1180, 980, 800):
+    view.resize(vw, 700)
+    app.processEvents()
+    clipped = []
+    for cname, c in view._cards.items():
+        for b in c.findChildren(QPushButton):
+            if b.width() < _btn_min(b):
+                clipped.append(f"{cname}/{b.text()}({b.width()}<{_btn_min(b)})")
+    check(f"窗口 {vw} 下按钮不裁字", not clipped, f"{clipped}")
+    check(f"窗口 {vw} 下卡片不小于 300", min(c.width() for c in view._cards.values()) >= 300,
+          f"got={min(c.width() for c in view._cards.values())}")
+
+# ===== 13. 像素冒烟 =====
+view.resize(1180, 760)
+app.processEvents()
 img = view.grab()
 qi = img.toImage()
 nonwhite = sum(1 for x in range(0, qi.width(), 40)

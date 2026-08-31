@@ -14,7 +14,7 @@ from typing import Dict, List
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QAbstractItemView, QDialog, QDialogButtonBox, QFrame,
+    QAbstractItemView, QDialog, QDialogButtonBox, QFrame, QLayout,
     QGridLayout, QHBoxLayout, QInputDialog, QLabel, QListWidget, QListWidgetItem,
     QMenu, QMessageBox, QScrollArea, QSizePolicy, QTextEdit, QVBoxLayout, QWidget,
 )
@@ -177,10 +177,14 @@ class CategoryCard(QFrame):
         b_add = PushButton("新增")
         b_add.clicked.connect(self._add)
         b_up = PushButton("上移")
+        b_up.setToolTip("在本类内向上移一位")
         b_up.clicked.connect(lambda: self._move(-1))
         b_down = PushButton("下移")
+        b_down.setToolTip("在本类内向下移一位")
         b_down.clicked.connect(lambda: self._move(1))
-        self.b_move = PushButton("移动到")
+        # 「移动」而非「移动到」：少一字，五个按钮一行时才放得下（窄窗口不裁字）
+        self.b_move = PushButton("移动")
+        self.b_move.setToolTip("移动到其它分类")
         menu = QMenu(self.b_move)
         for c in ec.CATEGORIES:
             if c != name:
@@ -189,8 +193,15 @@ class CategoryCard(QFrame):
         b_del = PushButton("删除")
         b_del.clicked.connect(self._delete)
         for b in (b_add, b_up, b_down, self.b_move, b_del):
+            b.setObjectName("cardBtn")      # 紧凑样式，避免被压到 sizeHint 以下
             b.setFixedHeight(24)
+            # 按文字宽度设最小宽：窄卡片（窗口被压窄时）也不会裁字。
+            # 带菜单的「移动」多留箭头位；其余按 2 字文字 + 留白即可。
+            fm = b.fontMetrics()
+            extra = 40 if b.menu() is not None else 26
+            b.setMinimumWidth(fm.horizontalAdvance(b.text()) + extra)
             bar.addWidget(b)
+        bar.addStretch(1)                   # 富余空间留在右侧，按钮保持自身宽度
         lay.addLayout(bar)
 
     # -- 数据 -----------------------------------------------------------
@@ -293,6 +304,8 @@ class ExpenseCatView(QWidget):
         self.grid = QGridLayout(self.body)
         self.grid.setContentsMargins(0, 0, 8, 0)
         self.grid.setSpacing(12)
+        # 尊重各卡片最小宽 300：窗口被压窄到放不下 3 列时，滚动而非压缩卡片
+        self.grid.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize)
         self.scroll.setWidget(self.body)
         lay.addWidget(self.scroll, 1)
 
@@ -328,10 +341,14 @@ class ExpenseCatView(QWidget):
             self._cards = {}
             for i, c in enumerate(cats):
                 card = CategoryCard(c["name"], c["note"], self)
-                card.setMinimumWidth(240)
+                # 300 是按钮行（新增/上移/下移/移动/删除）不裁字的最小宽度
+                card.setMinimumWidth(300)
                 card.setMinimumHeight(240)
                 self._cards[c["name"]] = card
                 self.grid.addWidget(card, i // 3, i % 3)
+            # 列可拉伸：窗口宽时卡片变宽，窄时不至于被压到最小宽度以下
+            for col in range(3):
+                self.grid.setColumnStretch(col, 1)
             self.grid.setRowStretch(len(cats) // 3 + 1, 1)
         by_cat = ec.types_by_category()
         for c in cats:

@@ -232,6 +232,15 @@ QLabel#chipWarn {{
 QLabel#chipWarn QLabel#chipVal {{ color: {p['warn_fg']}; }}
 QFrame#sep {{ background: {p['grid']}; border: none; }}
 
+/* ===== 费用类型卡片内的操作按钮 ===== */
+/* 全局 QPushButton padding 7px 16px 太宽，5 个一行时会被压到 sizeHint 以下导致文字被裁 */
+QFrame#card QPushButton#cardBtn {{
+    padding: 4px 10px; font-size: 12px; border-radius: 6px;
+    background: {p['btn_bg']}; border: 1px solid {p['btn_border']}; color: {p['text']};
+}}
+QFrame#card QPushButton#cardBtn:hover {{ background: {p['btn_hover']}; }}
+QFrame#card QPushButton#cardBtn:pressed {{ background: {p['btn_press']}; }}
+
 /* ===== 台账溯源卡片 ===== */
 QWidget#sourceCard {{
     background: {p['bg_table']}; border: 1px solid {p['border']};
