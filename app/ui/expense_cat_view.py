@@ -157,7 +157,11 @@ class CategoryCard(QFrame):
         head.addWidget(self.count)
         head.addStretch()
         btn_note = PushButton("说明")
+        btn_note.setObjectName("cardBtn")      # 与底部操作按钮一致：紧凑样式 + 不裁字
         btn_note.setFixedHeight(24)
+        # 按文字宽度设最小宽：窄卡片（窗口被压窄时）也不裁字
+        fm = btn_note.fontMetrics()
+        btn_note.setMinimumWidth(fm.horizontalAdvance("说明") + 26)
         btn_note.clicked.connect(self._edit_note)
         head.addWidget(btn_note)
         lay.addLayout(head)
