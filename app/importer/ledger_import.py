@@ -75,6 +75,8 @@ def _parse_invoice_sheet(rows: List[List[str]], sheet_key: str, sheet_name: str,
                 "total_amount": g(row, idx_amt),
                 "handler_text": g(row, idx_handler), "remark_raw": g(row, idx_remark),
                 "date_text": g(row, idx_date), "reason": reason,
+                # 保留原始台账行：修正界面可「查看原始台账行」对照填写（与解析成功行一致）
+                "header": header, "raw_row": list(row),
             }
 
         amt_txt = g(row, idx_amt)
@@ -158,6 +160,8 @@ def _parse_sheet4(rows: List[List[str]], sheet_name: str, period: str) -> "tuple
                 "buyer": buyer, "amount_text": amt_txt,
                 "person_text": g(row, idx_handler), "date_text": g(row, idx_rcvdate),
                 "reason": reason,
+                # 保留原始台账行：修正界面可「查看原始台账行」对照填写
+                "header": header, "raw_row": list(row),
             }
 
         try:

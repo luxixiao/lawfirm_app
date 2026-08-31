@@ -196,10 +196,11 @@ class ImportView(QWidget):
                     r = import_invoice_file(path, period)
                     msg = f"✓ 销项文档 {period}: {r['count']} 张发票"
                 elif ftype == "ledger":
+                    # 统一确认：问题行修正 + 写前预览合并为一个对话框
                     r = import_ledger_file(
                         path, period,
-                        on_problems=lambda probs: self._resolve_problems(probs, period),
-                        on_preview=lambda data: self._preview_ledger(data, period, path),
+                        on_confirm=lambda data, validator: self._confirm_ledger(
+                            data, validator, period, path),
                     )
                     msg = (f"✓ 发票台账 {period}: {r['invoice_count']} 张发票, "
                            f"{r['prepayment_count']} 条预收款")
@@ -221,8 +222,27 @@ class ImportView(QWidget):
         if not quiet:
             QMessageBox.information(self, "导入成功", msg)
 
+    def _confirm_ledger(self, data: dict, validator, period: str, path: str):
+        """统一确认回调：解析行 + 问题行同一张表，就地修正后确认入库。
+
+        确认时对话框内部先调用 validator 做写库前校验，校验不过留在对话框内继续改。
+        返回 data（已含修正结果与已收覆盖值）；取消返回 None。
+        """
+        from PySide6.QtWidgets import QDialog
+        from app.ui.unified_import_dialog import UnifiedImportDialog
+        conn = get_conn()
+        try:
+            staff_names = [r["name"] for r in conn.execute("SELECT name FROM staff ORDER BY name")]
+        finally:
+            conn.close()
+        dlg = UnifiedImportDialog(data, period, staff_names, self,
+                                  path=path, validator=validator)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return None
+        return data
+
     def _resolve_problems(self, problems: list, period: str):
-        """问题行修正回调：弹汇总对话框，返回 resolved；取消返回 None"""
+        """旧路径：仅修正问题行的回调（保留备用，当前走 _confirm_ledger）"""
         from PySide6.QtWidgets import QDialog
         from app.ui.problem_dialog import ProblemDialog
         conn = get_conn()

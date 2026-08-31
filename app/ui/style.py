@@ -241,6 +241,16 @@ QFrame#card QPushButton#cardBtn {{
 QFrame#card QPushButton#cardBtn:hover {{ background: {p['btn_hover']}; }}
 QFrame#card QPushButton#cardBtn:pressed {{ background: {p['btn_press']}; }}
 
+/* ===== 筛选胶囊（导入确认对话框的状态筛选）===== */
+QPushButton#chipBtn {{
+    padding: 0 12px; min-width: 54px; font-size: 12px; border-radius: 13px;
+    background: {p['btn_bg']}; border: 1px solid {p['btn_border']}; color: {p['text_mute']};
+}}
+QPushButton#chipBtn:hover {{ background: {p['btn_hover']}; color: {p['text']}; }}
+QPushButton#chipBtn:checked {{
+    background: {p['accent']}; border-color: {p['accent']}; color: {p['bg']};
+}}
+
 /* ===== 台账溯源卡片 ===== */
 QWidget#sourceCard {{
     background: {p['bg_table']}; border: 1px solid {p['border']};

@@ -1,0 +1,298 @@
+"""offscreen 冒烟：统一导入确认对话框（问题修正 + 预览确认 合并）。
+
+覆盖：
+- 一张表同时承载解析行与问题行，状态筛选胶囊切换
+- 问题行就地修正 → 保存后立即重算并刷新，真实 data 不被修改
+- 各经办人已收覆盖值回写
+- 预收款问题行修正
+- 跳过行
+- 「确认入库」就地校验：校验不过留在对话框内、真实 data 不变
+- 校验通过才合并：problems 清空、sheet 合计含修正行
+"""
+import os
+import sys
+
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from PySide6.QtWidgets import QApplication
+
+app = QApplication.instance() or QApplication(sys.argv)
+
+import app.ui.unified_import_dialog as U  # noqa: E402
+from app.ui.unified_import_dialog import UnifiedImportDialog  # noqa: E402
+
+
+class _MB:
+    """offscreen 下 QMessageBox.exec() 会阻塞，用桩替换：只记录、不弹窗。"""
+    calls: list = []
+
+    class StandardButton:
+        Yes, No = 1, 0
+
+    @staticmethod
+    def warning(parent, title, text, *a, **k):
+        _MB.calls.append(("warning", text))
+
+    @staticmethod
+    def question(parent, title, text, *a, **k):
+        _MB.calls.append(("question", text))
+        return 1  # Yes
+
+
+U.QMessageBox = _MB
+
+results = []
+
+
+def check(name, cond, extra=""):
+    results.append((name, bool(cond), extra))
+    print(f"[{'PASS' if cond else 'FAIL'}] {name} {extra}")
+
+
+STAFF = ["周立生", "陈娟", "胡坚", "柳立中"]
+HEADER = ["发票号码", "购方名称", "价税合计", "经办人", "备注"]
+
+
+def mk_inv(no, total, sheet="sheet1", remark=None, handler="周立生"):
+    return {
+        "sheet": sheet,
+        "sheet_name": {"sheet1": "已开票已入账", "sheet3": "应收账款"}.get(sheet, sheet),
+        "row_no": 10,
+        "header": HEADER,
+        "raw_row": [no, "某某公司", str(total), handler, ""],
+        "invoice_no": no, "invoice_date": "2025-01-15", "buyer": "某某公司",
+        "total_amount": total, "handlers": [(handler, float(total))],
+        "handler_text": handler, "remark_raw": "",
+        "remark": remark or {"receipts": [], "remaining": None, "pure_date": None},
+        "case_no": "", "is_red": False, "split_receipts": [],
+    }
+
+
+def mk_problem_inv():
+    return {
+        "kind": "invoice", "sheet": "sheet1", "row_no": 12,
+        "invoice_no": "BAD-1", "buyer": "问题购方", "total_amount": "5000",
+        "handler_text": "周立生3000 陈娟2000", "remark_raw": "1.20收",
+        "date_text": "2025-01-20", "reason": "经办人列无法解析",
+        "header": HEADER, "raw_row": ["BAD-1", "问题购方", "5000", "周立生3000 陈娟2000", "1.20收"],
+    }
+
+
+def mk_problem_pp():
+    return {
+        "kind": "prepayment", "sheet": "sheet4", "row_no": 5,
+        "buyer": "预付购方", "amount_text": "2000",
+        "person_text": "胡坚", "date_text": "2025-01-08", "reason": "金额无法解析",
+        "header": HEADER, "raw_row": ["", "预付购方", "2000", "胡坚", "2025-01-08"],
+    }
+
+
+def mk_data():
+    return {
+        "period": "2025-01",
+        "invoices": [
+            # 高置信：sheet1 + 收款备注齐全
+            mk_inv("INV-1", 1000.0,
+                   remark={"receipts": [("2025-01", 0)], "remaining": None, "pure_date": None}),
+            # 待确认：应收账款纯日期
+            mk_inv("INV-2", 2000.0, sheet="sheet3",
+                   remark={"receipts": [], "remaining": None, "pure_date": "2025-01-20"}),
+        ],
+        "prepayments": [],
+        "problems": [mk_problem_inv(), mk_problem_pp()],
+        "sheet_totals": {"sheet1": 1000.0},
+        "sheet12_total": 1000.0,
+    }
+
+
+def statuses(dlg):
+    return [r["status"] for r in dlg._rows]
+
+
+def fill_invoice_fix(dlg):
+    """把右侧修正面板填成合法数据（总额 5000 = 周立生 3000 + 陈娟 2000）。"""
+    p = dlg.fix_panel
+    p.inv_date.setText("2025-01-20")
+    p.inv_amount.setText("5000")
+    if p.htable.rowCount() < 2:
+        p._add_row()
+    p.htable.cellWidget(0, 0).setCurrentText("周立生")
+    p.htable.item(0, 1).setText("3000")
+    p.htable.cellWidget(1, 0).setCurrentText("陈娟")
+    p.htable.item(1, 1).setText("2000")
+
+
+# ---------------------------------------------------------------- 1) 行模型
+data = mk_data()
+dlg = UnifiedImportDialog(data, "2025-01", STAFF, path="2025.1台账.xlsx")
+dlg.show()  # offscreen 下子控件 isVisible() 依赖父窗口已 show
+check("构造成功", dlg is not None)
+check("行模型 = 2 解析行 + 2 问题行", len(dlg._rows) == 4, f"got={len(dlg._rows)}")
+st = statuses(dlg)
+check("状态含 1 待确认 / 1 高置信 / 2 待修正",
+      st.count("待确认") == 1 and st.count("高置信") == 1 and st.count("待修正") == 2,
+      f"got={st}")
+check("待修正行排在最前", st.index("待修正") == 0, f"got={st}")
+
+# 默认筛选「需处理」：待修正 2 + 待确认 1
+check("默认筛选=需处理，3 行", dlg.table.rowCount() == 3, f"got={dlg.table.rowCount()}")
+dlg._grp.button(1).setChecked(True)  # 全部
+dlg._render()
+check("切「全部」= 4 行", dlg.table.rowCount() == 4, f"got={dlg.table.rowCount()}")
+dlg._grp.button(2).setChecked(True)  # 待修正
+dlg._render()
+check("切「待修正」= 2 行", dlg.table.rowCount() == 2, f"got={dlg.table.rowCount()}")
+dlg._grp.button(4).setChecked(True)  # 高置信
+dlg._render()
+check("切「高置信」= 1 行", dlg.table.rowCount() == 1, f"got={dlg.table.rowCount()}")
+
+# 问题行也带原始台账行（底座改动）
+dlg._grp.button(2).setChecked(True)
+dlg._render()
+dlg.table.selectRow(0)
+row0 = dlg._current_row()
+check("问题行携带 header/raw_row（可查看原始台账行）",
+      bool(row0["problem"].get("header")) and bool(row0["problem"].get("raw_row")))
+check("问题行右侧显示修正面板（发票表单）",
+      dlg.fix_panel.isVisible() and dlg.fix_panel.inv_box.isVisible())
+check("保存/跳过按钮对问题行可见", dlg.btn_save.isVisible() and dlg.btn_skiprow.isVisible())
+
+# ---------------------------------------------------------------- 2) 就地修正
+n_inv_before = len(data["invoices"])
+fill_invoice_fix(dlg)
+dlg._save_fix()
+check("保存后工作副本发票数 +1", len(dlg._work["invoices"]) == n_inv_before + 1,
+      f"got={len(dlg._work['invoices'])}")
+check("保存后真实 data 未被修改", len(data["invoices"]) == n_inv_before,
+      f"got={len(data['invoices'])}")
+check("修正行不再是待修正", "待修正" not in [r["status"] for r in dlg._rows if r["p_index"] == 0],
+      f"got={statuses(dlg)}")
+check("sheet 合计含修正行（5000 计入 sheet1）",
+      abs(dlg._work["sheet_totals"].get("sheet1", 0.0) - 6000.0) < 0.01,
+      f"got={dlg._work['sheet_totals']}")
+check("sheet12_total 同步重算", abs(dlg._work["sheet12_total"] - 6000.0) < 0.01,
+      f"got={dlg._work['sheet12_total']}")
+
+# ---------------------------------------------------------------- 3) 已收覆盖
+dlg._grp.button(1).setChecked(True)
+dlg._render()
+target = next(r for r in dlg._rows if r["kind"] == "invoice" and r["inv_idx"] == 0)
+dlg._ov[0] = {"周立生": 800.0}
+check("已收列显示覆盖值 800.00", "800.00" in dlg._recv_text(target), dlg._recv_text(target))
+
+# ---------------------------------------------------------------- 4) 校验不过 → 留在对话框
+calls = {"n": 0}
+
+
+def bad_validator(d):
+    calls["n"] += 1
+    return "台账 sheet1+sheet2 合计(6000) ≠ 销项文档本月价税合计(0)"
+
+
+dlg._validate = bad_validator
+dlg.accept()
+check("校验不过：调用了校验器", calls["n"] == 1)
+check("校验不过：真实 data 未合并（problems 仍在）", len(data.get("problems", [])) == 2)
+check("校验不过：发票数未增加", len(data["invoices"]) == n_inv_before)
+
+# ---------------------------------------------------------------- 5) 校验通过 → 合并
+dlg._validate = lambda d: None
+dlg.accept()
+check("校验通过：problems 清空", data.get("problems") == [], f"got={data.get('problems')}")
+check("校验通过：发票数 +1（修正行入库）", len(data["invoices"]) == n_inv_before + 1,
+      f"got={len(data['invoices'])}")
+check("校验通过：已收覆盖值回写",
+      data["invoices"][0].get("received_overrides") == {"周立生": 800.0},
+      f"got={data['invoices'][0].get('received_overrides')}")
+fixed = data["invoices"][-1]
+check("修正行透传原始台账行", bool(fixed.get("header")) and bool(fixed.get("raw_row")))
+check("修正行保留源文件 sheet 分类", fixed.get("sheet") == "sheet1", f"got={fixed.get('sheet')}")
+check("修正行经办人分摊 2 人", len(fixed["handlers"]) == 2, f"got={fixed['handlers']}")
+
+# ---------------------------------------------------------------- 6) 跳过 + 预收款
+data2 = mk_data()
+dlg2 = UnifiedImportDialog(data2, "2025-01", STAFF)
+dlg2.show()
+dlg2._validate = lambda d: None
+# 跳过发票问题行
+dlg2.table.selectRow(0)
+r = dlg2._current_row()
+check("首行是发票问题行", r["problem"]["kind"] == "invoice", str(r["problem"]["kind"]))
+dlg2._skip_row()
+check("跳过后状态=已跳过", statuses(dlg2).count("已跳过") == 1, f"got={statuses(dlg2)}")
+# 修正预收款问题行
+dlg2._grp.button(1).setChecked(True)
+dlg2._render()
+for i in range(dlg2.table.rowCount()):
+    dlg2.table.selectRow(i)
+    cur = dlg2._current_row()
+    if cur["kind"] == "problem" and cur["problem"]["kind"] == "prepayment":
+        break
+check("预收款行显示预收款表单", dlg2.fix_panel.pp_box.isVisible())
+dlg2.fix_panel.pp_date.setText("2025-01-08")
+dlg2.fix_panel.pp_amount.setText("2000")
+dlg2.fix_panel.pp_person.setText("胡坚")
+dlg2._save_fix()
+check("预收款修正后 prepayments +1", len(dlg2._work.get("prepayments", [])) == 1,
+      f"got={len(dlg2._work.get('prepayments', []))}")
+dlg2.accept()
+check("跳过的行不入库", len(data2["invoices"]) == 2, f"got={len(data2['invoices'])}")
+check("预收款修正行入库", len(data2["prepayments"]) == 1, f"got={len(data2['prepayments'])}")
+check("预收款金额正确", abs(data2["prepayments"][0]["amount"] - 2000.0) < 0.01)
+
+# ---------------------------------------------------------------- 7) 渲染无告警
+data3 = mk_data()
+dlg3 = UnifiedImportDialog(data3, "2025-01", STAFF)
+dlg3.show()
+app.processEvents()
+check("窗口可渲染（grab 非空）", not dlg3.grab().isNull())
+check("底部汇总含发票数与合计",
+      "发票" in dlg3.lbl_summary.text() and "预收款" in dlg3.lbl_summary.text(),
+      dlg3.lbl_summary.text())
+check("统计胶囊有计数", "待修正 2" in dlg3.lbl_stat.text(), dlg3.lbl_stat.text())
+
+# ------------------------------------------- 8) 写库前校验（临时库，不碰真实 DB）
+import tempfile  # noqa: E402
+from pathlib import Path as _P  # noqa: E402
+
+import app.db as _db  # noqa: E402
+from app.importer.importer import validate_ledger_before_write  # noqa: E402
+
+_real_db = _db.DB_PATH
+try:
+    _tmp = _P(tempfile.mkdtemp(prefix="lawfirm_smoke_")) / "t.db"
+    _db.DB_PATH = _tmp
+    _db.init_db()
+    c = _db.get_conn()
+    c.execute("INSERT INTO staff (name, staff_type, is_active) VALUES (?,?,1)", ("周立生", "聘用"))
+    c.execute("INSERT INTO invoice (invoice_no, invoice_date, total_amount, source) VALUES (?,?,?,?)",
+              ("INV-1", "2025-01-15", 6000.0, "import"))
+    c.commit()
+    c.close()
+
+    d_ok = {"invoices": [{"handlers": [("周立生", 6000.0)]}],
+            "sheet_totals": {"sheet1": 6000.0}, "sheet12_total": 6000.0}
+    check("校验：合计一致 + 经办人在册 → 通过", validate_ledger_before_write(d_ok, "2025-01") is None)
+
+    d_bad_sum = dict(d_ok, sheet12_total=5000.0)
+    err = validate_ledger_before_write(d_bad_sum, "2025-01")
+    check("校验：合计不符 → 返回文案", err is not None and "≠" in err, f"got={err!r}")
+
+    d_bad_name = dict(d_ok)
+    d_bad_name["invoices"] = [{"handlers": [("查无此人", 6000.0)]}]
+    err2 = validate_ledger_before_write(d_bad_name, "2025-01")
+    check("校验：经办人不在册 → 返回文案",
+          err2 is not None and "不在职工花名册" in err2, f"got={err2!r}")
+
+    # 修正行金额计入后原本失败的合计可通过（回归 sheet12_total 重算的修复）
+    check("校验：修正行计入合计后通过（旧逻辑会误判失败）",
+          validate_ledger_before_write(d_ok, "2025-01") is None)
+finally:
+    _db.DB_PATH = _real_db
+
+bad = [n for n, ok, _ in results if not ok]
+print(f"\n{len(results) - len(bad)}/{len(results)} passed")
+if bad:
+    print("FAILED: " + ", ".join(bad))
+    sys.exit(1)

@@ -465,8 +465,9 @@ def _apply_resolved(data: Dict, resolved: List[Dict]) -> None:
                 "sheet": p.get("sheet") or "problem_fix",
                 "sheet_name": SHEET_LABELS.get(p.get("sheet"), p.get("sheet") or "问题行修正"),
                 "row_no": p["row_no"],
-                "header": [],
-                "raw_row": [],
+                # 透传原始台账行：修正后的行在预览里也能「查看原始台账行」
+                "header": p.get("header") or [],
+                "raw_row": p.get("raw_row") or [],
                 "invoice_no": d["invoice_no"] or p.get("invoice_no", ""),
                 "invoice_date": d["invoice_date"] or "",
                 "buyer": p.get("buyer", ""),
@@ -485,8 +486,8 @@ def _apply_resolved(data: Dict, resolved: List[Dict]) -> None:
                 "sheet": "sheet4",
                 "sheet_name": "已入账未开票",
                 "row_no": p["row_no"],
-                "header": [],
-                "raw_row": [],
+                "header": p.get("header") or [],
+                "raw_row": p.get("raw_row") or [],
                 "received_date": d["received_date"] or None,
                 "buyer": p.get("buyer", ""),
                 "amount": d["amount"],
@@ -495,26 +496,28 @@ def _apply_resolved(data: Dict, resolved: List[Dict]) -> None:
                 "case_no": "",
             })
 
+    # 修正行此前不计入 sheet_totals，会导致「台账 sheet1+sheet2 合计 vs 销项合计」
+    # 校验漏算修正行而误判失败。这里按 sheet 重新归集全部发票（含修正行）并重算。
+    totals: dict = {}
+    for inv in data.get("invoices", []):
+        key = inv.get("sheet") or ""
+        if key:
+            totals[key] = totals.get(key, 0.0) + (inv.get("total_amount") or 0.0)
+    if totals:
+        data.setdefault("sheet_totals", {}).update(totals)
+        data["sheet12_total"] = (
+            data["sheet_totals"].get("sheet1", 0.0)
+            + data["sheet_totals"].get("sheet2", 0.0)
+        )
 
-def import_ledger_file(path: str, period: str,
-                       on_problems: callable | None = None,
-                       on_preview: callable | None = None) -> Dict:
-    """导入发票台账。
 
-    on_problems: 可选回调 (problems: list) -> resolved: list | None。
-    解析失败的问题行交给回调处理（如弹修正对话框），返回
-    [{index, action: 'fix'|'skip', data}]；返回 None 表示用户取消导入。
-    on_preview: 可选回调 (data: dict) -> data | None。写库前全量预览确认，
-    接收完整解析结果，返回修改后的 data（或原样返回）；返回 None 表示用户取消导入。
+def validate_ledger_before_write(data: Dict, period: str) -> str | None:
+    """发票台账写库前校验：返回 None 通过，返回文案为失败原因（不抛异常）。
+
+    与写库前的两道校验完全一致（合计勾稽 + 经办人花名册），抽成函数是为了让
+    统一确认对话框能在「确认入库」时就地校验——校验不过留在对话框里继续改，
+    而不是改完一堆才报错、修改全丢。
     """
-    _auto_snapshot()
-    data = parse_ledger_file(path, period)
-    if data["problems"] and on_problems is not None:
-        resolved = on_problems(data["problems"])
-        if resolved is None:
-            raise ImportError_("已取消导入")
-        _apply_resolved(data, resolved)
-        data["problems"] = []
     conn = get_conn()
     try:
         # ---- 校验 1：sheet1+sheet2 合计 = 销项合计（本月销项须已导入）----
@@ -523,28 +526,68 @@ def import_ledger_file(path: str, period: str,
             "SELECT COALESCE(SUM(total_amount),0) FROM invoice WHERE strftime('%Y-%m', invoice_date) = ?",
             (period,),
         ).fetchone()[0]
-        s12 = data["sheet12_total"]
+        s12 = data.get("sheet12_total", 0.0)
         if abs(inv_total - s12) > 0.01:
             # 允许销项未导入的情况单独提示
-            if inv_total == 0 and "sheet1" not in data["sheet_totals"]:
-                pass
-            raise ImportError_(
-                f"校验失败: 台账 sheet1+sheet2 合计({s12:g}) ≠ 销项文档本月价税合计({inv_total:g})。"
-                f"请确认已先导入 {period} 销项文档。"
-            )
+            if not (inv_total == 0 and "sheet1" not in (data.get("sheet_totals") or {})):
+                return (
+                    f"校验失败: 台账 sheet1+sheet2 合计({s12:g}) ≠ 销项文档本月价税合计({inv_total:g})。"
+                    f"请确认已先导入 {period} 销项文档；如已修正过问题行，请核对修正金额。"
+                )
 
         # ---- 校验 2：经办人必须在花名册 ----
         all_handlers: List[str] = []
-        for inv in data["invoices"]:
-            all_handlers += [h[0] for h in inv["handlers"]]
+        for inv in data.get("invoices", []):
+            all_handlers += [h[0] for h in (inv.get("handlers") or [])]
         missing = _validate_handler_names(conn, all_handlers, "发票台账")
         if missing:
-            raise ImportError_(
-                f"经办人不在职工花名册中（请先在员工管理中添加）: {', '.join(sorted(set(missing)))}"
+            return (
+                "经办人不在职工花名册中（请先在员工管理中添加）: "
+                + ", ".join(sorted(set(missing)))
             )
+        return None
+    finally:
+        conn.close()
 
-        # ---- 写前预览确认（方案 A）：返回 None = 取消导入 ----
-        if on_preview is not None:
+
+def import_ledger_file(path: str, period: str,
+                       on_problems: callable | None = None,
+                       on_preview: callable | None = None,
+                       on_confirm: callable | None = None) -> Dict:
+    """导入发票台账。
+
+    两条路径二选一：
+    1) on_confirm（新，统一确认）：(data, validator) -> data | None。
+       问题行修正与写前预览合并在同一个对话框里；validator(data) -> str | None
+       供对话框在「确认入库」时就地校验。返回 None 表示取消导入。
+    2) on_problems + on_preview（旧，逐步）：先修问题行，再校验，最后预览确认。
+       on_problems: (problems) -> resolved: list | None；
+       on_preview: (data) -> data | None。
+    """
+    _auto_snapshot()
+    data = parse_ledger_file(path, period)
+    if on_confirm is not None:
+        confirmed = on_confirm(data, lambda d: validate_ledger_before_write(d, period))
+        if confirmed is None:
+            raise ImportError_("已取消导入")
+        if isinstance(confirmed, dict):
+            data = confirmed
+    else:
+        if data["problems"] and on_problems is not None:
+            resolved = on_problems(data["problems"])
+            if resolved is None:
+                raise ImportError_("已取消导入")
+            _apply_resolved(data, resolved)
+            data["problems"] = []
+    conn = get_conn()
+    try:
+        # ---- 校验 1 + 校验 2（统一路径下对话框已就地校验过，这里兜底）----
+        err = validate_ledger_before_write(data, period)
+        if err:
+            raise ImportError_(err)
+
+        # ---- 写前预览确认（旧路径）：返回 None = 取消导入 ----
+        if on_preview is not None and on_confirm is None:
             confirmed = on_preview(data)
             if confirmed is None:
                 raise ImportError_("已取消导入")
