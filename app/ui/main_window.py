@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QHBoxLayout, QLabel, QPushButton,
     QStackedWidget, QVBoxLayout, QWidget, QButtonGroup,
@@ -90,26 +91,78 @@ NAV_GROUPS = [
 ]
 
 
+def _titlebar_btn_hover_bg(p: dict) -> QColor:
+    """窗口按钮 hover 背景：浅色用淡黑、深色用淡白（库默认 hover 黑在深色下几乎不可见）。"""
+    return QColor(0, 0, 0, 26) if p.get("bg", "#fff").lower() != "#1f1f1e" else QColor(255, 255, 255, 26)
+
+
+def _titlebar_btn_press_bg(p: dict) -> QColor:
+    return QColor(0, 0, 0, 51) if p.get("bg", "#fff").lower() != "#1f1f1e" else QColor(255, 255, 255, 51)
+
+
 class AppTitleBar(TitleBar):
     """无边框窗口的自定义标题栏：继承库 TitleBar（自带最小/最大/关闭按钮 + 拖拽 + 双击最大化），
-    左侧追加程序标题，整体 Notion 风，配色跟随皮肤。"""
+    左侧动态显示当前页面名（无品牌文字、无图标），整体 Notion 风，配色跟随皮肤。"""
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self.setFixedHeight(36)
-        self.titleLabel = QLabel("律所开票收款统计")
+        self.titleLabel = QLabel("")
         self.titleLabel.setObjectName("titleBarTitle")
+        self.titleLabel.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         self.hBoxLayout.insertWidget(0, self.titleLabel, 0, Qt.AlignLeft)
+        self._full_title = ""
         self.apply_skin()
+
+    def set_page_title(self, name: str) -> None:
+        """设置当前页面名（来自 NAV_GROUPS 显示名）。"""
+        self._full_title = name or ""
+        self._elide()
+
+    def _elide(self) -> None:
+        """按可用宽度对长标题做末尾省略截断，避免压到右侧按钮。"""
+        if not self._full_title:
+            self.titleLabel.setText("")
+            return
+        fm = self.titleLabel.fontMetrics()
+        # 右侧三按钮各 46px + 间距 + 左 padding(12) + 余量
+        max_w = max(60, self.width() - 150)
+        self.titleLabel.setText(fm.elidedText(self._full_title, Qt.ElideRight, max_w))
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self._elide()
 
     def apply_skin(self) -> None:
         p = style.palette()
         bg = p.get("bg", "#ffffff")
         text = p.get("text", "#1f1f1f")
-        self.setStyleSheet(f"background:{bg}; border:none;")
+        border = p.get("border", "#E9E9E7")
+        # border-bottom 与内容区分层；分隔线色取中性描边
+        self.setStyleSheet(
+            f"background:{bg}; border:none; border-bottom:1px solid {border};"
+        )
         self.titleLabel.setStyleSheet(
             f"color:{text}; font:13px 'Microsoft YaHei'; padding-left:12px;"
         )
+        # 三按钮为自定义绘制（paintEvent），用属性设色而非 QSS。
+        # 图标色用文字色：修复深色皮肤下默认纯黑图标不可见的问题；hover/按下态按皮肤给可见底色。
+        hover = _titlebar_btn_hover_bg(p)
+        press = _titlebar_btn_press_bg(p)
+        for btn in (self.minBtn, self.maxBtn):
+            btn.setNormalColor(QColor(text))
+            btn.setHoverColor(QColor(text))
+            btn.setPressedColor(QColor(text))
+            btn.setNormalBackgroundColor(QColor(0, 0, 0, 0))
+            btn.setHoverBackgroundColor(hover)
+            btn.setPressedBackgroundColor(press)
+        # 关闭按钮保留 Windows 风红底 + 白图标
+        self.closeBtn.setNormalColor(QColor(text))
+        self.closeBtn.setHoverColor(Qt.white)
+        self.closeBtn.setPressedColor(Qt.white)
+        self.closeBtn.setNormalBackgroundColor(QColor(0, 0, 0, 0))
+        self.closeBtn.setHoverBackgroundColor(QColor(232, 17, 35))
+        self.closeBtn.setPressedBackgroundColor(QColor(241, 112, 122))
 
 
 class MainWindow(FramelessWindow):
@@ -201,6 +254,7 @@ class MainWindow(FramelessWindow):
         content_layout.addWidget(self.stack)
 
         self._key_to_group = {k: t for t, items in NAV_GROUPS for k, _ in items}
+        self._key_to_title = {k: name for _, items in NAV_GROUPS for k, name in items}
         self.skin_box = self._build_skin_box()
         self.sidebar = SidebarWidget(NAV_GROUPS, bottom_widget=self.skin_box)
         self.sidebar.itemSelected.connect(self.select)
@@ -282,6 +336,9 @@ class MainWindow(FramelessWindow):
         grp = self._key_to_group.get(key)
         if grp is not None:
             self.sidebar.activate(key, grp)
+        # 同步标题栏：显示当前页面名（B 方案）
+        if getattr(self, "titleBar", None) is not None:
+            self.titleBar.set_page_title(self._key_to_title.get(key, ""))
 
     def go_to_page(self, key: str) -> None:
         """兼容旧接口：供其他视图通过 window().go_to_page(...) 调用。"""
