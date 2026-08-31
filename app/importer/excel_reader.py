@@ -4,8 +4,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import List
 
-import openpyxl
 import xlrd
+from app.importer.xlsx_io import load_workbook
 
 
 class ImportError_(Exception):
@@ -35,7 +35,7 @@ def read_sheet(path: str, sheet_index: int = 0, sheet_name: str | None = None) -
         ws = wb.sheet_by_name(sheet_name) if sheet_name else wb.sheet_by_index(sheet_index)
         return [[cell_text(ws.cell_value(i, j)) for j in range(ws.ncols)] for i in range(ws.nrows)]
 
-    wb = openpyxl.load_workbook(path, data_only=True)
+    wb = load_workbook(path, data_only=True)
     try:
         ws = wb[sheet_name] if sheet_name else wb.worksheets[sheet_index]
         return [[cell_text(c) for c in row] for row in ws.iter_rows(values_only=True)]
@@ -48,7 +48,7 @@ def sheet_names(path: str) -> List[str]:
     suffix = Path(path).suffix.lower()
     if suffix == ".xls":
         return xlrd.open_workbook(path).sheet_names()
-    wb = openpyxl.load_workbook(path, read_only=True)
+    wb = load_workbook(path, read_only=True)
     try:
         return wb.sheetnames
     finally:

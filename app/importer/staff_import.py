@@ -5,8 +5,8 @@ import hashlib
 from pathlib import Path
 from typing import List, Tuple
 
-import openpyxl
 import xlrd
+from app.importer.xlsx_io import load_workbook
 
 
 class ImportError_(Exception):
@@ -39,7 +39,7 @@ def parse_staff_file(path: str) -> Tuple[List[Tuple[str, str, str]], str]:
     rows: List[List[str]] = []
 
     if suffix == ".xlsx":
-        wb = openpyxl.load_workbook(path, data_only=True)
+        wb = load_workbook(path, data_only=True)
         ws = wb[wb.sheetnames[0]]
         for row in ws.iter_rows(values_only=True):
             rows.append([_cell_text(c) for c in row])
