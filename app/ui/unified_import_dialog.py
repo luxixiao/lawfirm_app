@@ -5,11 +5,11 @@
     2) 导入预览确认 PreviewDialog → 只能看与改已收，解析失败的行已被处理掉、无法回头改
 本对话框把两者合并为「一张表 + 右侧就地修正」：
 
-- 一张表承载全部行，状态分四类：待修正（解析失败）/ 待确认（低置信）/ 高置信 / 已跳过
-- 顶部筛选胶囊：需处理（默认，待修正+待确认）/ 全部 / 待修正 / 待确认 / 高置信
-- 选中「待修正」行 → 右侧内嵌 ProblemFixPanel 就地修正；保存后立即合并进工作副本、
-  重算置信度并刷新表格，该行当场变为「待确认 / 高置信」，可反复修改
-- 选中「已修正」行 → 右侧仍可「重新修正」
+- 一张表承载全部行，状态分三类：待确认（解析失败 + 低置信，合并）/ 高置信 / 已跳过
+- 顶部筛选胶囊（默认「待确认」）：待确认 / 已确认 / 高置信 / 已跳过 / 全部
+  - 「已确认」与「高置信」重叠：已修正、点「确认」、或编辑过的发票均属高置信且归入已确认
+- 选中「待确认」行（解析失败或低置信）→ 右侧内嵌 ProblemFixPanel 就地修正/编辑；
+  保存或点「确认」后立即合并进工作副本、重算置信度并刷新，该行归入「已确认 / 高置信」
 - 双击任意行 → 查看原始台账行（问题行也能看，依赖 problem 携带 header/raw_row）
 - 待确认行：右侧可编辑「各经办人已收」，也可直接点「确认」认可系统默认收款口径
   （压制 sheet1/2/3 的三类兜底判定疑问，移出「需处理」）；若另有硬疑问仍需先修正数据
@@ -54,8 +54,8 @@ HEADERS = [
 COL_STATUS, COL_KIND, COL_SRC, COL_NO, COL_BUYER, COL_AMT, COL_HANDLER, \
     COL_RECV, COL_RECEIPT, COL_REMARK, COL_REASON = range(11)
 
-FILTERS = ["需处理", "全部", "待修正", "待确认", "高置信"]
-_PRIO = {"待修正": 0, "待确认": 1, "已修正": 2, "已跳过": 3, "高置信": 4}
+FILTERS = ["待确认", "已确认", "高置信", "已跳过", "全部"]
+_PRIO = {"待确认": 0, "高置信": 1, "已跳过": 2}
 
 
 class UnifiedImportDialog(QWidget):
@@ -340,18 +340,26 @@ class UnifiedImportDialog(QWidget):
             })
         for i, p in enumerate(self._data.get("problems", [])):
             if i in self._fix:
-                # 发票类修正行已由 evaluate 产出，这里只补预收款类
-                if p.get("kind") == "prepayment":
-                    rows.append({"kind": "problem", "status": "已修正",
-                                 "p_index": i, "inv_idx": None, "work_idx": None,
-                                 "ev": None, "problem": p})
+                # 已修正：归入高置信，并标记「已确认」
+                rows.append({"kind": "problem", "status": "高置信",
+                             "p_index": i, "inv_idx": None, "work_idx": None,
+                             "ev": None, "problem": p})
                 continue
             rows.append({
                 "kind": "problem",
-                "status": "已跳过" if i in self._skip else "待修正",
+                "status": "已跳过" if i in self._skip else "待确认",
                 "p_index": i, "inv_idx": None, "work_idx": None,
                 "ev": None, "problem": p,
             })
+        # 标记「已确认」类别：已修正 / 点「确认」/ 编辑过的发票（均属高置信）
+        for r in rows:
+            confirmed = False
+            if r["kind"] == "problem" and r["p_index"] in self._fix:
+                confirmed = True
+            elif r["kind"] == "invoice" and r["inv_idx"] is not None and (
+                    r["inv_idx"] in self._confirmed or r["inv_idx"] in self._inv_edits):
+                confirmed = True
+            r["is_confirmed"] = confirmed
         rows.sort(key=lambda r: (_PRIO.get(r["status"], 9), r["p_index"] if r["p_index"] is not None else 1 << 30))
         self._rows = rows
         self._render(anchor)
@@ -425,11 +433,11 @@ class UnifiedImportDialog(QWidget):
                 if c == 5:
                     item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
                 if c == COL_STATUS:
-                    fg = {"待修正": RED, "待确认": AMBER, "高置信": GREEN}.get(r["status"], GRAY)
+                    fg = {"待确认": AMBER, "高置信": GREEN}.get(r["status"], GRAY)
                     item.setForeground(fg)
                 if c == COL_REASON and r["kind"] == "invoice":
                     item.setForeground(GREEN if not r["ev"]["reasons"] else AMBER)
-                if r["status"] == "待修正":
+                if r["status"] == "待确认":
                     item.setBackground(DIFF_BG)
                 if r["status"] == "已跳过":
                     item.setForeground(GRAY)
@@ -444,14 +452,13 @@ class UnifiedImportDialog(QWidget):
         self.table.setColumnWidth(COL_REMARK, scale.px(170))
         self._refresh_tip_data()
 
-        n_fix = sum(1 for r in self._rows if r["status"] == "待修正")
-        n_low = sum(1 for r in self._rows if r["status"] == "待确认")
+        n_pending = sum(1 for r in self._rows if r["status"] == "待确认")
         n_high = sum(1 for r in self._rows if r["status"] == "高置信")
         n_skip = sum(1 for r in self._rows if r["status"] == "已跳过")
-        n_done = sum(1 for r in self._rows if r["status"] == "已修正")
+        n_confirmed = sum(1 for r in self._rows if r.get("is_confirmed"))
         self.lbl_stat.setText(
-            f"待修正 {n_fix}　待确认 {n_low}　高置信 {n_high}"
-            + (f"　已修正 {n_done}" if n_done else "")
+            f"待确认 {n_pending}　高置信 {n_high}"
+            + (f"　已确认 {n_confirmed}" if n_confirmed else "")
             + (f"　已跳过 {n_skip}" if n_skip else "")
         )
 
@@ -459,7 +466,7 @@ class UnifiedImportDialog(QWidget):
         pp = self._work.get("prepayments", [])
         pp_total = sum(x.get("amount", 0.0) for x in pp)
         self.lbl_summary.setText(
-            f"发票 {n_high + n_low + n_done} 张，合计 ¥{inv_total:,.2f}　"
+            f"发票 {n_high + n_pending} 张，合计 ¥{inv_total:,.2f}　"
             f"预收款 {len(pp)} 条，合计 ¥{pp_total:,.2f}"
         )
 
@@ -484,9 +491,15 @@ class UnifiedImportDialog(QWidget):
     def _match(r: Dict, filt: str) -> bool:
         if filt == "全部":
             return True
-        if filt == "需处理":
-            return r["status"] in ("待修正", "待确认")
-        return r["status"] == filt
+        if filt == "待确认":
+            return r["status"] == "待确认"
+        if filt == "已确认":
+            return bool(r.get("is_confirmed"))
+        if filt == "高置信":
+            return r["status"] == "高置信"
+        if filt == "已跳过":
+            return r["status"] == "已跳过"
+        return False
 
     def _current_anchor(self):
         r = self._current_row()
@@ -595,7 +608,7 @@ class UnifiedImportDialog(QWidget):
             # 待修正 / 已跳过 问题行仍走 set_problem 修正路径（始终可编辑）
             self.fix_panel.setVisible(True)
             self.fix_panel.set_problem(r["problem"])
-            self._set_actions(save=True, skip=(r["status"] == "待修正"))
+            self._set_actions(save=True, skip=(r["status"] == "待确认"))
 
     def _set_actions(self, *, save: bool = False, skip: bool = False,
                      refix: bool = False, confirm: bool = False,
@@ -740,7 +753,7 @@ class UnifiedImportDialog(QWidget):
         return merged
 
     def accept(self) -> None:
-        todo = [r for r in self._rows if r["status"] == "待修正"]
+        todo = [r for r in self._rows if r["status"] == "待确认"]
         if todo:
             msg = (f"还有 {len(todo)} 行未处理，确认入库时这些行将被跳过（不入库）。\n\n"
                    "是否继续？")

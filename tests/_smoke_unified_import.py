@@ -134,25 +134,28 @@ dlg.show()  # offscreen 下子控件 isVisible() 依赖父窗口已 show
 check("构造成功", dlg is not None)
 check("行模型 = 2 解析行 + 2 问题行", len(dlg._rows) == 4, f"got={len(dlg._rows)}")
 st = statuses(dlg)
-check("状态含 1 待确认 / 1 高置信 / 2 待修正",
-      st.count("待确认") == 1 and st.count("高置信") == 1 and st.count("待修正") == 2,
+check("状态含 1 高置信 / 3 待确认（待修正并入待确认）",
+      st.count("待确认") == 3 and st.count("高置信") == 1,
       f"got={st}")
-check("待修正行排在最前", st.index("待修正") == 0, f"got={st}")
+check("待确认行排在最前", st.index("待确认") == 0, f"got={st}")
 
-# 默认筛选「需处理」：待修正 2 + 待确认 1
-check("默认筛选=需处理，3 行", dlg.table.rowCount() == 3, f"got={dlg.table.rowCount()}")
-dlg._grp.button(1).setChecked(True)  # 全部
+# 默认筛选「待确认」：解析失败 2 + 低置信 1 = 3 行
+check("默认筛选=待确认，3 行", dlg.table.rowCount() == 3, f"got={dlg.table.rowCount()}")
+dlg._grp.button(4).setChecked(True)  # 全部
 dlg._render()
 check("切「全部」= 4 行", dlg.table.rowCount() == 4, f"got={dlg.table.rowCount()}")
-dlg._grp.button(2).setChecked(True)  # 待修正
+dlg._grp.button(0).setChecked(True)  # 待确认
 dlg._render()
-check("切「待修正」= 2 行", dlg.table.rowCount() == 2, f"got={dlg.table.rowCount()}")
-dlg._grp.button(4).setChecked(True)  # 高置信
+check("切「待确认」= 3 行", dlg.table.rowCount() == 3, f"got={dlg.table.rowCount()}")
+dlg._grp.button(1).setChecked(True)  # 已确认
+dlg._render()
+check("切「已确认」= 0 行（尚未修正/确认）", dlg.table.rowCount() == 0, f"got={dlg.table.rowCount()}")
+dlg._grp.button(2).setChecked(True)  # 高置信
 dlg._render()
 check("切「高置信」= 1 行", dlg.table.rowCount() == 1, f"got={dlg.table.rowCount()}")
 
 # 问题行也带原始台账行（底座改动）
-dlg._grp.button(2).setChecked(True)
+dlg._grp.button(0).setChecked(True)  # 待确认（含解析失败问题行）
 dlg._render()
 dlg.table.selectRow(0)
 row0 = dlg._current_row()
@@ -170,7 +173,13 @@ check("保存后工作副本发票数 +1", len(dlg._work["invoices"]) == n_inv_b
       f"got={len(dlg._work['invoices'])}")
 check("保存后真实 data 未被修改", len(data["invoices"]) == n_inv_before,
       f"got={len(data['invoices'])}")
-check("修正行不再是待修正", "待修正" not in [r["status"] for r in dlg._rows if r["p_index"] == 0],
+check("修正行(原问题行)不再是待确认",
+      any(r["kind"] == "problem" and r["p_index"] == 0 and r["status"] == "高置信"
+          for r in dlg._rows),
+      f"got={statuses(dlg)}")
+check("修正行(原问题行)归入已确认",
+      any(r["kind"] == "problem" and r["p_index"] == 0 and r.get("is_confirmed")
+          for r in dlg._rows),
       f"got={statuses(dlg)}")
 check("sheet 合计含修正行（5000 计入 sheet1）",
       abs(dlg._work["sheet_totals"].get("sheet1", 0.0) - 6000.0) < 0.01,
@@ -179,7 +188,7 @@ check("sheet12_total 同步重算", abs(dlg._work["sheet12_total"] - 6000.0) < 0
       f"got={dlg._work['sheet12_total']}")
 
 # ---------------------------------------------------------------- 3) 右侧就地编辑已存在发票 → 各经办人已收 / 收款认定 同步
-dlg._grp.button(1).setChecked(True)  # 全部
+dlg._grp.button(4).setChecked(True)  # 全部
 dlg._render()
 target = next(r for r in dlg._rows if r["kind"] == "invoice" and r["inv_idx"] == 0)
 dlg.table.selectRow(dlg._rows.index(target))   # 触发 _load_right → set_invoice
@@ -237,7 +246,7 @@ check("首行是发票问题行", r["problem"]["kind"] == "invoice", str(r["prob
 dlg2._skip_row()
 check("跳过后状态=已跳过", statuses(dlg2).count("已跳过") == 1, f"got={statuses(dlg2)}")
 # 修正预收款问题行
-dlg2._grp.button(1).setChecked(True)
+dlg2._grp.button(4).setChecked(True)  # 全部
 dlg2._render()
 for i in range(dlg2.table.rowCount()):
     dlg2.table.selectRow(i)
@@ -265,7 +274,8 @@ check("窗口可渲染（grab 非空）", not dlg3.grab().isNull())
 check("底部汇总含发票数与合计",
       "发票" in dlg3.lbl_summary.text() and "预收款" in dlg3.lbl_summary.text(),
       dlg3.lbl_summary.text())
-check("统计胶囊有计数", "待修正 2" in dlg3.lbl_stat.text(), dlg3.lbl_stat.text())
+check("统计胶囊有计数", "待确认 3" in dlg3.lbl_stat.text() and "高置信 1" in dlg3.lbl_stat.text(),
+      dlg3.lbl_stat.text())
 
 # ------------------------------------------- 8) 写库前校验（临时库，不碰真实 DB）
 import tempfile  # noqa: E402
@@ -357,7 +367,7 @@ check("引擎：应收账款收款日期为当月 → 不报非本月",
 check("引擎：应收账款收款日期为当月 → 走兜底请确认",
       "应收账款纯日期按全额收款，请确认" in _e_ar_ok[0]["reasons"], f"reasons={_e_ar_ok[0]['reasons']}")
 
-# 点2：待确认行「确认」按钮 → 移出需处理
+# 点2：待确认行「确认」按钮 → 移出待确认、归入已确认/高置信
 d2 = mk_simple()
 d2dlg = UnifiedImportDialog(d2, "2025-01", STAFF)
 d2dlg.show()
@@ -368,7 +378,9 @@ check("点2：待确认行不显示「编辑」按钮", not d2dlg.btn_edit.isVis
 d2dlg._confirm_row()
 low2 = next(r for r in d2dlg._rows if r["kind"] == "invoice" and r["inv_idx"] == 0)
 check("点2：确认后该发票变高置信", low2["ev"]["conf"] == "high", f"reasons={low2['ev']['reasons']}")
-check("点2：确认后离开需处理（状态=高置信）", low2["status"] == "高置信", f"status={low2['status']}")
+check("点2：确认后离开待确认（状态=高置信）", low2["status"] == "高置信", f"status={low2['status']}")
+check("点2：确认后归入已确认类别", low2["is_confirmed"] is True and low2["status"] == "高置信",
+      f"status={low2['status']} confirmed={low2['is_confirmed']}")
 
 # 点3：填收款金额+日期并保存 → 不再是待确认（即便未全额收款）
 d3 = mk_simple()
@@ -383,13 +395,13 @@ d3dlg._inv_edits[0] = pp3.read_fix()
 d3dlg._rebuild()
 low3b = next(r for r in d3dlg._rows if r["kind"] == "invoice" and r["inv_idx"] == 0)
 check("点3：填收款并保存 → 不再是待确认", low3b["ev"]["conf"] == "high", f"reasons={low3b['ev']['reasons']}")
-check("点3：未全额收款也离开需处理", low3b["status"] == "高置信", f"status={low3b['status']}")
+check("点3：未全额收款也离开待确认", low3b["status"] == "高置信", f"status={low3b['status']}")
 
-# 点1：高置信默认只读，点「编辑」才解锁（高置信不在「需处理」筛选，先切「全部」）
+# 点1：高置信默认只读，点「编辑」才解锁（高置信不在「待确认」筛选，先切「全部」）
 d1 = mk_simple()
 d1dlg = UnifiedImportDialog(d1, "2025-01", STAFF)
 d1dlg.show()
-d1dlg._grp.button(1).setChecked(True)   # 全部
+d1dlg._grp.button(4).setChecked(True)   # 全部
 d1dlg._render()
 hi = next(r for r in d1dlg._rows if r["kind"] == "invoice" and r["inv_idx"] == 1)
 d1dlg.table.selectRow(d1dlg._rows.index(hi))
@@ -402,6 +414,13 @@ check("点1：点编辑后开票日期可写", not d1dlg.fix_panel.inv_date.isRe
 check("点1：点编辑后经办人下拉启用", d1dlg.fix_panel.htable.cellWidget(0, 0).isEnabled())
 check("点1：点编辑后保存按钮出现", d1dlg.btn_save.isVisible())
 check("点1：点编辑后编辑按钮隐藏", not d1dlg.btn_edit.isVisible())
+# 编辑后保存 → 高置信发票归入已确认（已确认 ⊂ 高置信）
+d1dlg.fix_panel.inv_amount.setText("1000")
+d1dlg._inv_edits[1] = d1dlg.fix_panel.read_fix()
+d1dlg._rebuild()
+hi_b = next(r for r in d1dlg._rows if r["kind"] == "invoice" and r["inv_idx"] == 1)
+check("点1：编辑并保存后高置信发票归入已确认", hi_b["is_confirmed"] is True and hi_b["status"] == "高置信",
+      f"status={hi_b['status']} confirmed={hi_b['is_confirmed']}")
 
 # ------------------------------------------- 汇总
 bad = [n for n, ok, _ in results if not ok]
