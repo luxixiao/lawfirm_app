@@ -1,20 +1,29 @@
-"""导入页：选文件 → 自动识别类型与账期 → 导入"""
+"""导入页：选文件 → 自动识别类型与账期 → 导入
+
+分为两个 tab：
+- 导入：选文件 / 文件夹，执行导入；下方保留导入日志（持久化到 import_log 表）。
+- 导入确认：发票台账导入时，把「统一确认」面板（问题行修正 + 写前预览合并）直接嵌入此
+  tab，不再弹模态对话框。这样确认面板拥有整页画布，右侧经办人表不再被挤成单行。
+"""
 from __future__ import annotations
 
+import glob
+import os
 import re
 from datetime import datetime
 
 from PySide6.QtWidgets import (
     QFileDialog, QHBoxLayout, QLabel, QMessageBox, QPlainTextEdit,
-    QPushButton, QVBoxLayout, QWidget,
+    QPushButton, QTabWidget, QVBoxLayout, QWidget,
 )
 
 from app.ui.widgets import (SubtitleLabel, CaptionLabel, PrimaryPushButton, PushButton)
 from app.importer.importer import (
-    import_expense_file, import_invoice_file, import_ledger_file,
-    import_salary_file,
+    commit_ledger_import, import_expense_file, import_invoice_file,
+    import_salary_file, parse_ledger_file, validate_ledger_before_write,
 )
 from app.importer.staff_import import parse_staff_file
+from app.ui.unified_import_dialog import UnifiedImportDialog
 from app.db import get_conn
 
 
@@ -52,10 +61,30 @@ def guess_type(filename: str) -> str:
     return "ledger"
 
 
-class ImportView(QWidget):
+class ImportView(QTabWidget):
     def __init__(self) -> None:
         super().__init__()
-        lay = QVBoxLayout(self)
+
+        # ---- Tab 1: 导入 ----
+        self._tab_import = QWidget()
+        self._build_import_tab(self._tab_import)
+        self.addTab(self._tab_import, "导入")
+
+        # ---- Tab 2: 导入确认（嵌入统一确认面板）----
+        self._tab_confirm = QWidget()
+        cv = QVBoxLayout(self._tab_confirm)
+        cv.setContentsMargins(0, 0, 0, 0)
+        cv.setSpacing(0)
+        self._confirm_panel = UnifiedImportDialog(parent=self)
+        self._confirm_panel.confirmed.connect(self._on_confirmed)
+        self._confirm_panel.cancelled.connect(self._on_cancelled)
+        cv.addWidget(self._confirm_panel)
+        self.addTab(self._tab_confirm, "导入确认")
+
+        self._pending = None  # (period, path) 等待面板确认的数据
+
+    def _build_import_tab(self, page: QWidget) -> None:
+        lay = QVBoxLayout(page)
         lay.setContentsMargins(24, 20, 24, 20)
         lay.setSpacing(12)
 
@@ -139,7 +168,6 @@ class ImportView(QWidget):
         folder = QFileDialog.getExistingDirectory(self, "选择台账文件夹")
         if not folder:
             return
-        import glob, os
         files = sorted(glob.glob(os.path.join(folder, "*.xls*")))
         if not files:
             QMessageBox.information(self, "提示", "该文件夹没有 Excel 文件")
@@ -166,7 +194,6 @@ class ImportView(QWidget):
                 staff, _ = parse_staff_file(path)
                 conn = get_conn()
                 try:
-                    from datetime import datetime
                     cur = conn.execute(
                         "INSERT INTO import_batch (batch_type, period, file_name, imported_at) VALUES (?,?,?,?)",
                         ("staff", "0000", fname, datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
@@ -196,14 +223,19 @@ class ImportView(QWidget):
                     r = import_invoice_file(path, period)
                     msg = f"✓ 销项文档 {period}: {r['count']} 张发票"
                 elif ftype == "ledger":
-                    # 统一确认：问题行修正 + 写前预览合并为一个对话框
-                    r = import_ledger_file(
-                        path, period,
-                        on_confirm=lambda data, validator: self._confirm_ledger(
-                            data, validator, period, path),
-                    )
-                    msg = (f"✓ 发票台账 {period}: {r['invoice_count']} 张发票, "
-                           f"{r['prepayment_count']} 条预收款")
+                    # 解析 → 载入嵌入「导入确认」tab 的面板 → 切换到该 tab，等用户确认后再写库
+                    data = parse_ledger_file(path, period)
+                    conn = get_conn()
+                    try:
+                        staff_names = [rr["name"] for rr in
+                                       conn.execute("SELECT name FROM staff ORDER BY name")]
+                    finally:
+                        conn.close()
+                    validator = lambda d, _p=period: validate_ledger_before_write(d, _p)
+                    self._pending = (period, path)
+                    self._confirm_panel.load_data(data, period, staff_names, path, validator)
+                    self.setCurrentWidget(self._tab_confirm)
+                    return
                 elif ftype == "salary":
                     r = import_salary_file(path, period)
                     msg = (f"✓ 工资表 {period}: {r['count']} 行"
@@ -222,27 +254,33 @@ class ImportView(QWidget):
         if not quiet:
             QMessageBox.information(self, "导入成功", msg)
 
-    def _confirm_ledger(self, data: dict, validator, period: str, path: str):
-        """统一确认回调：解析行 + 问题行同一张表，就地修正后确认入库。
-
-        确认时对话框内部先调用 validator 做写库前校验，校验不过留在对话框内继续改。
-        返回 data（已含修正结果与已收覆盖值）；取消返回 None。
-        """
-        from PySide6.QtWidgets import QDialog
-        from app.ui.unified_import_dialog import UnifiedImportDialog
-        conn = get_conn()
+    # ---- 嵌入「导入确认」面板的信号回调 ----
+    def _on_confirmed(self) -> None:
+        if self._pending is None:
+            return
+        period, path = self._pending
+        self._pending = None
+        fname = path.replace("\\", "/").split("/")[-1]
         try:
-            staff_names = [r["name"] for r in conn.execute("SELECT name FROM staff ORDER BY name")]
-        finally:
-            conn.close()
-        dlg = UnifiedImportDialog(data, period, staff_names, self,
-                                  path=path, validator=validator)
-        if dlg.exec() != QDialog.DialogCode.Accepted:
-            return None
-        return data
+            r = commit_ledger_import(self._confirm_panel._data, period, path)
+        except Exception as e:  # noqa: BLE001
+            self._log(f"✗ {fname}: {e}", ok=False, file_name=fname,
+                      batch_type="ledger", period=period or "")
+            QMessageBox.warning(self, "导入失败", str(e))
+            self.setCurrentWidget(self._tab_import)
+            return
+        msg = (f"✓ 发票台账 {period}: {r['invoice_count']} 张发票, "
+               f"{r['prepayment_count']} 条预收款")
+        self._log(msg, ok=True, file_name=fname, batch_type="ledger", period=period or "")
+        self.setCurrentWidget(self._tab_import)
+        QMessageBox.information(self, "导入成功", msg)
+
+    def _on_cancelled(self) -> None:
+        self._pending = None
+        self.setCurrentWidget(self._tab_import)
 
     def _resolve_problems(self, problems: list, period: str):
-        """旧路径：仅修正问题行的回调（保留备用，当前走 _confirm_ledger）"""
+        """旧路径：仅修正问题行的回调（保留备用，当前走嵌入确认 tab）。"""
         from PySide6.QtWidgets import QDialog
         from app.ui.problem_dialog import ProblemDialog
         conn = get_conn()

@@ -108,12 +108,15 @@ class ProblemFixPanel(QWidget):
         self.htable.setHorizontalHeaderLabels(
             ["经办人", "开票金额", "收款金额", "收款日期"])
         self.htable.setSelectionBehavior(TableWidget.SelectionBehavior.SelectRows)
+        self.htable.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.htable.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        self.htable.setColumnWidth(1, scale.px(120))
-        self.htable.setColumnWidth(2, scale.px(120))
-        self.htable.setColumnWidth(3, scale.px(130))
+        self.htable.setColumnWidth(1, scale.px(130))
+        self.htable.setColumnWidth(2, scale.px(130))
+        self.htable.setColumnWidth(3, scale.px(140))
+        # 至少露出 ~4 行，避免被右侧面板压成单行
+        self.htable.setMinimumHeight(scale.px(34) * 4 + scale.px(30))
         self.htable.itemChanged.connect(self._on_item_changed)
-        iv.addWidget(self.htable)
+        iv.addWidget(self.htable, 1)
 
         sb = QHBoxLayout()
         sb.setSpacing(10)

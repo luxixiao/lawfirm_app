@@ -564,7 +564,6 @@ def import_ledger_file(path: str, period: str,
        on_problems: (problems) -> resolved: list | None；
        on_preview: (data) -> data | None。
     """
-    _auto_snapshot()
     data = parse_ledger_file(path, period)
     if on_confirm is not None:
         confirmed = on_confirm(data, lambda d: validate_ledger_before_write(d, period))
@@ -572,27 +571,34 @@ def import_ledger_file(path: str, period: str,
             raise ImportError_("已取消导入")
         if isinstance(confirmed, dict):
             data = confirmed
-    else:
-        if data["problems"] and on_problems is not None:
-            resolved = on_problems(data["problems"])
-            if resolved is None:
-                raise ImportError_("已取消导入")
-            _apply_resolved(data, resolved)
-            data["problems"] = []
+    elif data["problems"] and on_problems is not None:
+        resolved = on_problems(data["problems"])
+        if resolved is None:
+            raise ImportError_("已取消导入")
+        _apply_resolved(data, resolved)
+        data["problems"] = []
+    if on_preview is not None and on_confirm is None:
+        confirmed = on_preview(data)
+        if confirmed is None:
+            raise ImportError_("已取消导入")
+        if isinstance(confirmed, dict):
+            data = confirmed
+    return commit_ledger_import(data, period, path)
+
+
+def commit_ledger_import(data: Dict, period: str, path: str) -> Dict:
+    """把已确认（含修正结果与已收覆盖值）的发票台账数据写入数据库。
+
+    覆盖式导入：清同账期 active 批次 → raw_ledger 镜像双写 → invoice / charge_detail /
+    prepayment upsert → import_batch。写前再做一次 validate_ledger_before_write 兜底。
+    """
+    _auto_snapshot()
     conn = get_conn()
     try:
-        # ---- 校验 1 + 校验 2（统一路径下对话框已就地校验过，这里兜底）----
+        # ---- 校验兜底（确认对话框已就地校验过，这里再拦一次）----
         err = validate_ledger_before_write(data, period)
         if err:
             raise ImportError_(err)
-
-        # ---- 写前预览确认（旧路径）：返回 None = 取消导入 ----
-        if on_preview is not None and on_confirm is None:
-            confirmed = on_preview(data)
-            if confirmed is None:
-                raise ImportError_("已取消导入")
-            if isinstance(confirmed, dict):
-                data = confirmed
 
         # ---- 覆盖式导入 ----
         # 清旧批次的 raw_ledger 镜像（在 rollback 之前，否则 active 标记已变）

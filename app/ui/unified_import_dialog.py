@@ -22,7 +22,7 @@ from __future__ import annotations
 import copy
 from typing import Dict, List
 
-from PySide6.QtCore import Qt, QPoint, QTimer
+from PySide6.QtCore import Qt, QPoint, QTimer, Signal
 from PySide6.QtGui import QColor, QCursor
 from PySide6.QtWidgets import (
     QAbstractItemView, QButtonGroup, QDialog, QFrame,
@@ -56,38 +56,43 @@ FILTERS = ["需处理", "全部", "待修正", "待确认", "高置信"]
 _PRIO = {"待修正": 0, "待确认": 1, "已修正": 2, "已跳过": 3, "高置信": 4}
 
 
-class UnifiedImportDialog(QDialog):
-    """发票台账导入统一确认对话框。
+class UnifiedImportDialog(QWidget):
+    """发票台账导入统一确认面板（可作为独立对话框，也可嵌入导入页的 tab）。
 
-    exec() == Accepted 表示确认入库：结果已合并进 self._data
-    （invoices/prepayments 含修正行、received_overrides 已回写、problems 清空）。
+    confirmed 信号：用户点「确认入库」且校验通过后发出（self._data 已被合并为最终结果）。
+    cancelled 信号：用户点「取消」发出。
+    也可直接调用 accept() 同步拿到合并结果（保留旧调用方式，便于测试）。
     """
 
-    def __init__(self, data: Dict, period: str, staff_names: List[str],
-                 parent=None, path: str = "", validator=None) -> None:
-        """validator: 可选 callable(data) -> str | None。
+    confirmed = Signal()
+    cancelled = Signal()
 
-        在「确认入库」时先对合并后的结果做写库前校验（sheet1+sheet2 合计 vs
-        销项合计、经办人是否在花名册）；返回错误文案则留在对话框内继续修改，
-        避免像旧流程那样「改完一堆才报错、修改全丢」。
+    def __init__(self, data=None, period="", staff_names=None,
+                 parent=None, path: str = "", validator=None) -> None:
+        """validator: 可选 callable(data) -> str | None（确认入库时先做写前校验）。
+
+        作为对话框：直接传 data/staff_names 即可使用。
+        作为嵌入面板：可只传 parent，随后调用 load_data(...) 载入待确认数据。
         """
         super().__init__(parent)
-        self._data = data
+        # 数据相关的状态在 load_data 中初始化；这里给占位默认值以便无数据时也能构造
+        self._data: Dict = {}
         self._period = period
         self._path = path
         self._validate = validator
         self._file_name = path.replace("\\", "/").split("/")[-1] if path else "导入文件"
-        self._staff_set = set(staff_names)
-        self._orig_inv_len = len(data.get("invoices", []))
-
+        self._staff_set: set = set(staff_names or [])
+        self._orig_inv_len = 0
         self._fix: Dict[int, dict] = {}          # problem index -> 修正数据
         self._skip: set = set()                  # problem index -> 跳过
         self._ov: Dict[int, Dict[str, float]] = {}  # invoice 下标 -> {经办人: 已收}
         self._idx_to_p: Dict[int, int] = {}      # work invoices 下标 -> problem index
         self._rows: List[Dict] = []
+        self.fix_panel = None
 
         self.setWindowTitle(f"发票台账导入确认 — {period}")
-        self.resize(1240, 700)
+        if self.isWindow():
+            self.resize(1240, 700)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(20, 18, 20, 18)
@@ -144,7 +149,7 @@ class UnifiedImportDialog(QDialog):
         self._build_right_panel()
         self.splitter.addWidget(self.right)
         self.splitter.setHandleWidth(8)
-        self.splitter.setSizes([820, 420])
+        self.splitter.setSizes([760, 560])
         root.addWidget(self.splitter, 1)
 
         # ---- 底部 ----
@@ -162,7 +167,45 @@ class UnifiedImportDialog(QDialog):
         root.addLayout(btns)
 
         self._init_cell_tooltip()
+
+        if data is not None:
+            self.load_data(data, period, staff_names, path, validator)
+        else:
+            self._rebuild()
+
+    # ------------------------------------------------------------------ #
+    # 数据载入（嵌入面板可二次调用）
+    # ------------------------------------------------------------------ #
+    def load_data(self, data, period="", staff_names=None,
+                  path="", validator=None) -> None:
+        """（重新）载入待确认数据并重建界面。
+
+        作为嵌入面板时，可先以空参 __init__ 构造，再多次调用本方法切换数据源。
+        self._data 直接引用传入的 data（同一对象），便于 accept() 原地合并回写。
+        """
+        self._data = data
+        self._period = period
+        self._path = path
+        self._validate = validator
+        self._file_name = path.replace("\\", "/").split("/")[-1] if path else "导入文件"
+        self._staff_set = set(staff_names or [])
+        self._orig_inv_len = len(data.get("invoices", []))
+        self._fix = {}
+        self._skip = set()
+        self._ov = {}
+        self._idx_to_p = {}
+        self._rows = []
+        self.setWindowTitle(f"发票台账导入确认 — {period}")
+        self._rebuild_fix_panel()
         self._rebuild()
+
+    def _rebuild_fix_panel(self) -> None:
+        """按当前 staff_set 重建右侧修正表单（staff 变化时需重建下拉）。"""
+        if self.fix_panel is not None:
+            self.fix_panel.setParent(None)
+            self.fix_panel.deleteLater()
+        self.fix_panel = ProblemFixPanel(sorted(self._staff_set), self._period, self)
+        self._fix_host_ly.addWidget(self.fix_panel, 1)
 
     # ------------------------------------------------------------------ #
     # 右侧面板
@@ -205,8 +248,13 @@ class UnifiedImportDialog(QDialog):
         sep.setFrameShape(QFrame.Shape.HLine); sep.setFixedHeight(1)
         rv.addWidget(sep)
 
+        self._fix_host = QWidget()
+        self._fix_host_ly = QVBoxLayout(self._fix_host)
+        self._fix_host_ly.setContentsMargins(0, 0, 0, 0)
+        self._fix_host_ly.setSpacing(0)
         self.fix_panel = ProblemFixPanel(sorted(self._staff_set), self._period, self)
-        rv.addWidget(self.fix_panel, 1)
+        self._fix_host_ly.addWidget(self.fix_panel, 1)
+        rv.addWidget(self._fix_host, 1)
 
         ab = QHBoxLayout()
         ab.setSpacing(8)
@@ -625,4 +673,8 @@ class UnifiedImportDialog(QDialog):
         # 校验通过才提交：原地替换调用方持有的同一个 dict
         self._data.clear()
         self._data.update(merged)
-        super().accept()
+        self.confirmed.emit()
+
+    def reject(self) -> None:
+        """用户点「取消」：真实 data 不被修改，发出 cancelled 信号。"""
+        self.cancelled.emit()
