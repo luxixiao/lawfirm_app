@@ -24,25 +24,18 @@ from PySide6.QtWidgets import (
     QScrollArea, QVBoxLayout, QWidget,
 )
 
-from app.ui import scale, style
+from app.ui import style
 from app.ui.nav_icons import draw_chevron, draw_nav_icon
 
-# 侧栏几何的**基准值**（= 标准档 13px 下的像素）。
-# 一律经 scale.px() 派生后使用，字号档位变化后由 reapply_metrics() 统一重算。
-BASE_W_EXPAND = 240
-BASE_W_COLLAPSE = 60
-BASE_ICON_SIZE = 20
-BASE_ROW_GROUP = 34
-BASE_ROW_ITEM = 31
-BASE_PAD_LEFT = 8     # 大类行内左边距（容器 margin 6 + 8 = 图标左缘 14）
-BASE_ICON_GAP = 8     # 图标 → 文字
-BASE_CHEVRON = 12
-BASE_MARGIN_SIDE = 6  # 分组区左右外边距
-
-
-def _px(base: float) -> int:
-    """按当前字号档位派生像素尺寸。"""
-    return scale.px(base)
+W_EXPAND = 240
+W_COLLAPSE = 60
+ICON_SIZE = 20
+ROW_GROUP = 34
+ROW_ITEM = 31
+PAD_LEFT = 8          # 大类行内左边距（容器 margin 6 + 8 = 图标左缘 14）
+ICON_GAP = 8          # 图标 → 文字
+CHEVRON = 12
+MARGIN_SIDE = 6       # 分组区左右外边距
 
 # 动效时长（ms）与缓动
 MOTION = {
@@ -90,7 +83,7 @@ class NavHeaderButton(QPushButton):
         super().__init__(parent)
         self.title = title
         self.setObjectName("groupHeaderBtn")
-        self.setFixedHeight(_px(BASE_ROW_GROUP))
+        self.setFixedHeight(ROW_GROUP)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setToolTip(title)          # 收起态纯图标列也能确认含义
         self._hover = 0.0
@@ -197,10 +190,8 @@ class NavHeaderButton(QPushButton):
             p.drawRoundedRect(QRectF(self.rect()).adjusted(1, 1, -1, -1), 6, 6)
 
         h = self.height()
-        pad = _px(BASE_PAD_LEFT)
-        icon_size = _px(BASE_ICON_SIZE)
-        icon_x = pad if self._show_text else (self.width() - icon_size) / 2
-        icon_rect = QRectF(icon_x, (h - icon_size) / 2, icon_size, icon_size)
+        icon_x = PAD_LEFT if self._show_text else (self.width() - ICON_SIZE) / 2
+        icon_rect = QRectF(icon_x, (h - ICON_SIZE) / 2, ICON_SIZE, ICON_SIZE)
 
         # 图标与文字颜色：默认 text_mute，hover / 按下 / 展开 → text
         t = max(self._hover, self._press, 1.0 if self._expanded else 0.0)
@@ -212,22 +203,20 @@ class NavHeaderButton(QPushButton):
             text_color.setAlphaF(self._label)
             p.setPen(text_color)
             font = p.font()
-            # 10pt ≈13px @96DPI；用浮点 pt 让侧栏文字随档位连续缩放
-            font.setPointSizeF(10 * scale.ratio())
+            font.setPointSize(10)      # ≈13px @96DPI，与全局字号一致
             font.setWeight(QFont.Weight.Medium if not self._expanded
                            else QFont.Weight.DemiBold)
             p.setFont(font)
-            text_x = pad + icon_size + _px(BASE_ICON_GAP)
-            chev_w = _px(BASE_CHEVRON) + pad
+            text_x = PAD_LEFT + ICON_SIZE + ICON_GAP
+            chev_w = CHEVRON + PAD_LEFT
             p.drawText(QRectF(text_x, 0, self.width() - text_x - chev_w, h),
                        Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
                        self.title)
 
             chev_color = _mix(QColor(pal["text_faint"]), QColor(pal["text_mute"]), self._hover)
             chev_color.setAlphaF(self._label)
-            chevron = _px(BASE_CHEVRON)
-            chev_rect = QRectF(self.width() - pad - chevron, (h - chevron) / 2,
-                               chevron, chevron)
+            chev_rect = QRectF(self.width() - PAD_LEFT - CHEVRON, (h - CHEVRON) / 2,
+                               CHEVRON, CHEVRON)
             p.save()
             c = chev_rect.center()
             p.translate(c)
@@ -253,8 +242,7 @@ class GroupPanel(QWidget):
         self._open = True
         self._anim = None
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(_px(BASE_MARGIN_SIDE), _px(3),
-                               _px(BASE_MARGIN_SIDE), _px(6))
+        lay.setContentsMargins(MARGIN_SIDE, 3, MARGIN_SIDE, 6)
         lay.setSpacing(3)
 
         self._eff = QGraphicsOpacityEffect(self)
@@ -381,9 +369,8 @@ class SidebarWidget(QWidget):
         container = QWidget()
         container.setObjectName("scrollContent")
         self.groups_layout = QVBoxLayout(container)
-        self.groups_layout.setContentsMargins(_px(BASE_MARGIN_SIDE), _px(4),
-                                              _px(BASE_MARGIN_SIDE), _px(4))
-        self.groups_layout.setSpacing(_px(2))
+        self.groups_layout.setContentsMargins(MARGIN_SIDE, 4, MARGIN_SIDE, 4)
+        self.groups_layout.setSpacing(2)
         for title, items in self.nav_groups:
             self._add_group(title, items)
         self.groups_layout.addStretch(1)
@@ -404,7 +391,7 @@ class SidebarWidget(QWidget):
         for key, label in items:
             btn = QPushButton(label)
             btn.setObjectName("navItem")
-            btn.setMinimumHeight(_px(BASE_ROW_ITEM))
+            btn.setMinimumHeight(ROW_ITEM)
             btn.setCheckable(True)
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
             btn.clicked.connect(lambda _checked=False, k=key: self.itemSelected.emit(k))
@@ -472,7 +459,7 @@ class SidebarWidget(QWidget):
     # ------------------------------------------------------------------ #
     def set_collapsed(self, b: bool, animate: bool = True) -> None:
         self._collapsed = bool(b)
-        target = _px(BASE_W_COLLAPSE) if self._collapsed else _px(BASE_W_EXPAND)
+        target = W_COLLAPSE if self._collapsed else W_EXPAND
         if animate:
             self._animate_width(target)
         else:
@@ -541,29 +528,7 @@ class SidebarWidget(QWidget):
     def key_to_group(self, key: str):
         return self._key_to_group.get(key)
 
-    def reapply_metrics(self) -> None:
-        """字号档位变化后重算侧栏几何（行高 / 子项高 / 分组边距 / 整体宽度）。
-
-        与 apply_motion_pref 不同：这里只改尺寸，不动折叠状态、不做动画。
-        自绘的大类行字号由 paintEvent 每次现取 scale.ratio()，无需在此处理。
-        """
-        for btn in self._header_buttons.values():
-            btn.setFixedHeight(_px(BASE_ROW_GROUP))
-        for btn in self._item_buttons.values():
-            btn.setMinimumHeight(_px(BASE_ROW_ITEM))
-        margin = _px(BASE_MARGIN_SIDE)
-        self.groups_layout.setContentsMargins(margin, _px(4), margin, _px(4))
-        self.groups_layout.setSpacing(_px(2))
-        for panel in self._panels.values():
-            lay = panel.layout()
-            if lay is not None:
-                lay.setContentsMargins(margin, _px(3), margin, _px(6))
-        self._finish_width(_px(BASE_W_COLLAPSE) if self._collapsed
-                           else _px(BASE_W_EXPAND))
-        self.update()
-
     def apply_motion_pref(self) -> None:
         """动效开关变化后调用：立即落位，避免残留半透明/半高状态。"""
-        self._finish_width(_px(BASE_W_COLLAPSE) if self._collapsed
-                           else _px(BASE_W_EXPAND))
+        self._finish_width(W_COLLAPSE if self._collapsed else W_EXPAND)
         self.set_collapsed(self._collapsed, animate=False)

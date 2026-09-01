@@ -98,7 +98,7 @@ check("self 名称=sidebar", w.objectName() == "sidebar")
 for n in names:
     btn = w._header_buttons[n]
     check(f"{n} 有 tooltip（收起态可读）", btn.toolTip() == n, f"got={btn.toolTip()}")
-    check(f"{n} 行高 34", btn.height() == sb._px(sb.BASE_ROW_GROUP), f"got={btn.height()}")
+    check(f"{n} 行高 34", btn.height() == sb.ROW_GROUP, f"got={btn.height()}")
 check("子项共 10 个", len(w._item_buttons) == 10, f"got={len(w._item_buttons)}")
 check("子项可勾选", all(b.isCheckable() for b in w._item_buttons.values()))
 
@@ -112,14 +112,14 @@ check("effect 不挂在大类按钮上",
 # ===== 3. 收起 / 展开（无动画路径） =====
 w.set_collapsed(True, animate=False)
 app.processEvents()
-check("收起宽度 60", w.width() == sb._px(sb.BASE_W_COLLAPSE), f"got={w.width()}")
+check("收起宽度 60", w.width() == sb.W_COLLAPSE, f"got={w.width()}")
 check("收起态不画文字", all(not b._show_text for b in w._header_buttons.values()))
 check("收起态隐藏底部挂件", bottom.isHidden())
 check("收起态隐藏固定按钮", w.pin_btn.isHidden())
 
 w.set_collapsed(False, animate=False)
 app.processEvents()
-check("展开宽度 240", w.width() == sb._px(sb.BASE_W_EXPAND), f"got={w.width()}")
+check("展开宽度 240", w.width() == sb.W_EXPAND, f"got={w.width()}")
 check("展开态画文字", all(b._show_text for b in w._header_buttons.values()))
 check("展开态显示底部挂件", bottom.isVisible())
 check("展开态显示固定按钮", w.pin_btn.isVisible())
@@ -172,26 +172,26 @@ check("连点展开状态自洽", panel.isVisible() and panel.is_open() is True)
 # ===== 6. 侧栏宽度动画 =====
 w.set_collapsed(True, animate=True)
 QTest.qWait(400)
-check("宽度动画收起到 60", w.width() == sb._px(sb.BASE_W_COLLAPSE), f"got={w.width()}")
+check("宽度动画收起到 60", w.width() == sb.W_COLLAPSE, f"got={w.width()}")
 w.set_collapsed(False, animate=True)
 QTest.qWait(400)
-check("宽度动画展开到 240", w.width() == sb._px(sb.BASE_W_EXPAND), f"got={w.width()}")
-check("动画结束后已固定宽度", w.minimumWidth() == sb._px(sb.BASE_W_EXPAND), f"got={w.minimumWidth()}")
+check("宽度动画展开到 240", w.width() == sb.W_EXPAND, f"got={w.width()}")
+check("动画结束后已固定宽度", w.minimumWidth() == sb.W_EXPAND, f"got={w.minimumWidth()}")
 check("动画后 min=max（单一状态量，不残留 min/max 分叉）",
-      w.minimumWidth() == w.maximumWidth() == sb._px(sb.BASE_W_EXPAND),
+      w.minimumWidth() == w.maximumWidth() == sb.W_EXPAND,
       f"min={w.minimumWidth()} max={w.maximumWidth()}")
 
 # ===== 7. 防抖：鼠标掠过不应立即展开/收起 =====
 w.set_collapsed(True, animate=False)
 w._enter_timer.stop()
 w.enterEvent(None)
-check("移入后未立即展开（防抖）", w.width() == sb._px(sb.BASE_W_COLLAPSE), f"got={w.width()}")
+check("移入后未立即展开（防抖）", w.width() == sb.W_COLLAPSE, f"got={w.width()}")
 QTest.qWait(80 + 240 + 120)          # 防抖 80 + 宽度动画 240 + 余量
-check("防抖结束后已展开", w.width() == sb._px(sb.BASE_W_EXPAND), f"got={w.width()}")
+check("防抖结束后已展开", w.width() == sb.W_EXPAND, f"got={w.width()}")
 w.leaveEvent(None)
-check("移出后未立即收起（防抖）", w.width() == sb._px(sb.BASE_W_EXPAND), f"got={w.width()}")
+check("移出后未立即收起（防抖）", w.width() == sb.W_EXPAND, f"got={w.width()}")
 QTest.qWait(120 + 180 + 120)         # 防抖 120 + 宽度动画 180 + 余量
-check("防抖结束后已收起", w.width() == sb._px(sb.BASE_W_COLLAPSE), f"got={w.width()}")
+check("防抖结束后已收起", w.width() == sb.W_COLLAPSE, f"got={w.width()}")
 
 # ===== 8. 关闭动效：瞬时到位 =====
 style.set_motion_enabled(False)
@@ -203,7 +203,7 @@ app.processEvents()
 check("关动效后展开瞬时到位", panel.isVisible() and panel.maximumHeight() == 16777215)
 w.set_collapsed(False, animate=True)
 app.processEvents()
-check("关动效后宽度瞬时到位", w.width() == sb._px(sb.BASE_W_EXPAND), f"got={w.width()}")
+check("关动效后宽度瞬时到位", w.width() == sb.W_EXPAND, f"got={w.width()}")
 style.set_motion_enabled(True)
 
 # ===== 9. 深色皮肤下自绘仍可渲染 =====
