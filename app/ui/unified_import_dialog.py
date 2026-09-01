@@ -98,9 +98,9 @@ class UnifiedImportDialog(QWidget):
         root.setContentsMargins(20, 18, 20, 18)
         root.setSpacing(10)
 
-        t = QLabel(f"发票台账导入确认（{period}）")
-        t.setObjectName("pageTitle")
-        root.addWidget(t)
+        self._title = QLabel(f"发票台账导入确认 — {period}")
+        self._title.setObjectName("pageTitle")
+        root.addWidget(self._title)
         root.addWidget(CaptionLabel(
             "解析失败的行与系统判定有疑问的行集中在同一张表：左侧筛选，右侧就地修正。"
             "「待修正」保存后立即重算并刷新；未处理的行在确认入库时自动跳过。"
@@ -196,6 +196,7 @@ class UnifiedImportDialog(QWidget):
         self._idx_to_p = {}
         self._rows = []
         self.setWindowTitle(f"发票台账导入确认 — {period}")
+        self._title.setText(f"发票台账导入确认 — {period}")
         self._rebuild_fix_panel()
         self._rebuild()
 

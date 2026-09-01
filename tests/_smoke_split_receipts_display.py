@@ -56,6 +56,20 @@ def main():
     assert evs2[0]["system_received"] == {"周立生": 1000.0}, evs2[0]["system_received"]
     print("OK 空 split_receipts 回落备注逻辑:", evs2[0]["system_received"])
 
+    # 全额收款：收款认定应与正常行一致显示「年月 全额」，不带经办人姓名
+    inv3 = _fixed_invoice("周立生", 1000.0, 1000.0, "2025-02")
+    evs3 = evaluate({"invoices": [inv3]}, {"周立生"})
+    assert evs3[0]["system_received"] == {"周立生": 1000.0}, evs3[0]["system_received"]
+    assert evs3[0]["receipt_text"] == "2025-02 全额", evs3[0]["receipt_text"]
+    assert "周立生" not in evs3[0]["receipt_text"], evs3[0]["receipt_text"]
+    print("OK 全额收款 收款认定 =", evs3[0]["receipt_text"])
+
+    # 部分收款：显示「年月 金额」，不带经办人姓名
+    inv4 = _fixed_invoice("周立生", 1000.0, 500.0, "2025-02")
+    evs4 = evaluate({"invoices": [inv4]}, {"周立生"})
+    assert evs4[0]["receipt_text"] == "2025-02 500.00", evs4[0]["receipt_text"]
+    print("OK 部分收款 收款认定 =", evs4[0]["receipt_text"])
+
     print("ALL PASS")
 
 

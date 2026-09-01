@@ -16,6 +16,7 @@
 """
 from __future__ import annotations
 
+from collections import defaultdict
 from typing import Dict, List, Tuple
 
 from app.engine.split import allocate_invoice
@@ -126,14 +127,25 @@ def evaluate(data: Dict, staff_set: set) -> List[Dict]:
 def _receipt_text(inv: Dict) -> str:
     """收款认定摘要（与预览框一致）。
 
-    问题行修正时用户逐经办人填写的收款落在 split_receipts，需优先展示，
-    否则修正后「收款认定」列仍显示「未收款」。
+    问题行修正时用户逐经办人填写的收款落在 split_receipts。为与正常行显示口径一致
+    （正常行「收款认定」列只列 年月+金额/全额、不列经办人姓名），这里按年月归集、
+    全额收款显示「全额」，不再带经办人姓名。
     """
     if inv.get("is_red"):
         return "红字，不产生收款"
     split = inv.get("split_receipts") or []
     if split:
-        parts = [f"{ym} {name} {amt:,.2f}" for name, amt, ym in split]
+        by_ym = defaultdict(float)
+        for _name, amt, ym in split:
+            by_ym[ym] += amt
+        total = inv.get("total_amount") or 0.0
+        parts = []
+        for ym in sorted(by_ym):
+            amt = by_ym[ym]
+            if abs(amt - total) <= 0.01:
+                parts.append(f"{ym} 全额")
+            else:
+                parts.append(f"{ym} {amt:,.2f}")
         return "、".join(parts)
     rem = inv.get("remark") or {}
     if rem.get("pure_date"):
