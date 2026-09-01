@@ -19,7 +19,7 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QDialog, QFileDialog, QHBoxLayout,
-    QHeaderView, QInputDialog, QLabel, QLineEdit, QListWidget, QMessageBox,
+    QInputDialog, QLabel, QLineEdit, QListWidget, QMessageBox,
     QPushButton, QSplitter, QTableWidget, QTableWidgetItem, QVBoxLayout,
     QWidget,
 )
@@ -220,12 +220,6 @@ class CalcSheetView(QWidget):
         self.btn_add_col.clicked.connect(lambda: self._grow(0, 3))
         bar.addWidget(self.btn_add_row)
         bar.addWidget(self.btn_add_col)
-        self.btn_freeze = QPushButton("冻结首行")
-        self.btn_freeze.setCheckable(True)
-        self.btn_freeze.setChecked(True)
-        self.btn_freeze.setToolTip("首行常显：滚动时保持可见（由上方副表承载表头+首行，主表自身表头/首行隐藏）")
-        self.btn_freeze.toggled.connect(self._on_freeze_toggled)
-        bar.addWidget(self.btn_freeze)
         rv.addLayout(bar)
 
         fbar = QHBoxLayout()
@@ -249,25 +243,7 @@ class CalcSheetView(QWidget):
         self.table.zoomRequested.connect(self._on_zoom)
         self.table.itemSelectionChanged.connect(self._update_stats)
 
-        # ---- 冻结首行（覆盖式副表：只显示主表第 1 行，横向滚动/列宽同步） ----
-        self.frozen = GridTable(0, 0)
-        self.frozen.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self.frozen.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.frozen.setWordWrap(False)
-        self.frozen.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Fixed)
-        self.frozen.verticalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Fixed)
-        self.frozen.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.frozen.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.frozen.hide()
-        self.frozen.zoomRequested.connect(self._on_zoom)
-        self.frozen.cellClicked.connect(lambda r, c: self._frozen_goto(c))
-        self.frozen.cellDoubleClicked.connect(
-            lambda r, c: self._frozen_goto(c, edit=True))
-        rv.addWidget(self.frozen)
         rv.addWidget(self.table, 1)
-        self.table.horizontalScrollBar().valueChanged.connect(
-            self.frozen.horizontalScrollBar().setValue)
-        self.table.horizontalHeader().sectionResized.connect(self._on_col_resized)
         # 基准行高（标准字号、缩放 100% 时），供缩放派生
         self._base_row = self.table.verticalHeader().defaultSectionSize()
         self._zoom = 1.0
@@ -381,10 +357,8 @@ class CalcSheetView(QWidget):
         px = max(8, round(scale.px(13) * z))
         qss = f"QTableWidget {{ font-size: {px}px; }}"
         self.table.setStyleSheet(qss)
-        self.frozen.setStyleSheet(qss)
         row_h = max(18, round(self._base_row * z))
         self.table.verticalHeader().setDefaultSectionSize(row_h)
-        self.frozen.verticalHeader().setDefaultSectionSize(row_h)
         if rescale_cols and abs(z - old) > 1e-9 and self.table.columnCount():
             ratio = z / old
             for c in range(self.table.columnCount()):
@@ -393,7 +367,6 @@ class CalcSheetView(QWidget):
         self._zoom = z
         self.lbl_zoom.setText(f"{int(round(z * 100))}%")
         self._save_zoom_pref(z)
-        self._sync_frozen_geometry()
 
     def _load_zoom_pref(self) -> float | None:
         z = _pref("calc_zoom", {}).get(str(self.sheet_id))
@@ -418,72 +391,6 @@ class CalcSheetView(QWidget):
         for c in range(self.table.columnCount()):
             self.table.setColumnWidth(
                 c, max(48, min(self.table.columnWidth(c), 280)))
-        self._sync_frozen_geometry()
-
-    def _on_freeze_toggled(self, _on: bool) -> None:
-        """冻结开关：同步主表表头/首行可见性，再刷新副表。"""
-        self._apply_freeze_visibility()
-        self._fill_frozen()
-
-    def _apply_freeze_visibility(self) -> None:
-        """冻结首行时：主表隐藏自身横向表头与第 0 行（由上方副表承担「表头+首行」），
-        避免主副表各带一套表头造成「两张表」的观感；关闭时恢复。"""
-        frozen = self.btn_freeze.isChecked()
-        self.table.horizontalHeader().setVisible(not frozen)
-        if self.table.rowCount() > 0:
-            self.table.setRowHidden(0, frozen)
-
-    def _fill_frozen(self) -> None:
-        """冻结首行：副表只读显示主表第 1 行；双击跳到主表对应格。"""
-        if not self.btn_freeze.isChecked() or self.table.rowCount() == 0 \
-                or self.table.columnCount() == 0:
-            self.frozen.setVisible(False)
-            return
-        cols = self.table.columnCount()
-        self.frozen.blockSignals(True)
-        self.frozen.setRowCount(1)
-        self.frozen.setColumnCount(cols)
-        headers = []
-        for c in range(cols):
-            hit = self.table.horizontalHeaderItem(c)
-            headers.append(hit.text() if hit else self._col_name(c))
-        self.frozen.setHorizontalHeaderLabels(headers)
-        for c in range(cols):
-            src = self.table.item(0, c)
-            it = QTableWidgetItem(src.text() if src else "")
-            if src is not None:
-                it.setForeground(src.foreground())
-                it.setBackground(src.background())
-                it.setTextAlignment(src.textAlignment())
-            self.frozen.setItem(0, c, it)
-            self.frozen.setColumnWidth(c, self.table.columnWidth(c))
-        self.frozen.blockSignals(False)
-        self._sync_frozen_geometry()
-        self.frozen.setVisible(True)
-
-    def _sync_frozen_geometry(self) -> None:
-        if not self.frozen.isVisible() or self.frozen.columnCount() == 0:
-            return
-        row_h = self.table.verticalHeader().defaultSectionSize()
-        hh = self.frozen.horizontalHeader().sizeHint().height()
-        self.frozen.verticalHeader().setDefaultSectionSize(row_h)
-        self.frozen.setFixedHeight(hh + row_h)
-        for c in range(min(self.frozen.columnCount(), self.table.columnCount())):
-            self.frozen.setColumnWidth(c, self.table.columnWidth(c))
-
-    def _on_col_resized(self, col: int, _old: int, _new: int) -> None:
-        if 0 <= col < self.frozen.columnCount():
-            self.frozen.setColumnWidth(col, self.table.columnWidth(col))
-
-    def _frozen_goto(self, c: int, edit: bool = False) -> None:
-        if c < 0 or c >= self.table.columnCount():
-            return
-        self.table.setCurrentCell(0, c)
-        self.table.scrollToTop()
-        if edit and self.edit_mode:
-            idx = self.table.currentIndex()
-            if idx.isValid():
-                self.table.edit(idx)
 
     def _update_stats(self) -> None:
         """选中区域统计（类 Excel）：计数 / 数值 / 求和 / 均值。"""
@@ -540,8 +447,6 @@ class CalcSheetView(QWidget):
                 ev.close()
         finally:
             self._filling = False
-        self._apply_freeze_visibility()
-        self._fill_frozen()
         self._update_stats()
         self._on_current_cell(self.table.currentRow(), self.table.currentColumn(), -1, -1)
 

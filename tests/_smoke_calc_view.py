@@ -118,15 +118,13 @@ check("粘贴自动加行 40→(5,1)", view.table.item(5, 1).text() == "40",
       f"got={view.table.item(5, 1).text() if view.table.item(5, 1) else None}")
 check("粘贴数字右对齐值", view.table.item(4, 0).text() == "10")
 
-# ---- 新功能回归：冻结首行 / 缩放 / 折叠 / 选中统计 ----
-# 冻结首行默认开：副表仅 1 行，且镜像主表第 1 行内容
-check("冻结首行默认可见", view.frozen.isVisible(),
-      f"visible={view.frozen.isVisible()}")
-check("冻结副表仅 1 行", view.frozen.rowCount() == 1,
-      f"rows={view.frozen.rowCount()}")
-check("冻结副表镜像首行 B1=100",
-      view.frozen.item(0, 1) is not None and view.frozen.item(0, 1).text() == "100",
-      f"got={view.frozen.item(0,1).text() if view.frozen.item(0,1) else None}")
+# ---- 新功能回归：无级缩放 / 折叠 / 选中统计（冻结首行功能已移除）----
+# 首行是主表的一部分：未隐藏、可正常编辑
+check("首行在主表中可见(未隐藏)", not view.table.isRowHidden(0),
+      f"rowHidden(0)={view.table.isRowHidden(0)}")
+check("首行 B1=100 正常显示", view.table.item(0, 1) is not None
+      and view.table.item(0, 1).text() == "100",
+      f"got={view.table.item(0,1).text() if view.table.item(0,1) else None}")
 # Ctrl+滚轮放大：zoom 增长、标签更新
 before_z = view._zoom
 view._on_zoom(1)
