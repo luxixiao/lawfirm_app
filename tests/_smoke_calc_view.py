@@ -73,6 +73,12 @@ app.processEvents()
 check("公式栏显示 raw", view.fx.text() == '=B1*PARAM("k")', f"got={view.fx.text()!r}")
 check("坐标标签 A2", view.lbl_cell.text() == "A2", f"got={view.lbl_cell.text()}")
 
+# 公式栏自动补全候选：内置函数 + 当前表参数片段
+comp_items = view._completer.model().stringList()
+check("补全含内置函数 SUM", "SUM" in comp_items, f"items={comp_items}")
+check("补全含内置函数 PARAM", "PARAM" in comp_items, f"items={comp_items}")
+check("补全含 PARAM(\"k\")", 'PARAM("k")' in comp_items, f"items={comp_items}")
+
 # 查看模式默认只读
 check("默认查看模式", not view.edit_mode)
 check("查看模式公式栏只读", view.fx.isReadOnly())

@@ -14,11 +14,12 @@ from __future__ import annotations
 
 import json
 import os
+import re
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, Signal, QStringListModel
 from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import (
-    QAbstractItemView, QApplication, QDialog, QFileDialog, QHBoxLayout,
+    QAbstractItemView, QApplication, QCompleter, QDialog, QFileDialog, QHBoxLayout,
     QInputDialog, QLabel, QLineEdit, QListWidget, QMessageBox,
     QPushButton, QSplitter, QTableWidget, QTableWidgetItem, QVBoxLayout,
     QWidget,
@@ -38,6 +39,40 @@ _FORMULA_GREEN = QColor("#1E7B34")
 
 # 缩放范围与步进（Ctrl+滚轮，按表记忆到本机 prefs，不写库）
 _ZOOM_MIN, _ZOOM_MAX, _ZOOM_STEP = 0.6, 2.0, 1.1
+
+# 公式栏自动补全候选：内置函数 + 当前表参数片段
+_KNOWN_FUNCS = ["SUM", "ROUND", "AVERAGE", "IF", "MIN", "MAX", "ABS", "DATA", "PARAM"]
+
+
+class _FormulaCompleter(QCompleter):
+    """公式栏 Excel 式词条补全：只在光标前的最后一个标识符上匹配，
+    候选 = 内置函数名 + 当前表 PARAM("名称") 片段，避免 PAPRM 这类拼写错。"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        self.setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
+
+    @staticmethod
+    def _last_token(text: str) -> str:
+        m = re.search(r"[A-Za-z_][A-Za-z0-9_]*$", text or "")
+        return m.group(0) if m else ""
+
+    def splitPath(self, path: str):
+        # 只拿尾部正在拼写的标识符做匹配前缀
+        return [self._last_token(path)]
+
+    def pathFromIndex(self, index):
+        comp = super().pathFromIndex(index)
+        w = self.widget()
+        if w is None:
+            return comp
+        text = w.text()
+        token = self._last_token(text)
+        if not token:
+            return comp
+        # 仅替换尾部标识符，保留前面的 =1* 等前缀
+        return text[: len(text) - len(token)] + comp
 
 
 def _user() -> str:
@@ -226,8 +261,11 @@ class CalcSheetView(QWidget):
         self.lbl_cell = QLabel("")          # 当前格坐标
         self.lbl_cell.setMinimumWidth(56)
         self.fx = QLineEdit()
-        self.fx.setPlaceholderText("公式栏（选中单元格显示原文；编辑模式下可改，回车生效）")
+        self.fx.setPlaceholderText(
+            "公式栏（支持补全：输入 SUM/ROUND/PARAM… 弹候选，↑↓选择回车确认；回车生效）")
         self.fx.returnPressed.connect(self._apply_formula_bar)
+        self._completer = _FormulaCompleter(self.fx)
+        self.fx.setCompleter(self._completer)
         fbar.addWidget(self.lbl_cell)
         fbar.addWidget(self.fx, 1)
         rv.addLayout(fbar)
@@ -306,11 +344,20 @@ class CalcSheetView(QWidget):
             self.sheet_id = sid
             self._load_sheet()
 
+    def _refresh_completer(self) -> None:
+        """刷新公式栏补全候选：内置函数 + 当前表参数 PARAM("名称") 片段。"""
+        params = list((self.content.get("params") or {}).keys()) if self.content else []
+        items = list(_KNOWN_FUNCS)
+        for p in params:
+            items.append(f'PARAM("{p}")')
+        self._completer.setModel(QStringListModel(items, self._completer))
+
     def _load_sheet(self) -> None:
         self.fx.clear()
         self.lbl_cell.clear()
         if self.sheet_id is None:
             self.content = {}
+            self._refresh_completer()
             self.table.setRowCount(0)
             self.table.setColumnCount(0)
             self.lbl_hint.setText("左侧选择或「新建」一张计算表。")
@@ -321,6 +368,7 @@ class CalcSheetView(QWidget):
             self._load_sheet()
             return
         self.content = rec["content"] or {}
+        self._refresh_completer()
         self.lbl_hint.setText(
             f"最后编辑：{rec.get('updated_by') or '—'}  {rec.get('updated_at') or ''}"
             "　（数据库经 Seafile 多机同步：编辑前请确认其他电脑未同时编辑本表，后保存者会覆盖）")
@@ -547,6 +595,7 @@ class CalcSheetView(QWidget):
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
         self.content["params"] = dlg.params
+        self._refresh_completer()
         self._recalc_fill()
 
     def _on_indicators(self) -> None:

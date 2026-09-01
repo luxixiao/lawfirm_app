@@ -16,6 +16,7 @@ import os
 import re
 from typing import Dict, List, Optional
 
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QComboBox, QDialog, QDialogButtonBox, QFormLayout, QHBoxLayout,
     QLabel, QLineEdit, QMessageBox, QPlainTextEdit,
@@ -249,7 +250,21 @@ class ParamDialog(QDialog):
 
         lay = QVBoxLayout(self)
         lay.setSpacing(8)
-        lay.addWidget(QLabel("命名参数（供 PARAM(\"名称\") 引用），如 提成比例=0.3："))
+
+        help_html = (
+            "命名参数 = 本表内可复用的常量，在公式中通过 <b>PARAM(\"名称\")</b> 引用。<br>"
+            "· 左侧填参数名，右侧填数值（或文本）。<br>"
+            "· 例：名称 <b>提成比例</b>，值 <b>0.3</b>；公式中写 "
+            "<b>=B2*PARAM(\"提成比例\")</b> 即按 0.3 计算。<br>"
+            "· 命名规则：非空、≤50 字、不含引号，且不能与函数名"
+            "（SUM/ROUND/AVERAGE/IF/MIN/MAX/ABS/DATA/PARAM）重名。<br>"
+            "· 修改参数后，引用它的公式会自动重算。"
+        )
+        lbl_help = QLabel(help_html)
+        lbl_help.setWordWrap(True)
+        lbl_help.setTextInteractionFlags(Qt.TextInteractionFlag.NoTextInteraction)
+        lbl_help.setStyleSheet("color:#555;")
+        lay.addWidget(lbl_help)
 
         self.table = QTableWidget(0, 2)
         self.table.setHorizontalHeaderLabels(["名称", "值"])
