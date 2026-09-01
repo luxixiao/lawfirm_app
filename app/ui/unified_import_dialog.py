@@ -34,7 +34,7 @@ from app.engine.import_confidence import SHEET_LABEL, evaluate
 from app.importer.excel_reader import ImportError_
 from app.ui import scale
 from app.ui.ledger_source import show_ledger_source
-from app.ui.preview_dialog import HandlerReceivedDialog, _fmt_money
+from app.ui.preview_dialog import _fmt_money
 from app.ui.problem_fix_panel import ProblemFixPanel
 from app.ui.table_view import auto_fit_columns
 from app.ui.widgets import CaptionLabel, PrimaryPushButton, PushButton, TableWidget
@@ -86,6 +86,7 @@ class UnifiedImportDialog(QWidget):
         self._fix: Dict[int, dict] = {}          # problem index -> 修正数据
         self._skip: set = set()                  # problem index -> 跳过
         self._ov: Dict[int, Dict[str, float]] = {}  # invoice 下标 -> {经办人: 已收}
+        self._inv_edits: Dict[int, dict] = {}    # work invoice 下标 -> 表单编辑结果（原地更新）
         self._idx_to_p: Dict[int, int] = {}      # work invoices 下标 -> problem index
         self._rows: List[Dict] = []
         self.fix_panel = None
@@ -193,6 +194,7 @@ class UnifiedImportDialog(QWidget):
         self._fix = {}
         self._skip = set()
         self._ov = {}
+        self._inv_edits = {}
         self._idx_to_p = {}
         self._rows = []
         self.setWindowTitle(f"发票台账导入确认 — {period}")
@@ -238,10 +240,7 @@ class UnifiedImportDialog(QWidget):
         row_btn = QHBoxLayout()
         self.btn_source = PushButton("查看原始台账行")
         self.btn_source.clicked.connect(self._show_source)
-        self.btn_edit_recv = PushButton("编辑各经办人已收")
-        self.btn_edit_recv.clicked.connect(self._edit_received)
         row_btn.addWidget(self.btn_source)
-        row_btn.addWidget(self.btn_edit_recv)
         row_btn.addStretch()
         rv.addLayout(row_btn)
 
@@ -283,12 +282,37 @@ class UnifiedImportDialog(QWidget):
                 self._work,
                 [{"index": i, "action": "fix", "data": d} for i, d in sorted(self._fix.items())],
             )
+        # 已存在发票的右侧表单就地编辑（_inv_edits）原地覆盖，不追加
+        for inv_idx, ed in self._inv_edits.items():
+            invs = self._work.get("invoices", [])
+            if 0 <= inv_idx < len(invs):
+                self._apply_invoice_edit(invs[inv_idx], ed)
         self._idx_to_p = {
             self._orig_inv_len + k: p_idx
             for k, p_idx in enumerate(sorted(self._fix))
         }
 
+    @staticmethod
+    def _apply_invoice_edit(inv: dict, ed: dict) -> None:
+        """把右侧表单的编辑结果原地写回一条已存在的发票。"""
+        inv["invoice_date"] = ed.get("invoice_date") or ""
+        inv["total_amount"] = ed.get("total_amount") or 0.0
+        inv["handlers"] = list(ed.get("handlers") or [])
+        inv["handler_text"] = ed.get("handler_text") or ""
+        inv["split_receipts"] = list(ed.get("split_receipts") or [])
+        if ed.get("buyer") is not None:
+            inv["buyer"] = ed.get("buyer")
+        if ed.get("case_no") is not None:
+            inv["case_no"] = ed.get("case_no")
+        # 收款已由 split_receipts 显式接管，清空旧的备注推导与覆盖值
+        rem = inv.get("remark") or {}
+        rem.pop("receipts", None)
+        rem.pop("pure_date", None)
+        inv["remark"] = rem
+        inv.pop("received_overrides", None)
+
     def _rebuild(self) -> None:
+        anchor = self._current_anchor()
         self._rebuild_work()
         evs = evaluate(self._work, self._staff_set)
         rows: List[Dict] = []
@@ -299,6 +323,7 @@ class UnifiedImportDialog(QWidget):
                 "status": "待确认" if ev["conf"] == "low" else "高置信",
                 "p_index": self._idx_to_p.get(i),
                 "inv_idx": inv_idx,
+                "work_idx": i,
                 "ev": ev,
                 "problem": None,
             })
@@ -307,16 +332,18 @@ class UnifiedImportDialog(QWidget):
                 # 发票类修正行已由 evaluate 产出，这里只补预收款类
                 if p.get("kind") == "prepayment":
                     rows.append({"kind": "problem", "status": "已修正",
-                                 "p_index": i, "inv_idx": None, "ev": None, "problem": p})
+                                 "p_index": i, "inv_idx": None, "work_idx": None,
+                                 "ev": None, "problem": p})
                 continue
             rows.append({
                 "kind": "problem",
                 "status": "已跳过" if i in self._skip else "待修正",
-                "p_index": i, "inv_idx": None, "ev": None, "problem": p,
+                "p_index": i, "inv_idx": None, "work_idx": None,
+                "ev": None, "problem": p,
             })
         rows.sort(key=lambda r: (_PRIO.get(r["status"], 9), r["p_index"] if r["p_index"] is not None else 1 << 30))
         self._rows = rows
-        self._render()
+        self._render(anchor)
 
     def _row_field(self, r: Dict, key: str) -> str:
         if r["kind"] == "invoice":
@@ -365,10 +392,11 @@ class UnifiedImportDialog(QWidget):
     # ------------------------------------------------------------------ #
     # 渲染
     # ------------------------------------------------------------------ #
-    def _render(self) -> None:
+    def _render(self, anchor: tuple | None = None) -> None:
+        if anchor is None:
+            anchor = self._current_anchor()
         filt = FILTERS[self._grp.checkedId()]
         rows = [r for r in self._rows if self._match(r, filt)]
-        sel_key = self._selected_key()
 
         self.table.blockSignals(True)
         self.table.setRowCount(0)
@@ -424,13 +452,21 @@ class UnifiedImportDialog(QWidget):
             f"预收款 {len(pp)} 条，合计 ¥{pp_total:,.2f}"
         )
 
-        if sel_key is not None:
+        sel_row = -1
+        if anchor is not None:
             for i, r in enumerate(rows):
-                if id(r) == sel_key:
-                    self.table.selectRow(i)
+                if r["kind"] == "invoice" and anchor[0] == "inv" and r.get("work_idx") == anchor[1]:
+                    sel_row = i
                     break
-        if self.table.rowCount() and self.table.currentRow() < 0:
+                if r["kind"] == "problem" and anchor[0] == "prob" and r["p_index"] == anchor[1]:
+                    sel_row = i
+                    break
+        self.table.blockSignals(True)
+        if sel_row >= 0:
+            self.table.selectRow(sel_row)
+        elif self.table.rowCount() and self.table.currentRow() < 0:
             self.table.selectRow(0)
+        self.table.blockSignals(False)
         self._load_right()
 
     @staticmethod
@@ -441,18 +477,21 @@ class UnifiedImportDialog(QWidget):
             return r["status"] in ("待修正", "待确认")
         return r["status"] == filt
 
-    def _selected_key(self):
-        item = self.table.item(self.table.currentRow(), 0)
-        return item.data(Qt.ItemDataRole.UserRole) if item else None
+    def _current_anchor(self):
+        r = self._current_row()
+        if r is None:
+            return None
+        if r["kind"] == "invoice":
+            return ("inv", r.get("work_idx"))
+        return ("prob", r["p_index"])
 
     def _recv_text(self, r: Dict) -> str:
         if r["kind"] != "invoice":
             return "—（修正后生成）"
         ev = r["ev"]
-        ov = self._ov.get(r["inv_idx"], {}) if r["inv_idx"] is not None else {}
         parts = []
         for name, _b in ev.get("handlers", []):
-            amt = ov.get(name, ev.get("system_received", {}).get(name, 0.0))
+            amt = ev.get("system_received", {}).get(name, 0.0)
             parts.append(f"{name} {_fmt_money(amt)}")
         return "、".join(parts) or "—"
 
@@ -523,25 +562,26 @@ class UnifiedImportDialog(QWidget):
         r = self._current_row()
         if r is None:
             self.fix_panel.set_problem(None)
-            self._set_actions(False, False)
+            self.fix_panel.setVisible(False)
+            self._set_actions(False, False, False)
             return
         for key in ("src", "no", "buyer", "amt", "receipt", "remark"):
             self._info[key].setText(self._row_field(r, key))
 
-        can_fix = r["p_index"] is not None and r["kind"] == "problem"
-        is_fixed_invoice = r["p_index"] is not None and r["kind"] == "invoice"
-        self.fix_panel.setVisible(can_fix)
-        self._set_actions(can_fix, is_fixed_invoice)
-
-        if can_fix:
-            self.fix_panel.set_problem(r["problem"])
+        if r["kind"] == "invoice":
+            # 所有发票行（高/低/已修正）均在右侧就地编辑（方案 A：统一右栏）
+            self.fix_panel.setVisible(True)
+            self.fix_panel.set_invoice(r["ev"]["_inv"], r["ev"])
+            self._set_actions(True, False, False)
         else:
-            self.fix_panel.set_problem(None)
-        self.btn_edit_recv.setVisible(r["kind"] == "invoice" and r["inv_idx"] is not None)
+            # 待修正 / 已跳过 问题行仍走 set_problem 修正路径
+            self.fix_panel.setVisible(True)
+            self.fix_panel.set_problem(r["problem"])
+            self._set_actions(True, False, True)
 
-    def _set_actions(self, fixing: bool, refix: bool) -> None:
+    def _set_actions(self, fixing: bool, refix: bool, show_skip: bool = True) -> None:
         self.btn_save.setVisible(fixing)
-        self.btn_skiprow.setVisible(fixing)
+        self.btn_skiprow.setVisible(fixing and show_skip)
         self.btn_refix.setVisible(refix)
 
     def _show_source(self) -> None:
@@ -572,35 +612,26 @@ class UnifiedImportDialog(QWidget):
         row = self._rows and self._current_row()
         if row is None:
             return
-        if c == COL_RECV and row["kind"] == "invoice" and row["inv_idx"] is not None:
-            self._edit_received()
-            return
         self._show_source()
-
-    def _edit_received(self) -> None:
-        r = self._current_row()
-        if r is None or r["kind"] != "invoice" or r["inv_idx"] is None:
-            return
-        ev = r["ev"]
-        no = ev["invoice_no"]
-        tmp = {no: dict(self._ov.get(r["inv_idx"], {}))}
-        dlg = HandlerReceivedDialog(ev, tmp, self)
-        if dlg.exec() == QDialog.DialogCode.Accepted:
-            self._ov[r["inv_idx"]] = tmp.get(no, {})
-            self._render()
 
     def _save_fix(self) -> None:
         r = self._current_row()
-        if r is None or r["p_index"] is None:
+        if r is None:
             return
         try:
             data = self.fix_panel.read_fix()
         except ImportError_ as e:
             QMessageBox.warning(self, "无法保存", str(e))
             return
-        self._fix[r["p_index"]] = data
-        self._skip.discard(r["p_index"])
-        self._rebuild()
+        if r["kind"] == "invoice" and r["inv_idx"] is not None:
+            # 已存在发票：右侧表单原地更新（方案 A），不追加、不覆盖整表
+            self._inv_edits[r["inv_idx"]] = data
+            self._rebuild()
+        elif r["p_index"] is not None:
+            # 待修正问题行 / 已修正行（源自问题修正）：走追加 / 覆盖修正路径
+            self._fix[r["p_index"]] = data
+            self._skip.discard(r["p_index"])
+            self._rebuild()
 
     def _refix(self) -> None:
         """已修正的发票行：回到修正形态继续编辑。"""
@@ -637,7 +668,13 @@ class UnifiedImportDialog(QWidget):
             _apply_resolved(merged, resolved)
         merged["problems"] = []
 
-        # 已收覆盖值按「原始解析下标」回写（修正行的收款已包含在修正数据里）
+        # 已存在发票的右侧就地编辑：原地覆盖
+        for inv_idx, ed in self._inv_edits.items():
+            invs = merged.get("invoices", [])
+            if 0 <= inv_idx < len(invs):
+                self._apply_invoice_edit(invs[inv_idx], ed)
+
+        # 已收覆盖值按「原始解析下标」回写（历史弹窗路径，现已停用，保留兼容）
         invoices = merged.get("invoices", [])
         for inv_idx, ov in self._ov.items():
             if inv_idx is None or inv_idx >= len(invoices):

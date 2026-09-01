@@ -186,6 +186,58 @@ class ProblemFixPanel(QWidget):
     def current_problem(self) -> dict | None:
         return self._problem
 
+    def set_invoice(self, inv: dict, ev: dict | None = None) -> None:
+        """载入一条已解析发票（高/低置信或修正后）预填表单，供就地编辑。
+
+        与 set_problem 的区别：数据来自 invoice 结构（handlers / remark / split_receipts），
+        而非 problem 原始台账文本。每经办人的收款金额/日期优先取既有 split_receipts，
+        否则用 system_received 按备注日期兜底预填，便于直接核对、微调。
+        """
+        ev = ev or {}
+        self._problem = {
+            "kind": "invoice",
+            "invoice_no": inv.get("invoice_no", ""),
+            "buyer": inv.get("buyer", ""),
+            "case_no": inv.get("case_no", ""),
+            "row_no": inv.get("row_no", 0),
+        }
+        self.pp_box.setVisible(False)
+        self.inv_box.setVisible(True)
+        self.inv_date.setText(inv.get("invoice_date") or "")
+        self.inv_amount.setText(str(inv.get("total_amount") or ""))
+
+        handlers = inv.get("handlers") or []
+        sys_recv = ev.get("system_received", {}) or {}
+        split = {name: (amt, ym) for name, amt, ym in (inv.get("split_receipts") or [])}
+        rem = inv.get("remark") or {}
+        if rem.get("pure_date"):
+            date_hint = rem["pure_date"]
+        elif rem.get("receipts"):
+            date_hint = rem["receipts"][0][0] if rem["receipts"] else ""
+        else:
+            date_hint = ""
+        rows = []
+        for name, billing in handlers:
+            if name in split:
+                amt, ym = split[name]
+                rows.append({
+                    "name": name, "bill": billing,
+                    "recv_amt": ("" if not amt else _money(amt)),
+                    "recv_date": ym or "",
+                })
+            else:
+                amt = sys_recv.get(name, 0.0)
+                rows.append({
+                    "name": name, "bill": billing,
+                    "recv_amt": ("" if not amt else _money(amt)),
+                    "recv_date": (date_hint if amt > 0 else ""),
+                })
+        self._render_rows(rows)
+        self.hint.setText(
+            "可直接修改开票日期 / 总额 / 经办人分摊 / 收款金额与日期；"
+            "点「保存修改」原地更新该发票（不再弹小窗）。"
+        )
+
     # ------------------------------------------------------------------ #
     # 表单渲染 / 读取
     # ------------------------------------------------------------------ #

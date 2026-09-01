@@ -174,12 +174,23 @@ check("sheet 合计含修正行（5000 计入 sheet1）",
 check("sheet12_total 同步重算", abs(dlg._work["sheet12_total"] - 6000.0) < 0.01,
       f"got={dlg._work['sheet12_total']}")
 
-# ---------------------------------------------------------------- 3) 已收覆盖
-dlg._grp.button(1).setChecked(True)
+# ---------------------------------------------------------------- 3) 右侧就地编辑已存在发票 → 各经办人已收 / 收款认定 同步
+dlg._grp.button(1).setChecked(True)  # 全部
 dlg._render()
 target = next(r for r in dlg._rows if r["kind"] == "invoice" and r["inv_idx"] == 0)
-dlg._ov[0] = {"周立生": 800.0}
-check("已收列显示覆盖值 800.00", "800.00" in dlg._recv_text(target), dlg._recv_text(target))
+dlg.table.selectRow(dlg._rows.index(target))   # 触发 _load_right → set_invoice
+# 通过右侧面板把 周立生 收款金额由 1000.00 改为 800.00（不动开票金额）
+p = dlg.fix_panel
+p.htable.item(0, 2).setText("800.00")
+ed = p.read_fix()
+dlg._inv_edits[0] = ed
+n_work_before = len(dlg._work["invoices"])
+dlg._rebuild()
+check("右侧编辑不追加新发票（原地更新）",
+      len(dlg._work["invoices"]) == n_work_before, f"got={len(dlg._work['invoices'])}")
+target = next(r for r in dlg._rows if r["kind"] == "invoice" and r["inv_idx"] == 0)
+check("右侧编辑后 各经办人已收 显示 800.00", "800.00" in dlg._recv_text(target), dlg._recv_text(target))
+check("右侧编辑后 收款认定 同步更新", "800.00" in target["ev"]["receipt_text"], target["ev"]["receipt_text"])
 
 # ---------------------------------------------------------------- 4) 校验不过 → 留在对话框
 calls = {"n": 0}
@@ -202,9 +213,9 @@ dlg.accept()
 check("校验通过：problems 清空", data.get("problems") == [], f"got={data.get('problems')}")
 check("校验通过：发票数 +1（修正行入库）", len(data["invoices"]) == n_inv_before + 1,
       f"got={len(data['invoices'])}")
-check("校验通过：已收覆盖值回写",
-      data["invoices"][0].get("received_overrides") == {"周立生": 800.0},
-      f"got={data['invoices'][0].get('received_overrides')}")
+check("校验通过：右侧编辑的收款写入 split_receipts",
+      data["invoices"][0].get("split_receipts") == [("周立生", 800.0, "2025-01")],
+      f"got={data['invoices'][0].get('split_receipts')}")
 fixed = data["invoices"][-1]
 check("修正行透传原始台账行", bool(fixed.get("header")) and bool(fixed.get("raw_row")))
 check("修正行保留源文件 sheet 分类", fixed.get("sheet") == "sheet1", f"got={fixed.get('sheet')}")
