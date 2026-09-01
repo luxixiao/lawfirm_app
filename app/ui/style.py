@@ -5,11 +5,17 @@
 - 颜色全部参数化到 palette 字典，build_qss() 按 palette 生成 QSS，便于新增皮肤。
 - SKINS 是皮肤注册表；apply_skin() 在运行时切换；当前皮肤持久化到 data/prefs.json。
 - 第二批皮肤（如品牌色、午夜蓝）只需往 PALETTES / SKINS 追加一项，无需改其他代码。
+
+尺寸全部按 app.ui.scale 的档位倍率派生（build_qss 的 s 参数）：字号、内边距、
+圆角、控件最小尺寸一律乘倍率，避免「字号变了框没变」导致文字被裁或溢出。
+QSS 因此**不再在模块加载时预生成**，改由 qss_for() 按当前倍率即时生成。
 """
 from __future__ import annotations
 
 import json
 from pathlib import Path
+
+from app.ui import scale
 
 PREFS_PATH = Path(__file__).resolve().parent.parent.parent / "data" / "prefs.json"
 
@@ -53,11 +59,20 @@ PALETTES = {"notion_light": _light(), "notion_dark": _dark()}
 # ---------------------------------------------------------------------------
 # QSS 生成
 # ---------------------------------------------------------------------------
-def build_qss(p: dict) -> str:
+def build_qss(p: dict, s: float = 1.0) -> str:
+    """按调色板 p 与缩放倍率 s 生成全局 QSS。
+
+    s 取自 app.ui.scale.ratio()。所有 px 值一律走 P() 派生——字号变了，
+    内边距/行高/圆角/最小尺寸同步变，任何档位下都不会出现裁切或溢出。
+    """
+
+    def P(n: float) -> str:
+        return f"{max(1, int(round(n * s)))}px"
+
     return f"""
 * {{
     font-family: "Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI", sans-serif;
-    font-size: 13px;
+    font-size: {P(13)};
     color: {p['text']};
 }}
 QMainWindow, QWidget#pageArea {{ background: {p['bg']}; }}
@@ -65,28 +80,28 @@ QToolTip {{
     background: {p['bg_table']};
     color: {p['text']};
     border: 1px solid {p['border_2']};
-    padding: 5px 9px;
-    border-radius: 6px;
+    padding: {P(5)} {P(9)};
+    border-radius: {P(6)};
 }}
 QLabel#cellTip {{
     background: {p['bg_table']};
     color: {p['text']};
     border: 1px solid {p['border_2']};
-    padding: 5px 9px;
-    border-radius: 6px;
-    font-size: 12px;
+    padding: {P(5)} {P(9)};
+    border-radius: {P(6)};
+    font-size: {P(12)};
 }}
 
 /* ===== 侧边栏 ===== */
 #sidebar {{ background: {p['bg_side']}; border-right: 1px solid {p['border']}; }}
 #sidebar QLabel#groupHeader {{
-    color: {p['text_faint']}; font-size: 11px; font-weight: 700;
-    padding: 16px 16px 6px 16px;
+    color: {p['text_faint']}; font-size: {P(11)}; font-weight: 700;
+    padding: {P(16)} {P(16)} {P(6)} {P(16)};
 }}
 #sidebar QPushButton#navItem {{
-    background: transparent; border: none; border-radius: 6px;
-    text-align: left; padding: 0 8px 0 36px; min-height: 31px;
-    color: {p['text_mute']}; font-size: 13px;
+    background: transparent; border: none; border-radius: {P(6)};
+    text-align: left; padding: 0 {P(8)} 0 {P(36)}; min-height: {P(31)};
+    color: {p['text_mute']}; font-size: {P(13)};
 }}
 #sidebar QPushButton#navItem:hover {{ background: {p['bg_hover']}; color: {p['text']}; }}
 #sidebar QPushButton#navItem:checked {{
@@ -99,24 +114,24 @@ QLabel#cellTip {{
 #sidebar QPushButton#groupPin:focus {{
     outline: none; background: {p['bg_hover']}; color: {p['text']};
 }}
-#sidebar QLabel#skinLabel {{ color: {p['text_faint']}; font-size: 11px; padding: 0 0 4px 0; }}
+#sidebar QLabel#skinLabel {{ color: {p['text_faint']}; font-size: {P(11)}; padding: 0 0 {P(4)} 0; }}
 
 /* ===== 方案 A 折叠侧栏（单列分组 + 收起为图标列） ===== */
 /* 大类行由 NavHeaderButton 自绘（图标/文字/chevron/hover/press 全自绘），
    这里只声明透明底无边框，避免套用全局 QPushButton 样式。
    注意：不要给 #groupHeaderBtn 加 :hover —— 会与自绘的 hover 插值打架。 */
 #sidebar QPushButton#groupHeaderBtn {{
-    background: transparent; border: none; border-radius: 6px;
-    text-align: left; padding: 0; color: {p['text']}; font-size: 13px;
+    background: transparent; border: none; border-radius: {P(6)};
+    text-align: left; padding: 0; color: {p['text']}; font-size: {P(13)};
 }}
 #sidebar QPushButton#groupToggle {{
-    background: transparent; border: none; border-radius: 8px;
-    color: {p['text_faint']}; font-size: 16px; padding: 6px 10px;
+    background: transparent; border: none; border-radius: {P(8)};
+    color: {p['text_faint']}; font-size: {P(16)}; padding: {P(6)} {P(10)};
 }}
 #sidebar QPushButton#groupToggle:hover {{ background: {p['bg_hover']}; color: {p['text']}; }}
 #sidebar QPushButton#groupPin {{
-    background: transparent; border: 1px solid {p['border']}; border-radius: 7px;
-    color: {p['text_mute']}; font-size: 12px; padding: 4px 10px;
+    background: transparent; border: 1px solid {p['border']}; border-radius: {P(7)};
+    color: {p['text_mute']}; font-size: {P(12)}; padding: {P(4)} {P(10)};
 }}
 #sidebar QPushButton#groupPin:hover {{ background: {p['bg_hover']}; color: {p['text']}; }}
 #sidebar QPushButton#groupPin:checked {{
@@ -127,14 +142,14 @@ QLabel#cellTip {{
 #sidebar QWidget#scrollContent {{ background: transparent; }}
 
 /* ===== 页面标题（视图自带，保留选择器兼容） ===== */
-#pageTitle {{ font-size: 20px; font-weight: 700; color: {p['text']}; }}
-#pageHint  {{ color: {p['text_mute']}; font-size: 12px; }}
-#placeholder {{ color: {p['text_faint']}; font-size: 14px; padding: 40px; }}
+#pageTitle {{ font-size: {P(20)}; font-weight: 700; color: {p['text']}; }}
+#pageHint  {{ color: {p['text_mute']}; font-size: {P(12)}; }}
+#placeholder {{ color: {p['text_faint']}; font-size: {P(14)}; padding: {P(40)}; }}
 
 /* ===== 按钮 ===== */
 QPushButton {{
     background: {p['btn_bg']}; border: 1px solid {p['btn_border']};
-    border-radius: 8px; padding: 7px 16px; color: {p['text']};
+    border-radius: {P(8)}; padding: {P(7)} {P(16)}; color: {p['text']};
 }}
 QPushButton:hover {{ background: {p['btn_hover']}; border-color: {p['btn_border']}; }}
 QPushButton:pressed {{ background: {p['btn_press']}; }}
@@ -148,22 +163,22 @@ QPushButton#primary:pressed {{ background: {p['btn_pri_press']}; }}
 /* ===== 输入控件 ===== */
 QLineEdit, QComboBox, QDateEdit, QDoubleSpinBox {{
     background: {p['btn_bg']}; border: 1px solid {p['btn_border']};
-    border-radius: 7px; padding: 6px 10px; min-height: 18px; color: {p['text']};
+    border-radius: {P(7)}; padding: {P(6)} {P(10)}; min-height: {P(18)}; color: {p['text']};
 }}
 QLineEdit:focus, QComboBox:focus, QDateEdit:focus, QDoubleSpinBox:focus {{ border-color: {p['text_faint']}; }}
-QComboBox::drop-down {{ border: none; width: 22px; }}
+QComboBox::drop-down {{ border: none; width: {P(22)}; }}
 QComboBox QAbstractItemView {{
-    background: {p['btn_bg']}; border: 1px solid {p['border']}; border-radius: 8px; padding: 4px;
+    background: {p['btn_bg']}; border: 1px solid {p['border']}; border-radius: {P(8)}; padding: {P(4)};
     selection-background-color: {p['bg_select']}; selection-color: {p['text']};
 }}
 
 /* ===== 表格 ===== */
 QTableWidget {{
     background: {p['bg']}; alternate-background-color: {p['bg_table']};
-    border: 1px solid {p['border']}; border-radius: 10px; gridline-color: {p['grid']};
+    border: 1px solid {p['border']}; border-radius: {P(10)}; gridline-color: {p['grid']};
     selection-background-color: {p['bg_select']}; selection-color: {p['text']};
 }}
-QTableWidget::item {{ padding: 6px 10px; border: none; }}
+QTableWidget::item {{ padding: {P(6)} {P(10)}; border: none; }}
 QTableWidget::item:selected {{ background: {p['bg_select']}; }}
 /* 注意：此处不要写 color。选中态文字色由单元格 setForeground + TableBehaviorDelegate
    的 initStyleOption 接管（红字/绿字选中仍保持原色）；在此写 color 会覆盖委托，
@@ -171,24 +186,24 @@ QTableWidget::item:selected {{ background: {p['bg_select']}; }}
 QHeaderView::section {{
     background: {p['bg_table']}; color: {p['text_mute']}; border: none;
     border-bottom: 1px solid {p['border']}; border-right: 1px solid {p['grid']};
-    padding: 9px 10px; font-weight: 600;
+    padding: {P(9)} {P(10)}; font-weight: 600;
 }}
 QHeaderView::section:hover {{ color: {p['text']}; }}
 QTableCornerButton::section {{ background: {p['bg_table']}; border: none; }}
 
 /* ===== 滚动条 ===== */
-QScrollBar:vertical {{ background: transparent; width: 10px; margin: 2px; }}
-QScrollBar::handle:vertical {{ background: {p['text_faint']}; border-radius: 5px; min-height: 30px; }}
+QScrollBar:vertical {{ background: transparent; width: {P(10)}; margin: {P(2)}; }}
+QScrollBar::handle:vertical {{ background: {p['text_faint']}; border-radius: {P(5)}; min-height: {P(30)}; }}
 QScrollBar::handle:vertical:hover {{ background: {p['text_mute']}; }}
-QScrollBar:horizontal {{ background: transparent; height: 10px; margin: 2px; }}
-QScrollBar::handle:horizontal {{ background: {p['text_faint']}; border-radius: 5px; min-width: 30px; }}
+QScrollBar:horizontal {{ background: transparent; height: {P(10)}; margin: {P(2)}; }}
+QScrollBar::handle:horizontal {{ background: {p['text_faint']}; border-radius: {P(5)}; min-width: {P(30)}; }}
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
 QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{ width: 0; }}
 
 /* ===== Tab ===== */
-QTabWidget::pane {{ border: 1px solid {p['border']}; border-radius: 10px; background: {p['bg']}; top: -1px; }}
+QTabWidget::pane {{ border: 1px solid {p['border']}; border-radius: {P(10)}; background: {p['bg']}; top: -1px; }}
 QTabBar::tab {{
-    background: transparent; color: {p['text_mute']}; padding: 8px 18px; border: none;
+    background: transparent; color: {p['text_mute']}; padding: {P(8)} {P(18)}; border: none;
     border-bottom: 2px solid transparent; font-weight: 500;
 }}
 QTabBar::tab:hover {{ color: {p['text']}; }}
@@ -201,33 +216,33 @@ QLabel#pageHint {{ color: {p['text_mute']}; }}
 /* ===== 问题行修正面板 ===== */
 QWidget#infoCard {{
     background: {p['bg_table']}; border: 1px solid {p['border']};
-    border-radius: 10px; padding: 12px 16px;
+    border-radius: {P(10)}; padding: {P(12)} {P(16)};
 }}
-QLabel#infoKey {{ color: {p['text_mute']}; font-size: 12px; margin-top: 6px; margin-bottom: 2px; }}
-QLabel#infoVal {{ color: {p['text']}; font-size: 15px; font-weight: 700; }}
+QLabel#infoKey {{ color: {p['text_mute']}; font-size: {P(12)}; margin-top: {P(6)}; margin-bottom: {P(2)}; }}
+QLabel#infoVal {{ color: {p['text']}; font-size: {P(15)}; font-weight: 700; }}
 QWidget#infoCard QLineEdit {{
-    min-height: 28px; max-height: 28px;
+    min-height: {P(28)}; max-height: {P(28)};
 }}
 QComboBox#handlerCombo {{
-    border: none; background: transparent; border-radius: 6px;
-    padding: 2px 6px;
+    border: none; background: transparent; border-radius: {P(6)};
+    padding: {P(2)} {P(6)};
 }}
 QComboBox#handlerCombo:hover,
 QComboBox#handlerCombo:focus {{
     background: {p['bg_hover']};
 }}
 QComboBox#handlerCombo::drop-down {{
-    border: none; width: 18px;
+    border: none; width: {P(18)};
 }}
 
 QLabel#chip {{
     background: {p['bg_table']}; border: 1px solid {p['border']};
-    border-radius: 14px; padding: 6px 14px; color: {p['text_mute']}; font-size: 12px;
+    border-radius: {P(14)}; padding: {P(6)} {P(14)}; color: {p['text_mute']}; font-size: {P(12)};
 }}
 QLabel#chipVal {{ color: {p['text']}; font-weight: 700; font-family: "JetBrains Mono", "Consolas", monospace; }}
 QLabel#chipWarn {{
     background: {p['warn_bg']}; border: 1px solid {p['warn_bg']};
-    border-radius: 14px; padding: 6px 14px; color: {p['warn_fg']}; font-size: 12px; font-weight: 600;
+    border-radius: {P(14)}; padding: {P(6)} {P(14)}; color: {p['warn_fg']}; font-size: {P(12)}; font-weight: 600;
 }}
 QLabel#chipWarn QLabel#chipVal {{ color: {p['warn_fg']}; }}
 QFrame#sep {{ background: {p['grid']}; border: none; }}
@@ -235,7 +250,7 @@ QFrame#sep {{ background: {p['grid']}; border: none; }}
 /* ===== 费用类型卡片内的操作按钮 ===== */
 /* 全局 QPushButton padding 7px 16px 太宽，5 个一行时会被压到 sizeHint 以下导致文字被裁 */
 QFrame#card QPushButton#cardBtn {{
-    padding: 4px 10px; font-size: 12px; border-radius: 6px;
+    padding: {P(4)} {P(10)}; font-size: {P(12)}; border-radius: {P(6)};
     background: {p['btn_bg']}; border: 1px solid {p['btn_border']}; color: {p['text']};
 }}
 QFrame#card QPushButton#cardBtn:hover {{ background: {p['btn_hover']}; }}
@@ -243,7 +258,7 @@ QFrame#card QPushButton#cardBtn:pressed {{ background: {p['btn_press']}; }}
 
 /* ===== 筛选胶囊（导入确认对话框的状态筛选）===== */
 QPushButton#chipBtn {{
-    padding: 0 12px; min-width: 54px; font-size: 12px; border-radius: 13px;
+    padding: 0 {P(12)}; min-width: {P(54)}; font-size: {P(12)}; border-radius: {P(13)};
     background: {p['btn_bg']}; border: 1px solid {p['btn_border']}; color: {p['text_mute']};
 }}
 QPushButton#chipBtn:hover {{ background: {p['btn_hover']}; color: {p['text']}; }}
@@ -254,19 +269,19 @@ QPushButton#chipBtn:checked {{
 /* ===== 台账溯源卡片 ===== */
 QWidget#sourceCard {{
     background: {p['bg_table']}; border: 1px solid {p['border']};
-    border-radius: 10px; padding: 16px 18px;
+    border-radius: {P(10)}; padding: {P(16)} {P(18)};
 }}
 QLabel#sourceBreadcrumb {{
-    color: {p['text_mute']}; font-size: 12px; padding: 0 0 10px 0;
+    color: {p['text_mute']}; font-size: {P(12)}; padding: 0 0 {P(10)} 0;
 }}
 QLabel#sourceBreadcrumb QLabel#crumbFile {{ color: {p['text']}; font-weight: 600; }}
 QWidget#sourceGrid {{ background: transparent; }}
 QLabel#sourceKey {{
-    color: {p['text_mute']}; font-size: 12px; padding: 5px 8px;
+    color: {p['text_mute']}; font-size: {P(12)}; padding: {P(5)} {P(8)};
     border-right: 1px solid {p['border']};
 }}
 QLabel#sourceVal {{
-    color: {p['text']}; font-size: 13px; padding: 5px 8px;
+    color: {p['text']}; font-size: {P(13)}; padding: {P(5)} {P(8)};
     font-family: "JetBrains Mono", "Consolas", monospace;
 }}
 QLabel#sourceEmpty {{ color: {p['text_faint']}; font-style: italic; }}
@@ -274,29 +289,30 @@ QLabel#sourceEmpty {{ color: {p['text_faint']}; font-style: italic; }}
 /* ===== 费用类型分类卡片（费用类型页） ===== */
 QFrame#card {{
     background: {p['bg_table']}; border: 1px solid {p['border']};
-    border-radius: 10px;
+    border-radius: {P(10)};
 }}
-QLabel#cardTitle {{ color: {p['text']}; font-size: 13px; font-weight: 700; }}
+QLabel#cardTitle {{ color: {p['text']}; font-size: {P(13)}; font-weight: 700; }}
 QFrame#card QListWidget {{
     background: {p['bg']}; border: 1px solid {p['border']};
-    border-radius: 8px; padding: 4px; outline: none;
+    border-radius: {P(8)}; padding: {P(4)}; outline: none;
 }}
-QFrame#card QListWidget::item {{ padding: 5px 8px; border-radius: 5px; }}
+QFrame#card QListWidget::item {{ padding: {P(5)} {P(8)}; border-radius: {P(5)}; }}
 QFrame#card QListWidget::item:hover {{ background: {p['bg_hover']}; }}
 QFrame#card QListWidget::item:selected {{ background: {p['bg_select']}; color: {p['text']}; }}
 
 /* ===== 消息框 / 弹窗 ===== */
 QMessageBox, QDialog {{ background: {p['bg']}; }}
-QMessageBox QLabel {{ font-size: 13px; }}
+QMessageBox QLabel {{ font-size: {P(13)}; }}
 """
 
 
 # ---------------------------------------------------------------------------
 # 皮肤注册表
 # ---------------------------------------------------------------------------
+# qss 不再预生成：字号档位会变，QSS 必须按当前倍率即时生成。
 SKINS = {
-    "notion_light": {"label": "Notion 浅色", "qss": build_qss(PALETTES["notion_light"])},
-    "notion_dark": {"label": "Notion 深色", "qss": build_qss(PALETTES["notion_dark"])},
+    "notion_light": {"label": "Notion 浅色", "palette": "notion_light"},
+    "notion_dark": {"label": "Notion 深色", "palette": "notion_dark"},
 }
 
 
@@ -309,12 +325,26 @@ def palette() -> dict:
     return PALETTES.get(_current_skin, PALETTES[DEFAULT_SKIN])
 
 
+def qss_for(name: str) -> str:
+    """按皮肤名 + **当前字号档位**生成 QSS。"""
+    key = SKINS.get(name, SKINS[DEFAULT_SKIN])["palette"]
+    return build_qss(PALETTES[key], scale.ratio())
+
+
 def apply_skin(app, name: str) -> None:
     """在运行时切换皮肤（app 为 QApplication 实例）。"""
     global _current_skin
     name = name if name in SKINS else DEFAULT_SKIN
     _current_skin = name
-    app.setStyleSheet(SKINS[name]["qss"])
+    app.setStyleSheet(qss_for(name))
+
+
+def refresh_qss(app) -> None:
+    """字号档位变化后重建 QSS（皮肤不变）。
+
+    只换样式表不够：行高/列宽等代码侧尺寸需由 main_window 另行广播刷新。
+    """
+    app.setStyleSheet(qss_for(_current_skin))
 
 
 def skin_label(name: str) -> str:
