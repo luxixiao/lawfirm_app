@@ -77,8 +77,20 @@ def evaluate(data: Dict, staff_set: set) -> List[Dict]:
                 reasons.append("经办人分摊合计≠价税合计")
 
         # ---- 系统预填每经办人已收 ----
+        # 问题行修正时用户逐经办人填写的收款落在 split_receipts（备注 receipts 为空），
+        # 必须直接归因，不能走备注推导，否则修正后界面仍显示「未收款」。
+        split_receipts = inv.get("split_receipts") or []
         if is_red:
             system_received = {n: 0.0 for n, _ in handlers}
+        elif split_receipts:
+            agg = {}
+            for name, amt, _ym in split_receipts:
+                agg[name] = agg.get(name, 0.0) + amt
+            system_received = {n: agg.get(n, 0.0) for n, _ in handlers}
+            for n, b in handlers:
+                got = system_received.get(n, 0.0)
+                if got > b + 0.01:
+                    reasons.append(f"经办人{n}已收({got:g})>开票金额({b:g})")
         else:
             # 备注 receipts 中 0.0 是「全额」哨兵，需展开为总价后再分摊
             recs = [
@@ -112,9 +124,17 @@ def evaluate(data: Dict, staff_set: set) -> List[Dict]:
 
 
 def _receipt_text(inv: Dict) -> str:
-    """收款认定摘要（与预览框一致）。"""
+    """收款认定摘要（与预览框一致）。
+
+    问题行修正时用户逐经办人填写的收款落在 split_receipts，需优先展示，
+    否则修正后「收款认定」列仍显示「未收款」。
+    """
     if inv.get("is_red"):
         return "红字，不产生收款"
+    split = inv.get("split_receipts") or []
+    if split:
+        parts = [f"{ym} {name} {amt:,.2f}" for name, amt, ym in split]
+        return "、".join(parts)
     rem = inv.get("remark") or {}
     if rem.get("pure_date"):
         return f"{rem['pure_date']} 全额"
