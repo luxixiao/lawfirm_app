@@ -181,6 +181,7 @@ class MainWindow(FramelessWindow):
         self._build_pages()
         self._build_layout()
         self._apply_current_skin_to_combo()
+        self._install_font_shortcuts()
 
         # 默认选中导入页
         self.select("import")
@@ -294,6 +295,18 @@ class MainWindow(FramelessWindow):
         self.motion_box.setToolTip("关闭可减少画面移动，适合前庭敏感用户")
         self.motion_box.toggled.connect(self._on_motion_toggled)
         skin_layout.addWidget(self.motion_box)
+
+        font_label = QLabel("字号")
+        font_label.setObjectName("skinLabel")
+        self.font_combo = QComboBox()
+        for i, size, label in scale.steps():
+            self.font_combo.addItem(f"{label}（{size}px）", i)
+        self.font_combo.setCurrentIndex(scale.step())
+        self.font_combo.setToolTip(
+            "全局字号 5 档，即时生效；快捷键 Ctrl+= 放大 / Ctrl+- 缩小 / Ctrl+0 复位")
+        self.font_combo.currentIndexChanged.connect(self._on_font_changed)
+        skin_layout.addWidget(font_label)
+        skin_layout.addWidget(self.font_combo)
         return skin_box
 
     def _apply_current_skin_to_combo(self) -> None:
@@ -320,6 +333,21 @@ class MainWindow(FramelessWindow):
             self.show_info("动效已开启", success=True)
         else:
             self.show_info("动效已关闭：界面切换将瞬时到位", success=True)
+
+    def _on_font_changed(self, index: int) -> None:
+        if index < 0:
+            return
+        self.apply_font_step(index)
+
+    def _install_font_shortcuts(self) -> None:
+        """Ctrl+= 放大一档 / Ctrl+- 缩小一档 / Ctrl+0 复位标准档。"""
+        from PySide6.QtGui import QKeySequence, QShortcut
+        QShortcut(QKeySequence("Ctrl+="), self,
+                  activated=lambda: self.apply_font_step(scale.step() + 1))
+        QShortcut(QKeySequence("Ctrl+-"), self,
+                  activated=lambda: self.apply_font_step(scale.step() - 1))
+        QShortcut(QKeySequence("Ctrl+0"), self,
+                  activated=lambda: self.apply_font_step(scale.DEFAULT_STEP))
 
     def apply_font_step(self, step: int) -> None:
         """切换全局字号档位并即时生效。
