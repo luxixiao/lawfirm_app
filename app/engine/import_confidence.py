@@ -30,38 +30,47 @@ SHEET_LABEL = {
 }
 
 
-def evaluate(data: Dict, staff_set: set) -> List[Dict]:
+def evaluate(data: Dict, staff_set: set, confirmed: set = None) -> List[Dict]:
     """评估全部发票，返回逐张结果列表。
 
     Args:
         data: parse_ledger_file(...) 的解析结果（含 invoices）。
         staff_set: 在职职工姓名集合（用于"不在花名册"判定）。
+        confirmed: 已被用户「确认」过的发票下标集合（下标对应 data.invoices 顺序）。
+                   命中后，sheet1/2/3 的三类「兜底判定」提示不再追加，视为用户已认可
+                   系统默认口径（例如 sheet1 空备注按全额收款、应收账款纯日期按全额等）。
 
     Returns: 每项为一张发票的评估结果 dict，含 inv 引用（_inv）。
     """
+    confirmed = confirmed or set()
     results: List[Dict] = []
-    for inv in data.get("invoices", []):
+    for i, inv in enumerate(data.get("invoices", [])):
         sheet = inv.get("sheet") or ""
         total = inv.get("total_amount") or 0.0
         is_red = bool(inv.get("is_red"))
         handlers: List[Tuple[str, float]] = inv.get("handlers") or []
         remark = inv.get("remark") or {}
         reasons: List[str] = []
+        # 用户是否逐经办人显式填过收款（问题修正/右侧表单保存都会落到 split_receipts）。
+        # 已填 → 视作用户已认可系统按其所填收款认定，兜底类「请确认」提示不再追加。
+        split_receipts = inv.get("split_receipts") or []
+        has_split = bool(split_receipts)
+        suppressed = has_split or (i in confirmed)
 
         # ---- 收款认定疑问 ----
         if not is_red:
             pure_date = remark.get("pure_date")
             receipts = remark.get("receipts") or []
             remaining = remark.get("remaining")
-            if sheet == "sheet3" and pure_date:
+            if sheet == "sheet3" and pure_date and not suppressed:
                 reasons.append("应收账款纯日期按全额收款，请确认")
-            if sheet == "sheet2" and pure_date:
+            if sheet == "sheet2" and pure_date and not suppressed:
                 reasons.append("已开票未入账纯日期按未收，请确认")
             if remaining is not None and receipts and not pure_date:
                 recv_sum = sum(a for _, a in receipts if a > 0)
                 if abs((recv_sum + remaining) - total) > 0.01:
                     reasons.append("收款+剩余≠价税合计（勾稽不平）")
-            if sheet == "sheet1" and not receipts and not pure_date:
+            if sheet == "sheet1" and not receipts and not pure_date and not suppressed:
                 reasons.append("已开票已入账空备注按全额兜底，请确认")
 
         # ---- 经办人疑问 ----
@@ -80,7 +89,6 @@ def evaluate(data: Dict, staff_set: set) -> List[Dict]:
         # ---- 系统预填每经办人已收 ----
         # 问题行修正时用户逐经办人填写的收款落在 split_receipts（备注 receipts 为空），
         # 必须直接归因，不能走备注推导，否则修正后界面仍显示「未收款」。
-        split_receipts = inv.get("split_receipts") or []
         if is_red:
             system_received = {n: 0.0 for n, _ in handlers}
         elif split_receipts:

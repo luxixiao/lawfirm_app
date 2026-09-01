@@ -39,6 +39,10 @@ class _MB:
         _MB.calls.append(("question", text))
         return 1  # Yes
 
+    @staticmethod
+    def information(parent, title, text, *a, **k):
+        _MB.calls.append(("information", text))
+
 
 U.QMessageBox = _MB
 
@@ -302,6 +306,84 @@ try:
 finally:
     _db.DB_PATH = _real_db
 
+# ------------------------------------------- 9) 反馈三点回归（只读 / 确认按钮 / sheet1 兜底闸门）
+from app.engine.import_confidence import evaluate as _eval  # noqa: E402
+
+
+def mk_simple(sheet1_empty=True):
+    """待确认：sheet1 空备注全额兜底；高置信：sheet1 收款备注齐全。"""
+    invs = []
+    if sheet1_empty:
+        invs.append(mk_inv("25332000000406956789", 6000.0, sheet="sheet1",
+                           remark={"receipts": [], "remaining": None, "pure_date": None}))
+    invs.append(mk_inv("INV-HI", 1000.0,
+                       remark={"receipts": [("2025-01", 0)], "remaining": None, "pure_date": None}))
+    return {
+        "period": "2025-01", "invoices": invs, "prepayments": [], "problems": [],
+        "sheet_totals": {"sheet1": (7000.0 if sheet1_empty else 1000.0)},
+        "sheet12_total": (7000.0 if sheet1_empty else 1000.0),
+    }
+
+
+# 引擎层直接验证 confirmed / has_split 闸门（不依赖 GUI）
+_e0 = mk_simple()
+_before = _eval(_e0, set(STAFF))
+check("引擎：sheet1 空备注默认待确认", _before[0]["conf"] == "low", f"reasons={_before[0]['reasons']}")
+_after_c = _eval(_e0, set(STAFF), confirmed={0})
+check("引擎：confirmed={0} 后该发票变高置信", _after_c[0]["conf"] == "high", f"reasons={_after_c[0]['reasons']}")
+import copy as _copy  # noqa: E402
+_e2 = _copy.deepcopy(_e0)
+_e2["invoices"][0]["split_receipts"] = [("周立生", 4000.0, "2025-01")]
+_after_s = _eval(_e2, set(STAFF))
+check("引擎：填 split_receipts 亦压制兜底提示", _after_s[0]["conf"] == "high", f"reasons={_after_s[0]['reasons']}")
+
+# 点2：待确认行「确认」按钮 → 移出需处理
+d2 = mk_simple()
+d2dlg = UnifiedImportDialog(d2, "2025-01", STAFF)
+d2dlg.show()
+low = next(r for r in d2dlg._rows if r["kind"] == "invoice" and r["inv_idx"] == 0)
+d2dlg.table.selectRow(d2dlg._rows.index(low))
+check("点2：待确认行显示「确认」按钮", d2dlg.btn_confirm_row.isVisible())
+check("点2：待确认行不显示「编辑」按钮", not d2dlg.btn_edit.isVisible())
+d2dlg._confirm_row()
+low2 = next(r for r in d2dlg._rows if r["kind"] == "invoice" and r["inv_idx"] == 0)
+check("点2：确认后该发票变高置信", low2["ev"]["conf"] == "high", f"reasons={low2['ev']['reasons']}")
+check("点2：确认后离开需处理（状态=高置信）", low2["status"] == "高置信", f"status={low2['status']}")
+
+# 点3：填收款金额+日期并保存 → 不再是待确认（即便未全额收款）
+d3 = mk_simple()
+d3dlg = UnifiedImportDialog(d3, "2025-01", STAFF)
+d3dlg.show()
+low3 = next(r for r in d3dlg._rows if r["kind"] == "invoice" and r["inv_idx"] == 0)
+d3dlg.table.selectRow(d3dlg._rows.index(low3))
+pp3 = d3dlg.fix_panel
+pp3.htable.item(0, 2).setText("4000.00")   # 未全额收款
+pp3.htable.item(0, 3).setText("2025-01")
+d3dlg._inv_edits[0] = pp3.read_fix()
+d3dlg._rebuild()
+low3b = next(r for r in d3dlg._rows if r["kind"] == "invoice" and r["inv_idx"] == 0)
+check("点3：填收款并保存 → 不再是待确认", low3b["ev"]["conf"] == "high", f"reasons={low3b['ev']['reasons']}")
+check("点3：未全额收款也离开需处理", low3b["status"] == "高置信", f"status={low3b['status']}")
+
+# 点1：高置信默认只读，点「编辑」才解锁（高置信不在「需处理」筛选，先切「全部」）
+d1 = mk_simple()
+d1dlg = UnifiedImportDialog(d1, "2025-01", STAFF)
+d1dlg.show()
+d1dlg._grp.button(1).setChecked(True)   # 全部
+d1dlg._render()
+hi = next(r for r in d1dlg._rows if r["kind"] == "invoice" and r["inv_idx"] == 1)
+d1dlg.table.selectRow(d1dlg._rows.index(hi))
+check("点1：高置信默认只读（开票日期）", d1dlg.fix_panel.inv_date.isReadOnly())
+check("点1：高置信默认只读（经办人下拉禁用）", not d1dlg.fix_panel.htable.cellWidget(0, 0).isEnabled())
+check("点1：高置信默认只读（保存按钮隐藏）", not d1dlg.btn_save.isVisible())
+check("点1：高置信显示「编辑」按钮", d1dlg.btn_edit.isVisible())
+d1dlg._enter_edit_mode()
+check("点1：点编辑后开票日期可写", not d1dlg.fix_panel.inv_date.isReadOnly())
+check("点1：点编辑后经办人下拉启用", d1dlg.fix_panel.htable.cellWidget(0, 0).isEnabled())
+check("点1：点编辑后保存按钮出现", d1dlg.btn_save.isVisible())
+check("点1：点编辑后编辑按钮隐藏", not d1dlg.btn_edit.isVisible())
+
+# ------------------------------------------- 汇总
 bad = [n for n, ok, _ in results if not ok]
 print(f"\n{len(results) - len(bad)}/{len(results)} passed")
 if bad:

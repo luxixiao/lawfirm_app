@@ -11,7 +11,9 @@
   重算置信度并刷新表格，该行当场变为「待确认 / 高置信」，可反复修改
 - 选中「已修正」行 → 右侧仍可「重新修正」
 - 双击任意行 → 查看原始台账行（问题行也能看，依赖 problem 携带 header/raw_row）
-- 待确认行可编辑「各经办人已收」（双击该列或右侧按钮）
+- 待确认行：右侧可编辑「各经办人已收」，也可直接点「确认」认可系统默认收款口径
+  （压制 sheet1/2/3 的三类兜底判定疑问，移出「需处理」）；若另有硬疑问仍需先修正数据
+- 高置信行：默认只读（防随手改坏），点「编辑」才解锁表单
 - 确认入库：未处理的问题行自动跳过；已收覆盖值按发票下标回写真实数据
 
 数据流：真实 data 全程不被修改，修正只作用于工作副本；点「确认入库」时才一次性
@@ -88,6 +90,7 @@ class UnifiedImportDialog(QWidget):
         self._ov: Dict[int, Dict[str, float]] = {}  # invoice 下标 -> {经办人: 已收}
         self._inv_edits: Dict[int, dict] = {}    # work invoice 下标 -> 表单编辑结果（原地更新）
         self._idx_to_p: Dict[int, int] = {}      # work invoices 下标 -> problem index
+        self._confirmed: set = set()             # 已点「确认」的 work invoice 下标集合
         self._rows: List[Dict] = []
         self.fix_panel = None
 
@@ -196,6 +199,7 @@ class UnifiedImportDialog(QWidget):
         self._ov = {}
         self._inv_edits = {}
         self._idx_to_p = {}
+        self._confirmed = set()
         self._rows = []
         self.setWindowTitle(f"发票台账导入确认 — {period}")
         self._title.setText(f"发票台账导入确认 — {period}")
@@ -227,7 +231,8 @@ class UnifiedImportDialog(QWidget):
         cg.setSpacing(8)
         self._info: Dict[str, QLabel] = {}
         fields = [("来源", "src"), ("发票号", "no"), ("购方", "buyer"),
-                  ("金额", "amt"), ("收款认定", "receipt"), ("备注", "remark")]
+                  ("金额", "amt"), ("收款认定", "receipt"), ("备注", "remark"),
+                  ("原因 / 疑问", "reason")]
         for r, (label, key) in enumerate(fields):
             k = QLabel(label); k.setObjectName("infoKey")
             v = QLabel("—")
@@ -262,10 +267,16 @@ class UnifiedImportDialog(QWidget):
         self.btn_save.clicked.connect(self._save_fix)
         self.btn_refix = PushButton("重新修正")
         self.btn_refix.clicked.connect(self._refix)
+        self.btn_confirm_row = PushButton("确认")
+        self.btn_confirm_row.clicked.connect(self._confirm_row)
+        self.btn_edit = PushButton("编辑")
+        self.btn_edit.clicked.connect(self._enter_edit_mode)
         self.btn_skiprow = PushButton("跳过此行")
         self.btn_skiprow.clicked.connect(self._skip_row)
         ab.addWidget(self.btn_save)
         ab.addWidget(self.btn_refix)
+        ab.addWidget(self.btn_confirm_row)
+        ab.addWidget(self.btn_edit)
         ab.addWidget(self.btn_skiprow)
         ab.addStretch()
         rv.addLayout(ab)
@@ -314,7 +325,7 @@ class UnifiedImportDialog(QWidget):
     def _rebuild(self) -> None:
         anchor = self._current_anchor()
         self._rebuild_work()
-        evs = evaluate(self._work, self._staff_set)
+        evs = evaluate(self._work, self._staff_set, self._confirmed)
         rows: List[Dict] = []
         for i, ev in enumerate(evs):
             inv_idx = i if i < self._orig_inv_len else None
@@ -563,26 +574,37 @@ class UnifiedImportDialog(QWidget):
         if r is None:
             self.fix_panel.set_problem(None)
             self.fix_panel.setVisible(False)
-            self._set_actions(False, False, False)
+            self._set_actions()
             return
-        for key in ("src", "no", "buyer", "amt", "receipt", "remark"):
+        for key in ("src", "no", "buyer", "amt", "receipt", "remark", "reason"):
             self._info[key].setText(self._row_field(r, key))
 
         if r["kind"] == "invoice":
             # 所有发票行（高/低/已修正）均在右侧就地编辑（方案 A：统一右栏）
             self.fix_panel.setVisible(True)
             self.fix_panel.set_invoice(r["ev"]["_inv"], r["ev"])
-            self._set_actions(True, False, False)
+            if r["ev"]["conf"] == "high":
+                # 高置信：默认只读，防止被随手改坏；点「编辑」才解锁
+                self.fix_panel.set_readonly(True)
+                self._set_actions(edit=True)
+            else:
+                # 低置信（待确认）：可保存修改，也可点「确认」认可系统默认口径
+                self.fix_panel.set_readonly(False)
+                self._set_actions(save=True, confirm=True)
         else:
-            # 待修正 / 已跳过 问题行仍走 set_problem 修正路径
+            # 待修正 / 已跳过 问题行仍走 set_problem 修正路径（始终可编辑）
             self.fix_panel.setVisible(True)
             self.fix_panel.set_problem(r["problem"])
-            self._set_actions(True, False, True)
+            self._set_actions(save=True, skip=(r["status"] == "待修正"))
 
-    def _set_actions(self, fixing: bool, refix: bool, show_skip: bool = True) -> None:
-        self.btn_save.setVisible(fixing)
-        self.btn_skiprow.setVisible(fixing and show_skip)
+    def _set_actions(self, *, save: bool = False, skip: bool = False,
+                     refix: bool = False, confirm: bool = False,
+                     edit: bool = False) -> None:
+        self.btn_save.setVisible(save)
+        self.btn_skiprow.setVisible(skip)
         self.btn_refix.setVisible(refix)
+        self.btn_confirm_row.setVisible(confirm)
+        self.btn_edit.setVisible(edit)
 
     def _show_source(self) -> None:
         r = self._current_row()
@@ -640,8 +662,36 @@ class UnifiedImportDialog(QWidget):
             return
         p = self._data["problems"][r["p_index"]]
         self.fix_panel.setVisible(True)
-        self._set_actions(True, False)
+        self._set_actions(save=True)
         self.fix_panel.set_problem(p)
+
+    def _enter_edit_mode(self) -> None:
+        """高置信行点「编辑」后解锁表单（默认只读态）。"""
+        r = self._current_row()
+        if r is None or r["kind"] != "invoice":
+            return
+        self.fix_panel.set_readonly(False)
+        self._set_actions(save=True)
+
+    def _confirm_row(self) -> None:
+        """待确认行点「确认」：认可系统默认收款口径，移出「需处理」。
+
+        仅压制 sheet1/2/3 的三类「兜底判定」提示；若该行另有无法确认的硬疑问
+        （如经办人不在花名册、分摊不平），确认无法消除，需先「保存修改」修正数据。
+        """
+        r = self._current_row()
+        if r is None or r["kind"] != "invoice" or r["work_idx"] is None:
+            return
+        self._confirmed.add(r["work_idx"])
+        self._rebuild()
+        row = next((x for x in self._rows
+                    if x["kind"] == "invoice" and x.get("work_idx") == r["work_idx"]), None)
+        if row is not None and row["ev"]["conf"] == "low":
+            residual = "、".join(row["ev"]["reasons"]) or "其它疑问"
+            QMessageBox.information(
+                self, "仍有未确认的疑问",
+                f"该行的「兜底判定」已确认，但还残留以下硬疑问，确认无法消除：\n\n"
+                f"　{residual}\n\n请点「保存修改」修正数据后再确认。")
 
     def _skip_row(self) -> None:
         r = self._current_row()

@@ -63,6 +63,8 @@ class ProblemFixPanel(QWidget):
         self._staff_list = sorted(staff_names)
         self._period = period
         self._problem: dict | None = None
+        self._readonly = False
+        self._edit_hint = ""
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -160,6 +162,14 @@ class ProblemFixPanel(QWidget):
     # ------------------------------------------------------------------ #
     def set_problem(self, p: dict | None) -> None:
         self._problem = p
+        # 问题行始终可编辑：切回时务必清掉可能残留的只读态
+        self._readonly = False
+        self.inv_date.setReadOnly(False)
+        self.inv_amount.setReadOnly(False)
+        self.htable.setEditTriggers(
+            TableWidget.EditTrigger.DoubleClicked | TableWidget.EditTrigger.EditKeyPressed)
+        self.btn_add.setEnabled(True)
+        self.btn_del.setEnabled(True)
         if p is None:
             self.inv_box.setVisible(False)
             self.pp_box.setVisible(False)
@@ -186,6 +196,24 @@ class ProblemFixPanel(QWidget):
     def current_problem(self) -> dict | None:
         return self._problem
 
+    def set_readonly(self, ro: bool) -> None:
+        """切换只读态。只读时禁用开票日期/总额输入、经办人子表与增删按钮，
+        防止高置信行被随手改坏；点「编辑」再切回可编辑。"""
+        self._readonly = ro
+        self.inv_date.setReadOnly(ro)
+        self.inv_amount.setReadOnly(ro)
+        trig = (TableWidget.EditTrigger.NoEditTriggers
+                if ro else (TableWidget.EditTrigger.DoubleClicked
+                            | TableWidget.EditTrigger.EditKeyPressed))
+        self.htable.setEditTriggers(trig)
+        for r in range(self.htable.rowCount()):
+            w = self.htable.cellWidget(r, 0)
+            if w is not None:
+                w.setEnabled(not ro)
+        self.btn_add.setEnabled(not ro)
+        self.btn_del.setEnabled(not ro)
+        self.hint.setText("高置信：默认只读，点「编辑」可修改。" if ro else (self._edit_hint or ""))
+
     def set_invoice(self, inv: dict, ev: dict | None = None) -> None:
         """载入一条已解析发票（高/低置信或修正后）预填表单，供就地编辑。
 
@@ -205,6 +233,7 @@ class ProblemFixPanel(QWidget):
         self.inv_box.setVisible(True)
         self.inv_date.setText(inv.get("invoice_date") or "")
         self.inv_amount.setText(str(inv.get("total_amount") or ""))
+        self._readonly = False
 
         handlers = inv.get("handlers") or []
         sys_recv = ev.get("system_received", {}) or {}
@@ -233,10 +262,12 @@ class ProblemFixPanel(QWidget):
                     "recv_date": (date_hint if amt > 0 else ""),
                 })
         self._render_rows(rows)
-        self.hint.setText(
+        self._edit_hint = (
             "可直接修改开票日期 / 总额 / 经办人分摊 / 收款金额与日期；"
             "点「保存修改」原地更新该发票（不再弹小窗）。"
         )
+        if not self._readonly:
+            self.hint.setText(self._edit_hint)
 
     # ------------------------------------------------------------------ #
     # 表单渲染 / 读取
@@ -261,7 +292,9 @@ class ProblemFixPanel(QWidget):
         for r in rows:
             i = self.htable.rowCount()
             self.htable.insertRow(i)
-            self.htable.setCellWidget(i, 0, self._make_handler_combo(r.get("name", "")))
+            combo = self._make_handler_combo(r.get("name", ""))
+            combo.setEnabled(not self._readonly)
+            self.htable.setCellWidget(i, 0, combo)
             self.htable.setItem(i, 1, self._item(str(r.get("bill", ""))))
             self.htable.setItem(i, 2, self._item(str(r.get("recv_amt", ""))))
             self.htable.setItem(i, 3, self._item(str(r.get("recv_date", ""))))
