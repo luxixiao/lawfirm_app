@@ -118,6 +118,41 @@ check("粘贴自动加行 40→(5,1)", view.table.item(5, 1).text() == "40",
       f"got={view.table.item(5, 1).text() if view.table.item(5, 1) else None}")
 check("粘贴数字右对齐值", view.table.item(4, 0).text() == "10")
 
+# ---- 新功能回归：冻结首行 / 缩放 / 折叠 / 选中统计 ----
+# 冻结首行默认开：副表仅 1 行，且镜像主表第 1 行内容
+check("冻结首行默认可见", view.frozen.isVisible(),
+      f"visible={view.frozen.isVisible()}")
+check("冻结副表仅 1 行", view.frozen.rowCount() == 1,
+      f"rows={view.frozen.rowCount()}")
+check("冻结副表镜像首行 B1=100",
+      view.frozen.item(0, 1) is not None and view.frozen.item(0, 1).text() == "100",
+      f"got={view.frozen.item(0,1).text() if view.frozen.item(0,1) else None}")
+# Ctrl+滚轮放大：zoom 增长、标签更新
+before_z = view._zoom
+view._on_zoom(1)
+check("Ctrl+滚轮放大 zoom 增长", view._zoom > before_z,
+      f"before={before_z} after={view._zoom}")
+check("缩放标签已更新", view.lbl_zoom.text().endswith("%"),
+      f"got={view.lbl_zoom.text()!r}")
+# 复位
+view._reset_zoom()
+check("缩放复位 100%", view._zoom == 1.0 and view.lbl_zoom.text() == "100%",
+      f"got={view.lbl_zoom.text()!r}")
+# 左栏折叠：visible 关闭
+view._toggle_list()
+check("左栏可折叠", not view.left_widget.isVisible(),
+      f"visible={view.left_widget.isVisible()}")
+view._toggle_list()  # 复位，避免影响后续像素冒烟
+# 选中区域统计：选中 A1:A3（基数/公式/公式）后求和应含数值项
+from PySide6.QtWidgets import QTableWidgetSelectionRange
+view.table.setRangeSelected(QTableWidgetSelectionRange(0, 0, 2, 0), True)
+view._update_stats()
+stat = view.lbl_stat.text()
+check("选中统计非空", stat != "",
+      f"got={stat!r}")
+check("选中统计含 计数", "计数" in stat, f"stat={stat!r}")
+check("选中统计含 求和", "求和" in stat, f"stat={stat!r}")
+
 # 像素冒烟：grab 非空白
 img = view.grab()
 qi = img.toImage()

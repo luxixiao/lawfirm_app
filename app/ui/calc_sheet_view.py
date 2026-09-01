@@ -12,14 +12,16 @@
 """
 from __future__ import annotations
 
+import json
 import os
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QDialog, QFileDialog, QHBoxLayout,
-    QInputDialog, QLabel, QLineEdit, QListWidget, QMessageBox, QPushButton,
-    QSplitter, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
+    QHeaderView, QInputDialog, QLabel, QLineEdit, QListWidget, QMessageBox,
+    QPushButton, QSplitter, QTableWidget, QTableWidgetItem, QVBoxLayout,
+    QWidget,
 )
 
 from app.engine import calc_sheet as cs
@@ -27,14 +29,46 @@ from app.engine.calc_eval import CalcEvaluator
 from app.engine.calc_formula import ErrVal, classify_cell
 from app.exporter.calc_export import export_sheet, suggest_filename
 from app.ui.calc_dialogs import DataRefDialog, IndicatorManagerDialog, ParamDialog
+from app.ui import scale
+from app.ui.scale import PREFS_PATH
 from app.ui.widgets import CaptionLabel, SubtitleLabel
 
 _ERR_RED = QColor("#C0392B")
 _FORMULA_GREEN = QColor("#1E7B34")
 
+# 缩放范围与步进（Ctrl+滚轮，按表记忆到本机 prefs，不写库）
+_ZOOM_MIN, _ZOOM_MAX, _ZOOM_STEP = 0.6, 2.0, 1.1
+
 
 def _user() -> str:
     return os.environ.get("USERNAME", "") or "本机"
+
+
+def _pref(key: str, default=None):
+    """读 prefs.json（与皮肤/字号档共用文件，只加键不覆盖）。"""
+    try:
+        if PREFS_PATH.exists():
+            data = json.loads(PREFS_PATH.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                return data.get(key, default)
+    except Exception:
+        pass
+    return default
+
+
+def _pref_set(key: str, value) -> None:
+    try:
+        data = {}
+        if PREFS_PATH.exists():
+            loaded = json.loads(PREFS_PATH.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                data = loaded
+        data[key] = value
+        PREFS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        PREFS_PATH.write_text(
+            json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:
+        pass
 
 
 def _fmt(v) -> str:
@@ -50,12 +84,21 @@ def _fmt(v) -> str:
 
 
 class GridTable(QTableWidget):
-    """网格：编辑开始时把公式格的编辑文本切回原文 raw。"""
+    """网格：编辑开始时把公式格的编辑文本切回原文 raw；Ctrl+滚轮缩放。"""
+
+    zoomRequested = Signal(int)   # +1 放大 / -1 缩小（按住 Ctrl 滚动）
 
     def __init__(self, *a, **kw):
         super().__init__(*a, **kw)
         self.raw_provider = None   # callable(r0, c0) -> raw | None
         self.paste_callback = None  # Ctrl+V → TSV 值粘贴
+
+    def wheelEvent(self, event):  # noqa: N802 (Qt override)
+        if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            self.zoomRequested.emit(1 if event.angleDelta().y() > 0 else -1)
+            event.accept()
+            return
+        super().wheelEvent(event)
 
     def keyPressEvent(self, event):  # noqa: N802 (Qt override)
         if (self.paste_callback is not None
@@ -94,10 +137,13 @@ class CalcSheetView(QWidget):
             "计算结果只读引用台账数据，绝不回写业务主表。"))
 
         split = QSplitter(Qt.Orientation.Horizontal)
+        self.split = split
         root.addWidget(split, 1)
 
-        # ---------------- 左：表格列表 ----------------
+        # ---------------- 左：表格列表（窄栏，可折叠） ----------------
         left = QWidget()
+        self.left_widget = left
+        left.setMaximumWidth(320)
         lv = QVBoxLayout(left)
         lv.setContentsMargins(0, 0, 12, 0)
         lv.setSpacing(8)
@@ -126,6 +172,11 @@ class CalcSheetView(QWidget):
 
         bar = QHBoxLayout()
         bar.setSpacing(8)
+        self.btn_toggle_list = QPushButton("≪")
+        self.btn_toggle_list.setFixedWidth(28)
+        self.btn_toggle_list.setToolTip("收起左侧表格列表，把空间让给网格")
+        self.btn_toggle_list.clicked.connect(self._toggle_list)
+        bar.addWidget(self.btn_toggle_list)
         self.btn_view_mode = QPushButton("查看")
         self.btn_edit_mode = QPushButton("编辑")
         for b in (self.btn_view_mode, self.btn_edit_mode):
@@ -155,12 +206,25 @@ class CalcSheetView(QWidget):
         bar.addWidget(self.btn_ind)
         bar.addWidget(self.btn_export)
         bar.addStretch(1)
+        self.lbl_zoom = QLabel("100%")
+        self.lbl_zoom.setToolTip("Ctrl+滚轮缩放网格（60%~200%），按表记忆；点「复位」回到 100%")
+        bar.addWidget(self.lbl_zoom)
+        self.btn_zoom_reset = QPushButton("复位")
+        self.btn_zoom_reset.setToolTip("缩放复位 100%（Ctrl+0 已被全局字号占用）")
+        self.btn_zoom_reset.clicked.connect(self._reset_zoom)
+        bar.addWidget(self.btn_zoom_reset)
         self.btn_add_row = QPushButton("+行")
         self.btn_add_col = QPushButton("+列")
         self.btn_add_row.clicked.connect(lambda: self._grow(5, 0))
         self.btn_add_col.clicked.connect(lambda: self._grow(0, 3))
         bar.addWidget(self.btn_add_row)
         bar.addWidget(self.btn_add_col)
+        self.btn_freeze = QPushButton("冻结首行")
+        self.btn_freeze.setCheckable(True)
+        self.btn_freeze.setChecked(True)
+        self.btn_freeze.setToolTip("首行常显：滚动时保持可见，双击冻结格跳到主表对应格")
+        self.btn_freeze.toggled.connect(lambda _on: self._fill_frozen())
+        bar.addWidget(self.btn_freeze)
         rv.addLayout(bar)
 
         fbar = QHBoxLayout()
@@ -181,13 +245,49 @@ class CalcSheetView(QWidget):
         self.table.setHorizontalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
         self.table.currentCellChanged.connect(self._on_current_cell)
         self.table.itemChanged.connect(self._on_item_changed)
-        rv.addWidget(self.table, 1)
+        self.table.zoomRequested.connect(self._on_zoom)
+        self.table.itemSelectionChanged.connect(self._update_stats)
 
+        # ---- 冻结首行（覆盖式副表：只显示主表第 1 行，横向滚动/列宽同步） ----
+        self.frozen = GridTable(0, 0)
+        self.frozen.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.frozen.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.frozen.setWordWrap(False)
+        self.frozen.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Fixed)
+        self.frozen.verticalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Fixed)
+        self.frozen.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.frozen.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.frozen.hide()
+        self.frozen.zoomRequested.connect(self._on_zoom)
+        self.frozen.cellClicked.connect(lambda r, c: self._frozen_goto(c))
+        self.frozen.cellDoubleClicked.connect(
+            lambda r, c: self._frozen_goto(c, edit=True))
+        rv.addWidget(self.frozen)
+        rv.addWidget(self.table, 1)
+        self.table.horizontalScrollBar().valueChanged.connect(
+            self.frozen.horizontalScrollBar().setValue)
+        self.table.horizontalHeader().sectionResized.connect(self._on_col_resized)
+        # 基准行高（标准字号、缩放 100% 时），供缩放派生
+        self._base_row = self.table.verticalHeader().defaultSectionSize()
+        self._zoom = 1.0
+
+        bottom = QHBoxLayout()
         self.lbl_hint = CaptionLabel("")
-        rv.addWidget(self.lbl_hint)
+        bottom.addWidget(self.lbl_hint, 1)
+        self.lbl_stat = CaptionLabel("")
+        self.lbl_stat.setToolTip("当前选中区域的统计（类 Excel）")
+        bottom.addWidget(self.lbl_stat)
+        rv.addLayout(bottom)
         split.addWidget(right)
         split.setStretchFactor(0, 0)
         split.setStretchFactor(1, 1)
+        split.setSizes([220, 1000])
+
+        # 左栏折叠状态记忆
+        if _pref("calc_list_collapsed", False):
+            self.left_widget.setVisible(False)
+            self.btn_toggle_list.setText("≫")
+            self.btn_toggle_list.setToolTip("展开左侧表格列表")
 
         self._set_mode(False)
         self._reload_list()
@@ -247,7 +347,146 @@ class CalcSheetView(QWidget):
         self.lbl_hint.setText(
             f"最后编辑：{rec.get('updated_by') or '—'}  {rec.get('updated_at') or ''}"
             "　（数据库经 Seafile 多机同步：编辑前请确认其他电脑未同时编辑本表，后保存者会覆盖）")
+        # 缩放按表记忆（仅本机 prefs，不写库）：先套字号/行高再填，
+        # 列宽自适应用缩放后的字体测量，宽度自然带缩放
+        self._zoom = 1.0
+        self._set_zoom(self._load_zoom_pref() or 1.0, rescale_cols=False)
         self._fill()
+        self._auto_fit_columns()
+
+    # ------------------------------------------------------------------ #
+    # 左栏折叠 / 网格缩放 / 冻结首行 / 选中统计
+    # ------------------------------------------------------------------ #
+    def _toggle_list(self) -> None:
+        vis = not self.left_widget.isVisible()
+        self.left_widget.setVisible(vis)
+        self.btn_toggle_list.setText("≪" if vis else "≫")
+        self.btn_toggle_list.setToolTip(
+            "收起左侧表格列表，把空间让给网格" if vis else "展开左侧表格列表")
+        _pref_set("calc_list_collapsed", not vis)
+        if vis:
+            self.split.setSizes([220, 1000])
+
+    def _on_zoom(self, direction: int) -> None:
+        self._set_zoom(round(self._zoom * (_ZOOM_STEP if direction > 0 else 1 / _ZOOM_STEP), 2))
+
+    def _reset_zoom(self) -> None:
+        self._set_zoom(1.0)
+
+    def _set_zoom(self, z: float, rescale_cols: bool = True) -> None:
+        """应用缩放：字号 + 行高 + 列宽同比缩放（60%~200%）。"""
+        z = max(_ZOOM_MIN, min(_ZOOM_MAX, round(float(z), 2)))
+        old = self._zoom
+        px = max(8, round(scale.px(13) * z))
+        qss = f"QTableWidget {{ font-size: {px}px; }}"
+        self.table.setStyleSheet(qss)
+        self.frozen.setStyleSheet(qss)
+        row_h = max(18, round(self._base_row * z))
+        self.table.verticalHeader().setDefaultSectionSize(row_h)
+        self.frozen.verticalHeader().setDefaultSectionSize(row_h)
+        if rescale_cols and abs(z - old) > 1e-9 and self.table.columnCount():
+            ratio = z / old
+            for c in range(self.table.columnCount()):
+                self.table.setColumnWidth(
+                    c, max(24, round(self.table.columnWidth(c) * ratio)))
+        self._zoom = z
+        self.lbl_zoom.setText(f"{int(round(z * 100))}%")
+        self._save_zoom_pref(z)
+        self._sync_frozen_geometry()
+
+    def _load_zoom_pref(self) -> float | None:
+        z = _pref("calc_zoom", {}).get(str(self.sheet_id))
+        try:
+            z = float(z)
+        except (TypeError, ValueError):
+            return None
+        return z if _ZOOM_MIN <= z <= _ZOOM_MAX else None
+
+    def _save_zoom_pref(self, z: float) -> None:
+        if self.sheet_id is None:
+            return
+        m = _pref("calc_zoom", {})
+        if not isinstance(m, dict):
+            m = {}
+        m[str(self.sheet_id)] = z
+        _pref_set("calc_zoom", m)
+
+    def _auto_fit_columns(self) -> None:
+        """打开表时列宽按内容自适应（设上下限）；行高由全局字号档与缩放决定。"""
+        self.table.resizeColumnsToContents()
+        for c in range(self.table.columnCount()):
+            self.table.setColumnWidth(
+                c, max(48, min(self.table.columnWidth(c), 280)))
+        self._sync_frozen_geometry()
+
+    def _fill_frozen(self) -> None:
+        """冻结首行：副表只读显示主表第 1 行；双击跳到主表对应格。"""
+        if not self.btn_freeze.isChecked() or self.table.rowCount() == 0 \
+                or self.table.columnCount() == 0:
+            self.frozen.setVisible(False)
+            return
+        cols = self.table.columnCount()
+        self.frozen.blockSignals(True)
+        self.frozen.setRowCount(1)
+        self.frozen.setColumnCount(cols)
+        headers = []
+        for c in range(cols):
+            hit = self.table.horizontalHeaderItem(c)
+            headers.append(hit.text() if hit else self._col_name(c))
+        self.frozen.setHorizontalHeaderLabels(headers)
+        for c in range(cols):
+            src = self.table.item(0, c)
+            it = QTableWidgetItem(src.text() if src else "")
+            if src is not None:
+                it.setForeground(src.foreground())
+                it.setBackground(src.background())
+                it.setTextAlignment(src.textAlignment())
+            self.frozen.setItem(0, c, it)
+            self.frozen.setColumnWidth(c, self.table.columnWidth(c))
+        self.frozen.blockSignals(False)
+        self._sync_frozen_geometry()
+        self.frozen.setVisible(True)
+
+    def _sync_frozen_geometry(self) -> None:
+        if not self.frozen.isVisible() or self.frozen.columnCount() == 0:
+            return
+        row_h = self.table.verticalHeader().defaultSectionSize()
+        hh = self.frozen.horizontalHeader().sizeHint().height()
+        self.frozen.verticalHeader().setDefaultSectionSize(row_h)
+        self.frozen.setFixedHeight(hh + row_h)
+        for c in range(min(self.frozen.columnCount(), self.table.columnCount())):
+            self.frozen.setColumnWidth(c, self.table.columnWidth(c))
+
+    def _on_col_resized(self, col: int, _old: int, _new: int) -> None:
+        if 0 <= col < self.frozen.columnCount():
+            self.frozen.setColumnWidth(col, self.table.columnWidth(col))
+
+    def _frozen_goto(self, c: int, edit: bool = False) -> None:
+        self.table.setCurrentCell(0, c)
+        self.table.scrollToTop()
+        if edit and self.edit_mode:
+            self.table.edit(self.table.currentIndex())
+
+    def _update_stats(self) -> None:
+        """选中区域统计（类 Excel）：计数 / 数值 / 求和 / 均值。"""
+        items = self.table.selectedItems()
+        if not items:
+            self.lbl_stat.setText("")
+            return
+        vals = []
+        for it in items:
+            try:
+                vals.append(float(str(it.text()).replace(",", "")))
+            except ValueError:
+                continue
+        parts = [f"计数 {len(items)}"]
+        if vals:
+            s = sum(vals)
+            parts.append(f"数值 {len(vals)}")
+            parts.append(f"求和 {s:,.2f}" if s != int(s) else f"求和 {s:,.0f}")
+            if vals:
+                parts.append(f"均值 {s / len(vals):,.2f}")
+        self.lbl_stat.setText("　".join(parts))
 
     # ------------------------------------------------------------------ #
     # 求值与填充
@@ -284,6 +523,8 @@ class CalcSheetView(QWidget):
                 ev.close()
         finally:
             self._filling = False
+        self._fill_frozen()
+        self._update_stats()
         self._on_current_cell(self.table.currentRow(), self.table.currentColumn(), -1, -1)
 
     @staticmethod
