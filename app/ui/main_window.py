@@ -24,7 +24,7 @@ from qframelesswindow import FramelessWindow
 from qframelesswindow.titlebar import TitleBar
 
 from app.db import get_conn
-from app.ui import scale, style
+from app.ui import style
 from app.ui.sidebar import SidebarWidget
 from app.ui.batch_view import BatchView
 from app.ui.calc_sheet_view import CalcSheetView
@@ -106,7 +106,7 @@ class AppTitleBar(TitleBar):
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
-        self.setFixedHeight(scale.px(36))
+        self.setFixedHeight(36)
         self.titleLabel = QLabel("")
         self.titleLabel.setObjectName("titleBarTitle")
         self.titleLabel.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
@@ -125,8 +125,8 @@ class AppTitleBar(TitleBar):
             self.titleLabel.setText("")
             return
         fm = self.titleLabel.fontMetrics()
-        # 右侧三按钮各 46px + 间距 + 左 padding(12) + 余量（随字号缩放）
-        max_w = max(scale.px(60), self.width() - scale.px(150))
+        # 右侧三按钮各 46px + 间距 + 左 padding(12) + 余量
+        max_w = max(60, self.width() - 150)
         self.titleLabel.setText(fm.elidedText(self._full_title, Qt.ElideRight, max_w))
 
     def resizeEvent(self, event) -> None:  # noqa: N802
@@ -145,8 +145,7 @@ class AppTitleBar(TitleBar):
             f"background:{bar_bg}; border:none; border-bottom:1px solid {border};"
         )
         self.titleLabel.setStyleSheet(
-            f"color:{text}; font:{scale.sp(13)}px 'Microsoft YaHei'; "
-            f"padding-left:{scale.px(12)}px;"
+            f"color:{text}; font:13px 'Microsoft YaHei'; padding-left:12px;"
         )
         # 三按钮为自定义绘制（paintEvent），用属性设色而非 QSS。
         # 图标色用文字色：修复深色皮肤下默认纯黑图标不可见的问题；hover/按下态按皮肤给可见底色。
