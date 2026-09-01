@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
 from app.db import get_conn
 from app.engine import staff_type as st
 from app.importer.staff_import import ImportError_, parse_staff_file
+from app.ui import scale
 from app.ui.column_layout import install_column_layout
 from app.ui.table_features import install_common_features, install_header_filter
 from app.ui.widgets import (
@@ -120,9 +121,9 @@ class StaffView(QWidget):
         self.type_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.type_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.type_table.verticalHeader().setVisible(False)
-        self.type_table.setColumnWidth(0, 120)
-        self.type_table.setColumnWidth(1, 80)
-        self.type_table.setColumnWidth(3, 60)
+        self.type_table.setColumnWidth(0, scale.px(120))
+        self.type_table.setColumnWidth(1, scale.px(80))
+        self.type_table.setColumnWidth(3, scale.px(60))
         install_common_features(self.type_table)
         self._type_col = install_column_layout(self.type_table, "staff_type", "main")
         lay.addWidget(self.type_table, 1)

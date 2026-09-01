@@ -28,6 +28,7 @@ from app.importer.importer import (
     merge_collection_for_invoice, _refresh_snapshot_actual,
 )
 from app.importer.ledger_import import parse_ledger_file
+from app.ui import scale
 from app.ui.ledger_source import show_source_for_invoice
 from app.ui.column_layout import install_column_layout
 from app.ui.widgets import CaptionLabel, ComboBox, PushButton, TableWidget
@@ -536,7 +537,7 @@ class ImportVerifyView(QWidget):
                 elif confirmed:
                     item.setBackground(CONFIRMED_BG)
                 self.table.setItem(r, c, item)
-            self.table.setRowHeight(r, 32)
+            self.table.setRowHeight(r, scale.px(32))
             self.table.item(r, 0).setData(Qt.ItemDataRole.UserRole, row["_idx"])
         if self._need_fit:
             self.table._col.apply()

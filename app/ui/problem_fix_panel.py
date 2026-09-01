@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
 from app.importer.date_utils import normalize_date
 from app.importer.excel_reader import ImportError_
 from app.importer.parse_handler import parse_handler_column
+from app.ui import scale
 from app.ui.widgets import (
     CaptionLabel, ComboBox, LineEdit, PushButton, TableWidget,
 )
@@ -108,9 +109,9 @@ class ProblemFixPanel(QWidget):
             ["经办人", "开票金额", "收款金额", "收款日期"])
         self.htable.setSelectionBehavior(TableWidget.SelectionBehavior.SelectRows)
         self.htable.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        self.htable.setColumnWidth(1, 120)
-        self.htable.setColumnWidth(2, 120)
-        self.htable.setColumnWidth(3, 130)
+        self.htable.setColumnWidth(1, scale.px(120))
+        self.htable.setColumnWidth(2, scale.px(120))
+        self.htable.setColumnWidth(3, scale.px(130))
         self.htable.itemChanged.connect(self._on_item_changed)
         iv.addWidget(self.htable)
 

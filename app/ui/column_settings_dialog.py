@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
     QPushButton, QSpinBox, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
+from app.ui import scale
 from app.ui.column_layout import ColumnLayoutManager, MIN_W, SPIN_MAX
 
 
@@ -68,11 +69,11 @@ class _ColSettingsDlg(QDialog):
             label = self.tbl.horizontalHeaderItem(col).text()
             w = int(fm.horizontalAdvance(label)) + 16
             hdr.setSectionResizeMode(col, QHeaderView.ResizeMode.Fixed)
-            self.tbl.setColumnWidth(col, max(MIN_W, min(w, 80)))
+            self.tbl.setColumnWidth(col, max(MIN_W, min(w, scale.px(80))))
         hdr.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)  # 列名：撑满剩余
         hdr.setSectionResizeMode(3, QHeaderView.ResizeMode.Fixed)    # 宽度：固定
         hdr.setStretchLastSection(False)
-        self.tbl.setColumnWidth(3, 90)
+        self.tbl.setColumnWidth(3, scale.px(90))
         self._fill()
         lay.addWidget(self.tbl, 1)
 

@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
 
 from app.db import get_conn
 from app.engine.import_confidence import evaluate
+from app.ui import scale
 from app.ui.ledger_source import show_ledger_source
 from app.ui.table_view import auto_fit_columns
 from app.ui.widgets import CaptionLabel, PrimaryPushButton, PushButton, TableWidget
@@ -110,7 +111,7 @@ class HandlerReceivedDialog(QDialog):
             amt_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             amt_item.setData(Qt.ItemDataRole.UserRole, float(cur))
             self.table.setItem(r, 1, amt_item)
-            self.table.setRowHeight(r, 30)
+            self.table.setRowHeight(r, scale.px(30))
         self.table.setItemDelegateForColumn(1, AmountDelegate(self.table))
 
     def accept(self) -> None:
@@ -251,12 +252,12 @@ class PreviewDialog(QDialog):
                 if ev["conf"] == "low":
                     item.setBackground(DIFF_BG)
                 self.table.setItem(r, c, item)
-            self.table.setRowHeight(r, 34)
+            self.table.setRowHeight(r, scale.px(34))
             self.table.item(r, 0).setData(Qt.ItemDataRole.UserRole, ev["_idx_global"])
         auto_fit_columns(self.table, max_width=220)
-        self.table.setColumnWidth(4, 240)
-        self.table.setColumnWidth(5, 360)
-        self.table.setColumnWidth(7, 200)
+        self.table.setColumnWidth(4, scale.px(240))
+        self.table.setColumnWidth(5, scale.px(360))
+        self.table.setColumnWidth(7, scale.px(200))
 
         # 单元格文字被列宽裁剪时，悬停显示全文
         fm = self.table.fontMetrics()

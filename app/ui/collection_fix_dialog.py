@@ -26,6 +26,7 @@ from app.db import get_conn
 from app.importer.importer import (
     _refresh_snapshot_actual, merge_collection_for_invoice,
 )
+from app.ui import scale
 
 
 def _money(v) -> str:
@@ -100,7 +101,7 @@ class CollectionFixDialog(QDialog):
             | QAbstractItemView.EditTrigger.SelectedClicked
         )
         self.table.verticalHeader().setVisible(False)
-        self.table.verticalHeader().setDefaultSectionSize(32)
+        self.table.verticalHeader().setDefaultSectionSize(scale.px(32))
         from app.ui.table_features import install_common_features
         install_common_features(self.table)
         self.table.setItemDelegateForColumn(1, AmountDelegate(self.table))

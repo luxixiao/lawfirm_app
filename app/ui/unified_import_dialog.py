@@ -32,6 +32,7 @@ from PySide6.QtWidgets import (
 
 from app.engine.import_confidence import SHEET_LABEL, evaluate
 from app.importer.excel_reader import ImportError_
+from app.ui import scale
 from app.ui.ledger_source import show_ledger_source
 from app.ui.preview_dialog import HandlerReceivedDialog, _fmt_money
 from app.ui.problem_fix_panel import ProblemFixPanel
@@ -345,14 +346,14 @@ class UnifiedImportDialog(QDialog):
                 if r["status"] == "已跳过":
                     item.setForeground(GRAY)
                 self.table.setItem(r_i, c, item)
-            self.table.setRowHeight(r_i, 34)
+            self.table.setRowHeight(r_i, scale.px(34))
             self.table.item(r_i, 0).setData(Qt.ItemDataRole.UserRole, id(r))
         self.table.blockSignals(False)
 
         auto_fit_columns(self.table, max_width=210)
-        self.table.setColumnWidth(COL_HANDLER, 230)
-        self.table.setColumnWidth(COL_RECV, 220)
-        self.table.setColumnWidth(COL_REMARK, 170)
+        self.table.setColumnWidth(COL_HANDLER, scale.px(230))
+        self.table.setColumnWidth(COL_RECV, scale.px(220))
+        self.table.setColumnWidth(COL_REMARK, scale.px(170))
         self._refresh_tip_data()
 
         n_fix = sum(1 for r in self._rows if r["status"] == "待修正")

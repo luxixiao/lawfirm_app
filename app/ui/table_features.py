@@ -29,6 +29,8 @@ from PySide6.QtWidgets import (
     QStyledItemDelegate, QStyleOptionViewItem, QTableWidget, QVBoxLayout,
 )
 
+from app.ui import scale
+
 
 # 冻结列底色（偏灰），用于与常规列可视区分
 _FROZEN_BG = QColor("#EAEAEA")
@@ -190,7 +192,7 @@ class AccentHeaderView(QHeaderView):
             font.setWeight(QFont.Weight.DemiBold)   # 对应 QSS font-weight:600
             painter.setFont(font)
             # 右侧留出角标位（右上角/右下角各 9px），避免文字压到排序角标
-            tr = rect.adjusted(left, 0, -(_SORT_MARK_SIZE + 5), 0)
+            tr = rect.adjusted(left, 0, -(scale.px(_SORT_MARK_SIZE) + 5), 0)
             painter.drawText(tr, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, text)
             painter.restore()
         # 5) 排序三角：QHeaderView 的 isSortIndicatorShown 默认 False，原生根本不会画，
@@ -212,7 +214,7 @@ class AccentHeaderView(QHeaderView):
         """
         # 三条边各外扩 1px：让实心部分真正顶到单元格边界（QRect.right()/bottom() 是
         # 最后一列像素，直接取会剩一条半透明的边缘），溢出由 painter 自动裁剪。
-        s = _SORT_MARK_SIZE + 1      # 直角边长
+        s = scale.px(_SORT_MARK_SIZE) + 1      # 直角边长
         right = rect.right() + 1
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(_SORT_MARK)

@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.db import get_conn
+from app.ui import scale
 from app.ui.widgets import SubtitleLabel, CaptionLabel, PrimaryPushButton, PushButton
 from app.ui.column_layout import install_column_layout
 from app.engine.backfill_module import (
@@ -217,7 +218,7 @@ class ManualEntryView(QWidget):
         detail.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         # 行高固定且与内嵌输入框等高，使输入框四边框正好对齐单元格四框
         detail.verticalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Fixed)
-        detail.verticalHeader().setDefaultSectionSize(36)
+        detail.verticalHeader().setDefaultSectionSize(scale.px(36))
         detail.setHorizontalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
         # 去掉单元格内边距，让输入框紧贴单元格四边
         detail.setStyleSheet("QTableWidget::item{padding:0px;margin:0px;}")
@@ -300,7 +301,7 @@ class ManualEntryView(QWidget):
             de.setDisplayFormat("yyyy-MM")
             d = QDate.fromString(date, "yyyy-MM")
             de.setDate(d if d.isValid() else QDate.currentDate())
-            de.setFixedHeight(34)
+            de.setFixedHeight(scale.px(34))
             date_cell = de
         else:
             date_cell = QLabel("")
@@ -308,7 +309,7 @@ class ManualEntryView(QWidget):
         re_.valueChanged.connect(lambda v: self._ensure_date_edit(table, r, v))
         # 让输入框四边框对齐单元格：固定高度 + 紧贴四边
         for w in (ne, be, re_):
-            w.setFixedHeight(34)
+            w.setFixedHeight(scale.px(34))
         table.setCellWidget(r, 0, ne)
         table.setCellWidget(r, 1, be)
         table.setCellWidget(r, 2, re_)
@@ -325,7 +326,7 @@ class ManualEntryView(QWidget):
         de.setCalendarPopup(True)
         de.setDisplayFormat("yyyy-MM")
         de.setDate(QDate.currentDate())
-        de.setFixedHeight(34)
+        de.setFixedHeight(scale.px(34))
         table.setCellWidget(row, 3, de)
 
     def _del_detail_row(self, table: QTableWidget) -> None:

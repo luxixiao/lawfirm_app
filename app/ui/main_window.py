@@ -321,6 +321,29 @@ class MainWindow(FramelessWindow):
         else:
             self.show_info("动效已关闭：界面切换将瞬时到位", success=True)
 
+    def apply_font_step(self, step: int) -> None:
+        """切换全局字号档位并即时生效。
+
+        顺序：scale 真源 → QSS 按新倍率重建 → 标题栏/侧栏重算几何 →
+        当前页立即 refresh（行高/列宽按新档位重建）；其余页在下次
+        showEvent 时由既有刷新机制自动按新档位重建。
+        """
+        step = max(0, min(len(scale.STEPS) - 1, int(step)))
+        if step == scale.step():
+            return
+        scale.set_step(step)
+        scale.save_step(step)
+        app = QApplication.instance()
+        if app is not None:
+            style.refresh_qss(app)
+        if getattr(self, "titleBar", None) is not None:
+            self.titleBar.apply_skin()
+        self.sidebar.reapply_metrics()
+        page = self.stack.currentWidget() if getattr(self, "stack", None) else None
+        if page is not None and hasattr(page, "refresh"):
+            page.refresh()
+        self.show_info(f"字号已切换为「{scale.LABELS[step]}」", success=True)
+
     # ------------------------------------------------------------------ #
     # 对外接口（保持与旧 FluentWindow 版兼容）
     # ------------------------------------------------------------------ #

@@ -7,6 +7,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QIcon
 from PySide6.QtWidgets import QFileDialog, QHBoxLayout, QLabel, QLineEdit, QMenu, QMessageBox, QVBoxLayout, QWidget
 
+from app.ui import scale
 from app.ui.widgets import ComboBox, LineEdit, PrimaryPushButton, PushButton, TableWidget
 from app.ui.column_layout import ColumnLayoutManager
 from app.ui.table_features import (
@@ -288,7 +289,7 @@ class BaseTableView(QWidget):
             for c, val in enumerate(row):
                 item = self._make_item(val, r, c)
                 self.table.setItem(r, c, item)
-            self.table.setRowHeight(r, 34)
+            self.table.setRowHeight(r, scale.px(34))
         # 合计行
         if total_cols:
             tr = len(self._rows)
@@ -305,7 +306,7 @@ class BaseTableView(QWidget):
                 item.setFont(QFont(item.font().family(), item.font().pointSize(), QFont.Weight.Bold))
                 item.setBackground(QColor("#F2F2F0"))
                 self.table.setItem(tr, c, item)
-            self.table.setRowHeight(tr, 34)
+            self.table.setRowHeight(tr, scale.px(34))
         # 列布局：测量内容宽（封顶发票号宽）→ 应用（重排/显隐/定宽/严格填充）
         self._col_content_w = self._mgr.measure_content_widths(self.table, self.columns)
         self._mgr.apply(self.table, self.columns, self._col_content_w, sorted_col=self._sort_col)
