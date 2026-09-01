@@ -138,11 +138,16 @@ check("缩放标签已更新", view.lbl_zoom.text().endswith("%"),
 view._reset_zoom()
 check("缩放复位 100%", view._zoom == 1.0 and view.lbl_zoom.text() == "100%",
       f"got={view.lbl_zoom.text()!r}")
-# 左栏折叠：visible 关闭
+# 左栏折叠：offscreen 下 isVisible 初始不可靠（窗口未真正映射），
+# 先强制可见，再 toggle 验证变隐藏、再复原（真实窗口里 isVisible 初始即 True，行为一致）
+view.left_widget.setVisible(True)
+app.processEvents()
 view._toggle_list()
-check("左栏可折叠", not view.left_widget.isVisible(),
-      f"visible={view.left_widget.isVisible()}")
-view._toggle_list()  # 复位，避免影响后续像素冒烟
+app.processEvents()
+check("左栏可折叠", view.left_widget.isHidden(),
+      f"hidden={view.left_widget.isHidden()}")
+view.left_widget.setVisible(True)
+app.processEvents()  # 复位，避免影响后续像素冒烟
 # 选中区域统计：选中 A1:A3（基数/公式/公式）后求和应含数值项
 from PySide6.QtWidgets import QTableWidgetSelectionRange
 view.table.setRangeSelected(QTableWidgetSelectionRange(0, 0, 2, 0), True)
