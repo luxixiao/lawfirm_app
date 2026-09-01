@@ -153,7 +153,7 @@ class PreviewDialog(QDialog):
             staff = {r["name"] for r in conn.execute("SELECT name FROM staff")}
         finally:
             conn.close()
-        self._rows: List[Dict] = evaluate(data, staff)
+        self._rows: List[Dict] = evaluate(data, staff, None, period)
         for i, ev in enumerate(self._rows):
             ev["_idx_global"] = i
         self._low = sum(1 for r in self._rows if r["conf"] == "low")

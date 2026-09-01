@@ -325,7 +325,7 @@ class UnifiedImportDialog(QWidget):
     def _rebuild(self) -> None:
         anchor = self._current_anchor()
         self._rebuild_work()
-        evs = evaluate(self._work, self._staff_set, self._confirmed)
+        evs = evaluate(self._work, self._staff_set, self._confirmed, self._period)
         rows: List[Dict] = []
         for i, ev in enumerate(evs):
             inv_idx = i if i < self._orig_inv_len else None

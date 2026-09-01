@@ -337,6 +337,26 @@ _e2["invoices"][0]["split_receipts"] = [("周立生", 4000.0, "2025-01")]
 _after_s = _eval(_e2, set(STAFF))
 check("引擎：填 split_receipts 亦压制兜底提示", _after_s[0]["conf"] == "high", f"reasons={_after_s[0]['reasons']}")
 
+# 应收账款(sheet3)备注收款日期须落在当月：非当月 → 提示「应收账款非本月收款」
+_d_ar = {
+    "period": "2025-12",
+    "invoices": [mk_inv("AR-1", 5000.0, sheet="sheet3",
+                       remark={"receipts": [], "remaining": None, "pure_date": "2025-10-15"})],
+    "prepayments": [], "problems": [], "sheet_totals": {"sheet3": 5000.0}, "sheet12_total": 0.0,
+}
+_e_ar = _eval(_d_ar, set(STAFF))
+check("引擎：应收账款收款日期非当月 → 应收账款非本月收款",
+      "应收账款非本月收款" in _e_ar[0]["reasons"], f"reasons={_e_ar[0]['reasons']}")
+# 当月日期：不报非本月，仍走兜底「请确认」
+_d_ar_ok = dict(_d_ar)
+_d_ar_ok["invoices"] = [mk_inv("AR-1", 5000.0, sheet="sheet3",
+                              remark={"receipts": [], "remaining": None, "pure_date": "2025-12-05"})]
+_e_ar_ok = _eval(_d_ar_ok, set(STAFF))
+check("引擎：应收账款收款日期为当月 → 不报非本月",
+      "应收账款非本月收款" not in _e_ar_ok[0]["reasons"], f"reasons={_e_ar_ok[0]['reasons']}")
+check("引擎：应收账款收款日期为当月 → 走兜底请确认",
+      "应收账款纯日期按全额收款，请确认" in _e_ar_ok[0]["reasons"], f"reasons={_e_ar_ok[0]['reasons']}")
+
 # 点2：待确认行「确认」按钮 → 移出需处理
 d2 = mk_simple()
 d2dlg = UnifiedImportDialog(d2, "2025-01", STAFF)

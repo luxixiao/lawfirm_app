@@ -16,6 +16,7 @@
 """
 from __future__ import annotations
 
+import re
 from collections import defaultdict
 from typing import Dict, List, Tuple
 
@@ -30,7 +31,28 @@ SHEET_LABEL = {
 }
 
 
-def evaluate(data: Dict, staff_set: set, confirmed: set = None) -> List[Dict]:
+def _to_ym(s: str) -> str:
+    """把各种形态的账期/日期归一为 'YYYY-MM'；无法解析返回空串。
+
+    兼容 2025-12 / 2025.12 / 25.12 / 2025年12月 等写法（2 位年补 2000）。
+    """
+    if not s:
+        return ""
+    s = str(s).strip()
+    m = re.search(r"(\d{4})[-./\u5e74](\d{1,2})", s)
+    if m:
+        y, mo = int(m.group(1)), int(m.group(2))
+    else:
+        m = re.search(r"(\d{2})[-./\u5e74](\d{1,2})", s)
+        if not m:
+            return ""
+        y, mo = int(m.group(1)) + 2000, int(m.group(2))
+    if 1 <= mo <= 12:
+        return f"{y:04d}-{mo:02d}"
+    return ""
+
+
+def evaluate(data: Dict, staff_set: set, confirmed: set = None, period: str = None) -> List[Dict]:
     """评估全部发票，返回逐张结果列表。
 
     Args:
@@ -39,10 +61,14 @@ def evaluate(data: Dict, staff_set: set, confirmed: set = None) -> List[Dict]:
         confirmed: 已被用户「确认」过的发票下标集合（下标对应 data.invoices 顺序）。
                    命中后，sheet1/2/3 的三类「兜底判定」提示不再追加，视为用户已认可
                    系统默认口径（例如 sheet1 空备注按全额收款、应收账款纯日期按全额等）。
+        period: 导入账期（"YYYY-MM"）。用于校验应收账款(sheet3)备注收款日期是否落在当月；
+                缺省时回退到 data.get("period")，仍取不到则跳过该月校验。
 
     Returns: 每项为一张发票的评估结果 dict，含 inv 引用（_inv）。
     """
     confirmed = confirmed or set()
+    period = period or data.get("period") or ""
+    period_ym = _to_ym(period)
     results: List[Dict] = []
     for i, inv in enumerate(data.get("invoices", [])):
         sheet = inv.get("sheet") or ""
@@ -62,8 +88,12 @@ def evaluate(data: Dict, staff_set: set, confirmed: set = None) -> List[Dict]:
             pure_date = remark.get("pure_date")
             receipts = remark.get("receipts") or []
             remaining = remark.get("remaining")
-            if sheet == "sheet3" and pure_date and not suppressed:
-                reasons.append("应收账款纯日期按全额收款，请确认")
+            if sheet == "sheet3" and pure_date:
+                date_ym = _to_ym(pure_date)
+                if period_ym and date_ym and date_ym != period_ym:
+                    reasons.append("应收账款非本月收款")
+                elif not suppressed:
+                    reasons.append("应收账款纯日期按全额收款，请确认")
             if sheet == "sheet2" and pure_date and not suppressed:
                 reasons.append("已开票未入账纯日期按未收，请确认")
             if remaining is not None and receipts and not pure_date:
