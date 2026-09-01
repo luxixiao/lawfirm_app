@@ -399,12 +399,16 @@ class MainWindow(FramelessWindow):
         self.select(key)
 
     def show_info(self, message: str, success: bool = True) -> None:
-        """Fluent 风格通知条。"""
+        """Fluent 风格通知条。
+
+        注意 qfluentwidgets 签名：InfoBar.success(title, content, ...) 前两个
+        位置参数是标题+内容，标题传空串只显示正文。
+        """
         if success:
-            InfoBar.success(message, parent=self,
+            InfoBar.success("", message, parent=self,
                             position=InfoBarPosition.TOP_RIGHT, duration=3000)
         else:
-            InfoBar.error(message, parent=self,
+            InfoBar.error("", message, parent=self,
                           position=InfoBarPosition.TOP_RIGHT, duration=4000)
 
     def staff_ready(self) -> bool:
@@ -418,7 +422,7 @@ class MainWindow(FramelessWindow):
         super().showEvent(event)
         if not self.staff_ready():
             InfoBar.warning(
-                "首次使用请先在「员工管理」导入职工花名册（模板：职工清单.xlsx），完成初始化后才能导入台账。",
+                "", "首次使用请先在「员工管理」导入职工花名册（模板：职工清单.xlsx），完成初始化后才能导入台账。",
                 parent=self, position=InfoBarPosition.TOP, duration=8000,
             )
             self.select("staff")

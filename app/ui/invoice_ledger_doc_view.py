@@ -335,7 +335,7 @@ class InvoiceLedgerDocView(QWidget):
         rl.update_row(rid, data, note="手工编辑发票台账行")
         self.refresh()
         from qfluentwidgets import InfoBar, InfoBarPosition
-        InfoBar.success("已保存并记入修改记录", parent=self,
+        InfoBar.success("", "已保存并记入修改记录", parent=self,
                         position=InfoBarPosition.TOP_RIGHT, duration=2500)
 
 

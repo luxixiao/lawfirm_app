@@ -427,6 +427,6 @@ class RefundView(QWidget):
             conn.close()
 
         from qfluentwidgets import InfoBar, InfoBarPosition
-        InfoBar.success("已修改并记入修改记录", parent=self,
+        InfoBar.success("", "已修改并记入修改记录", parent=self,
                         position=InfoBarPosition.TOP_RIGHT, duration=2500)
         self.refresh()
