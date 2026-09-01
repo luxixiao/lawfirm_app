@@ -84,7 +84,9 @@ class HandlerReceivedDialog(QDialog):
         self.table = TableWidget(self)
         self.table.setColumnCount(2)
         self.table.setHorizontalHeaderLabels(["经办人", "已收金额"])
-        self.table.setEditTriggers(TableWidget.EditTrigger.NoEditTriggers)
+        # 允许双击进入编辑（金额列挂 AmountDelegate）；姓名列在 _load 中已清掉
+        # ItemIsEditable 标志，故仅金额列可编辑。原为 NoEditTriggers 导致弹窗无法编辑。
+        self.table.setEditTriggers(TableWidget.EditTrigger.DoubleClicked)
         self.table.setSelectionBehavior(TableWidget.SelectionBehavior.SelectRows)
         self.table.verticalHeader().setVisible(False)
         self.table.horizontalHeader().setStretchLastSection(True)
