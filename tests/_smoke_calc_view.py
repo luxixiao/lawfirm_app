@@ -79,6 +79,14 @@ check("补全含内置函数 SUM", "SUM" in comp_items, f"items={comp_items}")
 check("补全含内置函数 PARAM", "PARAM" in comp_items, f"items={comp_items}")
 check("补全含 PARAM(\"k\")", 'PARAM("k")' in comp_items, f"items={comp_items}")
 
+# 单元格双击编辑也套用补全（与公式栏共用候选模型）
+from app.ui.calc_sheet_view import _GridItemDelegate  # noqa: E402
+check("单元格补全器已建", view._cell_completer is not None)
+check("单元格补全与公式栏共用模型",
+      view._cell_completer.model() is view._comp_model,
+      f"cell_model={id(view._cell_completer.model())} fx_model={id(view._comp_model)}")
+check("网格已装补全委托", isinstance(view.table.itemDelegate(), _GridItemDelegate))
+
 # 查看模式默认只读
 check("默认查看模式", not view.edit_mode)
 check("查看模式公式栏只读", view.fx.isReadOnly())

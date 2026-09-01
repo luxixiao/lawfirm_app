@@ -21,8 +21,8 @@ from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QCompleter, QDialog, QFileDialog, QHBoxLayout,
     QInputDialog, QLabel, QLineEdit, QListWidget, QMessageBox,
-    QPushButton, QSplitter, QTableWidget, QTableWidgetItem, QVBoxLayout,
-    QWidget,
+    QPushButton, QSplitter, QStyledItemDelegate, QTableWidget, QTableWidgetItem,
+    QVBoxLayout, QWidget,
 )
 
 from app.engine import calc_sheet as cs
@@ -73,6 +73,20 @@ class _FormulaCompleter(QCompleter):
             return comp
         # 仅替换尾部标识符，保留前面的 =1* 等前缀
         return text[: len(text) - len(token)] + comp
+
+
+class _GridItemDelegate(QStyledItemDelegate):
+    """单元格双击编辑器套用公式补全（与公式栏共用同一候选模型）。"""
+
+    def __init__(self, completer, parent=None):
+        super().__init__(parent)
+        self._completer = completer
+
+    def createEditor(self, parent, option, index):  # noqa: N802 (Qt override)
+        editor = super().createEditor(parent, option, index)
+        if isinstance(editor, QLineEdit):
+            editor.setCompleter(self._completer)
+        return editor
 
 
 def _user() -> str:
@@ -264,13 +278,18 @@ class CalcSheetView(QWidget):
         self.fx.setPlaceholderText(
             "公式栏（支持补全：输入 SUM/ROUND/PARAM… 弹候选，↑↓选择回车确认；回车生效）")
         self.fx.returnPressed.connect(self._apply_formula_bar)
+        self._comp_model = QStringListModel([], self)   # 公式栏/单元格共用候选模型
         self._completer = _FormulaCompleter(self.fx)
+        self._completer.setModel(self._comp_model)
         self.fx.setCompleter(self._completer)
         fbar.addWidget(self.lbl_cell)
         fbar.addWidget(self.fx, 1)
         rv.addLayout(fbar)
 
         self.table = GridTable(0, 0)
+        self._cell_completer = _FormulaCompleter(self.table)
+        self._cell_completer.setModel(self._comp_model)
+        self.table.setItemDelegate(_GridItemDelegate(self._cell_completer, self.table))
         self.table.raw_provider = self._raw_of
         self.table.paste_callback = self.paste_tsv
         self.table.setWordWrap(False)
@@ -345,12 +364,12 @@ class CalcSheetView(QWidget):
             self._load_sheet()
 
     def _refresh_completer(self) -> None:
-        """刷新公式栏补全候选：内置函数 + 当前表参数 PARAM("名称") 片段。"""
+        """刷新补全候选（公式栏与单元格编辑器共用同一模型）：内置函数 + 当前表参数片段。"""
         params = list((self.content.get("params") or {}).keys()) if self.content else []
         items = list(_KNOWN_FUNCS)
         for p in params:
             items.append(f'PARAM("{p}")')
-        self._completer.setModel(QStringListModel(items, self._completer))
+        self._comp_model.setStringList(items)
 
     def _load_sheet(self) -> None:
         self.fx.clear()
