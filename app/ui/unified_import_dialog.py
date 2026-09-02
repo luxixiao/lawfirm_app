@@ -94,22 +94,32 @@ class UnifiedImportDialog(QWidget):
         self._rows: List[Dict] = []
         self.fix_panel = None
 
+        # 作为独立弹窗时保留标题与说明；嵌入 ImportReviewView 等页面时
+        # 页头已由外层提供，隐藏自身标题避免双重页头造成上方空白。
+        self._embedded = parent is not None
+
         self.setWindowTitle(f"发票台账导入确认 — {period}")
         if self.isWindow():
             self.resize(1240, 700)
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(20, 18, 20, 18)
+        # 嵌入页面时上间距收紧，让内容区域尽可能往上顶，减少窗体顶部留白
+        root.setContentsMargins(20, 10 if self._embedded else 18, 20, 18)
         root.setSpacing(10)
 
         self._title = QLabel(f"发票台账导入确认 — {period}")
         self._title.setObjectName("pageTitle")
         root.addWidget(self._title)
-        root.addWidget(CaptionLabel(
+        self._caption = CaptionLabel(
             "解析失败的行与系统判定有疑问的行集中在同一张表：左侧筛选，右侧就地修正。"
             "「待修正」保存后立即重算并刷新；未处理的行在确认入库时自动跳过。"
             "双击任意行可对照原始台账行。"
-        ))
+        )
+        root.addWidget(self._caption)
+
+        if self._embedded:
+            self._title.setVisible(False)
+            self._caption.setVisible(False)
 
         # ---- 筛选栏 ----
         bar = QHBoxLayout()

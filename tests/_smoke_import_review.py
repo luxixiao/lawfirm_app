@@ -130,6 +130,9 @@ check("下拉显示锁定账期", v.combo_period.currentData() == "2025-01",
 check("面板已载入数据", v.page_pre._data.get("period") == "2025-01")
 check("pending 已记录", v._pending == ("2025-01", "2025.1台账.xlsx"), str(v._pending))
 check("尚未写库", len(_commit_calls) == 0)
+check("嵌入模式下隐藏对话框自身标题", not v.page_pre._title.isVisible())
+check("嵌入模式下隐藏对话框自身说明", not v.page_pre._caption.isVisible())
+check("嵌入模式识别正确", v.page_pre._embedded)
 
 # ---------------------------------------------------------------- 3) 确认入库
 fin = []
