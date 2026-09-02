@@ -25,7 +25,7 @@ import copy
 from typing import Dict, List
 
 from PySide6.QtCore import (
-    Qt, QPoint, QTimer, Signal, QPropertyAnimation, Property, QEasingCurve, QEvent,
+    Qt, QPoint, QTimer, Signal, QPropertyAnimation, Property, QEasingCurve, QSettings,
 )
 from PySide6.QtGui import QColor, QCursor
 from PySide6.QtWidgets import (
@@ -60,9 +60,15 @@ FILTERS = ["待确认", "已确认", "高置信", "已跳过", "全部"]
 _PRIO = {"待确认": 0, "高置信": 1, "已跳过": 2}
 
 
-class _CollapsiblePanel(QWidget):
-    """左栏容器：宽度由 w 属性驱动，支持展开 / 折叠动画（方案 C 折叠机制）。"""
+def _layout_settings() -> QSettings:
+    """右栏宽度 / 图钉状态的持久化目标（可被测试替换为临时 ini）。"""
+    return QSettings("lawfirm_app", "unified_import")
 
+
+class _CollapsiblePanel(QWidget):
+    """宽度可折叠容器：由 w 属性驱动 setFixedWidth，子控件 _rail 随尺寸铺满。
+
+    展开态承载正常内容；折叠态收窄到 _rail 宽度（细轨视觉）。"""
     def __init__(self, parent=None):
         super().__init__(parent)
         self._w = 0
@@ -88,17 +94,52 @@ class _CollapsiblePanel(QWidget):
             self._rail.setGeometry(0, 0, self._rail.width(), self.height())
 
 
-class _Divider(QFrame):
-    """4px 拖拽条：拖动改变左栏展开宽度（仅展开态生效）。"""
+class _Rail(QFrame):
+    """细轨（折叠态视觉）：竖排文字 + 箭头，点击回调展开。"""
 
-    def __init__(self, panel, on_press=None, on_width=None, parent=None):
+    def __init__(self, text: str, on_click, parent=None):
+        super().__init__(parent)
+        self.setObjectName("rightRail")
+        self._on_click = on_click
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 10, 0, 10)
+        lay.setSpacing(6)
+        chev = QLabel("‹")
+        chev.setObjectName("railChevron")
+        chev.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop)
+        lay.addWidget(chev)
+        title = QLabel("\n".join(text))
+        title.setObjectName("railTitle")
+        title.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter)
+        lay.addWidget(title, 1)
+
+    def mouseReleaseEvent(self, e):
+        if e.button() == Qt.MouseButton.LeftButton:
+            if self._on_click:
+                self._on_click()
+            e.accept()
+        else:
+            super().mouseReleaseEvent(e)
+
+
+class _Divider(QFrame):
+    """4px 拖拽条：拖动改变右栏展开宽度（仅展开态生效）。
+
+    direction=1：拖向 +x 面板变宽（面板在条左侧）；direction=-1：面板在条右侧（右栏）。
+    """
+
+    def __init__(self, panel, direction: int = 1, lo: int = 360, hi: int = 1100,
+                 on_press=None, on_width=None, on_release=None, parent=None):
         super().__init__(parent)
         self.setObjectName("hDivider")
         self._panel = panel
+        self._direction = direction
         self._on_press = on_press
         self._on_width = on_width
-        self._min = 360
-        self._max = 1100
+        self._on_release = on_release
+        self._min = lo
+        self._max = hi
         self._drag = False
         self._sx = 0.0
         self._sw = 0
@@ -119,7 +160,7 @@ class _Divider(QFrame):
     def mouseMoveEvent(self, e):
         if self._drag:
             dx = e.globalPosition().x() - self._sx
-            nw = max(self._min, min(self._max, int(self._sw + dx)))
+            nw = max(self._min, min(self._max, int(self._sw + self._direction * dx)))
             self._panel.setFixedWidth(nw)
             if self._on_width:
                 self._on_width(nw)
@@ -129,7 +170,10 @@ class _Divider(QFrame):
 
     def mouseReleaseEvent(self, e):
         if e.button() == Qt.MouseButton.LeftButton:
+            was = self._drag
             self._drag = False
+            if was and self._on_release:
+                self._on_release()
             e.accept()
         else:
             super().mouseReleaseEvent(e)
@@ -218,10 +262,14 @@ class UnifiedImportDialog(QWidget):
         bar.addStretch()
         root.addLayout(bar)
 
-        # ---- 主体：左表（可折叠）+ 拖拽条 + 右面板（流体） ----
-        self._expanded_w = 760
-        self._rail_w = 36
-        self._collapsed = False
+        # ---- 主体：左表（流体）+ 拖拽条 + 右栏（固定宽，可折叠/点行弹出） ----
+        self._rail_w = 36          # 折叠态细轨宽度
+        self._min_w = 400          # 右栏展开宽度下限
+        self._max_w = 900          # 右栏展开宽度上限
+        self._expanded_w = 560     # 右栏展开宽度（被拖拽/持久化更新）
+        self._collapsed = True     # 默认折叠成右侧细轨
+        self._pinned = False       # 图钉固定后常驻展开，点行不再收回
+        self._open_row_id = None   # 当前展开所对应的行（同行再点 → 收回）
 
         self.table = TableWidget(self)
         self.table.setColumnCount(len(HEADERS))
@@ -237,61 +285,30 @@ class UnifiedImportDialog(QWidget):
         self.table.setMinimumWidth(560)
         self.table.cellDoubleClicked.connect(self._cell_double_clicked)
         self.table.itemSelectionChanged.connect(self._load_right)
-
-        self.left_panel = _CollapsiblePanel()
-        self.left_panel.setObjectName("leftPanel")
-        self.left_panel.setFixedWidth(self._expanded_w)
-        ll = QVBoxLayout(self.left_panel)
-        ll.setContentsMargins(0, 0, 0, 0)
-        ll.setSpacing(0)
-        ll.addWidget(self.table, 1)
-
-        # 折叠态细轨：竖向「台账表格」+ 行数 + 展开箭头
-        self.left_rail = QWidget(self.left_panel)
-        self.left_rail.setObjectName("leftRail")
-        self.left_rail.setFixedWidth(self._rail_w)
-        rl = QVBoxLayout(self.left_rail)
-        rl.setContentsMargins(0, 8, 0, 8)
-        rl.setSpacing(6)
-        _chev = QLabel("›")
-        _chev.setObjectName("railChevron")
-        _chev.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop)
-        rl.addWidget(_chev)
-        _rtitle = QLabel("\n".join("台账表格"))
-        _rtitle.setObjectName("railTitle")
-        _rtitle.setAlignment(Qt.AlignmentFlag.AlignHCenter)
-        rl.addWidget(_rtitle, 1)
-        self.rail_count = QLabel("0 行")
-        self.rail_count.setObjectName("railCount")
-        self.rail_count.setAlignment(Qt.AlignmentFlag.AlignHCenter)
-        rl.addWidget(self.rail_count)
-        self.left_rail.setVisible(False)
-        self.left_panel.set_rail(self.left_rail)
+        self.table.cellClicked.connect(self._on_cell_clicked)
 
         self._build_right_panel()
 
         body = QHBoxLayout()
         body.setContentsMargins(0, 0, 0, 0)
         body.setSpacing(0)
-        body.addWidget(self.left_panel)
+        body.addWidget(self.table, 1)
         self._divider = _Divider(
-            self.left_panel,
+            self.right, direction=-1, lo=self._min_w, hi=self._max_w,
             on_press=self._anim_stop,
             on_width=self._track_expanded_w,
+            on_release=self._save_layout_state,
         )
         body.addWidget(self._divider)
-        body.addWidget(self.right, 1)
+        body.addWidget(self.right)
         root.addLayout(body, 1)
 
         # 折叠 / 展开动画（宽度由 _CollapsiblePanel.w 属性驱动）
-        self._anim = QPropertyAnimation(self.left_panel, b"w")
+        self._anim = QPropertyAnimation(self.right, b"w")
         self._anim.setEasingCurve(QEasingCurve.Type.OutCubic)
 
-        # 悬停自动隐藏：进入右侧 → 折叠；进入左栏（含细轨）→ 展开
-        for _w in [self.left_panel] + self.left_panel.findChildren(QWidget):
-            _w.installEventFilter(self)
-        for _w in [self.right] + self.right.findChildren(QWidget):
-            _w.installEventFilter(self)
+        # 初始状态：按上次记忆恢复（pinned → 常驻展开；否则折叠成细轨）
+        self._apply_layout_state()
 
         # ---- 底部 ----
         self.lbl_summary = CaptionLabel("")
@@ -315,7 +332,7 @@ class UnifiedImportDialog(QWidget):
             self._rebuild()
 
     # ------------------------------------------------------------------ #
-    # 左栏折叠 / 展开（方案 C：IDE 式自动隐藏）
+    # 右栏折叠 / 展开（默认折叠成细轨；点左表行弹出；图钉可固定常开）
     # ------------------------------------------------------------------ #
     def _anim_stop(self) -> None:
         self._anim.stop()
@@ -323,14 +340,34 @@ class UnifiedImportDialog(QWidget):
     def _track_expanded_w(self, w: int) -> None:
         self._expanded_w = w
 
-    def eventFilter(self, obj, ev):
-        if ev.type() == QEvent.Type.Enter:
-            # 进入左栏（含细轨）即展开；进入右栏即折叠
-            if self.left_panel.isAncestorOf(obj):
-                self.expand()
-            elif self.right.isAncestorOf(obj):
-                self.collapse()
-        return False
+    def _apply_layout_state(self) -> None:
+        """恢复上次右栏宽度与图钉状态（无记忆时默认折叠成细轨）。"""
+        s = _layout_settings()
+        try:
+            saved_w = int(s.value("right_panel_w", 560))
+        except (TypeError, ValueError):
+            saved_w = 560
+        self._expanded_w = max(self._min_w, min(self._max_w, saved_w))
+        self._pinned = str(s.value("right_panel_pinned", "0")).lower() in ("1", "true", "yes")
+        self.btn_pin.setChecked(self._pinned)
+        self.btn_pin.setText("已固定" if self._pinned else "固定")
+        if self._pinned:
+            self._collapsed = False
+            self.right_body.setVisible(True)
+            self.right_rail.setVisible(False)
+            self._divider.setVisible(True)
+            self.right.setFixedWidth(self._expanded_w)
+        else:
+            self._collapsed = True
+            self.right_body.setVisible(False)
+            self.right_rail.setVisible(True)
+            self._divider.setVisible(False)
+            self.right.setFixedWidth(self._rail_w)
+
+    def _save_layout_state(self) -> None:
+        s = _layout_settings()
+        s.setValue("right_panel_w", self._expanded_w)
+        s.setValue("right_panel_pinned", "1" if self._pinned else "0")
 
     def _animate_to(self, w: int, animate: "bool | None" = None) -> None:
         if animate is None:
@@ -338,10 +375,10 @@ class UnifiedImportDialog(QWidget):
             animate = style.motion_enabled()
         self._anim.stop()
         if not animate:
-            self.left_panel.setFixedWidth(w)
+            self.right.setFixedWidth(w)
             return
         self._anim.setDuration(180)
-        self._anim.setStartValue(self.left_panel.width())
+        self._anim.setStartValue(self.right.width())
         self._anim.setEndValue(w)
         self._anim.start()
 
@@ -349,19 +386,46 @@ class UnifiedImportDialog(QWidget):
         if self._collapsed:
             return
         self._collapsed = True
-        self.table.setVisible(False)
-        self.left_rail.setVisible(True)
+        self.right_body.setVisible(False)
+        self.right_rail.setVisible(True)
         self._divider.setVisible(False)
         self._animate_to(self._rail_w, animate)
+        self._save_layout_state()
 
     def expand(self, animate: "bool | None" = None) -> None:
         if not self._collapsed:
             return
         self._collapsed = False
-        self.left_rail.setVisible(False)
+        self.right_rail.setVisible(False)
         self._divider.setVisible(True)
-        self.table.setVisible(True)
+        self.right_body.setVisible(True)
         self._animate_to(self._expanded_w, animate)
+        self._save_layout_state()
+
+    def _on_cell_clicked(self, _row: int, _col: int) -> None:
+        """点行弹出：点当前展开的行 → 收回细轨；点其它行 → 只切换内容保持展开。
+
+        图钉固定后点行只切换内容，不再收回。程序化选中（筛选切换/初始选中）不触发。
+        """
+        if self._pinned:
+            return
+        r = self._current_row()
+        if r is None:
+            return
+        rid = id(r)
+        if (not self._collapsed) and rid == self._open_row_id:
+            self.collapse()
+        else:
+            self._open_row_id = rid
+            self.expand()
+
+    def _toggle_pin(self) -> None:
+        """图钉：固定 → 常驻展开（点行不再收回）；解除 → 恢复点行弹出行为。"""
+        self._pinned = self.btn_pin.isChecked()
+        self.btn_pin.setText("已固定" if self._pinned else "固定")
+        if self._pinned:
+            self.expand(animate=False)
+        self._save_layout_state()
 
     # ------------------------------------------------------------------ #
     # 数据载入（嵌入面板可二次调用）
@@ -399,20 +463,23 @@ class UnifiedImportDialog(QWidget):
             self.fix_panel.deleteLater()
         self.fix_panel = ProblemFixPanel(sorted(self._staff_set), self._period, self)
         self._fix_host_ly.addWidget(self.fix_panel, 1)
-        # 修正面板被替换后，其新子树需重新挂上折叠/展开的事件监听
-        for _w in [self.fix_panel] + self.fix_panel.findChildren(QWidget):
-            _w.installEventFilter(self)
 
     # ------------------------------------------------------------------ #
     # 右侧面板
     # ------------------------------------------------------------------ #
     def _build_right_panel(self) -> None:
-        # 右栏整体保持 QWidget（作为横向分割器的子项，保留左右拖拽调宽手柄）；
-        # 内部用 QScrollArea 承载内容：内容按自然高度顶部对齐（通常比左表矮），
-        # 左表依旧撑满分割器高度并独立滚动；右栏内容过高时自行滚动。
-        self.right = QWidget()
-        self.right.setMinimumWidth(400)
-        rv = QVBoxLayout(self.right)
+        # 右栏 = 可折叠容器（self.right 自身是可动画宽度的 _CollapsiblePanel）。
+        # 展开态：right_body = 「滚动内容(自然高度顶部对齐) + 操作栏(钉底)」；
+        # 折叠态：right_body 隐藏，只露出 right_rail（36px 细轨，点击展开）。
+        self.right = _CollapsiblePanel()
+        self.right.setObjectName("rightPanel")
+        outer = QVBoxLayout(self.right)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+
+        self.right_body = QWidget()
+        self.right_body.setObjectName("rightBody")
+        rv = QVBoxLayout(self.right_body)
         rv.setContentsMargins(0, 0, 0, 0)
         rv.setSpacing(10)
 
@@ -429,14 +496,25 @@ class UnifiedImportDialog(QWidget):
         iv.setContentsMargins(0, 0, 0, 0)
         iv.setSpacing(10)
 
-        # ---- 发票头部卡：占满右栏顶部空白，突出显示最关键身份 + 金额 ----
+        # ---- 发票头部卡：状态行（右侧放图钉） + 发票号 + 购方/金额 ----
         self.header_card = QFrame()
         self.header_card.setObjectName("invoiceHeaderCard")
         hb = QVBoxLayout(self.header_card)
-        hb.setContentsMargins(scale.px(16), scale.px(14), scale.px(16), scale.px(14))
+        hb.setContentsMargins(scale.px(16), scale.px(12), scale.px(16), scale.px(14))
         hb.setSpacing(scale.px(6))
         self.lbl_header_status = QLabel("—")
         self.lbl_header_status.setObjectName("headerStatus")
+        self.btn_pin = PushButton("固定")
+        self.btn_pin.setObjectName("pinBtn")
+        self.btn_pin.setCheckable(True)
+        self.btn_pin.setFixedHeight(scale.px(24))
+        self.btn_pin.clicked.connect(self._toggle_pin)
+        top_row = QHBoxLayout()
+        top_row.setSpacing(scale.px(8))
+        top_row.addWidget(self.lbl_header_status)
+        top_row.addStretch(1)
+        top_row.addWidget(self.btn_pin)
+        hb.addLayout(top_row)
         self.lbl_header_no = QLabel("—")
         self.lbl_header_no.setObjectName("headerNo")
         self.lbl_header_buyer = QLabel("—")
@@ -450,7 +528,6 @@ class UnifiedImportDialog(QWidget):
         header_row.setSpacing(scale.px(8))
         header_row.addWidget(self.lbl_header_buyer, 1)
         header_row.addWidget(self.lbl_header_amt)
-        hb.addWidget(self.lbl_header_status)
         hb.addWidget(self.lbl_header_no)
         hb.addLayout(header_row)
         iv.addWidget(self.header_card)
@@ -532,6 +609,14 @@ class UnifiedImportDialog(QWidget):
         ab.addWidget(self.btn_save)
         ab.addWidget(self.btn_confirm_row)
         rv.addLayout(ab)
+
+        outer.addWidget(self.right_body, 1)
+
+        # 折叠态细轨：竖排「详情」+ 箭头，点击展开（child of right，铺满 36px）
+        self.right_rail = _Rail("详情", self.expand, self.right)
+        self.right_rail.setFixedWidth(self._rail_w)
+        self.right_rail.setVisible(False)
+        self.right.set_rail(self.right_rail)
 
     # ------------------------------------------------------------------ #
     # 行模型
@@ -713,9 +798,6 @@ class UnifiedImportDialog(QWidget):
             + (f"　已确认 {n_confirmed}" if n_confirmed else "")
             + (f"　已跳过 {n_skip}" if n_skip else "")
         )
-
-        if getattr(self, "rail_count", None) is not None:
-            self.rail_count.setText(f"{len(self._rows)} 行")
 
         inv_total = sum(r["ev"]["total_amount"] for r in self._rows if r["kind"] == "invoice")
         pp = self._work.get("prepayments", [])
@@ -939,6 +1021,11 @@ class UnifiedImportDialog(QWidget):
         row = self._rows and self._current_row()
         if row is None:
             return
+        # 双击会先触发两次 cellClicked 的同行 toggle，可能把面板折回去；
+        # 双击的语义是「看原始行」，结束时保持右栏展开。
+        if self._collapsed:
+            self.expand()
+        self._open_row_id = id(row)
         self._show_source()
 
     def _save_fix(self) -> None:

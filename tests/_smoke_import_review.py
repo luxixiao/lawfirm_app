@@ -25,8 +25,16 @@ import app.ui.review_post_view as RP  # noqa: E402
 import app.engine.review_compare as RC  # noqa: E402
 from app.ui.import_review_view import ImportReviewView  # noqa: E402
 from app.ui.review_post_view import ReviewPostView  # noqa: E402
+import app.ui.unified_import_dialog as U  # noqa: E402
 from app.ui.unified_import_dialog import UnifiedImportDialog  # noqa: E402
 from app.importer import importer as _imp  # noqa: E402
+
+# 隔离右栏折叠状态持久化：指向临时 ini，避免读真实注册表造成不确定性
+import tempfile  # noqa: E402
+import os as _os  # noqa: E402
+from PySide6.QtCore import QSettings  # noqa: E402
+_QSFILE = _os.path.join(tempfile.mkdtemp(prefix="lawfirm_review_qs_"), "uimport.ini")
+U._layout_settings = lambda: QSettings(_QSFILE, QSettings.Format.IniFormat)
 
 
 # ---- 打桩 ----

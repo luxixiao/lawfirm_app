@@ -342,6 +342,26 @@ QPushButton#actionSecondary {{
     color: {p['text']}; padding: {P(6)} {P(14)};
 }}
 
+/* ===== 导入确认右栏：折叠细轨 + 图钉 ===== */
+QFrame#rightRail {{
+    background: {p['bg_table']}; border: 1px solid {p['border']};
+    border-radius: {P(8)};
+}}
+QFrame#rightRail:hover {{ background: {p['bg_hover']}; }}
+QFrame#rightRail QLabel {{ color: {p['text_mute']}; }}
+QFrame#rightRail:hover QLabel {{ color: {p['text']}; }}
+QLabel#railChevron {{ font-size: {P(14)}; }}
+QLabel#railTitle {{ font-size: {P(12)}; font-weight: 600; }}
+QPushButton#pinBtn {{
+    background: transparent; border: 1px solid {p['border']}; color: {p['text_mute']};
+    padding: {P(1)} {P(10)}; font-size: {P(11)}; border-radius: {P(6)};
+}}
+QPushButton#pinBtn:hover {{ background: {p['bg_hover']}; color: {p['text']}; }}
+QPushButton#pinBtn:checked {{
+    background: {p['accent']}; border-color: {p['accent']}; color: {p['bg']};
+    font-weight: 600;
+}}
+
 /* ===== 消息框 / 弹窗 ===== */
 QMessageBox, QDialog {{ background: {p['bg']}; }}
 QMessageBox QLabel {{ font-size: {P(13)}; }}

@@ -19,8 +19,20 @@ from PySide6.QtWidgets import QApplication
 
 app = QApplication.instance() or QApplication(sys.argv)
 
+import tempfile  # noqa: E402
+import os as _os  # noqa: E402
+from PySide6.QtCore import QSettings  # noqa: E402
+
+import app.ui.style as _style  # noqa: E402
+_style.motion_enabled = lambda: False  # 测试中折叠/展开即时生效，便于断言宽度
+
 import app.ui.unified_import_dialog as U  # noqa: E402
 from app.ui.unified_import_dialog import UnifiedImportDialog  # noqa: E402
+
+# 隔离持久化：把 _layout_settings() 指向临时 ini（Windows 上 QSettings.setDefaultFormat
+# 不生效、仍写注册表，直接注入 QSettings(file, IniFormat) 才能保证确定性与零污染）
+_QSFILE = _os.path.join(tempfile.mkdtemp(prefix="lawfirm_smoke_qs_"), "uimport.ini")
+U._layout_settings = lambda: QSettings(_QSFILE, QSettings.Format.IniFormat)
 
 
 class _MB:
@@ -131,6 +143,7 @@ def fill_invoice_fix(dlg):
 data = mk_data()
 dlg = UnifiedImportDialog(data, "2025-01", STAFF, path="2025.1台账.xlsx")
 dlg.show()  # offscreen 下子控件 isVisible() 依赖父窗口已 show
+dlg.expand(animate=False)  # 本节测右栏内容；折叠态由第 10 节单独覆盖
 check("构造成功", dlg is not None)
 check("行模型 = 2 解析行 + 2 问题行", len(dlg._rows) == 4, f"got={len(dlg._rows)}")
 st = statuses(dlg)
@@ -249,6 +262,7 @@ check("修正行经办人分摊 2 人", len(fixed["handlers"]) == 2, f"got={fixe
 data2 = mk_data()
 dlg2 = UnifiedImportDialog(data2, "2025-01", STAFF)
 dlg2.show()
+dlg2.expand(animate=False)  # 预收款表单可见性断言依赖右栏展开
 dlg2._validate = lambda d: None
 # 跳过发票问题行
 dlg2.table.selectRow(0)
@@ -382,6 +396,7 @@ check("引擎：应收账款收款日期为当月 → 走兜底请确认",
 d2 = mk_simple()
 d2dlg = UnifiedImportDialog(d2, "2025-01", STAFF)
 d2dlg.show()
+d2dlg.expand(animate=False)  # 操作栏按钮可见性断言依赖右栏展开
 low = next(r for r in d2dlg._rows if r["kind"] == "invoice" and r["inv_idx"] == 0)
 d2dlg.table.selectRow(d2dlg._rows.index(low))
 check("点2：待确认行显示「确认」按钮", d2dlg.btn_confirm_row.isVisible())
@@ -421,6 +436,7 @@ check("点3：未全额收款也离开待确认", low3b["status"] == "高置信"
 d1 = mk_simple()
 d1dlg = UnifiedImportDialog(d1, "2025-01", STAFF)
 d1dlg.show()
+d1dlg.expand(animate=False)  # 编辑/保存按钮可见性断言依赖右栏展开
 d1dlg._grp.button(4).setChecked(True)   # 全部
 d1dlg._render()
 hi = next(r for r in d1dlg._rows if r["kind"] == "invoice" and r["inv_idx"] == 1)
@@ -449,56 +465,87 @@ hi_b = next(r for r in d1dlg._rows if r["kind"] == "invoice" and r["inv_idx"] ==
 check("点1：编辑并保存后高置信发票归入已确认", hi_b["is_confirmed"] is True and hi_b["status"] == "高置信",
       f"status={hi_b['status']} confirmed={hi_b['is_confirmed']}")
 
-# ------------------------------------------- 10) 左栏折叠 / 展开（方案 C：IDE 式自动隐藏）
-from PySide6.QtCore import QEvent  # noqa: E402
+# ------------------------------------------- 10) 右栏点行弹出（默认折叠成细轨；图钉固定常开）
+from PySide6.QtCore import Qt  # noqa: E402
+from PySide6.QtTest import QTest  # noqa: E402
 
 cd = UnifiedImportDialog(mk_simple(), "2025-01", STAFF)
 cd.show()
-check("折叠：默认展开态", cd._collapsed is False)
-check("折叠：默认展开宽度=760", cd.left_panel.width() == cd._expanded_w == 760, f"w={cd.left_panel.width()}")
-check("折叠：默认细轨隐藏", not cd.left_rail.isVisible())
-check("折叠：默认表格可见", cd.table.isVisible())
-check("折叠：默认拖拽条可见", cd._divider.isVisible())
+cd._grp.button(4).setChecked(True)  # 全部：点行测试需要两行都在表里
+cd._render()
+check("右栏：默认折叠态", cd._collapsed is True)
+check("右栏：默认收窄到细轨 36", cd.right.width() == cd._rail_w == 36, f"w={cd.right.width()}")
+check("右栏：默认细轨可见", cd.right_rail.isVisible())
+check("右栏：默认内容隐藏", not cd.right_body.isVisible())
+check("右栏：默认拖拽条隐藏", not cd._divider.isVisible())
+check("左表默认铺满可见", cd.table.isVisible() and cd.table.width() > 400, f"tw={cd.table.width()}")
 
+row_a = next(r for r in cd._rows if r["kind"] == "invoice" and r["inv_idx"] == 0)
+row_b = next(r for r in cd._rows if r["kind"] == "invoice" and r["inv_idx"] == 1)
+ia, ib = cd._rows.index(row_a), cd._rows.index(row_b)
+
+# 程序化选中（筛选/初始/键盘）不应展开；单击才弹出
+def _click_row(d, row):
+    """模拟单击：先改变选中（真实点击会先触发内容载入），再触发 toggle。"""
+    d.table.selectRow(row)
+    d._on_cell_clicked(row, 0)
+
+cd.table.selectRow(ia)
+check("右栏：程序化选中不展开", cd._collapsed is True)
+
+_click_row(cd, ia)
+check("右栏：单击行 → 弹出", cd._collapsed is False)
+check("右栏：展开宽度=560", cd.right.width() == cd._expanded_w == 560, f"w={cd.right.width()}")
+check("右栏：展开后细轨隐藏", not cd.right_rail.isVisible())
+check("右栏：展开后内容可见", cd.right_body.isVisible())
+check("右栏：展开后拖拽条可见", cd._divider.isVisible())
+
+_click_row(cd, ia)
+check("右栏：再点同一行 → 收回", cd._collapsed is True)
+check("右栏：收回后宽度=36", cd.right.width() == 36, f"w={cd.right.width()}")
+
+_click_row(cd, ib)
+check("右栏：点另一行 → 弹出", cd._collapsed is False)
+_click_row(cd, ib)
+check("右栏：再点该行 → 收回", cd._collapsed is True)
+
+# 细轨点击 → 展开（真实鼠标事件）
+QTest.mouseClick(cd.right_rail, Qt.MouseButton.LeftButton)
+check("右栏：点细轨 → 展开", cd._collapsed is False)
+
+# 图钉：固定后常驻展开，点行不再收回
+QTest.mouseClick(cd.btn_pin, Qt.MouseButton.LeftButton)
+check("图钉：固定后 pinned=True", cd._pinned is True)
+check("图钉：文案变已固定", cd.btn_pin.text() == "已固定", cd.btn_pin.text())
+_click_row(cd, ia)   # 固定中：点行只切内容，不收回
+check("图钉：固定后点行不收回", cd._collapsed is False)
+QTest.mouseClick(cd.btn_pin, Qt.MouseButton.LeftButton)
+check("图钉：解除固定", cd._pinned is False)
+_click_row(cd, ia)   # 解除后点 ia（当前展开的是 ib）→ 仅切到 ia，保持展开
+check("图钉：解除后当前行切换保持展开", cd._collapsed is False)
+_click_row(cd, ia)   # 再点同一行 → 恢复收回行为
+check("图钉：解除后点行恢复收回", cd._collapsed is True)
+
+# 拖拽记忆宽度 + QSettings 持久化
+cd._track_expanded_w(700)
+cd.expand(animate=False)
+check("右栏：拖拽记忆 700", cd.right.width() == 700, f"w={cd.right.width()}")
+_s = U._layout_settings()
+check("右栏：宽度已持久化", str(_s.value("right_panel_w")) == "700",
+      f"got={_s.value('right_panel_w')}")
+check("右栏：图钉状态已持久化(解除)", str(_s.value("right_panel_pinned")) == "0",
+      f"got={_s.value('right_panel_pinned')}")
+
+# 幂等
 cd.collapse(animate=False)
-check("折叠：collapsed 置位", cd._collapsed is True)
-check("折叠：左栏收窄到细轨 36", cd.left_panel.width() == cd._rail_w == 36, f"w={cd.left_panel.width()}")
-check("折叠：细轨显示", cd.left_rail.isVisible())
-check("折叠：表格隐藏", not cd.table.isVisible())
-check("折叠：拖拽条隐藏", not cd._divider.isVisible())
-check("折叠：细轨显示行数", "行" in cd.rail_count.text(), cd.rail_count.text())
-
-cd.expand(animate=False)
-check("展开：collapsed 清除", cd._collapsed is False)
-check("展开：左栏回到 760", cd.left_panel.width() == 760, f"w={cd.left_panel.width()}")
-check("展开：细轨隐藏", not cd.left_rail.isVisible())
-check("展开：表格恢复可见", cd.table.isVisible())
-check("展开：拖拽条恢复可见", cd._divider.isVisible())
-
-# 拖拽记录展开宽度：展开后回到该宽度
-cd._track_expanded_w(820)
 cd.collapse(animate=False)
+check("右栏：重复收回幂等", cd._collapsed is True)
 cd.expand(animate=False)
-check("展开：回到拖拽后的宽度 820", cd.left_panel.width() == 820, f"w={cd.left_panel.width()}")
+cd.expand(animate=False)
+check("右栏：重复展开幂等", cd._collapsed is False)
 
-# 悬停自动隐藏：左栏子部件 Enter → 展开；右栏子部件 Enter → 折叠
-cd.collapse(animate=False)
-check("eventFilter：左栏子部件 Enter → 展开",
-      (cd.eventFilter(cd.table, QEvent(QEvent.Type.Enter)) is False) and (not cd._collapsed))
-cd.expand(animate=False)
-check("eventFilter：右栏子部件 Enter → 折叠",
-      (cd.eventFilter(cd.right, QEvent(QEvent.Type.Enter)) is False) and cd._collapsed)
-# 其它区域（如筛选栏）Enter 不改变状态
-cd.expand(animate=False)
-ev_other = QEvent(QEvent.Type.Enter)
-cd.eventFilter(cd._grp.button(0), ev_other)
-check("eventFilter：筛选栏 Enter 不改变状态", cd._collapsed is False)
-
-# 多次触发同状态幂等（不报错、状态不变）
-cd._anim_stop()
-cd.expand(animate=False)
-cd.expand(animate=False)
-check("展开：重复展开幂等", cd._collapsed is False)
+# 头部卡内含图钉按钮
+check("头部卡内含图钉按钮", cd.header_card is not None and cd.btn_pin.parent() is not None)
 
 # ------------------------------------------- 汇总
 bad = [n for n, ok, _ in results if not ok]

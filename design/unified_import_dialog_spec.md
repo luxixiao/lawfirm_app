@@ -118,11 +118,12 @@
 5. **修正表单宿主** `self._fix_host`（含 `ProblemFixPanel`，内部 `btn_add/btn_del` 维持现状作子表工具条）
 6. **单一操作栏**（见 7.5）
 
-> **布局约束（2026-09-02 补）**：主体区域改为 `QHBoxLayout [left_panel | divider | right(stretch=1)]`：
-> - `left_panel` 是左表容器，宽度在展开态固定为 760px、折叠态收窄为 36px 细轨，承载 `self.table` 与折叠细轨 `self.left_rail`。
-> - `right` 为流体区域（`stretch=1`），内容包在 `QScrollArea`（`rightScroll`，`widgetResizable=True`）中，按自然高度**顶部对齐**（通常比左表矮），左表依旧撑满高度并独立滚动；右栏内容过高时自行滚动。单一操作栏钉在右栏底部、与左表底部对齐，不随内容滚动。
-> - 保留 4px 拖拽条 `_Divider`（展开态可见）在左栏右边缘，拖动改变左栏宽度并作为后续展开宽度记忆。
-> - 折叠机制见 7.10。
+> **布局约束（2026-09-02 补；2026-09-02 三修）**：主体区域改为 `QHBoxLayout [table(stretch=1) | divider(4px) | right]`：
+> - `self.table` 流体（stretch=1），撑满主体区域减右栏的剩余宽度。
+> - `self.right` 是**可折叠**的右栏容器（`_CollapsiblePanel`），宽度在 36px 细轨（折叠）和 `_expanded_w`（展开，默认 560，范围 400–900）之间动画切换。承载右栏内容时：内容包在 `right_body = 滚动区(顶部对齐) + 操作栏(钉底)`，折叠态隐藏；折叠态显示 36px 右侧细轨 `right_rail`（竖排「详情」+ 箭头 `‹`，可点击展开）。
+> - 左表依旧撑满高度并独立滚动；右栏内容过高时自行滚动；操作栏与左表底部对齐，不随内容滚动。
+> - 保留 4px 拖拽条 `_Divider`（展开态可见）在右栏左边缘，拖动改变右栏宽度并记忆为下次展开宽度。
+> - 折叠/弹出机制见 7.10。
 
 #### 7.2a 发票头部卡（填补顶部空白）
 
@@ -190,29 +191,36 @@
 
 判定：构造时 `parent is not None` 即视为嵌入模式（`ImportReviewView` 以 `parent=self` 创建 `page_pre`）。
 
-### 7.10 左栏折叠 / 展开（方案 C：IDE 式自动隐藏）
+### 7.10 右栏点行弹出（默认折叠成细轨 + 图钉固定）
 
-评审后用户要求「把右边栏和左边栏分离，左边栏做成可以折叠的」，从 A/B/C/D/E 五个方案中选定 **方案 C（IDE 式自动隐藏）**，并确认：
-- (a) 保留手动拖拽调宽；
-- (b) 默认触发方式：鼠标进入右侧区域自动折叠，进入左栏（含细轨）自动展开；
-- (c) 细轨宽度 36px。
+评审后用户要求「默认折叠 → 点左边某一行 → 弹出 → 再点折叠 → 可固定」，确定**右栏可折叠、点左表行触发**的方案，并确认：
+- (a) 折叠态：保留 36px 右侧细轨（可点击展开）
+- (b) 展开宽度：沿用上次拖拽的宽度（首启 560px，范围 400–900）
+- (c) 持久化：图钉状态 + 展开宽度都记入 `QSettings("lawfirm_app", "unified_import")`，下次打开直接还原
 
 实现概要：
 
-- 新增 `_CollapsiblePanel`：基于 `QWidget` 的 `w` 属性驱动宽度，`QPropertyAnimation` 动画时设置 `setFixedWidth`，折叠态同步调整内部细轨几何。
-- 新增 `_Divider`：4px 宽竖条，带 `SplitHCursor`，`mousePress/Move/Release` 计算拖拽偏移并设置左栏宽度，同时通过 `_track_expanded_w()` 把该宽度记忆为下一次展开的目标。
-- 细轨 `self.left_rail`：36px 宽，置于 `left_panel` 内部；显示竖向「台账表格」、当前行数、展开箭头 `›`。折叠态显示，展开态隐藏。
-- 悬停触发：在 `left_panel` 及其所有子部件、以及 `right` 及其所有子部件上安装 `eventFilter`，收到 `QEvent.Enter` 时判断对象所属区域：
-  - 左栏子树（表格、细轨等）→ `expand()`
-  - 右栏子树（滚动区、信息卡、修正表单、操作栏等）→ `collapse()`
-  - 顶部筛选栏、底部按钮栏、拖拽条等不属于左右子树，不改变状态。
-- 动画：`style.motion_enabled()` 为 True 时使用 180ms `OutCubic` 动画；为 False 时直接 `setFixedWidth` 到目标值，便于测试与关闭动效的场景。
-- 默认状态：**展开**（`left_panel` 宽 760px，表格可见，细轨隐藏，拖拽条可见）。
-- 折叠时隐藏表格与拖拽条，展开时恢复，避免表格在窄宽动画中被挤压。
+- 布局：`QHBoxLayout [table(stretch=1) | divider(4px) | right]`，`self.right` 改为 `_CollapsiblePanel`（`w` 属性驱动 setFixedWidth），其内部用 `right_body`（QWidget，承载滚动内容 + 操作栏）填充展开态；折叠态隐藏 `right_body`、显示 36px `right_rail`。
+- 细轨 `self.right_rail`：竖向「详情」+ 箭头 `‹`，通过 `_Rail.mouseReleaseEvent` 触发 `expand()`。
+- 拖拽条 `_Divider` 增加 `direction`（本场景 direction=-1，面板在条右侧）、`lo/hi` 范围、`on_release` 回调（松手写回 QSettings）。
+- 弹出/收回：`table.cellClicked → _on_cell_clicked(row, col)`：
+  - `_pinned=True` → 不展开不收回，只切内容
+  - 折叠态 → 弹出，open_row_id 记当前行
+  - 展开态且 `row==open_row` → 收回
+  - 展开态且不同行 → 切内容保持展开
+  - 程序化选中（selectRow / 键盘 / 筛选切换）不触发
+- 图钉：右栏头部卡右上角 `btn_pin`（`PushButton`+ `setCheckable(True)`，objectName `pinBtn`），点击调 `_toggle_pin`：
+  - 固定后 `_pinned=True`，常驻展开；点行只切内容
+  - 解除后恢复点行弹出/收回行为
+  - 任何状态变更都立即 `_save_layout_state()`（`QSettings.setValue`）
+- 双击查看原始台账行：`_cell_double_clicked` 在调用前显式 `expand()` 并更新 `_open_row_id`，避免双击序列中两次 cellClicked 把面板折回去。
+- 持久化：模块级 `_layout_settings() -> QSettings` 是可被测试替换的缝；生产环境返回 `QSettings("lawfirm_app","unified_import")`。
+- 动画：动效开启时 180ms `OutCubic`，关闭时 `setFixedWidth` 瞬时切换（动效关闭以便测试与低端机）。
 
 验收：
 
-- `QT_QPA_PLATFORM=offscreen python tests/_smoke_unified_import.py` 新增断言通过：默认展开、折叠后宽度为 36px、细轨/表格/拖拽条可见性正确、拖拽宽度记忆、eventFilter 左右 Enter 触发折叠/展开、顶部筛选栏 Enter 不改变状态。
+- `QT_QPA_PLATFORM=offscreen python tests/_smoke_unified_import.py` 109/109 通过；`tests/_smoke_import_review.py` 54/54；`tests/_smoke_import_view.py` 15/15。
+- 新增断言覆盖：默认折叠态、细轨可见/内容隐藏、拖拽条隐藏；点行弹出/再点同行收回/点不同行保持；细轨点击展开；图钉固定后点行不收回 + 解除后恢复；拖拽宽度记忆 700；QSettings 持久化（宽度 700 + 图钉 0）；重复折叠/展开幂等；头部卡内含图钉按钮。
 
 ### 7.8 范围外（本次不做）
 
