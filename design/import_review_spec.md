@@ -423,3 +423,82 @@ _KEYS    = ["created_at","friendly_table","invoice_no","buyer","amount","handler
 
 D spec 写的是「`change_log` 此后**只**由『发票台账』页写入」。本方案移除了该页的编辑功能，写入方变为「导入复核」页（导入前 + 导入后两条路径）。
 → 实施时需同步修订 `invoice_ledger_D_spec.md §9` 的表述，避免文档与实现脱节。（用户 2026-09-02 已确认「文档债一同修订」）
+
+---
+
+## 13. 阶段 3 实施设计（回写机制，2026-09-02 定稿）
+
+> 本节的代码摸底与设计于 2026-09-02 完成，**尚未编码**，待用户确认后实施。
+
+### 13.1 现成可复用件（代码摸底结论）
+
+| 函数 | 位置 | 用途 |
+|---|---|---|
+| `_write_collection_for_invoice(conn, inv, batch_id)` | importer.py:169 | **删+重写 collection**，支持 split_receipts（逐人收款）与 remark（pure_date/receipts），末尾自动 `_upsert_received_snapshot`（方案E 快照） |
+| `_refresh_snapshot_actual(conn, invoice_no, batch_id, expected_json=None)` | importer.py:249 | 只重算 actual（保留 expected） |
+| `raw_ledger.update_row` / `get_row` | raw_ledger.py | 镜表编辑 + 逐字段 change_log + `_sync_invoice_from_raw`（invoice/charge_detail 同步）；`_sync_invoice_from_raw`/`_sync_charge_detail` **本身已 conn 感知** |
+| `log_change(conn, table_name, record_id, field, old, new, note, **ctx)` | change_log.py | 审计，ctx 带 friendly_table/invoice_no/buyer/amount/handlers |
+
+### 13.2 必须的小重构：`update_row` / `get_row` 支持外部 conn
+
+现状：二者各自 `get_conn()` + 自 commit/close → 无法满足回写"单事务、任一步失败整体回滚"。
+
+重构（向后兼容，发票台账页旧路径不受影响）：
+```python
+def get_row(rid, conn=None):        # conn 缺省自开自关；传入则复用不关
+def update_row(rid, data, note="", conn=None) -> list:
+    # 返回本次变更字段列表 [field, ...]（供 L2 汇总）；conn 缺省自 commit/close
+```
+
+### 13.3 `app/engine/review_writeback.py`（新增）
+
+```python
+def apply_edit(period: str, raw_id: int, patch: Dict, note: str) -> Dict:
+    """导入后回写（单事务）。
+    patch 键（镜表原始文本语义，与 EDIT_FIELDS 对齐；缺省=不改）：
+      invoice_date_raw / invoice_no / buyer / amount_raw / case_no / remark / handler_text
+      receipts: Optional[List[(person_name, amount, ym)]]  # 显式收款明细（split_receipts 语义）
+    流程：
+      1) get_row(raw_id, conn) 取旧行（diff 基准）
+      2) data = 旧行合并 patch → update_row(raw_id, data, note, conn=conn)
+         → L1 逐字段 change_log + invoice/charge_detail 同步（复用）
+      3) 若涉及金额/经办人/备注/收款 → 重建 inv dict（remark=parse_remark(新备注)）→
+         _write_collection_for_invoice(conn, inv, batch_id)（删+重写 collection+刷快照）
+      4) UPDATE raw_ledger SET synced=0 WHERE id=raw_id
+      5) L2 汇总：log_change(field='(同步)', new='invoice.total_amount A→B; charge_detail ×N; collection 重写 M 条')
+      6) 成功 commit，任一异常 rollback + 抛错
+    返回 {"changed": [字段], "summary": str}（供 UI InfoBar）
+    """
+```
+
+- `_write_collection_for_invoice` 的 remark 路径自动把"改备注里的收款日期"落到 collection → **recv_date_raw 修复以"发票行收款由 remark/receipts 驱动"的方式消化**
+- invoice_no 改名走 update_row 既有级联（6 张表）
+- 红字发票（amount_raw 负数）：_write_collection_for_invoice 的 is_red 分支不写 collection
+
+### 13.4 预收款行（sheet4）——范围决策点【待用户拍板】
+
+代码摸底发现比 recv_date_raw 更大的缺口：
+
+- `recv_date_raw` 是**预收款行专属**字段（发票行导入时恒空）
+- 旧 `_sync_invoice_from_raw` 对 `kind='prepayment'` 行**整体跳过** → 发票台账页编辑预收款行 = 只改镜表，业务 `prepayment` 表不动
+- 预收款页（prepayment_view）**只能核销（offset）**，不能改金额/日期/购方 → 预收款数据全系统无处可改
+
+**方案 A（推荐，阶段 3 聚焦发票行）**：回写引擎仅支持 `kind='invoice'` 行；导入后页对预收款行「编辑」置灰 + 提示"预收款管理请到「业务数据 → 预收款」页（当前仅支持核销）"。预收款行改数据留待后续单独排期。
+**方案 B（顺带预收款行）**：阶段 3 一并实现预收款行回写（写 `prepayment` 表 received_date/buyer/amount/person_text/case_no/remark + 镜表 + 审计；涉及与 offset 核销的一致性），范围明显增大。
+
+### 13.5 UI 接入（ReviewPostView）
+
+- 「标记已确认异常」旁新增**「编辑」**按钮；选中行 `raw_id` 非空且 `kind='invoice'` 时启用（阶段 3 先行版本：预收款行按 §13.4 决策置灰或可编辑）
+- 打开 `WritebackDialog(period, row)`：
+  - 表单字段（镜表原始文本语义）：开票日期 / 发票号码 / 购方 / 金额 / 案号 / 备注 / 经办人
+  - **收款明细**子表（收款日期 / 金额 / 经办人，从 collection 预填，可增删改）→ receipts
+  - **修改原因必填**（§9-D）
+  - 校验：经办人列可解析且合计=总额（复用 parse_handler_column 校验）；金额可解析
+- 确定 → `apply_edit` → InfoBar 成功/失败 → 刷新比对行
+- 回写后该行差异消失（镜表=业务表），但 `synced=0` → 表格「修订」徽标（阶段 3 同步加"已手工修订"列或徽标，见 §12.4）
+
+### 13.6 测试计划
+
+- `tests/test_review_writeback.py`（内存库单测）：改金额/购方/备注/经办人/收款明细 → 断言 invoice/charge_detail/collection/synced/change_log(L1+L2)/快照刷新；发票号改名级联；红字不改收款；失败回滚（注入异常 → 全表无变化）
+- `_smoke_import_review` 增补：编辑按钮启停、WritebackDialog 构造、保存后刷新
+- 全量回归 13 套
