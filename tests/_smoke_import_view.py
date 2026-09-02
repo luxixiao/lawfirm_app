@@ -116,6 +116,16 @@ check("无法识别账期不崩溃且不发信号", len(msgs) == 0)
 view.log_result("f.xlsx", "ledger", "2025-01", "✓ 冒烟测试导入", True)
 check("log_result 写入导入日志", "✓ 冒烟测试导入" in view.log.toPlainText())
 
+# ---------------------------------------------------------------- 5) 导入台账后自动跳到「导入复核」页（导航联动）
+from app.ui.main_window import MainWindow
+mw = MainWindow()
+before = mw.stack.currentWidget()
+mw.page_import._do_import("2025.1台账.xlsx")
+after = mw.stack.currentWidget()
+check("导入后自动切到复核页(review)", after is mw.page_review,
+      f"before={type(before).__name__} after={type(after).__name__}")
+check("复核页进入导入前模式(pre)", mw.page_review.stack.currentWidget() is mw.page_review.page_pre)
+
 bad = [n for n, ok, _ in results if not ok]
 print(f"\n{len(results) - len(bad)}/{len(results)} passed")
 if bad:

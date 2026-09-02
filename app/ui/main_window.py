@@ -226,6 +226,8 @@ class MainWindow(FramelessWindow):
         # 导入复核流程接线：导入页解析台账 → 复核页导入前模式就地确认；
         # 确认/取消后回导入页，导入结果回传写导入日志（弹窗由复核页负责）
         self.page_import.ledger_pending.connect(self.page_review.open_pending)
+        # 解析完成后自动跳到「导入复核」页（用户需求：导入台账后自动进入复核）
+        self.page_import.ledger_pending.connect(lambda *a: self.select("review"))
         self.page_review.navigate_back.connect(lambda: self.select("import"))
         self.page_review.import_finished.connect(self.page_import.log_result)
 
