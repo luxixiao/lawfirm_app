@@ -214,6 +214,28 @@ pv.table.selectRow(0)
 pv._on_sel()
 check("选中源侧行后编辑按钮启用", pv.btn_edit.isEnabled())
 
+# ---------------------------------------------------------------- 7b) 还原为原件按钮（§5.3）
+check("有「还原为原件」按钮且默认禁用",
+      hasattr(pv, "btn_restore") and not pv.btn_restore.isEnabled())
+pv._rows[0]["synced"] = False
+pv._batch = {"archive_path": "data/archive/x.xlsx", "id": 1, "file_name": "f"}
+pv._render()
+pv.table.selectRow(0)
+pv._on_sel()
+check("synced=0 + 有存档 → 还原按钮启用", pv.btn_restore.isEnabled())
+pv._rows[0]["synced"] = True
+pv._render()
+pv.table.selectRow(0)
+pv._on_sel()
+check("synced=1（未修订）→ 还原按钮禁用", not pv.btn_restore.isEnabled())
+pv._rows[0]["synced"] = False
+pv._batch = {"archive_path": "", "id": 1, "file_name": "f"}
+pv._render()
+pv.table.selectRow(0)
+pv._on_sel()
+check("无存档 → 还原按钮禁用", not pv.btn_restore.isEnabled())
+pv._batch = None
+
 # ---------------------------------------------------------------- 8) 导入前留痕装配（阶段 4）
 check("collect_import_fixes 空态返回 []", v.page_pre.collect_import_fixes() == [])
 v.page_pre._data = {"invoices": [

@@ -222,6 +222,75 @@ def main() -> int:
     except ValueError:
         check("预收款行被拒绝", True)
 
+    # ---------------- 11) rewrite_collection=True 强制按备注重写 ----------------
+    rid = add_invoice("R1", 100.0, remark="25.12.10")
+    rw.apply_edit(P, rid, {"receipts": [("张三", 80.0, "2025-12"),
+                                        ("李四", 20.0, "2025-12")]}, "逐人收款")
+    check("显式收款 2 条（预置）", q1("SELECT count(*) FROM collection "
+                                   "WHERE invoice_no='R1'")[0] == 2)
+    rw.apply_edit(P, rid, {"buyer": "乙公司"}, "仅改购方")  # 备注未变 + 无 receipts → 不重写
+    check("备注未变不重写收款（防清空）", q1("SELECT count(*) FROM collection "
+                                        "WHERE invoice_no='R1'")[0] == 2)
+    rw.apply_edit(P, rid, {"buyer": "甲公司"}, "强制按备注重写",
+                  rewrite_collection=True)
+    colls = q("SELECT amount FROM collection WHERE invoice_no='R1'")
+    check("rewrite_collection 撤销显式收款→按纯日期备注全额 1 条",
+          len(colls) == 1 and abs(colls[0]["amount"] - 100.0) < 1e-9,
+          str([dict(c) for c in colls]))
+
+    # ---------------- 12) restore_from_archive 单行还原 ----------------
+    from app.importer import importer as _imp  # noqa: E402
+    rid = add_invoice("R2", 100.0, remark="25.11.30")  # 原件坐标：已开票已入账 第2行
+    rw.apply_edit(P, rid, {"amount_raw": "200", "handler_text": "张三200"},
+                  "手改金额200")
+    rw.apply_edit(P, rid, {"receipts": [("张三", 200.0, "2025-12")]}, "手改收款")
+    check("还原前已手工修订 synced=0",
+          q1("SELECT synced FROM raw_ledger WHERE id=?", rid)["synced"] == 0)
+
+    header = ["序号", "开票日期", "金额", "发票号码", "对方", "经办人", "备注"]
+    raw_row = ["1", "2025-01-05", "100", "R2", "甲公司", "张三100", "25.11.30"]
+
+    def _fake_parse(path, period):
+        return {"invoices": [{
+            "sheet_name": "已开票已入账", "row_no": 2, "invoice_no": "R2",
+            "buyer": "甲公司", "total_amount": 100.0, "handler_text": "张三100",
+            "remark_raw": "25.11.30", "case_no": "",
+            "raw_row": raw_row, "header": header,
+        }], "prepayments": [], "problems": []}
+
+    _imp.parse_ledger_file = _fake_parse
+    res = rw.restore_from_archive(P, rid, "data/archive/fake.xlsx")
+    check("还原成功标记", res.get("restored") is True, str(res))
+    check("还原后金额回 100",
+          q1("SELECT amount_num, synced FROM raw_ledger WHERE id=?", rid)["amount_num"] == 100.0)
+    check("还原后 synced=1",
+          q1("SELECT synced FROM raw_ledger WHERE id=?", rid)["synced"] == 1)
+    check("还原后 invoice.total_amount=100", abs(q1(
+        "SELECT total_amount FROM invoice WHERE invoice_no='R2'")["total_amount"] - 100.0) < 1e-9)
+    colls = q("SELECT amount FROM collection WHERE invoice_no='R2'")
+    check("还原后收款按原备注纯日期全额 1 条",
+          len(colls) == 1 and abs(colls[0]["amount"] - 100.0) < 1e-9,
+          str([dict(c) for c in colls]))
+
+    # 还原找不到原件（问题行/无坐标）
+    rid_no = add_invoice("R3", 50.0, handler="张三50", remark="")
+    conn.execute("UPDATE raw_ledger SET sheet_name='', row_no=0 WHERE id=?", (rid_no,))
+    conn.commit()
+    try:
+        rw.restore_from_archive(P, rid_no, "data/archive/fake.xlsx")
+        check("无原件坐标被拒", False)
+    except ValueError:
+        check("无原件坐标被拒", True)
+    # 存档解析无此行（坐标 99 不在假解析结果里）
+    rid_miss = add_invoice("R4", 60.0, handler="张三60", remark="")
+    conn.execute("UPDATE raw_ledger SET row_no=99 WHERE id=?", (rid_miss,))
+    conn.commit()
+    try:
+        rw.restore_from_archive(P, rid_miss, "data/archive/fake.xlsx")
+        check("存档无该行解析结果被拒", False)
+    except ValueError:
+        check("存档无该行解析结果被拒", True)
+
     conn.close()
     print(f"\n{OK} passed, {len(FAILS)} failed")
     return 1 if FAILS else 0

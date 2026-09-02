@@ -22,7 +22,7 @@ from PySide6.QtWidgets import (
 from app.db import get_conn
 from app.engine import raw_ledger as rl
 from app.engine import review_compare as rc
-from app.engine.review_writeback import apply_edit
+from app.engine.review_writeback import apply_edit, restore_from_archive
 from app.ui import scale
 from app.ui.column_layout import install_column_layout
 from app.ui.widgets import CaptionLabel, PushButton, TableWidget
@@ -72,6 +72,10 @@ class ReviewPostView(QWidget):
         self.btn_edit.setEnabled(False)
         self.btn_edit.clicked.connect(self._edit_row)
         bar.addWidget(self.btn_edit)
+        self.btn_restore = PushButton("还原为原件")
+        self.btn_restore.setEnabled(False)
+        self.btn_restore.clicked.connect(self._restore_row)
+        bar.addWidget(self.btn_restore)
         self.btn_confirm = PushButton("标记已确认异常")
         self.btn_confirm.clicked.connect(self._mark_confirmed)
         bar.addWidget(self.btn_confirm)
@@ -255,7 +259,41 @@ class ReviewPostView(QWidget):
     # ------------------------------------------------------------------ #
     def _on_sel(self) -> None:
         row = self._current_row()
-        self.btn_edit.setEnabled(bool(row and row.get("raw_id")))
+        has_raw = bool(row and row.get("raw_id"))
+        self.btn_edit.setEnabled(has_raw)
+        # 还原：仅「已手工修订」(synced=0) 且账期有存档文件
+        self.btn_restore.setEnabled(bool(
+            has_raw and not row.get("synced", True)
+            and (self._batch or {}).get("archive_path")))
+
+    def _restore_row(self) -> None:
+        """单行还原为 Excel 原件（spec §5.3）。"""
+        row = self._current_row()
+        if row is None or not row.get("raw_id"):
+            QMessageBox.information(self, "提示", "请先选中一行。")
+            return
+        archive = (self._batch or {}).get("archive_path")
+        if not archive:
+            QMessageBox.information(self, "提示", "该账期无存档文件，无法还原原件。")
+            return
+        ret = QMessageBox.question(
+            self, "还原为原件",
+            f"将把发票 {row['invoice_no']} 恢复为 {self._period} 台账 Excel 原件"
+            "（覆盖当前手工修改，同步业务表并留痕）。\n\n确认还原？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No)
+        if ret != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            restore_from_archive(self._period, row["raw_id"], archive)
+        except ValueError as e:
+            QMessageBox.warning(self, "无法还原", str(e))
+            return
+        self._load()
+        from qfluentwidgets import InfoBar, InfoBarPosition
+        InfoBar.success("", "已还原为 Excel 原件（修改记录可查）",
+                        parent=self, position=InfoBarPosition.TOP_RIGHT,
+                        duration=2500)
 
     def _edit_row(self) -> None:
         row = self._current_row()
