@@ -98,28 +98,37 @@ def list_raw(sheet_key: str = "", keyword: str = "", status: str = "",
     return out
 
 
-def get_row(rid: int) -> Optional[Dict]:
-    conn = get_conn()
+def get_row(rid: int, conn=None) -> Optional[Dict]:
+    """读一行 raw_ledger。conn 缺省自开自关；传入则复用外部连接（单事务用）。"""
+    owns = conn is None
+    if owns:
+        conn = get_conn()
     try:
         r = conn.execute("SELECT * FROM raw_ledger WHERE id=?", (rid,)).fetchone()
     finally:
-        conn.close()
+        if owns:
+            conn.close()
     return dict(r) if r else None
 
 
 # ---------------------------------------------------------------------------
 # 写：编辑（手动修改能力，自动写审计）
 # ---------------------------------------------------------------------------
-def update_row(rid: int, data: Dict, note: str = "") -> None:
+def update_row(rid: int, data: Dict, note: str = "", conn=None) -> list:
     """编辑一行 raw_ledger，逐字段比对并写 change_log（仅记录变了的字段）。
 
     关键修复：编辑发票台账行后，向下游归一化表同步，使「发票收款情况」
     （读 invoice 表）与「经办人发票收款情况」（读 charge_detail）能够刷新。
     仅同步真正变更的字段，避免用镜表原始文本覆盖进项文档导入时已规范化的字段。
+
+    返回本次变更的字段名列表（供回写引擎做 L2 同步汇总）；无变更返回空列表。
+    conn 缺省时自开连接、自 commit/close（发票台账页旧路径不受影响）；
+    传入 conn 时复用外部连接且不 commit/close（导入复核回写引擎需单事务，见
+    app/engine/review_writeback.apply_edit）。
     """
-    old = get_row(rid)
+    old = get_row(rid, conn)
     if old is None:
-        return
+        return []
     changes = []
     new_vals = []
     for f in EDIT_FIELDS:
@@ -131,8 +140,10 @@ def update_row(rid: int, data: Dict, note: str = "") -> None:
         else:
             new_vals.append(o)
     if not changes:
-        return
-    conn = get_conn()
+        return []
+    owns = conn is None
+    if owns:
+        conn = get_conn()
     try:
         sets = ", ".join(f"{f}=?" for f in EDIT_FIELDS)
         conn.execute(f"UPDATE raw_ledger SET {sets} WHERE id=?", new_vals + [rid])
@@ -158,9 +169,12 @@ def update_row(rid: int, data: Dict, note: str = "") -> None:
         # 向下游归一化表同步（发票台账编辑 -> 发票收款情况/经办人发票收款情况）
         if (old.get("kind") or "invoice") != "prepayment":
             _sync_invoice_from_raw(conn, rid, old, changes, data)
-        conn.commit()
+        if owns:
+            conn.commit()
     finally:
-        conn.close()
+        if owns:
+            conn.close()
+    return [f for f, _, _ in changes]
 
 
 # ---------------------------------------------------------------------------

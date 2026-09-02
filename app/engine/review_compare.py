@@ -82,6 +82,7 @@ def _derive_raw(r: sqlite3.Row, period: str) -> Dict:
         "handler_text": r["handler_text"] or "",
         "handlers": {n: a for n, a in handlers},
         "remark": rem,
+        "synced": bool(r["synced"]),
         "source": f"{r['sheet_name'] or r['sheet_key'] or '—'} · 第{r['row_no'] or 0}行",
     }
 
@@ -92,7 +93,7 @@ def _raw_side(batch_id: int, period: str) -> List[Dict]:
     try:
         rows = conn.execute(
             "SELECT id, sheet_key, sheet_name, row_no, invoice_no, buyer, "
-            "amount_num, handler_text, remark FROM raw_ledger "
+            "amount_num, handler_text, remark, synced FROM raw_ledger "
             "WHERE import_batch_id=? AND kind='invoice' ORDER BY id",
             (batch_id,),
         ).fetchall()
@@ -260,6 +261,7 @@ def build_review_rows(period: str) -> Tuple[Optional[Dict], List[Dict]]:
             "detail": "；".join(flags),
             "confirmed_note": note,
             "raw_id": s["raw_id"] if s else None,
+            "synced": s["synced"] if s else True,
             "src": s,
         })
     return {"id": batch_id, "file_name": batch["file_name"],

@@ -14,12 +14,15 @@ from typing import Dict, List, Tuple
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
-    QAbstractItemView, QButtonGroup, QDialog, QDialogButtonBox, QHBoxLayout,
-    QLabel, QMessageBox, QPlainTextEdit, QVBoxLayout, QWidget,
+    QAbstractItemView, QButtonGroup, QDialog, QDialogButtonBox, QFormLayout,
+    QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPlainTextEdit, QPushButton,
+    QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
 from app.db import get_conn
+from app.engine import raw_ledger as rl
 from app.engine import review_compare as rc
+from app.engine.review_writeback import apply_edit
 from app.ui import scale
 from app.ui.column_layout import install_column_layout
 from app.ui.widgets import CaptionLabel, PushButton, TableWidget
@@ -65,6 +68,10 @@ class ReviewPostView(QWidget):
             bar.addWidget(b)
             self.chips[name] = b
         bar.addStretch()
+        self.btn_edit = PushButton("编辑回写")
+        self.btn_edit.setEnabled(False)
+        self.btn_edit.clicked.connect(self._edit_row)
+        bar.addWidget(self.btn_edit)
         self.btn_confirm = PushButton("标记已确认异常")
         self.btn_confirm.clicked.connect(self._mark_confirmed)
         bar.addWidget(self.btn_confirm)
@@ -85,6 +92,7 @@ class ReviewPostView(QWidget):
         self.table.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
         self.table.setHorizontalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
         self.table.cellDoubleClicked.connect(self._cell_double_clicked)
+        self.table.itemSelectionChanged.connect(self._on_sel)
         lay.addWidget(self.table, 1)
         self.table._col = install_column_layout(self.table, "import_review", "main")
 
@@ -149,6 +157,9 @@ class ReviewPostView(QWidget):
                 detail = f"{note}　|　{detail}"
             elif confirmed:
                 detail = note
+            if not row.get("synced", True):
+                # 已手工修订：与 Excel 原件不一致（可「编辑回写」里继续改或还原）
+                detail = f"〔已手工修订〕{detail}"
             cells.append((detail, False, detail, detail))
 
             for c, (text, mismatch, s_plain, d_plain) in enumerate(cells):
@@ -238,6 +249,166 @@ class ReviewPostView(QWidget):
                                    row["detail"], row["confirmed_note"])
         if dlg.exec() == QDialog.DialogCode.Accepted:
             self._load()
+
+    # ------------------------------------------------------------------ #
+    # 编辑回写（阶段 3）
+    # ------------------------------------------------------------------ #
+    def _on_sel(self) -> None:
+        row = self._current_row()
+        self.btn_edit.setEnabled(bool(row and row.get("raw_id")))
+
+    def _edit_row(self) -> None:
+        row = self._current_row()
+        if row is None or not row.get("raw_id"):
+            QMessageBox.information(self, "提示", "请先选中一张源侧存在的发票行。")
+            return
+        raw = rl.get_row(row["raw_id"])
+        if raw is None:
+            QMessageBox.information(self, "提示", "镜表行已不存在，请刷新后重试。")
+            return
+        dlg = WritebackDialog(self, self._period, row["invoice_no"], raw, row["raw_id"])
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            self._load()
+
+
+class WritebackDialog(QDialog):
+    """导入后回写对话框：编辑镜表原始文本字段 + 收款明细，修改原因必填。"""
+
+    _EDIT_FIELDS = [
+        ("invoice_date_raw", "开票日期"),
+        ("invoice_no", "发票号码"),
+        ("buyer", "对方"),
+        ("amount_raw", "金额"),
+        ("case_no", "案号"),
+        ("remark", "备注"),
+        ("handler_text", "经办人"),
+    ]
+
+    def __init__(self, parent, period: str, invoice_no: str, raw: Dict,
+                 raw_id: int) -> None:
+        super().__init__(parent)
+        self._period = period
+        self._raw_id = raw_id
+        self.setWindowTitle(f"编辑回写 — {invoice_no}")
+        self.resize(620, 560)
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(20, 18, 20, 18)
+        root.setSpacing(10)
+
+        root.addWidget(CaptionLabel(
+            f"账期 {period}　·　修改将写入镜表并同步业务表（invoice/经办人分摊/收款），"
+            "全程留痕。改后该行标记「已手工修订」。"))
+
+        form = QFormLayout()
+        form.setSpacing(8)
+        self.edits: Dict[str, QLineEdit] = {}
+        for key, label in self._EDIT_FIELDS:
+            le = QLineEdit(str(raw.get(key) or ""))
+            self.edits[key] = le
+            form.addRow(label, le)
+        root.addLayout(form)
+
+        root.addWidget(CaptionLabel("收款明细（留空=按备注自动推导；填写=显式覆盖）："))
+        self.tbl = QTableWidget(0, 3)
+        self.tbl.setHorizontalHeaderLabels(["收款年月(YYYY-MM)", "金额", "经办人"])
+        self.tbl.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.tbl.verticalHeader().setVisible(False)
+        root.addWidget(self.tbl, 1)
+        btns = QHBoxLayout()
+        btn_add = QPushButton("添加收款行")
+        btn_add.clicked.connect(self._add_row)
+        btn_del = QPushButton("删除所选行")
+        btn_del.clicked.connect(self._del_row)
+        btns.addWidget(btn_add)
+        btns.addWidget(btn_del)
+        btns.addStretch()
+        root.addLayout(btns)
+        self._load_receipts(raw.get("invoice_no") or "")
+
+        root.addWidget(CaptionLabel("修改原因（必填）："))
+        self.note_edit = QLineEdit()
+        self.note_edit.setPlaceholderText("例如：经核对实际收款日期为 2025-12-10，备注修正")
+        root.addWidget(self.note_edit)
+
+        box = QDialogButtonBox()
+        self.btn_ok = box.addButton("确定回写", QDialogButtonBox.ButtonRole.AcceptRole)
+        btn_cancel = box.addButton("取消", QDialogButtonBox.ButtonRole.RejectRole)
+        btn_cancel.clicked.connect(self.reject)
+        self.btn_ok.clicked.connect(self._on_ok)
+        root.addWidget(box)
+
+    def _load_receipts(self, invoice_no: str) -> None:
+        conn = get_conn()
+        try:
+            rows = conn.execute(
+                "SELECT receipt_date, amount, person_name FROM collection "
+                "WHERE invoice_no=? AND source='import' ORDER BY id",
+                (invoice_no,),
+            ).fetchall()
+        finally:
+            conn.close()
+        self.tbl.setRowCount(0)
+        for r in rows:
+            self._append_row((r["receipt_date"] or "")[:7],
+                             _money(r["amount"]), r["person_name"] or "")
+
+    def _append_row(self, ym: str, amount: str, person: str) -> None:
+        r = self.tbl.rowCount()
+        self.tbl.insertRow(r)
+        for c, v in enumerate([ym, amount, person]):
+            it = QTableWidgetItem(v)
+            if c == 1:
+                it.setTextAlignment(Qt.AlignmentFlag.AlignRight
+                                    | Qt.AlignmentFlag.AlignVCenter)
+            self.tbl.setItem(r, c, it)
+
+    def _add_row(self) -> None:
+        self._append_row("", "", "")
+
+    def _del_row(self) -> None:
+        r = self.tbl.currentRow()
+        if r >= 0:
+            self.tbl.removeRow(r)
+
+    def _receipts(self) -> list:
+        """收集收款明细 → [(person_name, amount, ym)]；无行返回 []。"""
+        out = []
+        for r in range(self.tbl.rowCount()):
+            def _txt(c):
+                it = self.tbl.item(r, c)
+                return (it.text() if it else "").strip()
+            ym, amt, person = _txt(0), _txt(1), _txt(2)
+            if not ym and not amt and not person:
+                continue
+            try:
+                amt_f = float(amt.replace(",", "")) if amt else 0.0
+            except ValueError:
+                raise ValueError(f"第 {r + 1} 行收款金额无法解析：{amt!r}")
+            if not ym:
+                raise ValueError(f"第 {r + 1} 行请填写收款年月（YYYY-MM）")
+            out.append((person, amt_f, ym[:7]))
+        return out
+
+    def _on_ok(self) -> None:
+        note = self.note_edit.text().strip()
+        if not note:
+            QMessageBox.warning(self, "需填写修改原因", "修改原因必填，便于日后审计追溯。")
+            return
+        patch = {}
+        for key, _ in self._EDIT_FIELDS:
+            patch[key] = self.edits[key].text().strip()
+        try:
+            patch["receipts"] = self._receipts()
+        except ValueError as e:
+            QMessageBox.warning(self, "收款明细有误", str(e))
+            return
+        try:
+            res = apply_edit(self._period, self._raw_id, patch, note)
+        except ValueError as e:
+            QMessageBox.warning(self, "无法回写", str(e))
+            return
+        super().accept()
 
 
 class AnomalyConfirmDialog(QDialog):

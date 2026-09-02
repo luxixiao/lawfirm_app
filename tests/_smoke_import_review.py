@@ -185,6 +185,35 @@ check("切回全部", pv.chips["全部"].isChecked() and pv._grp.checkedId() == 
 pv.set_period("")   # 空账期
 check("set_period 空值安全", pv.table.rowCount() == 0)
 
+# ---------------------------------------------------------------- 7) 编辑回写控件（阶段 3）
+check("有「编辑回写」按钮且默认禁用", hasattr(pv, "btn_edit") and not pv.btn_edit.isEnabled())
+fake_raw = {"id": 1, "invoice_date_raw": "2025-01-05", "invoice_no": "X1",
+            "buyer": "甲公司", "amount_raw": "100", "case_no": "",
+            "remark": "", "handler_text": "张三100", "kind": "invoice"}
+RP.rl.get_row = lambda rid: dict(fake_raw, id=rid)
+dlg = RP.WritebackDialog(pv, "2025-01", "X1", fake_raw, 1)
+check("WritebackDialog 可构造", dlg is not None)
+check("含修改原因输入框", hasattr(dlg, "note_edit"))
+check("含收款明细子表", hasattr(dlg, "tbl") and dlg.tbl.columnCount() == 3)
+check("收款明细预填 0 行（get_conn 打桩）", dlg.tbl.rowCount() == 0)
+dlg._append_row("2025-12", "80.00", "张三")
+receipts = dlg._receipts()
+check("_receipts 收集正确", receipts == [("张三", 80.0, "2025-12")], str(receipts))
+# 选中行 → 编辑按钮启用（注入一条带 raw_id 的假比对行）
+pv._rows = [{
+    "invoice_no": "X1", "source": "已开票已入账 · 第2行",
+    "buyer_src": "甲公司", "buyer_db": "甲公司",
+    "amount_src": 100.0, "amount_db": 100.0,
+    "handlers_src": "张三 100.00", "handlers_db": "张三 100.00",
+    "recv_src": "未收款", "recv_db": "—",
+    "status": "一致", "detail": "", "confirmed_note": "",
+    "raw_id": 1, "synced": False,
+}]
+pv._render()
+pv.table.selectRow(0)
+pv._on_sel()
+check("选中源侧行后编辑按钮启用", pv.btn_edit.isEnabled())
+
 bad = [n for n, ok, _ in results if not ok]
 print(f"\n{len(results) - len(bad)}/{len(results)} passed")
 if bad:
