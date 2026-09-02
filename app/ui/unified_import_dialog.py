@@ -779,3 +779,28 @@ class UnifiedImportDialog(QWidget):
     def reject(self) -> None:
         """用户点「取消」：真实 data 不被修改，发出 cancelled 信号。"""
         self.cancelled.emit()
+
+    def collect_import_fixes(self) -> list:
+        """把本次导入确认页的人工干预规范化为留痕条目（供 log_import_fixes）。
+
+        每项 {"kind": "fix"|"edit", "invoice_no": str, "old": dict, "new": dict}
+        - fix：修正的问题行（解析失败凭空填，old 为空）
+        - edit：右栏就地编辑的已解析行（old = 原解析值，取自未被修改的 _data）
+        真实 _data 全程不被修改，故 old 值可靠。
+        """
+        items = []
+        orig = self._data.get("invoices", [])
+        for p_idx, data in sorted(self._fix.items()):
+            items.append({
+                "kind": "fix",
+                "invoice_no": str(data.get("invoice_no") or "").strip(),
+                "old": {},
+                "new": data,
+            })
+        for inv_idx, data in sorted(self._inv_edits.items()):
+            if not (0 <= inv_idx < len(orig)):
+                continue
+            old = dict(orig[inv_idx])
+            no = str(data.get("invoice_no") or old.get("invoice_no") or "").strip()
+            items.append({"kind": "edit", "invoice_no": no, "old": old, "new": data})
+        return items

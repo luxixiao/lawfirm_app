@@ -137,6 +137,21 @@ class ImportReviewView(QWidget):
             self._set_mode("post", period)
             self.navigate_back.emit()
             return
+        # 导入前留痕：确认页的人工修正/编辑补录 change_log + synced=0
+        # （独立事务，失败不阻断已入库的导入结果）
+        try:
+            from app.engine.import_fix_log import log_import_fixes
+            fix_res = log_import_fixes(r.get("batch_id") or 0,
+                                       self.page_pre.collect_import_fixes())
+            if fix_res["skipped"]:
+                QMessageBox.information(
+                    self, "留痕提示",
+                    f"有 {fix_res['skipped']} 条人工修改未能定位到镜表行，未留痕"
+                    "（数据不受影响）。")
+        except Exception:  # noqa: BLE001
+            QMessageBox.information(
+                self, "留痕提示",
+                "导入已成功，但修改留痕写入失败（数据不受影响）。如持续出现请反馈。")
         msg = (f"✓ 发票台账 {period}: {r['invoice_count']} 张发票, "
                f"{r['prepayment_count']} 条预收款")
         QMessageBox.information(self, "导入成功", msg)

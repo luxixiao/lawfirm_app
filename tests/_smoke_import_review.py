@@ -214,6 +214,30 @@ pv.table.selectRow(0)
 pv._on_sel()
 check("选中源侧行后编辑按钮启用", pv.btn_edit.isEnabled())
 
+# ---------------------------------------------------------------- 8) 导入前留痕装配（阶段 4）
+check("collect_import_fixes 空态返回 []", v.page_pre.collect_import_fixes() == [])
+v.page_pre._data = {"invoices": [
+    {"invoice_no": "X1", "total_amount": 100.0, "handler_text": "张三100",
+     "invoice_date": "2025-01-05", "buyer": "甲公司", "case_no": ""}]}
+v.page_pre._inv_edits = {0: {"invoice_no": "X1", "total_amount": 200.0,
+                             "handler_text": "张三100", "buyer": "甲公司",
+                             "case_no": "", "invoice_date": "2025-01-06"}}
+items = v.page_pre.collect_import_fixes()
+check("collect_import_fixes 产生 edit 条目",
+      len(items) == 1 and items[0]["kind"] == "edit" and items[0]["invoice_no"] == "X1"
+      and items[0]["old"]["total_amount"] == 100.0 and items[0]["new"]["total_amount"] == 200.0,
+      str(items))
+
+# ---------------------------------------------------------------- 9) audit_view 补「字段」列（阶段 4）
+import app.ui.audit_view as AV  # noqa: E402
+AV.get_conn = lambda: _FakeConn()
+aud = AV.AuditView()
+aud._fill([])
+check("修改记录页新增「字段」列", aud.table.columnCount() == 10,
+      f"got={aud.table.columnCount()}")
+check("字段列位于修改表名之后",
+      aud.table.horizontalHeaderItem(2).text() == "字段")
+
 bad = [n for n, ok, _ in results if not ok]
 print(f"\n{len(results) - len(bad)}/{len(results)} passed")
 if bad:

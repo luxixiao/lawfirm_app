@@ -679,6 +679,7 @@ def commit_ledger_import(data: Dict, period: str, path: str) -> Dict:
     return {
         "type": "ledger",
         "period": period,
+        "batch_id": batch_id,
         "invoice_count": len(data["invoices"]),
         "prepayment_count": len(data["prepayments"]),
         "sheet12_total": data["sheet12_total"],

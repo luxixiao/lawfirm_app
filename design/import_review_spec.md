@@ -502,3 +502,51 @@ def apply_edit(period: str, raw_id: int, patch: Dict, note: str) -> Dict:
 - `tests/test_review_writeback.py`（内存库单测）：改金额/购方/备注/经办人/收款明细 → 断言 invoice/charge_detail/collection/synced/change_log(L1+L2)/快照刷新；发票号改名级联；红字不改收款；失败回滚（注入异常 → 全表无变化）
 - `_smoke_import_review` 增补：编辑按钮启停、WritebackDialog 构造、保存后刷新
 - 全量回归 13 套
+
+---
+
+## 14. 阶段 4 实施设计（导入前留痕，2026-09-02 定稿）
+
+> 代码摸底与设计于 2026-09-02 完成，**尚未编码**，待用户确认后实施。
+
+### 14.1 摸底结论
+
+- 统一确认页的状态追踪（`unified_import_dialog`）：
+  - `self._fix: Dict[p_index, data]` = 修正的问题行；`self._inv_edits: Dict[inv_idx, data]` = 已存在发票右栏就地编辑
+  - 两者存的是同一结构 `self.fix_panel.read_fix()` 结果（invoice_date/total_amount/handlers/split_receipts/buyer/case_no 等）
+  - 点「确认」(_confirmed) 不改数据 → **无需留痕**
+  - `_rebuild_work` 把修正合并进工作副本；真实 `self._data` 全程不改（留痕的 old 值可安全取自 _data）
+- `commit_ledger_import` 内部 `batch_id = _new_batch(...)` 但**返回值不含 batch_id** → 需补（向后兼容）
+- 镜表行由 `_insert_raw_ledger` 写入（synced=1 默认）；留痕后需按 (batch_id, invoice_no) 定位 rid 置 synced=0
+- 修改记录页 audit_view `_KEYS` 不含 field（spec §12.5 已定改造）
+
+### 14.2 留痕内容（§12.6 定案）
+
+| 情形 | 记录 |
+|---|---|
+| A. 修正问题行（解析失败凭空填） | 1 条：`field='(导入修正)'`, `old=''`, `new=新值摘要`, `friendly_table='发票台账 · 导入修正'` |
+| B. 编辑已解析行 | 逐字段 `field=列名` old→new（invoice_date/total_amount/buyer/case_no/handler_text）；备注/收款明细有变另补 1 条摘要行 |
+
+两者：`note='导入时人工修正'/'导入时人工编辑'`（导入前修正无用户原因输入框，note 记性质即可）；
+改后该镜表行 `synced=0`（与 Excel 原件不一致/无原件）。
+
+### 14.3 落点与调用顺序
+
+1. `commit_ledger_import` 返回值补 `"batch_id": batch_id`
+2. `UnifiedImportDialog.collect_import_fixes()` → 规范化 items（old=取自 _data 的原解析值；new=ed；fix 的 invoice_no 取 read_fix 结果——实现时核对 `_validate_invoice` 是否带 invoice_no，缺则回退从原 problem/合并结果定位）
+3. 新增 `app/engine/import_fix_log.py::log_import_fixes(batch_id, items)`（**独立事务**——留痕失败不应回滚已成功入库的导入；单连接内逐项 UPDATE+log_change，收尾 commit）
+   - 按 (import_batch_id, invoice_no) 查 raw_ledger rid；查不到 → skip 计数
+   - ctx（friendly_table/invoice_no/buyer/amount/handlers）取**改前**快照
+4. `ImportReviewView._on_confirmed`：commit 成功后 → `log_import_fixes(r["batch_id"], page_pre.collect_import_fixes())`；留痕异常仅提示不阻断（数据已入库）
+
+### 14.4 audit_view 改造（§12.5 落地）
+
+- `_HEADERS` 在「修改表名」后插入「字段」；`_KEYS` 同步插 `"field"`
+- `field` 以 `(` 开头的行（(导入修正)/(同步)/(新增)/(删除)）加淡色底纹
+- `_fill()` 左对齐集合补 `"field"`
+
+### 14.5 测试计划
+
+- `tests/test_import_fix_log.py`（内存库，复用 db.init_db 迁移技巧）：fix/edit 两类 items → 断言 change_log（field/old/new/friendly_table）+ synced=0；查不到镜表行 → skip
+- `_smoke_import_review` 增补：collect_import_fixes 空态返回 []；编辑后产生条目
+- 全量回归 13 套

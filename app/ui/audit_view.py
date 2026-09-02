@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QAbstractItemView, QComboBox, QHBoxLayout, QHeaderView, QLabel,
     QLineEdit, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
@@ -32,9 +33,9 @@ class AuditView(QWidget):
     （发票号码/对方/金额/经办人为修改前快照，由编辑入口在写日志时一并存入）
     """
 
-    _HEADERS = ["修改时间", "修改表名", "发票号码", "对方", "金额", "经办人", "旧值", "新值", "备注"]
-    _KEYS = ["created_at", "friendly_table", "invoice_no", "buyer", "amount", "handlers",
-             "old_value", "new_value", "note"]
+    _HEADERS = ["修改时间", "修改表名", "字段", "发票号码", "对方", "金额", "经办人", "旧值", "新值", "备注"]
+    _KEYS = ["created_at", "friendly_table", "field", "invoice_no", "buyer", "amount",
+             "handlers", "old_value", "new_value", "note"]
 
     def __init__(self, parent: QWidget | None = None, *,
                  table_name: str | None = None, record_id: str | None = None) -> None:
@@ -142,8 +143,13 @@ class AuditView(QWidget):
                 else:
                     v = row.get(key) or ""
                 item = QTableWidgetItem("" if v is None else str(v))
-                if key in ("old_value", "new_value", "buyer", "amount", "handlers", "invoice_no"):
-                    item.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+                if key in ("old_value", "new_value", "buyer", "amount", "handlers",
+                           "invoice_no", "field"):
+                    item.setTextAlignment(Qt.AlignmentFlag.AlignLeft
+                                          | Qt.AlignmentFlag.AlignVCenter)
+                # 事件类字段（(导入修正)/(同步)/(新增)/(删除)…）淡蓝底纹，与真字段编辑分层
+                if key == "field" and str(v or "").startswith("("):
+                    item.setBackground(QColor("#EAF2FB"))
                 self.table.setItem(r, c, item)
         self._col.apply()
         # 重新叠加右键「按列筛选」（与搜索/刷新 AND 组合）：_fill 重建表格会清除 setRowHidden 状态
