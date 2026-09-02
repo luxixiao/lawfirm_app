@@ -423,8 +423,8 @@ def get_conn() -> sqlite3.Connection:
     return conn
 
 
-def init_db() -> None:
-    """建库建表（幂等）"""
+def init_db(backfill: bool = True) -> None:
+    """建库建表（幂等）。backfill=False 时跳过收款认定快照补齐（延后到首屏后执行）。"""
     conn = get_conn()
     try:
         conn.executescript(SCHEMA)
@@ -471,6 +471,18 @@ def init_db() -> None:
         # 迁移：收款认定快照（方案E）全量回溯——对尚无快照的 active 批次重解析存档源，
         # 还原「导入时源声称收款」(expected) 与「按账期窗口过滤的累计库」(actual)。
         # 幂等：仅补齐缺快照批次；单批次失败跳过，不阻断启动。
+        # backfill 默认开启；main.py 传 False 将其延后到首屏之后执行，避免阻塞启动。
+        if backfill:
+            _backfill_received_snapshot(conn)
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def run_received_snapshot_backfill() -> None:
+    """首屏渲染后再补齐收款认定快照（避免阻塞启动）。幂等，失败仅告警。"""
+    conn = get_conn()
+    try:
         _backfill_received_snapshot(conn)
         conn.commit()
     finally:

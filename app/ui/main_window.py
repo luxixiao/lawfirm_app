@@ -190,58 +190,61 @@ class MainWindow(FramelessWindow):
     # 页面
     # ------------------------------------------------------------------ #
     def _build_pages(self) -> None:
-        self.page_import = ImportView()
-        self.page_invoice = InvoiceCollectView()
-        self.page_handler_all = HandlerCollectView()
-        self.page_prepayment = PrepaymentView()
-        self.page_refund = RefundView()
-        self.page_manual = ManualEntryView()
-        self.page_expense_ledger = ExpenseLedgerView()
-        self.page_salary_ledger = SalaryLedgerView()
-        self.page_salary_summary = SalarySummaryView()
-        self.page_tax_declaration = TaxDeclarationView()
-        self.page_tax_deduction = TaxDeductionView()
-        self.page_settlement = SettlementView()
-        self.page_staff = StaffView()
-        self.page_review = ImportReviewView()
-        self.page_snapshot = SnapshotView()
-        self.page_batch = BatchView()
-        self.page_invoice_ledger = InvoiceLedgerView()
-        self.page_ledger_doc = InvoiceLedgerDocView()
-        self.page_expense_cat = ExpenseCatView()
-        self.page_data_clear = DataClearView()
-        self.page_audit = AuditView()
-        self.page_calc = CalcSheetView()
-        # 注：原「工资个税」占位的 payroll 页已由真正的 SalarySummaryView 取代，
-        # _PlaceholderPage 类保留备用（后续若新增未实现模块可直接复用）。
-        self._pages = {
-            "import": self.page_import, "invoice": self.page_invoice,
-            "handler_all": self.page_handler_all,
-            "prepayment": self.page_prepayment, "refund": self.page_refund,
-            "manual": self.page_manual, "expense_ledger": self.page_expense_ledger,
-            "salary_ledger": self.page_salary_ledger,
-            "settlement": self.page_settlement,
-            "staff": self.page_staff,
-            "review": self.page_review,
-            "snapshot": self.page_snapshot, "batch": self.page_batch,
-            "invoice_ledger": self.page_invoice_ledger,
-            "ledger_doc": self.page_ledger_doc,
-            "expense_cat": self.page_expense_cat,
-            "data_clear": self.page_data_clear,
-            "audit": self.page_audit,
-            "salary_summary": self.page_salary_summary,
-            "tax_declaration": self.page_tax_declaration,
-            "tax_deduction": self.page_tax_deduction,
-            "calc": self.page_calc,
+        # (key, attr, ViewClass)：启动只实例化 import + review 两页（二者信号互联，
+        # 必须同时存在）；其余 25 页在首次 select(key) 时由 _ensure_page 惰性构造，
+        # 避免冷启动一次性 new 全部页面 + 各自 __init__ 全量查库拖慢双击打开速度。
+        self._page_specs = {
+            "import": ("page_import", ImportView),
+            "invoice": ("page_invoice", InvoiceCollectView),
+            "handler_all": ("page_handler_all", HandlerCollectView),
+            "prepayment": ("page_prepayment", PrepaymentView),
+            "refund": ("page_refund", RefundView),
+            "manual": ("page_manual", ManualEntryView),
+            "expense_ledger": ("page_expense_ledger", ExpenseLedgerView),
+            "salary_ledger": ("page_salary_ledger", SalaryLedgerView),
+            "salary_summary": ("page_salary_summary", SalarySummaryView),
+            "tax_declaration": ("page_tax_declaration", TaxDeclarationView),
+            "tax_deduction": ("page_tax_deduction", TaxDeductionView),
+            "settlement": ("page_settlement", SettlementView),
+            "staff": ("page_staff", StaffView),
+            "review": ("page_review", ImportReviewView),
+            "snapshot": ("page_snapshot", SnapshotView),
+            "batch": ("page_batch", BatchView),
+            "invoice_ledger": ("page_invoice_ledger", InvoiceLedgerView),
+            "ledger_doc": ("page_ledger_doc", InvoiceLedgerDocView),
+            "expense_cat": ("page_expense_cat", ExpenseCatView),
+            "data_clear": ("page_data_clear", DataClearView),
+            "audit": ("page_audit", AuditView),
+            "calc": ("page_calc", CalcSheetView),
         }
-        for key, page in self._pages.items():
-            page.setObjectName(key)
+        self._pages = {k: None for k in self._page_specs}
+
+        # 启动急切构造：导入页 + 复核页（二者信号互联，须先存在）
+        self._ensure_page("import")
+        self._ensure_page("review")
 
         # 导入复核流程接线：导入页解析台账 → 复核页导入前模式就地确认；
         # 确认/取消后回导入页，导入结果回传写导入日志（弹窗由复核页负责）
         self.page_import.ledger_pending.connect(self.page_review.open_pending)
         self.page_review.navigate_back.connect(lambda: self.select("import"))
         self.page_review.import_finished.connect(self.page_import.log_result)
+
+    def _ensure_page(self, key: str):
+        """惰性构造页面（首次访问才 new + 加入 stack），返回实例或 None。"""
+        inst = self._pages.get(key)
+        if inst is not None:
+            return inst
+        spec = self._page_specs.get(key)
+        if spec is None:
+            return None
+        attr, cls = spec
+        page = cls()
+        page.setObjectName(key)
+        if getattr(self, "stack", None) is not None:
+            self.stack.addWidget(page)
+        setattr(self, attr, page)
+        self._pages[key] = page
+        return page
 
     def _build_layout(self) -> None:
         central = QWidget()
@@ -254,7 +257,8 @@ class MainWindow(FramelessWindow):
         # 1700+，进而把主窗口最小宽度撑得比屏幕还宽。显式归零，让页面自己出滚动条。
         self.stack.setMinimumSize(0, 0)
         for page in self._pages.values():
-            self.stack.addWidget(page)
+            if page is not None:
+                self.stack.addWidget(page)
 
         content = QWidget()
         content.setObjectName("pageArea")
@@ -389,7 +393,7 @@ class MainWindow(FramelessWindow):
         避免每次点开页面「select + showEvent」双重刷新导致卡顿。
         同时联动双栏侧栏：确保右侧显示对应大类并高亮子项。
         """
-        page = self._pages.get(key)
+        page = self._ensure_page(key)
         if page is None:
             return
         self.stack.setCurrentWidget(page)
