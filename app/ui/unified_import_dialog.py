@@ -399,6 +399,9 @@ class UnifiedImportDialog(QWidget):
             self.fix_panel.deleteLater()
         self.fix_panel = ProblemFixPanel(sorted(self._staff_set), self._period, self)
         self._fix_host_ly.addWidget(self.fix_panel, 1)
+        # 修正面板被替换后，其新子树需重新挂上折叠/展开的事件监听
+        for _w in [self.fix_panel] + self.fix_panel.findChildren(QWidget):
+            _w.installEventFilter(self)
 
     # ------------------------------------------------------------------ #
     # 右侧面板
