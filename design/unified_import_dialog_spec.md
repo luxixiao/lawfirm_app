@@ -118,7 +118,11 @@
 5. **修正表单宿主** `self._fix_host`（含 `ProblemFixPanel`，内部 `btn_add/btn_del` 维持现状作子表工具条）
 6. **单一操作栏**（见 7.5）
 
-> **布局约束（2026-09-02 补）**：左表与右栏同处一个横向 `QSplitter`，横向分割器固有行为是两边强制等高（只负责左右调宽）。为支持「左右不同高」且保留拖拽调宽：右栏整体 `self.right` 仍作为 `QSplitter` 子项（手柄保留）；其内部内容包在 `QScrollArea`（`rightScroll`，`widgetResizable=True`）中，按自然高度**顶部对齐**（通常比左表矮），左表依旧撑满分割器高度并独立滚动；右栏内容过高时自行滚动。单一操作栏钉在右栏底部、与左表底部对齐，不随内容滚动。
+> **布局约束（2026-09-02 补）**：主体区域改为 `QHBoxLayout [left_panel | divider | right(stretch=1)]`：
+> - `left_panel` 是左表容器，宽度在展开态固定为 760px、折叠态收窄为 36px 细轨，承载 `self.table` 与折叠细轨 `self.left_rail`。
+> - `right` 为流体区域（`stretch=1`），内容包在 `QScrollArea`（`rightScroll`，`widgetResizable=True`）中，按自然高度**顶部对齐**（通常比左表矮），左表依旧撑满高度并独立滚动；右栏内容过高时自行滚动。单一操作栏钉在右栏底部、与左表底部对齐，不随内容滚动。
+> - 保留 4px 拖拽条 `_Divider`（展开态可见）在左栏右边缘，拖动改变左栏宽度并作为后续展开宽度记忆。
+> - 折叠机制见 7.10。
 
 #### 7.2a 发票头部卡（填补顶部空白）
 
@@ -185,6 +189,30 @@
 - **嵌入页面**：外层 `ImportReviewView` 已提供「导入前 · 待确认 {period}」模式徽章与账期下拉，对话框内部隐藏自身标题与说明，避免双重页头；上间距由 18px 收紧为 10px，使内容区域整体上顶，减少窗体顶部留白。
 
 判定：构造时 `parent is not None` 即视为嵌入模式（`ImportReviewView` 以 `parent=self` 创建 `page_pre`）。
+
+### 7.10 左栏折叠 / 展开（方案 C：IDE 式自动隐藏）
+
+评审后用户要求「把右边栏和左边栏分离，左边栏做成可以折叠的」，从 A/B/C/D/E 五个方案中选定 **方案 C（IDE 式自动隐藏）**，并确认：
+- (a) 保留手动拖拽调宽；
+- (b) 默认触发方式：鼠标进入右侧区域自动折叠，进入左栏（含细轨）自动展开；
+- (c) 细轨宽度 36px。
+
+实现概要：
+
+- 新增 `_CollapsiblePanel`：基于 `QWidget` 的 `w` 属性驱动宽度，`QPropertyAnimation` 动画时设置 `setFixedWidth`，折叠态同步调整内部细轨几何。
+- 新增 `_Divider`：4px 宽竖条，带 `SplitHCursor`，`mousePress/Move/Release` 计算拖拽偏移并设置左栏宽度，同时通过 `_track_expanded_w()` 把该宽度记忆为下一次展开的目标。
+- 细轨 `self.left_rail`：36px 宽，置于 `left_panel` 内部；显示竖向「台账表格」、当前行数、展开箭头 `›`。折叠态显示，展开态隐藏。
+- 悬停触发：在 `left_panel` 及其所有子部件、以及 `right` 及其所有子部件上安装 `eventFilter`，收到 `QEvent.Enter` 时判断对象所属区域：
+  - 左栏子树（表格、细轨等）→ `expand()`
+  - 右栏子树（滚动区、信息卡、修正表单、操作栏等）→ `collapse()`
+  - 顶部筛选栏、底部按钮栏、拖拽条等不属于左右子树，不改变状态。
+- 动画：`style.motion_enabled()` 为 True 时使用 180ms `OutCubic` 动画；为 False 时直接 `setFixedWidth` 到目标值，便于测试与关闭动效的场景。
+- 默认状态：**展开**（`left_panel` 宽 760px，表格可见，细轨隐藏，拖拽条可见）。
+- 折叠时隐藏表格与拖拽条，展开时恢复，避免表格在窄宽动画中被挤压。
+
+验收：
+
+- `QT_QPA_PLATFORM=offscreen python tests/_smoke_unified_import.py` 新增断言通过：默认展开、折叠后宽度为 36px、细轨/表格/拖拽条可见性正确、拖拽宽度记忆、eventFilter 左右 Enter 触发折叠/展开、顶部筛选栏 Enter 不改变状态。
 
 ### 7.8 范围外（本次不做）
 

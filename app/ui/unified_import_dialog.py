@@ -24,11 +24,13 @@ from __future__ import annotations
 import copy
 from typing import Dict, List
 
-from PySide6.QtCore import Qt, QPoint, QTimer, Signal
+from PySide6.QtCore import (
+    Qt, QPoint, QTimer, Signal, QPropertyAnimation, Property, QEasingCurve, QEvent,
+)
 from PySide6.QtGui import QColor, QCursor
 from PySide6.QtWidgets import (
     QAbstractItemView, QButtonGroup, QDialog, QFrame,
-    QGridLayout, QHBoxLayout, QLabel, QMessageBox, QPushButton, QScrollArea, QSplitter,
+    QGridLayout, QHBoxLayout, QLabel, QMessageBox, QPushButton, QScrollArea,
     QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
@@ -56,6 +58,81 @@ COL_STATUS, COL_KIND, COL_SRC, COL_NO, COL_BUYER, COL_AMT, COL_HANDLER, \
 
 FILTERS = ["待确认", "已确认", "高置信", "已跳过", "全部"]
 _PRIO = {"待确认": 0, "高置信": 1, "已跳过": 2}
+
+
+class _CollapsiblePanel(QWidget):
+    """左栏容器：宽度由 w 属性驱动，支持展开 / 折叠动画（方案 C 折叠机制）。"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._w = 0
+        self._rail = None
+
+    def _gw(self):
+        return self._w
+
+    def _sw(self, v):
+        self._w = int(round(v))
+        self.setFixedWidth(self._w)
+        if self._rail is not None:
+            self._rail.setGeometry(0, 0, self._rail.width(), self.height())
+
+    w = Property(int, _gw, _sw)
+
+    def set_rail(self, rail: "QWidget") -> None:
+        self._rail = rail
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        if self._rail is not None:
+            self._rail.setGeometry(0, 0, self._rail.width(), self.height())
+
+
+class _Divider(QFrame):
+    """4px 拖拽条：拖动改变左栏展开宽度（仅展开态生效）。"""
+
+    def __init__(self, panel, on_press=None, on_width=None, parent=None):
+        super().__init__(parent)
+        self.setObjectName("hDivider")
+        self._panel = panel
+        self._on_press = on_press
+        self._on_width = on_width
+        self._min = 360
+        self._max = 1100
+        self._drag = False
+        self._sx = 0.0
+        self._sw = 0
+        self.setFixedWidth(4)
+        self.setCursor(Qt.CursorShape.SplitHCursor)
+
+    def mousePressEvent(self, e):
+        if e.button() == Qt.MouseButton.LeftButton:
+            self._drag = True
+            self._sx = e.globalPosition().x()
+            self._sw = self._panel.width()
+            if self._on_press:
+                self._on_press()
+            e.accept()
+        else:
+            super().mousePressEvent(e)
+
+    def mouseMoveEvent(self, e):
+        if self._drag:
+            dx = e.globalPosition().x() - self._sx
+            nw = max(self._min, min(self._max, int(self._sw + dx)))
+            self._panel.setFixedWidth(nw)
+            if self._on_width:
+                self._on_width(nw)
+            e.accept()
+        else:
+            super().mouseMoveEvent(e)
+
+    def mouseReleaseEvent(self, e):
+        if e.button() == Qt.MouseButton.LeftButton:
+            self._drag = False
+            e.accept()
+        else:
+            super().mouseReleaseEvent(e)
 
 
 class UnifiedImportDialog(QWidget):
@@ -141,8 +218,10 @@ class UnifiedImportDialog(QWidget):
         bar.addStretch()
         root.addLayout(bar)
 
-        # ---- 主体：左表 + 右面板 ----
-        self.splitter = QSplitter(Qt.Orientation.Horizontal)
+        # ---- 主体：左表（可折叠）+ 拖拽条 + 右面板（流体） ----
+        self._expanded_w = 760
+        self._rail_w = 36
+        self._collapsed = False
 
         self.table = TableWidget(self)
         self.table.setColumnCount(len(HEADERS))
@@ -158,13 +237,61 @@ class UnifiedImportDialog(QWidget):
         self.table.setMinimumWidth(560)
         self.table.cellDoubleClicked.connect(self._cell_double_clicked)
         self.table.itemSelectionChanged.connect(self._load_right)
-        self.splitter.addWidget(self.table)
+
+        self.left_panel = _CollapsiblePanel()
+        self.left_panel.setObjectName("leftPanel")
+        self.left_panel.setFixedWidth(self._expanded_w)
+        ll = QVBoxLayout(self.left_panel)
+        ll.setContentsMargins(0, 0, 0, 0)
+        ll.setSpacing(0)
+        ll.addWidget(self.table, 1)
+
+        # 折叠态细轨：竖向「台账表格」+ 行数 + 展开箭头
+        self.left_rail = QWidget(self.left_panel)
+        self.left_rail.setObjectName("leftRail")
+        self.left_rail.setFixedWidth(self._rail_w)
+        rl = QVBoxLayout(self.left_rail)
+        rl.setContentsMargins(0, 8, 0, 8)
+        rl.setSpacing(6)
+        _chev = QLabel("›")
+        _chev.setObjectName("railChevron")
+        _chev.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop)
+        rl.addWidget(_chev)
+        _rtitle = QLabel("\n".join("台账表格"))
+        _rtitle.setObjectName("railTitle")
+        _rtitle.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+        rl.addWidget(_rtitle, 1)
+        self.rail_count = QLabel("0 行")
+        self.rail_count.setObjectName("railCount")
+        self.rail_count.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+        rl.addWidget(self.rail_count)
+        self.left_rail.setVisible(False)
+        self.left_panel.set_rail(self.left_rail)
 
         self._build_right_panel()
-        self.splitter.addWidget(self.right)
-        self.splitter.setHandleWidth(8)
-        self.splitter.setSizes([760, 560])
-        root.addWidget(self.splitter, 1)
+
+        body = QHBoxLayout()
+        body.setContentsMargins(0, 0, 0, 0)
+        body.setSpacing(0)
+        body.addWidget(self.left_panel)
+        self._divider = _Divider(
+            self.left_panel,
+            on_press=self._anim_stop,
+            on_width=self._track_expanded_w,
+        )
+        body.addWidget(self._divider)
+        body.addWidget(self.right, 1)
+        root.addLayout(body, 1)
+
+        # 折叠 / 展开动画（宽度由 _CollapsiblePanel.w 属性驱动）
+        self._anim = QPropertyAnimation(self.left_panel, b"w")
+        self._anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+
+        # 悬停自动隐藏：进入右侧 → 折叠；进入左栏（含细轨）→ 展开
+        for _w in [self.left_panel] + self.left_panel.findChildren(QWidget):
+            _w.installEventFilter(self)
+        for _w in [self.right] + self.right.findChildren(QWidget):
+            _w.installEventFilter(self)
 
         # ---- 底部 ----
         self.lbl_summary = CaptionLabel("")
@@ -186,6 +313,55 @@ class UnifiedImportDialog(QWidget):
             self.load_data(data, period, staff_names, path, validator)
         else:
             self._rebuild()
+
+    # ------------------------------------------------------------------ #
+    # 左栏折叠 / 展开（方案 C：IDE 式自动隐藏）
+    # ------------------------------------------------------------------ #
+    def _anim_stop(self) -> None:
+        self._anim.stop()
+
+    def _track_expanded_w(self, w: int) -> None:
+        self._expanded_w = w
+
+    def eventFilter(self, obj, ev):
+        if ev.type() == QEvent.Type.Enter:
+            # 进入左栏（含细轨）即展开；进入右栏即折叠
+            if self.left_panel.isAncestorOf(obj):
+                self.expand()
+            elif self.right.isAncestorOf(obj):
+                self.collapse()
+        return False
+
+    def _animate_to(self, w: int, animate: "bool | None" = None) -> None:
+        if animate is None:
+            from app.ui import style
+            animate = style.motion_enabled()
+        self._anim.stop()
+        if not animate:
+            self.left_panel.setFixedWidth(w)
+            return
+        self._anim.setDuration(180)
+        self._anim.setStartValue(self.left_panel.width())
+        self._anim.setEndValue(w)
+        self._anim.start()
+
+    def collapse(self, animate: "bool | None" = None) -> None:
+        if self._collapsed:
+            return
+        self._collapsed = True
+        self.table.setVisible(False)
+        self.left_rail.setVisible(True)
+        self._divider.setVisible(False)
+        self._animate_to(self._rail_w, animate)
+
+    def expand(self, animate: "bool | None" = None) -> None:
+        if not self._collapsed:
+            return
+        self._collapsed = False
+        self.left_rail.setVisible(False)
+        self._divider.setVisible(True)
+        self.table.setVisible(True)
+        self._animate_to(self._expanded_w, animate)
 
     # ------------------------------------------------------------------ #
     # 数据载入（嵌入面板可二次调用）
@@ -534,6 +710,9 @@ class UnifiedImportDialog(QWidget):
             + (f"　已确认 {n_confirmed}" if n_confirmed else "")
             + (f"　已跳过 {n_skip}" if n_skip else "")
         )
+
+        if getattr(self, "rail_count", None) is not None:
+            self.rail_count.setText(f"{len(self._rows)} 行")
 
         inv_total = sum(r["ev"]["total_amount"] for r in self._rows if r["kind"] == "invoice")
         pp = self._work.get("prepayments", [])

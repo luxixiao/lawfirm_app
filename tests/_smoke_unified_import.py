@@ -449,6 +449,57 @@ hi_b = next(r for r in d1dlg._rows if r["kind"] == "invoice" and r["inv_idx"] ==
 check("点1：编辑并保存后高置信发票归入已确认", hi_b["is_confirmed"] is True and hi_b["status"] == "高置信",
       f"status={hi_b['status']} confirmed={hi_b['is_confirmed']}")
 
+# ------------------------------------------- 10) 左栏折叠 / 展开（方案 C：IDE 式自动隐藏）
+from PySide6.QtCore import QEvent  # noqa: E402
+
+cd = UnifiedImportDialog(mk_simple(), "2025-01", STAFF)
+cd.show()
+check("折叠：默认展开态", cd._collapsed is False)
+check("折叠：默认展开宽度=760", cd.left_panel.width() == cd._expanded_w == 760, f"w={cd.left_panel.width()}")
+check("折叠：默认细轨隐藏", not cd.left_rail.isVisible())
+check("折叠：默认表格可见", cd.table.isVisible())
+check("折叠：默认拖拽条可见", cd._divider.isVisible())
+
+cd.collapse(animate=False)
+check("折叠：collapsed 置位", cd._collapsed is True)
+check("折叠：左栏收窄到细轨 36", cd.left_panel.width() == cd._rail_w == 36, f"w={cd.left_panel.width()}")
+check("折叠：细轨显示", cd.left_rail.isVisible())
+check("折叠：表格隐藏", not cd.table.isVisible())
+check("折叠：拖拽条隐藏", not cd._divider.isVisible())
+check("折叠：细轨显示行数", "行" in cd.rail_count.text(), cd.rail_count.text())
+
+cd.expand(animate=False)
+check("展开：collapsed 清除", cd._collapsed is False)
+check("展开：左栏回到 760", cd.left_panel.width() == 760, f"w={cd.left_panel.width()}")
+check("展开：细轨隐藏", not cd.left_rail.isVisible())
+check("展开：表格恢复可见", cd.table.isVisible())
+check("展开：拖拽条恢复可见", cd._divider.isVisible())
+
+# 拖拽记录展开宽度：展开后回到该宽度
+cd._track_expanded_w(820)
+cd.collapse(animate=False)
+cd.expand(animate=False)
+check("展开：回到拖拽后的宽度 820", cd.left_panel.width() == 820, f"w={cd.left_panel.width()}")
+
+# 悬停自动隐藏：左栏子部件 Enter → 展开；右栏子部件 Enter → 折叠
+cd.collapse(animate=False)
+check("eventFilter：左栏子部件 Enter → 展开",
+      (cd.eventFilter(cd.table, QEvent(QEvent.Type.Enter)) is False) and (not cd._collapsed))
+cd.expand(animate=False)
+check("eventFilter：右栏子部件 Enter → 折叠",
+      (cd.eventFilter(cd.right, QEvent(QEvent.Type.Enter)) is False) and cd._collapsed)
+# 其它区域（如筛选栏）Enter 不改变状态
+cd.expand(animate=False)
+ev_other = QEvent(QEvent.Type.Enter)
+cd.eventFilter(cd._grp.button(0), ev_other)
+check("eventFilter：筛选栏 Enter 不改变状态", cd._collapsed is False)
+
+# 多次触发同状态幂等（不报错、状态不变）
+cd._anim_stop()
+cd.expand(animate=False)
+cd.expand(animate=False)
+check("展开：重复展开幂等", cd._collapsed is False)
+
 # ------------------------------------------- 汇总
 bad = [n for n, ok, _ in results if not ok]
 print(f"\n{len(results) - len(bad)}/{len(results)} passed")
