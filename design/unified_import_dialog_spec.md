@@ -92,3 +92,71 @@
 
 - `problem_dialog.py` / `preview_dialog.py` 保留为回退路径（`preview_dialog.HandlerReceivedDialog`、`_fmt_money` 仍被新对话框复用），未删除。
 - 「重新修正」目前是回到修正形态重填；未做「基于已保存值预填下一次」的增强（`_prefill_rows` 只吃 problem 原始值）。如需，可让 `set_problem` 接受 `initial` 覆盖。
+
+## 7. 导入前确认右栏重构（2026-09-02 评审结论）
+
+### 7.1 背景与问题
+
+评审发现右栏按钮分散成「3 块」，意图不清：
+
+| 块 | 现状 | 问题 |
+|---|---|---|
+| 块 1 | 顶部孤零零一个 `btn_source`「查看原始台账行」（`row_btn` 单行） | 一个按钮独占一行，过于孤立，且与"改"动作平级 |
+| 块 2 | `ProblemFixPanel` 内的 `btn_add` / `btn_del`（经办人子表增删） | 已是子表工具条（紧贴 `htable`），属正常就近设计，本次**不动** |
+| 块 3 | 底部 5 个等权按钮：`btn_save`(保存修改) / `btn_refix`(重新修正) / `btn_confirm_row`(确认) / `btn_edit`(编辑) / `btn_skiprow`(跳过此行) | 5 个等权，难判断先点哪个；主行动不突出 |
+
+目标：**把三类意图（看 / 改表单 / 对整行做决定）各归其位，视觉统一**，并为"问题"信息单设区块。业务逻辑、信号槽、校验、写回一律不动。
+
+### 7.2 结论方案（方案 A 头部卡 + 问题块 + 按钮合一）
+
+右栏自上而下改为 5 个纵向分区：
+
+1. **发票信息卡**（`infoCard` + `self._info` 网格）：来源 / 发票号 / 购方 / 金额 / 收款认定 / 备注（原「原因/疑问」从网格移出，见 7.3）
+2. **问题 / 异常块**（新增，见 7.3）
+3. **工具行**（降级 `btn_source`，见 7.4）
+4. **修正表单宿主** `self._fix_host`（含 `ProblemFixPanel`，内部 `btn_add/btn_del` 维持现状作子表工具条）
+5. **单一操作栏**（见 7.5）
+
+### 7.3 问题 / 异常块（仅问题、不加建议）
+
+- 新增 `self.lbl_issue`（QLabel，`setWordWrap(True)`），置于信息卡下方独立块。
+- 数据来源：复用 `_row_field(r, "reason")`（发票行 = `ev["reasons"]` 拼接；问题行 = `p.get("reason")`）。
+- **只显示原始问题文本，禁止追加任何"建议：…"类系统文案。**
+- 双态：
+  - 有问题时（amber，objectName `issueWarn`）：左边框 3px `#BA7517`、背景 `#FAEEDA`、标题"问题 / 异常" `#854F0B`。
+  - 无问题时（文本为空 / 以"✓ 系统判定无疑问"开头，objectName `issueOk`）：淡化态，灰字、极淡边框。
+- `_load_right()` 中：`self.lbl_issue.setText(...)` 后按是否有 issue 切换 objectName 并 `style().unpolish()/polish()`。
+
+### 7.4 工具行（降级 btn_source）
+
+- 原 `row_btn` 仅含 `btn_source`，改为信息卡与表单之间的「工具行」：`btn_source` 走 quiet/ghost 风格（objectName `toolLink`，无填充、accent 文字 + 小图标方块），文字"查看原始台账行"。
+- 语义：它是"查看"不是"改动"，不与操作栏平级。实现上保留单按钮 QHBoxLayout，仅改 objectName 套 ghost 样式。
+
+### 7.5 单一操作栏（3 块合一）
+
+- 用单个 `QHBoxLayout action_bar` 替换原 `ab` 行，内分两组：
+  - **次级组（靠左，弱按钮）**：`btn_edit`(编辑) / `btn_refix`(重新修正) / `btn_skiprow`(跳过此行)
+  - **主行动（靠右，accent 高亮）**：同一时刻至多一个 —— `btn_confirm_row`(确认并移出待处理) 或 `btn_save`(保存修改)
+- 主行动判定（在 `_set_actions` 内实现，沿用现有 `save/skip/refix/confirm/edit` 可见性开关）：
+  - `confirm` 为真 → `btn_confirm_row` 显示并设为主行动；`btn_save` 仅当处于编辑态才显示且降级为次级（避免两个主行动并存）。
+  - `save` 为真且 `confirm` 假 → `btn_save` 设为主行动。
+  - `edit/refix/skiprow` 恒为次级。
+- 新增"主/次"样式区分：主行动 objectName `actionPrimary`（accent 填充 `#185FA5` + 白字）；次级 `actionSecondary`（透明 + `border-secondary`）。
+
+### 7.6 样式钩子（style.py）
+
+- `QPushButton#toolLink`：无背景、无边框、accent 文字、hover 淡底/下划线。
+- `QWidget#issueWarn` / `#issueOk`：背景与左边框差异（issueWarn 琥珀，issueOk 极淡灰）。
+- `QPushButton#actionPrimary`：`#185FA5` 填充 + 白字；`#actionSecondary`：透明 + `border-secondary`。
+- 圆角 6–8px、字号 12–13px，套 D-Notion 浅色基线；深皮肤走对应变量。
+
+### 7.7 验收
+
+- `QT_QPA_PLATFORM=offscreen python tests/_smoke_unified_import.py` 仍 40/40。
+- 新增 3–4 项断言：①问题块在待确认行显示 `issueWarn` 文本且不含"建议"字样；②工具行 `btn_source` 存在并走 ghost 样式；③操作栏同一时刻至多一个主行动可见。
+- 人工核对三种场景（待确认 / 高置信只读 / 已修正）操作栏主行动正确。
+
+### 7.8 范围外（本次不做）
+
+- 不改 `ReviewPostView`（导入后模式）：本就是单列表，无三块按钮问题。
+- 不改任何数据写回 / 校验 / 信号槽逻辑。

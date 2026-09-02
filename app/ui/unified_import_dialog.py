@@ -231,8 +231,7 @@ class UnifiedImportDialog(QWidget):
         cg.setSpacing(8)
         self._info: Dict[str, QLabel] = {}
         fields = [("来源", "src"), ("发票号", "no"), ("购方", "buyer"),
-                  ("金额", "amt"), ("收款认定", "receipt"), ("备注", "remark"),
-                  ("原因 / 疑问", "reason")]
+                  ("金额", "amt"), ("收款认定", "receipt"), ("备注", "remark")]
         for r, (label, key) in enumerate(fields):
             k = QLabel(label); k.setObjectName("infoKey")
             v = QLabel("—")
@@ -242,16 +241,30 @@ class UnifiedImportDialog(QWidget):
             self._info[key] = v
         rv.addWidget(card)
 
+        # 问题 / 异常块（仅显示原始问题文本，不附加"建议"类系统文案）
+        self.issue_block = QFrame()
+        self.issue_block.setObjectName("issueOk")
+        ib = QVBoxLayout(self.issue_block)
+        ib.setContentsMargins(scale.px(12), scale.px(10), scale.px(12), scale.px(10))
+        ib.setSpacing(scale.px(4))
+        self.issue_title = QLabel("问题 / 异常")
+        self.issue_title.setObjectName("issueTitle")
+        self.lbl_issue = QLabel("—")
+        self.lbl_issue.setWordWrap(True)
+        self.lbl_issue.setObjectName("issueBodyOk")
+        ib.addWidget(self.issue_title)
+        ib.addWidget(self.lbl_issue)
+        rv.addWidget(self.issue_block)
+
+        # 工具行：查看原始台账行（"看"非"改"，ghost 样式）
         row_btn = QHBoxLayout()
+        row_btn.setSpacing(8)
         self.btn_source = PushButton("查看原始台账行")
+        self.btn_source.setObjectName("toolLink")
         self.btn_source.clicked.connect(self._show_source)
         row_btn.addWidget(self.btn_source)
         row_btn.addStretch()
         rv.addLayout(row_btn)
-
-        sep = QFrame(); sep.setObjectName("sep")
-        sep.setFrameShape(QFrame.Shape.HLine); sep.setFixedHeight(1)
-        rv.addWidget(sep)
 
         self._fix_host = QWidget()
         self._fix_host_ly = QVBoxLayout(self._fix_host)
@@ -261,24 +274,28 @@ class UnifiedImportDialog(QWidget):
         self._fix_host_ly.addWidget(self.fix_panel, 1)
         rv.addWidget(self._fix_host, 1)
 
+        # 单一操作栏：次级组（左）+ 主行动（右，accent 高亮）
         ab = QHBoxLayout()
         ab.setSpacing(8)
-        self.btn_save = PushButton("保存修改")
-        self.btn_save.clicked.connect(self._save_fix)
-        self.btn_refix = PushButton("重新修正")
-        self.btn_refix.clicked.connect(self._refix)
-        self.btn_confirm_row = PushButton("确认")
-        self.btn_confirm_row.clicked.connect(self._confirm_row)
         self.btn_edit = PushButton("编辑")
         self.btn_edit.clicked.connect(self._enter_edit_mode)
+        self.btn_refix = PushButton("重新修正")
+        self.btn_refix.clicked.connect(self._refix)
         self.btn_skiprow = PushButton("跳过此行")
         self.btn_skiprow.clicked.connect(self._skip_row)
+        self.btn_save = PushButton("保存修改")
+        self.btn_save.clicked.connect(self._save_fix)
+        self.btn_confirm_row = PushButton("确认并移出待处理")
+        self.btn_confirm_row.clicked.connect(self._confirm_row)
+        left = QHBoxLayout()
+        left.setSpacing(8)
+        left.addWidget(self.btn_edit)
+        left.addWidget(self.btn_refix)
+        left.addWidget(self.btn_skiprow)
+        ab.addLayout(left)
+        ab.addStretch(1)
         ab.addWidget(self.btn_save)
-        ab.addWidget(self.btn_refix)
         ab.addWidget(self.btn_confirm_row)
-        ab.addWidget(self.btn_edit)
-        ab.addWidget(self.btn_skiprow)
-        ab.addStretch()
         rv.addLayout(ab)
 
     # ------------------------------------------------------------------ #
@@ -589,8 +606,19 @@ class UnifiedImportDialog(QWidget):
             self.fix_panel.setVisible(False)
             self._set_actions()
             return
-        for key in ("src", "no", "buyer", "amt", "receipt", "remark", "reason"):
+        for key in ("src", "no", "buyer", "amt", "receipt", "remark"):
             self._info[key].setText(self._row_field(r, key))
+
+        # 问题块：仅显示原始问题文本，不附加任何"建议"类系统文案
+        reason = self._row_field(r, "reason")
+        is_issue = bool(reason) and not reason.startswith("✓") and reason != "—"
+        self.lbl_issue.setText(reason or "—")
+        self.lbl_issue.setObjectName("issueBody" if is_issue else "issueBodyOk")
+        self.issue_block.setObjectName("issueWarn" if is_issue else "issueOk")
+        self.lbl_issue.style().unpolish(self.lbl_issue)
+        self.lbl_issue.style().polish(self.lbl_issue)
+        self.issue_block.style().unpolish(self.issue_block)
+        self.issue_block.style().polish(self.issue_block)
 
         if r["kind"] == "invoice":
             # 所有发票行（高/低/已修正）均在右侧就地编辑（方案 A：统一右栏）
@@ -618,6 +646,16 @@ class UnifiedImportDialog(QWidget):
         self.btn_refix.setVisible(refix)
         self.btn_confirm_row.setVisible(confirm)
         self.btn_edit.setVisible(edit)
+        # 同一时刻至多一个主行动（accent 高亮），其余为次级
+        primary = (self.btn_confirm_row if confirm
+                   else self.btn_save if save
+                   else self.btn_edit if edit else None)
+        for btn in (self.btn_save, self.btn_refix, self.btn_skiprow,
+                    self.btn_confirm_row, self.btn_edit):
+            is_primary = btn is primary
+            btn.setObjectName("actionPrimary" if is_primary else "actionSecondary")
+            btn.style().unpolish(btn)
+            btn.style().polish(btn)
 
     def _show_source(self) -> None:
         r = self._current_row()

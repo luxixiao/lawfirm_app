@@ -165,6 +165,12 @@ check("问题行右侧显示修正面板（发票表单）",
       dlg.fix_panel.isVisible() and dlg.fix_panel.inv_box.isVisible())
 check("保存/跳过按钮对问题行可见", dlg.btn_save.isVisible() and dlg.btn_skiprow.isVisible())
 
+# 右栏重构：问题块（仅问题文本、无「建议」）/ 工具行 ghost 样式
+check("问题块显示原始问题文本（无「建议」字样）",
+      "建议" not in dlg.lbl_issue.text(), dlg.lbl_issue.text())
+check("问题块为 issueWarn 态（amber 左边框）", dlg.issue_block.objectName() == "issueWarn")
+check("工具行 btn_source 走 toolLink ghost 样式", dlg.btn_source.objectName() == "toolLink")
+
 # ---------------------------------------------------------------- 2) 就地修正
 n_inv_before = len(data["invoices"])
 fill_invoice_fix(dlg)
@@ -375,6 +381,15 @@ low = next(r for r in d2dlg._rows if r["kind"] == "invoice" and r["inv_idx"] == 
 d2dlg.table.selectRow(d2dlg._rows.index(low))
 check("点2：待确认行显示「确认」按钮", d2dlg.btn_confirm_row.isVisible())
 check("点2：待确认行不显示「编辑」按钮", not d2dlg.btn_edit.isVisible())
+# 右栏重构：单一操作栏同一时刻至多一个主行动（accent）
+_prim = [b for b in (d2dlg.btn_save, d2dlg.btn_refix, d2dlg.btn_skiprow,
+                     d2dlg.btn_confirm_row, d2dlg.btn_edit)
+         if b.objectName() == "actionPrimary"]
+check("操作栏同一时刻至多一个主行动（待确认→确认为主）",
+      len(_prim) == 1, f"got={[b.objectName() for b in _prim]}")
+check("待确认行：主行动=确认（保存为次级）",
+      d2dlg.btn_confirm_row.objectName() == "actionPrimary"
+      and d2dlg.btn_save.objectName() == "actionSecondary")
 d2dlg._confirm_row()
 low2 = next(r for r in d2dlg._rows if r["kind"] == "invoice" and r["inv_idx"] == 0)
 check("点2：确认后该发票变高置信", low2["ev"]["conf"] == "high", f"reasons={low2['ev']['reasons']}")
@@ -409,6 +424,10 @@ check("点1：高置信默认只读（开票日期）", d1dlg.fix_panel.inv_date
 check("点1：高置信默认只读（经办人下拉禁用）", not d1dlg.fix_panel.htable.cellWidget(0, 0).isEnabled())
 check("点1：高置信默认只读（保存按钮隐藏）", not d1dlg.btn_save.isVisible())
 check("点1：高置信显示「编辑」按钮", d1dlg.btn_edit.isVisible())
+# 右栏重构：高置信无问题 → 问题块 issueOk 态、文本无「建议」
+check("高置信无问题 → 问题块 issueOk 态", d1dlg.issue_block.objectName() == "issueOk")
+check("高置信无问题 → 问题块文本无「建议」",
+      "建议" not in d1dlg.lbl_issue.text(), d1dlg.lbl_issue.text())
 d1dlg._enter_edit_mode()
 check("点1：点编辑后开票日期可写", not d1dlg.fix_panel.inv_date.isReadOnly())
 check("点1：点编辑后经办人下拉启用", d1dlg.fix_panel.htable.cellWidget(0, 0).isEnabled())

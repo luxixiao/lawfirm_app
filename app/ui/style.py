@@ -36,6 +36,7 @@ def _light() -> dict:
         "btn_press": "#E9E9E7", "btn_pri_bg": "#37352F", "btn_pri_fg": "#FFFFFF",
         "btn_pri_hover": "#4F4D49", "btn_pri_press": "#2A2823", "grid": "#F1F1EF",
         "warn_bg": "#FCEBEB", "warn_fg": "#C0392B",
+        "amber_bg": "#FAEEDA", "amber_fg": "#854F0B", "amber_border": "#BA7517",
     }
 
 
@@ -50,6 +51,7 @@ def _dark() -> dict:
         "btn_press": "#45453F", "btn_pri_bg": "#E9E9E7", "btn_pri_fg": "#1F1F1E",
         "btn_pri_hover": "#FFFFFF", "btn_pri_press": "#CFCFCA", "grid": "#33332F",
         "warn_bg": "#3A2622", "warn_fg": "#E07A6B",
+        "amber_bg": "#2E2410", "amber_fg": "#E8B25A", "amber_border": "#BA7517",
     }
 
 
@@ -299,6 +301,37 @@ QFrame#card QListWidget {{
 QFrame#card QListWidget::item {{ padding: {P(5)} {P(8)}; border-radius: {P(5)}; }}
 QFrame#card QListWidget::item:hover {{ background: {p['bg_hover']}; }}
 QFrame#card QListWidget::item:selected {{ background: {p['bg_select']}; color: {p['text']}; }}
+
+/* ===== 导入确认右栏：问题块 / 工具行 / 单一操作栏 ===== */
+QFrame#issueWarn {{
+    background: {p['amber_bg']}; border: none;
+    border-left: {P(3)} solid {p['amber_border']}; border-radius: {P(6)};
+}}
+QFrame#issueOk {{
+    background: transparent; border: none;
+    border-left: {P(3)} solid {p['border']}; border-radius: {P(6)};
+}}
+QLabel#issueTitle {{ color: {p['amber_fg']}; font-size: {P(12)}; font-weight: 600; }}
+QLabel#issueBody {{ color: {p['text']}; font-size: {P(13)}; }}
+QLabel#issueBodyOk {{ color: {p['text_mute']}; font-size: {P(13)}; }}
+
+QPushButton#toolLink {{
+    background: transparent; border: none; color: {p['accent']};
+    padding: {P(4)} {P(4)}; text-align: left;
+}}
+QPushButton#toolLink:hover {{ background: {p['bg_hover']}; }}
+QPushButton#toolLink:pressed {{ background: {p['bg_select']}; }}
+
+QPushButton#actionPrimary {{
+    background: {p['btn_pri_bg']}; color: {p['btn_pri_fg']}; border: none;
+    font-weight: 600; padding: {P(6)} {P(16)};
+}}
+QPushButton#actionPrimary:hover {{ background: {p['btn_pri_hover']}; }}
+QPushButton#actionPrimary:pressed {{ background: {p['btn_pri_press']}; }}
+QPushButton#actionSecondary {{
+    background: {p['btn_bg']}; border: 1px solid {p['btn_border']};
+    color: {p['text']}; padding: {P(6)} {P(14)};
+}}
 
 /* ===== 消息框 / 弹窗 ===== */
 QMessageBox, QDialog {{ background: {p['bg']}; }}
