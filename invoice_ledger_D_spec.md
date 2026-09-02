@@ -184,13 +184,43 @@ CREATE TABLE IF NOT EXISTS raw_invoice (
 
 ## 9. 修改记录（需求 2.5）
 
-- `change_log` 此后**只**由「发票台账」页写入：
-  - 新增 raw 行 → `table_name='raw_invoice'`, `record_id=发票号码`, `field='(新增)'`
-  - 删除 raw 行 → `table_name='raw_invoice'`, `field='(删除)'`
-  - 编辑 raw 行 → 每个变化的原始字段一行：`table_name='raw_invoice'`, `record_id=发票号码`, `field=列名`, `old_value/new_value`
-  - 同步到 invoice → 可选：记一条 `table_name='invoice'` 的同步事件（便于审计），或仅在 raw 增删改时记。
-- **其他页面（收款/费用/员工等）的编辑不再写 `change_log`**（这些 Tab 在 2.2/2.3 中已移除或迁移，「修改记录」Tab 此后只展示发票台账相关条目）。
-- 「修改记录」Tab（保留在「台账数据」页）展示 `change_log` 全量（因只含发票台账，自然只显示发票台账），列：时间 / 表 / 记录(发票号) / 字段 / 旧值 / 新值 / 备注。
+> **2026-09-02 修订**（导入复核页改造，详见 `design/import_review_spec.md` §12）
+> 本节原文以「发票台账」页 + `raw_invoice` 描述，与落地实现及后续演进已不一致，现更正如下。
+
+### 9.1 更正：镜表与页面的对应关系
+
+| 页面 | 镜表 | 说明 |
+|---|---|---|
+| **销项发票**页（`invoice_ledger_view`） | `raw_invoice` | 销项发票文档镜像；**无编辑功能** |
+| **发票台账**页（`invoice_ledger_doc_view`） | `raw_ledger` | 发票台账文档镜像；**曾**提供右键「编辑此行」 |
+
+即：本节原文所称 `raw_invoice` 的编辑能力，实际落在了 `raw_ledger` / 发票台账页上。
+
+### 9.2 更正：`change_log` 的写入方
+
+原文「`change_log` 此后**只**由『发票台账』页写入」已失效。现规则：
+
+- **写入方 = 「数据导入 → 导入复核」页**（新增，合并原「导入确认」与「导入校验」），覆盖两条路径：
+  - **导入前**：确认页的修正/编辑，在点「确认入库」时统一落盘
+  - **导入后**：回写（`app/engine/review_writeback.apply_edit`）
+- **操作对象 = `raw_ledger`**（发票台账文档镜表），同步影响 `invoice` / `charge_detail` / `collection`
+- **发票台账页的编辑功能将移除**（改造阶段 5），改为顶部提示引导至「导入复核」页；其右键「查看修改记录」保留
+- 其他页面（收款 / 费用 / 员工等）的编辑不写 `change_log`（不变）
+
+### 9.3 记录规范
+
+沿用原范式，并补充分层（详见 `design/import_review_spec.md` §12）：
+
+- 编辑镜表行 → 每个变化的原始字段一行：`table_name='raw_ledger'`, `record_id=<镜表行 id>`, `field=列名`, `old_value/new_value`
+- 导入时修正问题行（无旧值）→ `field='(导入修正)'`，`old_value=''`，`new_value=<填入内容>`
+- 同步落地 → 1 条汇总：`field='(同步)'`，`new_value` 汇总业务表变化（**不逐条记，避免行数爆炸**）
+- **`note`（修改原因）必填**
+- 「修改表名」列显示 `friendly_table`：导入时修正写 `发票台账 · 导入修正`；回写沿用 `build_friendly_table()`（如 `发票台账2025-01已开票已入账`）
+
+### 9.4 「修改记录」页展示
+
+- 展示 `change_log` 全量，列：修改时间 / 修改表名 / 发票号码 / 对方 / 金额 / 经办人 / 旧值 / 新值 / 备注
+- **改造项**：补「字段」列（`field`，置于「修改表名」后）—— 原 9 列不含 `field`，导致只看旧值/新值无法判断改的是哪个字段；并给 `field` 以 `(` 开头的行（`(导入修正)`/`(同步)`/`(新增)`/`(删除)`）加淡色底纹分层
 
 ---
 
