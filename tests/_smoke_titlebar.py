@@ -12,6 +12,11 @@ app = QApplication.instance() or QApplication(sys.argv)
 
 import app.ui.main_window as m
 from app.ui import style
+from app.ui import scale as _scale
+
+# 隔离用户偏好：scale 读 prefs.json 的 font_step（用户可能停在非默认档），
+# 而下方宽度断言按默认档硬编码。set_step 仅改内存，不写 prefs.json。
+_scale.set_step(_scale.DEFAULT_STEP)
 
 results = []
 

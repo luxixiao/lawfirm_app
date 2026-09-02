@@ -30,7 +30,7 @@ from app.ui.batch_view import BatchView
 from app.ui.calc_sheet_view import CalcSheetView
 from app.ui.handler_collect_view import HandlerCollectView
 from app.ui.import_view import ImportView
-from app.ui.import_verify_view import ImportVerifyView
+from app.ui.import_review_view import ImportReviewView
 from app.ui.invoice_collect_view import InvoiceCollectView
 from app.ui.invoice_ledger_view import InvoiceLedgerView
 from app.ui.invoice_ledger_doc_view import InvoiceLedgerDocView
@@ -55,7 +55,7 @@ NAV_GROUPS = [
     ("数据导入", [
         ("import", "导入台账"),
         ("batch", "导入记录"),
-        ("verify", "导入校验"),
+        ("review", "导入复核"),
         ("audit", "修改记录"),
         ("manual", "发票补录"),
     ]),
@@ -203,7 +203,7 @@ class MainWindow(FramelessWindow):
         self.page_tax_deduction = TaxDeductionView()
         self.page_settlement = SettlementView()
         self.page_staff = StaffView()
-        self.page_verify = ImportVerifyView()
+        self.page_review = ImportReviewView()
         self.page_snapshot = SnapshotView()
         self.page_batch = BatchView()
         self.page_invoice_ledger = InvoiceLedgerView()
@@ -222,7 +222,7 @@ class MainWindow(FramelessWindow):
             "salary_ledger": self.page_salary_ledger,
             "settlement": self.page_settlement,
             "staff": self.page_staff,
-            "verify": self.page_verify,
+            "review": self.page_review,
             "snapshot": self.page_snapshot, "batch": self.page_batch,
             "invoice_ledger": self.page_invoice_ledger,
             "ledger_doc": self.page_ledger_doc,
@@ -236,6 +236,12 @@ class MainWindow(FramelessWindow):
         }
         for key, page in self._pages.items():
             page.setObjectName(key)
+
+        # 导入复核流程接线：导入页解析台账 → 复核页导入前模式就地确认；
+        # 确认/取消后回导入页，导入结果回传写导入日志（弹窗由复核页负责）
+        self.page_import.ledger_pending.connect(self.page_review.open_pending)
+        self.page_review.navigate_back.connect(lambda: self.select("import"))
+        self.page_review.import_finished.connect(self.page_import.log_result)
 
     def _build_layout(self) -> None:
         central = QWidget()

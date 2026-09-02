@@ -48,6 +48,9 @@ def qss_at(step: int) -> str:
 
 
 # ------------------------------------------------- 1) scale 底座
+# 隔离用户偏好：scale 导入时读 prefs.json 的 font_step（用户可能停在非默认档），
+# 先归位默认档再断言「默认档」语义（set_step 仅改内存，不写 prefs.json）。
+scale.set_step(scale.DEFAULT_STEP)
 check("5 档定义", scale.STEPS == (11, 12, 13, 14, 15) and len(scale.LABELS) == 5,
       f"got={scale.STEPS}")
 check("默认档 = 标准(13px)", scale.DEFAULT_STEP == 2 and scale.base_size() == 13,

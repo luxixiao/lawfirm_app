@@ -1,12 +1,11 @@
-"""offscreen 冒烟：ImportView 改为 QTabWidget（导入确认嵌入 tab）。
+"""offscreen 冒烟：ImportView（导入复核页改造 阶段 1 后）。
 
 覆盖：
-- ImportView 是 QTabWidget，含「导入」「导入确认」两个 tab
-- 发票台账导入时不再弹模态框，而是把数据载入嵌入面板并切到「导入确认」tab
-- 面板 confirmed → _on_confirmed 写库（commit_ledger_import）并切回「导入」tab
-- 面板 cancelled → _on_cancelled 直接切回「导入」tab，不写库
+- ImportView 退回 QWidget（原 QTabWidget 的「导入确认」tab 已移除）
+- 发票台账导入解析后通过 ledger_pending 信号交给「导入复核」页，本页不写库
+- log_result 桥接导入复核页回传的结果（写导入日志）
 
-为不碰真实文件/数据库，parse_ledger_file 与 commit_ledger_import 均被打桩。
+为不碰真实文件/数据库，parse_ledger_file 打桩、get_conn 用假连接。
 """
 import os
 import sys
@@ -14,7 +13,7 @@ import sys
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from PySide6.QtWidgets import QApplication, QTabWidget
+from PySide6.QtWidgets import QApplication, QTabWidget, QWidget
 
 app = QApplication.instance() or QApplication(sys.argv)
 
@@ -25,7 +24,6 @@ from app.importer import importer as _imp  # noqa: E402
 
 # ---- 打桩：避免碰真实文件 / 数据库（Seafile 同步库在沙箱会被锁）----
 class _FakeCursor:
-    """模拟 sqlite 游标：可迭代（返回空行）+ fetchall + 链式 execute。"""
     def __iter__(self):
         return iter([])
 
@@ -36,9 +34,6 @@ class _FakeCursor:
 class _FakeConn:
     def execute(self, *a, **k):
         return _FakeCursor()
-
-    def fetchall(self):
-        return []
 
     def commit(self):
         pass
@@ -55,7 +50,7 @@ class _MB:
 
     @staticmethod
     def question(*a, **k):
-        return 1  # Yes
+        return 1
 
     @staticmethod
     def information(*a, **k):
@@ -66,36 +61,17 @@ _fake_data = {
     "invoices": [], "prepayments": [], "problems": [],
     "sheet_totals": {}, "sheet12_total": 0.0, "period": "2025-01",
 }
-_commit_calls = []
 
 
 def _fake_parse(path, period):
     return dict(_fake_data, period=period)
 
 
-def _fake_commit(data, period, path):
-    _commit_calls.append((data, period, path))
-    return {"type": "ledger", "period": period, "invoice_count": 0,
-            "prepayment_count": 0, "sheet12_total": 0.0}
-
-
-def _fake_validate(data, period):
-    return None
-
-
 import PySide6.QtWidgets as _qt  # noqa: E402
-from app.ui import unified_import_dialog as _uid  # noqa: E402
 _qt.QMessageBox = _MB
 IV.QMessageBox = _MB
-_uid.QMessageBox = _MB
-
-
 _imp.parse_ledger_file = _fake_parse
-_imp.commit_ledger_import = _fake_commit
-_imp.validate_ledger_before_write = _fake_validate
 IV.parse_ledger_file = _fake_parse
-IV.commit_ledger_import = _fake_commit
-IV.validate_ledger_before_write = _fake_validate
 IV.get_conn = lambda: _FakeConn()
 
 
@@ -109,45 +85,36 @@ def check(name, cond, extra=""):
 
 # ---------------------------------------------------------------- 1) 结构
 view = ImportView()
-check("ImportView 是 QTabWidget", isinstance(view, QTabWidget))
-check("共 2 个 tab", view.count() == 2, f"got={view.count()}")
-check("tab0=导入", view.tabText(0) == "导入", view.tabText(0))
-check("tab1=导入确认", view.tabText(1) == "导入确认", view.tabText(1))
-check("嵌入面板为 UnifiedImportDialog",
-      view._confirm_panel.__class__.__name__ == "UnifiedImportDialog")
-check("初始停留在「导入」tab",
-      view.currentWidget() is view._tab_import)
+check("ImportView 是 QWidget", isinstance(view, QWidget))
+check("不再是 QTabWidget", not isinstance(view, QTabWidget))
+check("仍有导入日志区", hasattr(view, "log"))
+check("不再持有确认面板", not hasattr(view, "_confirm_panel"))
+check("已无旧 tab 引用", not hasattr(view, "_tab_confirm"))
 
-# ---------------------------------------------------------------- 2) 导入台账 → 切到确认 tab
-_commit_calls.clear()
+# ---------------------------------------------------------------- 2) 台账导入 → ledger_pending 信号
+got = []
+view.ledger_pending.connect(lambda d, p, s, path: got.append((d, p, s, path)))
 view._do_import("2025.1台账.xlsx")
-check("导入台账后切到「导入确认」tab",
-      view.currentWidget() is view._tab_confirm)
-check("面板已载入数据（load_data 生效）",
-      view._confirm_panel._data.get("period") == "2025-01",
-      str(view._confirm_panel._data.get("period")))
-check("pending 已记录", view._pending == ("2025-01", "2025.1台账.xlsx"),
-      str(view._pending))
-check("尚未写库（等确认）", len(_commit_calls) == 0)
+check("发出 ledger_pending 信号一次", len(got) == 1, f"got={len(got)}")
+if got:
+    d, p, s, path = got[0]
+    check("账期正确", p == "2025-01", str(p))
+    check("路径正确", path == "2025.1台账.xlsx", str(path))
+    check("携带职工名单(list)", isinstance(s, list))
+    check("携带解析数据(period)", d.get("period") == "2025-01")
+check("已无写库职责（模块不再引用 commit_ledger_import）",
+      not hasattr(IV, "commit_ledger_import"))
 
-# ---------------------------------------------------------------- 3) 确认 → 写库 + 切回
-view._confirm_panel.accept()
-check("确认后写库一次", len(_commit_calls) == 1, f"got={len(_commit_calls)}")
-check("切回「导入」tab", view.currentWidget() is view._tab_import)
-if _commit_calls:
-    _, p, path = _commit_calls[0]
-    check("写库参数（账期/路径）正确", (p, path) == ("2025-01", "2025.1台账.xlsx"),
-          f"{(p, path)}")
-check("pending 已清空", view._pending is None)
+# ---------------------------------------------------------------- 3) 非台账类型照常直导（费用打桩不必要，走解析失败分支即可）
+view2 = ImportView()
+msgs = []
+view2.ledger_pending.connect(lambda *a: msgs.append(a))
+view2._do_import("没有账期的文件.xlsx")   # 无法识别账期 → 报错不崩溃
+check("无法识别账期不崩溃且不发信号", len(msgs) == 0)
 
-# ---------------------------------------------------------------- 4) 取消 → 不写库 + 切回
-view._do_import("2025.2台账.xlsx")
-check("第二次导入切到确认 tab", view.currentWidget() is view._tab_confirm)
-before = len(_commit_calls)
-view._confirm_panel.reject()
-check("取消后不写库", len(_commit_calls) == before, f"got={len(_commit_calls)}")
-check("取消后切回「导入」tab", view.currentWidget() is view._tab_import)
-check("pending 已清空", view._pending is None)
+# ---------------------------------------------------------------- 4) log_result 桥接
+view.log_result("f.xlsx", "ledger", "2025-01", "✓ 冒烟测试导入", True)
+check("log_result 写入导入日志", "✓ 冒烟测试导入" in view.log.toPlainText())
 
 bad = [n for n, ok, _ in results if not ok]
 print(f"\n{len(results) - len(bad)}/{len(results)} passed")
