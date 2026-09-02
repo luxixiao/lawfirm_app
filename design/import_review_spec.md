@@ -550,3 +550,45 @@ def apply_edit(period: str, raw_id: int, patch: Dict, note: str) -> Dict:
 - `tests/test_import_fix_log.py`（内存库，复用 db.init_db 迁移技巧）：fix/edit 两类 items → 断言 change_log（field/old/new/friendly_table）+ synced=0；查不到镜表行 → skip
 - `_smoke_import_review` 增补：collect_import_fixes 空态返回 []；编辑后产生条目
 - 全量回归 13 套
+
+---
+
+## 15. 阶段 5 实施设计（移除台账页编辑 + 收尾，2026-09-02 定稿）
+
+> 代码摸底与设计于 2026-09-02 完成，**尚未编码**，待用户确认后实施。
+
+### 15.1 摸底结论
+
+- `invoice_ledger_doc_view` 编辑作用面：
+  - `_on_context`（右键）：「编辑此行」+「查看修改记录」两个 action
+  - `_edit_row`（293~339）：唯一调用 `rl.get_row`/`rl.update_row` 的地方，整块可删
+  - `rl`（list_raw/sheet_keys）与模块级 `_parse_total`（红字筛选/排序用）**别处仍用 → 保留**
+  - `EDIT_FIELDS` 导入、`QFormLayout`/`QLineEdit` 随 `_edit_row` 删除而成为孤儿 → 清理
+  - 文案需更新：模块 docstring 第 5-6 行、页面提示行 62「右击可编辑或查看修改记录」
+- anomaly_note 收尾：真库仅 1 条（dim='handler'，历史）；**无 dim='invoice' 残留、无需迁移** —— 读取回退（dim='merged' 优先，否则聚合 handler/received）在阶段 2 已实现并覆盖
+
+### 15.2 改动清单
+
+1. `invoice_ledger_doc_view._on_context`：「编辑此行」改为**引导入口**——点击弹 InfoBar：
+   「台账数据修改请前往『数据导入 → 导入复核』页（导入前确认 / 导入后回写，全程留痕）」
+   （保留可发现性，不直接删菜单项；页面顶部另有常驻提示）
+2. 删除 `_edit_row` 整方法；清理孤儿 import（EDIT_FIELDS、QFormLayout、QLineEdit）
+3. 文案更新：docstring 去掉「预留修改能力」，改为「数据修改统一走导入复核页」；hint 行同步
+4. anomaly_note：无代码改动（确认兼容即可）
+5. 全量回归 + 真机验收清单
+
+### 15.3 真机验收清单（跑 run_app.bat 后逐项核对）
+
+- [ ] 导航「数据导入 → 导入复核」：默认已导入模式，账期下拉可选（2025-01~11），比对表按账期刷新
+- [ ] 发票台账页：右键只有「查看修改记录」+「编辑此行(引导提示)」；改数据入口消失
+- [ ] 导入 2025-12 台账 → 自动跳导入复核「导入前」模式，账期锁定不可切
+- [ ] 导入前改一行并确认入库 → 导入日志成功；切账期到 2025-12 核对 → 该行 synced 徽标「已手工修订」
+- [ ] 「数据维护 → 修改记录」：能看到 导入修正/(同步) 事件，字段列展示，括号事件淡蓝底纹
+- [ ] 导入后模式对某行「编辑回写」改金额（填修改原因）→ 刷新后差异消失、行标已手工修订；修改记录新增 (同步)
+- [ ] 「业务数据 → 发票收款情况」数值随回写刷新
+- [ ] 三台 PC Seafile 同步后各自复测 1、2 项
+
+### 15.4 测试计划
+
+- 全量回归 13 套 + 引擎单测 3 套（import_fix_log 18 / review_writeback 31 / review_compare 21）
+- `_smoke_sidebar`（构造全页）确认 InvoiceLedgerDocView 无构造回归

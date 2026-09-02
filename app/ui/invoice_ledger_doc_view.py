@@ -2,8 +2,9 @@
 
 - 数据源：raw_ledger（发票台账文档逐 sheet 逐行 1:1 镜像，导入双写落库）。
 - 只读查看：可按工作表切换、搜索（发票号/对方/金额/案号）、排序、筛选（仅红字）。
-- 预留修改能力：右击「编辑此行」修改 raw_ledger 并自动写 change_log；
-  右击「查看修改记录」打开统一审计中心（预设 raw_ledger + 行 id）。
+- 数据修改统一收归「数据导入 → 导入复核」页（导入前确认 / 导入后回写，全程留痕）：
+  本页右击「编辑此行」仅作引导提示；「查看修改记录」打开统一审计中心
+  （预设 raw_ledger + 行 id，含 导入修正/(同步) 等事件）。
 - 与「销项发票」页同构（raw_invoice vs raw_ledger），概念统一。
 """
 from __future__ import annotations
@@ -11,13 +12,13 @@ from __future__ import annotations
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
-    QAbstractItemView, QComboBox, QDialog, QDialogButtonBox, QFormLayout,
+    QAbstractItemView, QApplication, QComboBox, QDialog, QDialogButtonBox,
     QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMenu, QTableWidget,
     QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
 from app.engine import raw_ledger as rl
-from app.engine.raw_ledger import EDIT_FIELDS, sheet_label
+from app.engine.raw_ledger import sheet_label
 from app.ui.audit_view import AuditView
 from app.ui.column_layout import install_column_layout
 from app.ui.table_features import install_accent_header
@@ -59,7 +60,9 @@ class InvoiceLedgerDocView(QWidget):
 
         t = SubtitleLabel("发票台账")
         lay.addWidget(t)
-        h = CaptionLabel("数据来源：发票台账文档（最新一次导入），逐 sheet 逐行镜像；只读查看，可搜索/排序/筛选；右击可编辑或查看修改记录。")
+        h = CaptionLabel("数据来源：发票台账文档（最新一次导入），逐 sheet 逐行镜像；只读查看，可搜索/排序/筛选。"
+                         "如需修改数据请前往「数据导入 → 导入复核」页（导入前确认 / 导入后回写，全程留痕）；"
+                         "右击可查看修改记录。")
         lay.addWidget(h)
 
         # 筛选条
@@ -267,15 +270,25 @@ class InvoiceLedgerDocView(QWidget):
             return
         rid = self._meta[row]
         menu = QMenu(self)
-        act_edit = menu.addAction("编辑此行")
+        act_edit = menu.addAction("编辑此行（已移至导入复核）")
         act_log = menu.addAction("查看修改记录")
         chosen = menu.exec(self.table.viewport().mapToGlobal(pos))
         if chosen is None:
             return
         if chosen == act_edit:
-            self._edit_row(rid)
+            self._guide_to_review()
         elif chosen == act_log:
             self._show_log(rid)
+
+    @staticmethod
+    def _guide_to_review() -> None:
+        """数据修改统一收归「导入复核」页（阶段 5 起本页只读）。"""
+        from qfluentwidgets import InfoBar, InfoBarPosition
+        parent = QApplication.activeWindow()
+        InfoBar.info(
+            "", "台账数据修改请前往「数据导入 → 导入复核」页"
+                "（导入前确认 / 导入后回写，全程留痕）",
+            parent=parent, position=InfoBarPosition.TOP_RIGHT, duration=4000)
 
     def _show_log(self, rid: int) -> None:
         dlg = QDialog(self)
@@ -289,54 +302,6 @@ class InvoiceLedgerDocView(QWidget):
         box.rejected.connect(dlg.reject)
         v.addWidget(box)
         dlg.exec()
-
-    def _edit_row(self, rid: int) -> None:
-        row = rl.get_row(rid)
-        if row is None:
-            return
-        dlg = QDialog(self)
-        dlg.setWindowTitle(f"编辑发票台账行 #{rid}")
-        form = QFormLayout(dlg)
-        edits = {}
-        labels = {
-            "seq": "序号", "invoice_date_raw": "开票日期", "invoice_no": "发票号码",
-            "buyer": "对方", "amount_raw": "金额", "handler_text": "经办人",
-            "remark": "备注", "case_no": "案号", "recv_date_raw": "收到日期",
-        }
-        for f in EDIT_FIELDS:
-            le = QLineEdit(str(row.get(f) or ""))
-            edits[f] = le
-            form.addRow(labels.get(f, f), le)
-        box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        from qfluentwidgets import InfoBar, InfoBarPosition
-
-        def _on_ok() -> None:
-            # 编辑前校验经办人列（与导入一致：格式合法 + 金额合计=开票总额）
-            handler_text = edits["handler_text"].text().strip()
-            amt_text = edits["amount_raw"].text().strip()
-            if handler_text:
-                try:
-                    from app.importer.parse_handler import parse_handler_column
-                    from app.engine.raw_ledger import _parse_total
-                    parse_handler_column(handler_text, _parse_total(amt_text),
-                                         edits["invoice_no"].text().strip())
-                except Exception as e:  # noqa: BLE001
-                    InfoBar.error("经办人列无法解析", str(e), parent=dlg,
-                                  position=InfoBarPosition.TOP_RIGHT, duration=4000)
-                    return
-            dlg.accept()
-
-        box.accepted.connect(_on_ok)
-        box.rejected.connect(dlg.reject)
-        form.addRow(box)
-        if dlg.exec() != QDialog.DialogCode.Accepted:
-            return
-        data = {f: edits[f].text().strip() for f in EDIT_FIELDS}
-        rl.update_row(rid, data, note="手工编辑发票台账行")
-        self.refresh()
-        from qfluentwidgets import InfoBar, InfoBarPosition
-        InfoBar.success("", "已保存并记入修改记录", parent=self,
-                        position=InfoBarPosition.TOP_RIGHT, duration=2500)
 
 
 def _safe_int(v) -> int:
