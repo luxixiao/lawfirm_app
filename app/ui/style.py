@@ -216,6 +216,15 @@ QLabel {{ color: {p['text']}; }}
 QLabel#pageHint {{ color: {p['text_mute']}; }}
 
 /* ===== 问题行修正面板 ===== */
+QFrame#invoiceHeaderCard {{
+    background: {p['bg_table']}; border: 1px solid {p['border']};
+    border-radius: {P(10)}; padding: {P(14)} {P(16)};
+}}
+QLabel#headerStatus {{ color: {p['text_mute']}; font-size: {P(12)}; font-weight: 600; }}
+QLabel#headerNo {{ color: {p['text']}; font-size: {P(22)}; font-weight: 700; }}
+QLabel#headerBuyer {{ color: {p['text_mute']}; font-size: {P(13)}; }}
+QLabel#headerAmt {{ color: {p['text']}; font-size: {P(18)}; font-weight: 700; }}
+
 QWidget#infoCard {{
     background: {p['bg_table']}; border: 1px solid {p['border']};
     border-radius: {P(10)}; padding: {P(12)} {P(16)};

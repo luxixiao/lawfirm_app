@@ -165,7 +165,12 @@ check("问题行右侧显示修正面板（发票表单）",
       dlg.fix_panel.isVisible() and dlg.fix_panel.inv_box.isVisible())
 check("保存/跳过按钮对问题行可见", dlg.btn_save.isVisible() and dlg.btn_skiprow.isVisible())
 
-# 右栏重构：问题块（仅问题文本、无「建议」）/ 工具行 ghost 样式
+# 右栏重构：头部卡 / 问题块（仅问题文本、无「建议」）/ 工具行 ghost 样式
+check("头部卡存在且可见", dlg.header_card.isVisible())
+check("头部卡显示当前行状态", dlg.lbl_header_status.text() == row0["status"], dlg.lbl_header_status.text())
+check("头部卡显示发票号", dlg.lbl_header_no.text() == "BAD-1", dlg.lbl_header_no.text())
+check("头部卡显示购方", "问题购方" in dlg.lbl_header_buyer.text(), dlg.lbl_header_buyer.text())
+check("头部卡显示金额", "5000" in dlg.lbl_header_amt.text(), dlg.lbl_header_amt.text())
 check("问题块显示原始问题文本（无「建议」字样）",
       "建议" not in dlg.lbl_issue.text(), dlg.lbl_issue.text())
 check("问题块为 issueWarn 态（amber 左边框）", dlg.issue_block.objectName() == "issueWarn")
@@ -424,7 +429,10 @@ check("点1：高置信默认只读（开票日期）", d1dlg.fix_panel.inv_date
 check("点1：高置信默认只读（经办人下拉禁用）", not d1dlg.fix_panel.htable.cellWidget(0, 0).isEnabled())
 check("点1：高置信默认只读（保存按钮隐藏）", not d1dlg.btn_save.isVisible())
 check("点1：高置信显示「编辑」按钮", d1dlg.btn_edit.isVisible())
-# 右栏重构：高置信无问题 → 问题块 issueOk 态、文本无「建议」
+# 右栏重构：高置信头部卡正常填充 / 问题块 issueOk 态、文本无「建议」
+check("点1：高置信头部卡显示发票号", d1dlg.lbl_header_no.text() == "INV-HI", d1dlg.lbl_header_no.text())
+check("点1：高置信头部卡显示金额", "1,000.00" in d1dlg.lbl_header_amt.text(), d1dlg.lbl_header_amt.text())
+
 check("高置信无问题 → 问题块 issueOk 态", d1dlg.issue_block.objectName() == "issueOk")
 check("高置信无问题 → 问题块文本无「建议」",
       "建议" not in d1dlg.lbl_issue.text(), d1dlg.lbl_issue.text())

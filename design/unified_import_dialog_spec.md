@@ -107,15 +107,28 @@
 
 目标：**把三类意图（看 / 改表单 / 对整行做决定）各归其位，视觉统一**，并为"问题"信息单设区块。业务逻辑、信号槽、校验、写回一律不动。
 
-### 7.2 结论方案（方案 A 头部卡 + 问题块 + 按钮合一）
+### 7.2 结论方案（方案 A 头部卡 + 信息卡 + 问题块 + 按钮合一）
 
-右栏自上而下改为 5 个纵向分区：
+右栏自上而下改为 6 个纵向分区：
 
-1. **发票信息卡**（`infoCard` + `self._info` 网格）：来源 / 发票号 / 购方 / 金额 / 收款认定 / 备注（原「原因/疑问」从网格移出，见 7.3）
-2. **问题 / 异常块**（新增，见 7.3）
-3. **工具行**（降级 `btn_source`，见 7.4）
-4. **修正表单宿主** `self._fix_host`（含 `ProblemFixPanel`，内部 `btn_add/btn_del` 维持现状作子表工具条）
-5. **单一操作栏**（见 7.5）
+1. **发票头部卡**（新增 `invoiceHeaderCard`，见 7.2a）：占满右栏顶部空白，突出显示状态 / 发票号 / 购方 / 金额
+2. **发票信息卡**（`infoCard` + `self._info` 网格）：来源 / 发票号 / 购方 / 金额 / 收款认定 / 备注（原「原因/疑问」从网格移出，见 7.3）
+3. **问题 / 异常块**（新增，见 7.3）
+4. **工具行**（降级 `btn_source`，见 7.4）
+5. **修正表单宿主** `self._fix_host`（含 `ProblemFixPanel`，内部 `btn_add/btn_del` 维持现状作子表工具条）
+6. **单一操作栏**（见 7.5）
+
+#### 7.2a 发票头部卡（填补顶部空白）
+
+- 置于右栏最顶端，填补原先「信息卡上方大片空白」的问题。
+- 内容：
+  - 第一行：当前行状态（`待确认 / 高置信 / 已跳过`），按状态着色（琥珀 / 绿 / 灰）。
+  - 第二行：发票号码，大字号（22px）加粗，作为视觉锚点。
+  - 第三行：左购方、右金额，金额大字号（18px）加粗右对齐。
+- 数据来源：复用 `_row_field(r, "no")`、`_row_field(r, "buyer")`、`_row_field(r, "amt")`，发票行 / 问题行统一填充。
+- 无选中行时全部显示「—」并清空状态样式。
+
+
 
 ### 7.3 问题 / 异常块（仅问题、不加建议）
 
@@ -145,15 +158,21 @@
 
 ### 7.6 样式钩子（style.py）
 
+- `QFrame#invoiceHeaderCard`：背景 `bg_table`、边框 `border`、圆角 10px、内边距 14px 16px。
+- `QLabel#headerStatus` / `#headerNo` / `#headerBuyer` / `#headerAmt`：状态小字、发票号 22px 加粗、购方 13px、金额 18px 加粗右对齐。
 - `QPushButton#toolLink`：无背景、无边框、accent 文字、hover 淡底/下划线。
 - `QWidget#issueWarn` / `#issueOk`：背景与左边框差异（issueWarn 琥珀，issueOk 极淡灰）。
 - `QPushButton#actionPrimary`：`#185FA5` 填充 + 白字；`#actionSecondary`：透明 + `border-secondary`。
-- 圆角 6–8px、字号 12–13px，套 D-Notion 浅色基线；深皮肤走对应变量。
+- 圆角 6–10px、字号 12–22px，套 D-Notion 浅色基线；深皮肤走对应变量。
 
 ### 7.7 验收
 
-- `QT_QPA_PLATFORM=offscreen python tests/_smoke_unified_import.py` 仍 40/40。
-- 新增 3–4 项断言：①问题块在待确认行显示 `issueWarn` 文本且不含"建议"字样；②工具行 `btn_source` 存在并走 ghost 样式；③操作栏同一时刻至多一个主行动可见。
+- `QT_QPA_PLATFORM=offscreen python tests/_smoke_unified_import.py` 通过。
+- 新增断言：
+  1. 右栏顶部存在 `invoiceHeaderCard`，且头部卡显示当前行状态、发票号、购方、金额。
+  2. 问题块在待确认行显示 `issueWarn` 文本且不含"建议"字样。
+  3. 工具行 `btn_source` 存在并走 ghost 样式。
+  4. 操作栏同一时刻至多一个主行动可见。
 - 人工核对三种场景（待确认 / 高置信只读 / 已修正）操作栏主行动正确。
 
 ### 7.8 范围外（本次不做）

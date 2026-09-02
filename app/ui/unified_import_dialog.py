@@ -224,6 +224,32 @@ class UnifiedImportDialog(QWidget):
         rv.setContentsMargins(0, 0, 0, 0)
         rv.setSpacing(10)
 
+        # ---- 发票头部卡：占满右栏顶部空白，突出显示最关键身份 + 金额 ----
+        self.header_card = QFrame()
+        self.header_card.setObjectName("invoiceHeaderCard")
+        hb = QVBoxLayout(self.header_card)
+        hb.setContentsMargins(scale.px(16), scale.px(14), scale.px(16), scale.px(14))
+        hb.setSpacing(scale.px(6))
+        self.lbl_header_status = QLabel("—")
+        self.lbl_header_status.setObjectName("headerStatus")
+        self.lbl_header_no = QLabel("—")
+        self.lbl_header_no.setObjectName("headerNo")
+        self.lbl_header_buyer = QLabel("—")
+        self.lbl_header_buyer.setObjectName("headerBuyer")
+        self.lbl_header_buyer.setWordWrap(True)
+        self.lbl_header_amt = QLabel("—")
+        self.lbl_header_amt.setObjectName("headerAmt")
+        self.lbl_header_amt.setAlignment(
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        header_row = QHBoxLayout()
+        header_row.setSpacing(scale.px(8))
+        header_row.addWidget(self.lbl_header_buyer, 1)
+        header_row.addWidget(self.lbl_header_amt)
+        hb.addWidget(self.lbl_header_status)
+        hb.addWidget(self.lbl_header_no)
+        hb.addLayout(header_row)
+        rv.addWidget(self.header_card)
+
         card = QWidget()
         card.setObjectName("infoCard")
         cg = QGridLayout(card)
@@ -602,10 +628,26 @@ class UnifiedImportDialog(QWidget):
     def _load_right(self) -> None:
         r = self._current_row()
         if r is None:
+            self.lbl_header_status.setText("—")
+            self.lbl_header_no.setText("—")
+            self.lbl_header_buyer.setText("—")
+            self.lbl_header_amt.setText("—")
+            self.lbl_header_status.setStyleSheet("")
             self.fix_panel.set_problem(None)
             self.fix_panel.setVisible(False)
             self._set_actions()
             return
+
+        # 头部卡：状态 + 发票号 + 购方 + 金额
+        self.lbl_header_status.setText(r["status"])
+        self.lbl_header_no.setText(self._row_field(r, "no"))
+        self.lbl_header_buyer.setText(self._row_field(r, "buyer"))
+        self.lbl_header_amt.setText(self._row_field(r, "amt"))
+        status_color = {"待确认": AMBER, "高置信": GREEN, "已跳过": GRAY}.get(
+            r["status"], GRAY)
+        self.lbl_header_status.setStyleSheet(
+            f"color:{status_color.name()}; font-size:{scale.px(12)}px; font-weight:600;")
+
         for key in ("src", "no", "buyer", "amt", "receipt", "remark"):
             self._info[key].setText(self._row_field(r, key))
 
