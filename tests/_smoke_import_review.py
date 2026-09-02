@@ -1,14 +1,14 @@
-"""offscreen 冒烟：ImportReviewView（导入复核页，阶段 1）。
+"""offscreen 冒烟：ImportReviewView + ReviewPostView（导入复核页，阶段 2）。
 
 覆盖：
-- 结构：顶部模式徽章 + 堆栈（0=导入后 ImportVerifyView 内嵌 / 1=导入前 UnifiedImportDialog）
-- 默认导入后模式；徽章文案随模式切换
-- open_pending → 切导入前模式、徽章带账期、load_data 生效
-- confirmed（page_pre.accept()）→ commit_ledger_import 被调一次 + navigate_back + 回导入后模式
-- cancelled（page_pre.reject()）→ 不写库 + navigate_back + 回导入后模式
-- import_finished 信号携带 (file_name, batch_type, period, msg, ok)
+- 结构：模式徽章 + 账期下拉 + 堆栈（0=导入后 ReviewPostView / 1=导入前 UnifiedImportDialog）
+- 默认导入后模式（账期下拉启用）；open_pending 后切导入前（下拉锁定并显示该账期）
+- confirmed → commit_ledger_import 一次 + navigate_back + 回导入后（下拉重新启用）
+- cancelled → 不写库 + navigate_back
+- 写库失败路径 → 不崩溃 + import_finished(ok=False)
+- ReviewPostView：筛选胶囊/统计文案/空账期安全
 
-commit_ledger_import / validate_ledger_before_write 打桩，QMessageBox 换空桩。
+commit_ledger_import / validate_ledger_before_write / get_conn 均打桩，QMessageBox 换空桩。
 """
 import os
 import sys
@@ -21,8 +21,10 @@ from PySide6.QtWidgets import QApplication, QStackedWidget, QWidget
 app = QApplication.instance() or QApplication(sys.argv)
 
 import app.ui.import_review_view as RV  # noqa: E402
+import app.ui.review_post_view as RP  # noqa: E402
+import app.engine.review_compare as RC  # noqa: E402
 from app.ui.import_review_view import ImportReviewView  # noqa: E402
-from app.ui.import_verify_view import ImportVerifyView  # noqa: E402
+from app.ui.review_post_view import ReviewPostView  # noqa: E402
 from app.ui.unified_import_dialog import UnifiedImportDialog  # noqa: E402
 from app.importer import importer as _imp  # noqa: E402
 
@@ -36,6 +38,28 @@ class _MB:
     @staticmethod
     def information(*a, **k):
         return None
+
+
+class _FakeCursor:
+    def __iter__(self):
+        return iter([])
+
+    def fetchall(self):
+        return []
+
+    def fetchone(self):
+        return None
+
+
+class _FakeConn:
+    def execute(self, *a, **k):
+        return _FakeCursor()
+
+    def commit(self):
+        pass
+
+    def close(self):
+        pass
 
 
 _commit_calls = []
@@ -54,11 +78,14 @@ import PySide6.QtWidgets as _qt  # noqa: E402
 from app.ui import unified_import_dialog as _uid  # noqa: E402
 _qt.QMessageBox = _MB
 RV.QMessageBox = _MB
+RP.QMessageBox = _MB
 _uid.QMessageBox = _MB
 _imp.commit_ledger_import = _fake_commit
 _imp.validate_ledger_before_write = _fake_validate
 RV.commit_ledger_import = _fake_commit
 RV.validate_ledger_before_write = _fake_validate
+RV.get_conn = lambda: _FakeConn()
+RC.get_conn = lambda: _FakeConn()
 
 results = []
 
@@ -76,14 +103,19 @@ _data = {
 # ---------------------------------------------------------------- 1) 结构
 v = ImportReviewView()
 check("ImportReviewView 是 QWidget", isinstance(v, QWidget))
-check("含模式徽章", hasattr(v, "lbl_mode"))
-check("含内容堆栈", isinstance(v.stack, QStackedWidget))
-check("堆栈 2 页（导入后/导入前）", v.stack.count() == 2, f"got={v.stack.count()}")
-check("导入后页 = ImportVerifyView 内嵌（阶段1过渡）",
-      isinstance(v.page_post, ImportVerifyView))
+check("含模式徽章与账期下拉", hasattr(v, "lbl_mode") and hasattr(v, "combo_period"))
+check("堆栈 2 页", v.stack.count() == 2, f"got={v.stack.count()}")
+check("导入后页 = ReviewPostView（阶段2融合实现）", isinstance(v.page_post, ReviewPostView))
 check("导入前页 = UnifiedImportDialog", isinstance(v.page_pre, UnifiedImportDialog))
 check("默认导入后模式", v.stack.currentWidget() is v.page_post)
 check("徽章显示已导入", "已导入" in v.lbl_mode.text(), v.lbl_mode.text())
+check("导入后账期下拉启用", v.combo_period.isEnabled())
+check("ReviewPostView 有 4 个筛选胶囊", len(v.page_post.chips) == 4,
+      str(list(v.page_post.chips)))
+check("ReviewPostView 默认「全部」", v.page_post._grp.checkedId() == 0)
+check("空账期安全（无批次统计）",
+      "该账期没有已导入的发票台账批次" in v.page_post.lbl_stat.text(),
+      v.page_post.lbl_stat.text())
 
 # ---------------------------------------------------------------- 2) 导入前入口
 backs = []
@@ -92,10 +124,12 @@ v.open_pending(dict(_data), "2025-01", ["周立生", "陈娟"], "2025.1台账.xl
 check("切到导入前模式", v.stack.currentWidget() is v.page_pre)
 check("徽章含账期且锁定提示", "导入前" in v.lbl_mode.text() and "2025-01" in v.lbl_mode.text(),
       v.lbl_mode.text())
+check("导入前账期下拉锁定", not v.combo_period.isEnabled())
+check("下拉显示锁定账期", v.combo_period.currentData() == "2025-01",
+      str(v.combo_period.currentData()))
 check("面板已载入数据", v.page_pre._data.get("period") == "2025-01")
 check("pending 已记录", v._pending == ("2025-01", "2025.1台账.xlsx"), str(v._pending))
 check("尚未写库", len(_commit_calls) == 0)
-check("尚未回导航", len(backs) == 0)
 
 # ---------------------------------------------------------------- 3) 确认入库
 fin = []
@@ -110,6 +144,7 @@ check("发 navigate_back 一次", len(backs) == 1, f"got={len(backs)}")
 check("发 import_finished 且 ok=True",
       fin and fin[0][:3] == ("2025.1台账.xlsx", "ledger", "2025-01") and fin[0][4] is True,
       str(fin[:1]))
+check("导入后下拉重新启用", v.combo_period.isEnabled())
 check("pending 已清空", v._pending is None)
 
 # ---------------------------------------------------------------- 4) 取消
@@ -137,6 +172,18 @@ check("写库失败回导入后模式", v.stack.currentWidget() is v.page_post)
 check("写库失败发 navigate_back", len(backs) == 1)
 check("写库失败 import_finished ok=False",
       fin and fin[0][4] is False and "模拟写库失败" in fin[0][3], str(fin[:1]))
+
+# ---------------------------------------------------------------- 6) ReviewPostView 筛选渲染（空数据安全）
+pv = v.page_post
+for name, chip in pv.chips.items():
+    chip.setChecked(True)
+    chip.clicked.emit()
+check("四个筛选切换不崩溃", True)
+pv.chips["全部"].setChecked(True)
+pv.chips["全部"].clicked.emit()
+check("切回全部", pv.chips["全部"].isChecked() and pv._grp.checkedId() == 0)
+pv.set_period("")   # 空账期
+check("set_period 空值安全", pv.table.rowCount() == 0)
 
 bad = [n for n, ok, _ in results if not ok]
 print(f"\n{len(results) - len(bad)}/{len(results)} passed")
