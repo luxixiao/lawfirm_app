@@ -28,7 +28,7 @@ from PySide6.QtCore import Qt, QPoint, QTimer, Signal
 from PySide6.QtGui import QColor, QCursor
 from PySide6.QtWidgets import (
     QAbstractItemView, QButtonGroup, QDialog, QFrame,
-    QGridLayout, QHBoxLayout, QLabel, QMessageBox, QPushButton, QSplitter,
+    QGridLayout, QHBoxLayout, QLabel, QMessageBox, QPushButton, QScrollArea, QSplitter,
     QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
@@ -228,11 +228,27 @@ class UnifiedImportDialog(QWidget):
     # 右侧面板
     # ------------------------------------------------------------------ #
     def _build_right_panel(self) -> None:
+        # 右栏整体保持 QWidget（作为横向分割器的子项，保留左右拖拽调宽手柄）；
+        # 内部用 QScrollArea 承载内容：内容按自然高度顶部对齐（通常比左表矮），
+        # 左表依旧撑满分割器高度并独立滚动；右栏内容过高时自行滚动。
         self.right = QWidget()
         self.right.setMinimumWidth(400)
         rv = QVBoxLayout(self.right)
         rv.setContentsMargins(0, 0, 0, 0)
         rv.setSpacing(10)
+
+        scroll = QScrollArea()
+        scroll.setObjectName("rightScroll")
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+
+        inner = QWidget()
+        inner.setObjectName("rightInner")
+        iv = QVBoxLayout(inner)
+        iv.setContentsMargins(0, 0, 0, 0)
+        iv.setSpacing(10)
 
         # ---- 发票头部卡：占满右栏顶部空白，突出显示最关键身份 + 金额 ----
         self.header_card = QFrame()
@@ -258,7 +274,7 @@ class UnifiedImportDialog(QWidget):
         hb.addWidget(self.lbl_header_status)
         hb.addWidget(self.lbl_header_no)
         hb.addLayout(header_row)
-        rv.addWidget(self.header_card)
+        iv.addWidget(self.header_card)
 
         card = QWidget()
         card.setObjectName("infoCard")
@@ -275,7 +291,7 @@ class UnifiedImportDialog(QWidget):
             cg.addWidget(k, r, 0)
             cg.addWidget(v, r, 1)
             self._info[key] = v
-        rv.addWidget(card)
+        iv.addWidget(card)
 
         # 问题 / 异常块（仅显示原始问题文本，不附加"建议"类系统文案）
         self.issue_block = QFrame()
@@ -290,7 +306,7 @@ class UnifiedImportDialog(QWidget):
         self.lbl_issue.setObjectName("issueBodyOk")
         ib.addWidget(self.issue_title)
         ib.addWidget(self.lbl_issue)
-        rv.addWidget(self.issue_block)
+        iv.addWidget(self.issue_block)
 
         # 工具行：查看原始台账行（"看"非"改"，ghost 样式）
         row_btn = QHBoxLayout()
@@ -300,7 +316,7 @@ class UnifiedImportDialog(QWidget):
         self.btn_source.clicked.connect(self._show_source)
         row_btn.addWidget(self.btn_source)
         row_btn.addStretch()
-        rv.addLayout(row_btn)
+        iv.addLayout(row_btn)
 
         self._fix_host = QWidget()
         self._fix_host_ly = QVBoxLayout(self._fix_host)
@@ -308,9 +324,13 @@ class UnifiedImportDialog(QWidget):
         self._fix_host_ly.setSpacing(0)
         self.fix_panel = ProblemFixPanel(sorted(self._staff_set), self._period, self)
         self._fix_host_ly.addWidget(self.fix_panel, 1)
-        rv.addWidget(self._fix_host, 1)
+        iv.addWidget(self._fix_host)
 
-        # 单一操作栏：次级组（左）+ 主行动（右，accent 高亮）
+        scroll.setWidget(inner)
+        rv.addWidget(scroll, 1)
+
+        # 单一操作栏：次要组（左）+ 主行动（右，accent 高亮），钉在右栏底部
+        # （与左表底部对齐，不随内容滚动）
         ab = QHBoxLayout()
         ab.setSpacing(8)
         self.btn_edit = PushButton("编辑")
