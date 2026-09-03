@@ -24,24 +24,29 @@ from app.ui import scale
 from app.ui.column_layout import install_column_layout
 from app.ui.table_features import install_common_features, install_header_filter
 from app.ui.widgets import (
-    CaptionLabel, PrimaryPushButton, PushButton, page_header,
+    CaptionLabel, HelpIcon, PrimaryPushButton, PushButton,
 )
 
 
 class StaffView(QWidget):
+    _TAB_HELP = {
+        0: "职工花名册（基础数据）：导入/手动添加/修改/删除/停用启用；删除前校验业务引用，有引用则禁止删除并提示改用停用。台账导入时校验经办人是否在此名单中。",
+        1: "自定义员工类型。合伙/聘用/兼职为内置结算类型：禁止删除与改名（改名会断结算口径），说明可改；自定义类型可自由增删改名。仅合伙/聘用/兼职参与业务收入计算。",
+    }
+
     def __init__(self) -> None:
         super().__init__()
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(24, 20, 24, 20)
+        lay.setContentsMargins(24, 16, 24, 16)
         lay.setSpacing(12)
-
-        lay.addWidget(page_header("员工管理", "职工花名册（基础数据）：台账导入时校验经办人是否在此名单中。"
-                      "类型中只有「合伙 / 聘用 / 兼职」参与业务收入计算。"))
 
         self.tabs = QTabWidget()
         self.tabs.addTab(self._build_staff_tab(), "员工名单")
         self.tabs.addTab(self._build_type_tab(), "员工类型")
         self.tabs.currentChanged.connect(self._on_tab_changed)
+        self._help = HelpIcon("")
+        self.tabs.setCornerWidget(self._help, Qt.Corner.TopRightCorner)
+        self._help.set_help_text(self._TAB_HELP.get(self.tabs.currentIndex(), ""))
         lay.addWidget(self.tabs, 1)
 
         self.refresh()
@@ -131,7 +136,8 @@ class StaffView(QWidget):
         super().showEvent(event)
         self.refresh()
 
-    def _on_tab_changed(self, _idx: int) -> None:
+    def _on_tab_changed(self, idx: int) -> None:
+        self._help.set_help_text(self._TAB_HELP.get(idx, ""))
         self.refresh()
 
     def refresh(self) -> None:

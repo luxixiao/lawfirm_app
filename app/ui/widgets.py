@@ -282,6 +282,17 @@ class HelpIcon(QLabel):
         if not self._text:
             self.hide()
 
+    def set_help_text(self, text: str) -> None:
+        """动态更新说明文字；空字符串则隐藏图标。供多 tab 页切 tab 时调用。"""
+        self._text = text or ""
+        if self._text:
+            self.show()
+        else:
+            self.hide()
+        if self._tip is not None and self._tip.isVisible():
+            self._tip._set_rich(self._text)
+            self._position_tip()
+
     # -- hover 颜色过渡属性 --
     def _get_hover(self) -> float:
         return self._hover

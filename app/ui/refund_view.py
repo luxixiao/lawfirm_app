@@ -14,7 +14,7 @@ from PySide6.QtWidgets import (
     QLabel, QMenu, QMessageBox, QPushButton, QTabWidget, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
-from app.ui.widgets import (page_header, PrimaryPushButton, PushButton)
+from app.ui.widgets import (HelpIcon, PrimaryPushButton, PushButton)
 from app.db import get_conn
 from app.engine.refund import evaluate_red_invoices, confirmed_refunds
 
@@ -34,14 +34,16 @@ DONE_HEADERS = ["红字发票日期", "红字发票号码", "原票日期", "原
 
 
 class RefundView(QWidget):
+    _TAB_HELP = {
+        0: "需退款但尚未（完全）确认的红字发票（原票以前月份且已收款）；含部分退款后的剩余应退。",
+        1: "已确认退款明细（红字发票日期/号码、原票日期/号码、经办人、退款金额、退款日期）；右击可修改退款金额与日期。",
+    }
+
     def __init__(self) -> None:
         super().__init__()
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(24, 20, 24, 20)
-        lay.setSpacing(10)
-
-        lay.addWidget(page_header("退款", "红字发票退款确认。分为「待确认」（需退款未确认）与「已确认」（已确认退款明细）；"
-                   "手动填写退款金额与日期，可多次确认（部分退款）。"))
+        lay.setContentsMargins(24, 16, 24, 16)
+        lay.setSpacing(12)
 
         # ---- 待补录警告横幅 ----
         self.banner = QWidget()
@@ -89,6 +91,11 @@ class RefundView(QWidget):
         self.tabs.addTab(self.tab_done, "已确认")
         lay.addWidget(self.tabs, 1)
 
+        self._help = HelpIcon("")
+        self.tabs.setCornerWidget(self._help, Qt.Corner.TopRightCorner)
+        self.tabs.currentChanged.connect(self._on_tab_changed)
+        self._help.set_help_text(self._TAB_HELP.get(self.tabs.currentIndex(), ""))
+
         self.refresh()
 
     @staticmethod
@@ -106,6 +113,9 @@ class RefundView(QWidget):
         """切换到本页时自动刷新数据"""
         super().showEvent(event)
         self.refresh()
+
+    def _on_tab_changed(self, idx: int) -> None:
+        self._help.set_help_text(self._TAB_HELP.get(idx, ""))
 
     def refresh(self) -> None:
         # ---------- 待确认 ----------

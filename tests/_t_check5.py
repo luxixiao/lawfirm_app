@@ -35,17 +35,16 @@ try:
         v = PrepaymentView()
         v.show()
         app.processEvents()
-        # 两个 tab 各一个 ? 图标
-        icons = v.findChildren(HelpIcon)
-        has_text = [ic for ic in icons if (ic._text or "").strip()]
-        # 切换 tab 验证各自激活时可见
+        # 精简版：tab 条右上角 1 个 ? 图标（corner widget），切 tab 同步说明
+        cw = v.cornerWidget()
+        ok_corner = isinstance(cw, HelpIcon)
         v.setCurrentIndex(0); app.processEvents()
-        vis_0 = any(ic.isVisible() for ic in v.findChildren(HelpIcon))
+        t0 = (cw._text if cw else "").strip()
         v.setCurrentIndex(1); app.processEvents()
-        vis_1 = any(ic.isVisible() for ic in v.findChildren(HelpIcon))
-        ok = len(icons) == 2 and len(has_text) == 2 and vis_0 and vis_1
-        print(f"VIEW prepayment: help_icons={len(icons)} with_text={len(has_text)} "
-              f"vis_tab0={vis_0} vis_tab1={vis_1} -> {'OK' if ok else 'FAIL'}")
+        t1 = (cw._text if cw else "").strip()
+        ok = ok_corner and cw.isVisible() and bool(t0) and bool(t1) and t0 != t1
+        print(f"VIEW prepayment: corner_helpicon={ok_corner} visible={cw.isVisible() if cw else 'n/a'} "
+              f"tab0_help={'Y' if t0 else 'N'} tab1_help={'Y' if t1 else 'N'} -> {'OK' if ok else 'FAIL'}")
         sys.exit(0 if ok else 1)
 
     elif which == "import_review":

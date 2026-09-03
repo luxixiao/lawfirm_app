@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (
 
 from app.db import get_conn
 from app.ui import scale
-from app.ui.widgets import CaptionLabel, SubtitleLabel, page_header, PrimaryPushButton, PushButton
+from app.ui.widgets import CaptionLabel, SubtitleLabel, HelpIcon, PrimaryPushButton, PushButton
 from app.ui.column_layout import install_column_layout
 from app.engine.backfill_module import (
     list_pending_backfill, list_backfilled, load_invoice_detail,
@@ -27,14 +27,16 @@ from app.engine.backfill_module import (
 
 
 class ManualEntryView(QWidget):
+    _TAB_HELP = {
+        0: "被引用但 invoice 表中缺失的发票（红字原票缺失或应收对应缺失）；点击「补录」用引用它的红字发票信息预填。",
+        1: "已补录的期初/历史应收发票；可新增、编辑、删除（若仍被红字发票引用，删除后重新进入待补录）。补录数据与导入数据同模型计算。",
+    }
+
     def __init__(self) -> None:
         super().__init__()
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(24, 20, 24, 20)
-        lay.setSpacing(10)
-
-        lay.addWidget(page_header("发票补录", "补录期初/历史应收的原始发票信息（红字原票缺失或应收对应发票缺失）。"
-                   "补录数据与导入数据同模型计算，不影响其他页面。"))
+        lay.setContentsMargins(24, 16, 24, 16)
+        lay.setSpacing(12)
 
         self.tabs = QTabWidget()
         self.tab_pending = self._make_table(
@@ -44,6 +46,11 @@ class ManualEntryView(QWidget):
         self.tabs.addTab(self.tab_pending, "待补录发票")
         self.tabs.addTab(self.tab_done, "已补录发票")
         lay.addWidget(self.tabs, 1)
+
+        self._help = HelpIcon("")
+        self.tabs.setCornerWidget(self._help, Qt.Corner.TopRightCorner)
+        self.tabs.currentChanged.connect(self._on_tab_changed)
+        self._help.set_help_text(self._TAB_HELP.get(self.tabs.currentIndex(), ""))
 
         # 已补录页操作按钮
         done_btns = QHBoxLayout()
@@ -67,6 +74,9 @@ class ManualEntryView(QWidget):
     def showEvent(self, event) -> None:  # noqa: N802
         super().showEvent(event)
         self.refresh()
+
+    def _on_tab_changed(self, idx: int) -> None:
+        self._help.set_help_text(self._TAB_HELP.get(idx, ""))
 
     def _make_table(self, headers, name: str) -> QTableWidget:
         t = QTableWidget(0, len(headers))
