@@ -36,7 +36,6 @@ def _light() -> dict:
         "btn_press": "#E9E9E7", "btn_pri_bg": "#37352F", "btn_pri_fg": "#FFFFFF",
         "btn_pri_hover": "#4F4D49", "btn_pri_press": "#2A2823", "grid": "#F1F1EF",
         "warn_bg": "#FCEBEB", "warn_fg": "#C0392B",
-        "amber_bg": "#FAEEDA", "amber_fg": "#854F0B", "amber_border": "#BA7517",
     }
 
 
@@ -51,7 +50,6 @@ def _dark() -> dict:
         "btn_press": "#45453F", "btn_pri_bg": "#E9E9E7", "btn_pri_fg": "#1F1F1E",
         "btn_pri_hover": "#FFFFFF", "btn_pri_press": "#CFCFCA", "grid": "#33332F",
         "warn_bg": "#3A2622", "warn_fg": "#E07A6B",
-        "amber_bg": "#2E2410", "amber_fg": "#E8B25A", "amber_border": "#BA7517",
     }
 
 
@@ -148,18 +146,6 @@ QLabel#cellTip {{
 #pageHint  {{ color: {p['text_mute']}; font-size: {P(12)}; }}
 #placeholder {{ color: {p['text_faint']}; font-size: {P(14)}; padding: {P(40)}; }}
 
-/* ===== 页头帮助图标 + 悬浮说明卡 ===== */
-/* 图标自绘（见 widgets.HelpIcon），此处仅确保无默认底色干扰 */
-#helpIcon {{ background: transparent; }}
-/* 悬浮卡：底 bg_table / 描边 border_2 / 圆角 8 / 正文 12px；内边距由 QWidget 边距承载 */
-#pageHelpTip {{
-    background: {p['bg_table']};
-    border: 1px solid {p['border_2']};
-    border-radius: {P(8)};
-    color: {p['text']};
-    font-size: {P(12)};
-}}
-
 /* ===== 按钮 ===== */
 QPushButton {{
     background: {p['btn_bg']}; border: 1px solid {p['btn_border']};
@@ -215,7 +201,6 @@ QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
 QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{ width: 0; }}
 
 /* ===== Tab ===== */
-/* 裸 QTabWidget（如工资表的 sheet 标签）：保留 pane 外框 */
 QTabWidget::pane {{ border: 1px solid {p['border']}; border-radius: {P(10)}; background: {p['bg']}; top: -1px; }}
 QTabBar::tab {{
     background: transparent; color: {p['text_mute']}; padding: {P(8)} {P(18)}; border: none;
@@ -223,32 +208,12 @@ QTabBar::tab {{
 }}
 QTabBar::tab:hover {{ color: {p['text']}; }}
 QTabBar::tab:selected {{ color: {p['text']}; border-bottom: 2px solid {p['accent']}; font-weight: 600; }}
-/* 页头容器内的 tab 条（PageHeaderBar + HeaderTabs）：无 pane 外框，
-   字号提到 15px 与标题同层，padding 收到让整条贴合 PAGE_BAR_H = {P(32)} */
-QTabBar#pageHeaderTabBar {{ background: transparent; }}
-QTabBar#pageHeaderTabBar::tab {{
-    background: transparent; color: {p['text_mute']}; padding: {P(4)} {P(16)}; border: none;
-    border-bottom: 2px solid transparent; font-size: {P(15)}; font-weight: 500;
-}}
-QTabBar#pageHeaderTabBar::tab:hover {{ color: {p['text']}; }}
-QTabBar#pageHeaderTabBar::tab:selected {{
-    color: {p['text']}; border-bottom: 2px solid {p['accent']}; font-weight: 600;
-}}
 
 /* ===== 标签 ===== */
 QLabel {{ color: {p['text']}; }}
 QLabel#pageHint {{ color: {p['text_mute']}; }}
 
 /* ===== 问题行修正面板 ===== */
-QFrame#invoiceHeaderCard {{
-    background: {p['bg_table']}; border: 1px solid {p['border']};
-    border-radius: {P(10)}; padding: {P(14)} {P(16)};
-}}
-QLabel#headerStatus {{ color: {p['text_mute']}; font-size: {P(12)}; font-weight: 600; }}
-QLabel#headerNo {{ color: {p['text']}; font-size: {P(22)}; font-weight: 700; }}
-QLabel#headerBuyer {{ color: {p['text_mute']}; font-size: {P(13)}; }}
-QLabel#headerAmt {{ color: {p['text']}; font-size: {P(18)}; font-weight: 700; }}
-
 QWidget#infoCard {{
     background: {p['bg_table']}; border: 1px solid {p['border']};
     border-radius: {P(10)}; padding: {P(12)} {P(16)};
@@ -334,57 +299,6 @@ QFrame#card QListWidget {{
 QFrame#card QListWidget::item {{ padding: {P(5)} {P(8)}; border-radius: {P(5)}; }}
 QFrame#card QListWidget::item:hover {{ background: {p['bg_hover']}; }}
 QFrame#card QListWidget::item:selected {{ background: {p['bg_select']}; color: {p['text']}; }}
-
-/* ===== 导入确认右栏：问题块 / 工具行 / 单一操作栏 ===== */
-QFrame#issueWarn {{
-    background: {p['amber_bg']}; border: none;
-    border-left: {P(3)} solid {p['amber_border']}; border-radius: {P(6)};
-}}
-QFrame#issueOk {{
-    background: transparent; border: none;
-    border-left: {P(3)} solid {p['border']}; border-radius: {P(6)};
-}}
-QLabel#issueTitle {{ color: {p['amber_fg']}; font-size: {P(12)}; font-weight: 600; }}
-QLabel#issueBody {{ color: {p['text']}; font-size: {P(13)}; }}
-QLabel#issueBodyOk {{ color: {p['text_mute']}; font-size: {P(13)}; }}
-
-QPushButton#toolLink {{
-    background: transparent; border: none; color: {p['accent']};
-    padding: {P(4)} {P(4)}; text-align: left;
-}}
-QPushButton#toolLink:hover {{ background: {p['bg_hover']}; }}
-QPushButton#toolLink:pressed {{ background: {p['bg_select']}; }}
-
-QPushButton#actionPrimary {{
-    background: {p['btn_pri_bg']}; color: {p['btn_pri_fg']}; border: none;
-    font-weight: 600; padding: {P(6)} {P(16)};
-}}
-QPushButton#actionPrimary:hover {{ background: {p['btn_pri_hover']}; }}
-QPushButton#actionPrimary:pressed {{ background: {p['btn_pri_press']}; }}
-QPushButton#actionSecondary {{
-    background: {p['btn_bg']}; border: 1px solid {p['btn_border']};
-    color: {p['text']}; padding: {P(6)} {P(14)};
-}}
-
-/* ===== 导入确认右栏：折叠细轨 + 图钉 ===== */
-QFrame#rightRail {{
-    background: {p['bg_table']}; border: 1px solid {p['border']};
-    border-radius: {P(8)};
-}}
-QFrame#rightRail:hover {{ background: {p['bg_hover']}; }}
-QFrame#rightRail QLabel {{ color: {p['text_mute']}; }}
-QFrame#rightRail:hover QLabel {{ color: {p['text']}; }}
-QLabel#railChevron {{ font-size: {P(14)}; }}
-QLabel#railTitle {{ font-size: {P(12)}; font-weight: 600; }}
-QPushButton#pinBtn {{
-    background: transparent; border: 1px solid {p['border']}; color: {p['text_mute']};
-    padding: {P(1)} {P(10)}; font-size: {P(11)}; border-radius: {P(6)};
-}}
-QPushButton#pinBtn:hover {{ background: {p['bg_hover']}; color: {p['text']}; }}
-QPushButton#pinBtn:checked {{
-    background: {p['accent']}; border-color: {p['accent']}; color: {p['bg']};
-    font-weight: 600;
-}}
 
 /* ===== 消息框 / 弹窗 ===== */
 QMessageBox, QDialog {{ background: {p['bg']}; }}

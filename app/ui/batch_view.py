@@ -7,7 +7,7 @@ from PySide6.QtWidgets import (
     QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
-from app.ui.widgets import (page_header, PrimaryPushButton, PushButton)
+from app.ui.widgets import (SubtitleLabel, CaptionLabel, PrimaryPushButton, PushButton)
 from app.db import get_conn
 from app.importer.importer import rollback_batch
 
@@ -21,7 +21,10 @@ class BatchView(QWidget):
         lay.setContentsMargins(24, 20, 24, 20)
         lay.setSpacing(10)
 
-        lay.addWidget(page_header("导入记录", "撤销导入只删除该批次导入的数据，手动补录数据不受影响。重新导入同月同类型文件会自动覆盖。"))
+        t = SubtitleLabel("导入记录")
+        lay.addWidget(t)
+        h = QLabel("撤销导入只删除该批次导入的数据，手动补录数据不受影响。重新导入同月同类型文件会自动覆盖。")
+        lay.addWidget(h)
 
         btns = QHBoxLayout()
         self.btn_rollback = QPushButton("撤销所选批次")

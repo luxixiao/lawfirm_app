@@ -19,20 +19,8 @@ from PySide6.QtWidgets import QApplication
 
 app = QApplication.instance() or QApplication(sys.argv)
 
-import tempfile  # noqa: E402
-import os as _os  # noqa: E402
-from PySide6.QtCore import QSettings  # noqa: E402
-
-import app.ui.style as _style  # noqa: E402
-_style.motion_enabled = lambda: False  # 测试中折叠/展开即时生效，便于断言宽度
-
 import app.ui.unified_import_dialog as U  # noqa: E402
 from app.ui.unified_import_dialog import UnifiedImportDialog  # noqa: E402
-
-# 隔离持久化：把 _layout_settings() 指向临时 ini（Windows 上 QSettings.setDefaultFormat
-# 不生效、仍写注册表，直接注入 QSettings(file, IniFormat) 才能保证确定性与零污染）
-_QSFILE = _os.path.join(tempfile.mkdtemp(prefix="lawfirm_smoke_qs_"), "uimport.ini")
-U._layout_settings = lambda: QSettings(_QSFILE, QSettings.Format.IniFormat)
 
 
 class _MB:
@@ -143,7 +131,6 @@ def fill_invoice_fix(dlg):
 data = mk_data()
 dlg = UnifiedImportDialog(data, "2025-01", STAFF, path="2025.1台账.xlsx")
 dlg.show()  # offscreen 下子控件 isVisible() 依赖父窗口已 show
-dlg.expand(animate=False)  # 本节测右栏内容；折叠态由第 10 节单独覆盖
 check("构造成功", dlg is not None)
 check("行模型 = 2 解析行 + 2 问题行", len(dlg._rows) == 4, f"got={len(dlg._rows)}")
 st = statuses(dlg)
@@ -177,17 +164,6 @@ check("问题行携带 header/raw_row（可查看原始台账行）",
 check("问题行右侧显示修正面板（发票表单）",
       dlg.fix_panel.isVisible() and dlg.fix_panel.inv_box.isVisible())
 check("保存/跳过按钮对问题行可见", dlg.btn_save.isVisible() and dlg.btn_skiprow.isVisible())
-
-# 右栏重构：头部卡 / 问题块（仅问题文本、无「建议」）/ 工具行 ghost 样式
-check("头部卡存在且可见", dlg.header_card.isVisible())
-check("头部卡显示当前行状态", dlg.lbl_header_status.text() == row0["status"], dlg.lbl_header_status.text())
-check("头部卡显示发票号", dlg.lbl_header_no.text() == "BAD-1", dlg.lbl_header_no.text())
-check("头部卡显示购方", "问题购方" in dlg.lbl_header_buyer.text(), dlg.lbl_header_buyer.text())
-check("头部卡显示金额", "5000" in dlg.lbl_header_amt.text(), dlg.lbl_header_amt.text())
-check("问题块显示原始问题文本（无「建议」字样）",
-      "建议" not in dlg.lbl_issue.text(), dlg.lbl_issue.text())
-check("问题块为 issueWarn 态（amber 左边框）", dlg.issue_block.objectName() == "issueWarn")
-check("工具行 btn_source 走 toolLink ghost 样式", dlg.btn_source.objectName() == "toolLink")
 
 # ---------------------------------------------------------------- 2) 就地修正
 n_inv_before = len(data["invoices"])
@@ -262,7 +238,6 @@ check("修正行经办人分摊 2 人", len(fixed["handlers"]) == 2, f"got={fixe
 data2 = mk_data()
 dlg2 = UnifiedImportDialog(data2, "2025-01", STAFF)
 dlg2.show()
-dlg2.expand(animate=False)  # 预收款表单可见性断言依赖右栏展开
 dlg2._validate = lambda d: None
 # 跳过发票问题行
 dlg2.table.selectRow(0)
@@ -396,20 +371,10 @@ check("引擎：应收账款收款日期为当月 → 走兜底请确认",
 d2 = mk_simple()
 d2dlg = UnifiedImportDialog(d2, "2025-01", STAFF)
 d2dlg.show()
-d2dlg.expand(animate=False)  # 操作栏按钮可见性断言依赖右栏展开
 low = next(r for r in d2dlg._rows if r["kind"] == "invoice" and r["inv_idx"] == 0)
 d2dlg.table.selectRow(d2dlg._rows.index(low))
 check("点2：待确认行显示「确认」按钮", d2dlg.btn_confirm_row.isVisible())
 check("点2：待确认行不显示「编辑」按钮", not d2dlg.btn_edit.isVisible())
-# 右栏重构：单一操作栏同一时刻至多一个主行动（accent）
-_prim = [b for b in (d2dlg.btn_save, d2dlg.btn_refix, d2dlg.btn_skiprow,
-                     d2dlg.btn_confirm_row, d2dlg.btn_edit)
-         if b.objectName() == "actionPrimary"]
-check("操作栏同一时刻至多一个主行动（待确认→确认为主）",
-      len(_prim) == 1, f"got={[b.objectName() for b in _prim]}")
-check("待确认行：主行动=确认（保存为次级）",
-      d2dlg.btn_confirm_row.objectName() == "actionPrimary"
-      and d2dlg.btn_save.objectName() == "actionSecondary")
 d2dlg._confirm_row()
 low2 = next(r for r in d2dlg._rows if r["kind"] == "invoice" and r["inv_idx"] == 0)
 check("点2：确认后该发票变高置信", low2["ev"]["conf"] == "high", f"reasons={low2['ev']['reasons']}")
@@ -436,7 +401,6 @@ check("点3：未全额收款也离开待确认", low3b["status"] == "高置信"
 d1 = mk_simple()
 d1dlg = UnifiedImportDialog(d1, "2025-01", STAFF)
 d1dlg.show()
-d1dlg.expand(animate=False)  # 编辑/保存按钮可见性断言依赖右栏展开
 d1dlg._grp.button(4).setChecked(True)   # 全部
 d1dlg._render()
 hi = next(r for r in d1dlg._rows if r["kind"] == "invoice" and r["inv_idx"] == 1)
@@ -445,13 +409,6 @@ check("点1：高置信默认只读（开票日期）", d1dlg.fix_panel.inv_date
 check("点1：高置信默认只读（经办人下拉禁用）", not d1dlg.fix_panel.htable.cellWidget(0, 0).isEnabled())
 check("点1：高置信默认只读（保存按钮隐藏）", not d1dlg.btn_save.isVisible())
 check("点1：高置信显示「编辑」按钮", d1dlg.btn_edit.isVisible())
-# 右栏重构：高置信头部卡正常填充 / 问题块 issueOk 态、文本无「建议」
-check("点1：高置信头部卡显示发票号", d1dlg.lbl_header_no.text() == "INV-HI", d1dlg.lbl_header_no.text())
-check("点1：高置信头部卡显示金额", "1,000.00" in d1dlg.lbl_header_amt.text(), d1dlg.lbl_header_amt.text())
-
-check("高置信无问题 → 问题块 issueOk 态", d1dlg.issue_block.objectName() == "issueOk")
-check("高置信无问题 → 问题块文本无「建议」",
-      "建议" not in d1dlg.lbl_issue.text(), d1dlg.lbl_issue.text())
 d1dlg._enter_edit_mode()
 check("点1：点编辑后开票日期可写", not d1dlg.fix_panel.inv_date.isReadOnly())
 check("点1：点编辑后经办人下拉启用", d1dlg.fix_panel.htable.cellWidget(0, 0).isEnabled())
@@ -464,88 +421,6 @@ d1dlg._rebuild()
 hi_b = next(r for r in d1dlg._rows if r["kind"] == "invoice" and r["inv_idx"] == 1)
 check("点1：编辑并保存后高置信发票归入已确认", hi_b["is_confirmed"] is True and hi_b["status"] == "高置信",
       f"status={hi_b['status']} confirmed={hi_b['is_confirmed']}")
-
-# ------------------------------------------- 10) 右栏点行弹出（默认折叠成细轨；图钉固定常开）
-from PySide6.QtCore import Qt  # noqa: E402
-from PySide6.QtTest import QTest  # noqa: E402
-
-cd = UnifiedImportDialog(mk_simple(), "2025-01", STAFF)
-cd.show()
-cd._grp.button(4).setChecked(True)  # 全部：点行测试需要两行都在表里
-cd._render()
-check("右栏：默认折叠态", cd._collapsed is True)
-check("右栏：默认收窄到细轨 36", cd.right.width() == cd._rail_w == 36, f"w={cd.right.width()}")
-check("右栏：默认细轨可见", cd.right_rail.isVisible())
-check("右栏：默认内容隐藏", not cd.right_body.isVisible())
-check("右栏：默认拖拽条隐藏", not cd._divider.isVisible())
-check("左表默认铺满可见", cd.table.isVisible() and cd.table.width() > 400, f"tw={cd.table.width()}")
-
-row_a = next(r for r in cd._rows if r["kind"] == "invoice" and r["inv_idx"] == 0)
-row_b = next(r for r in cd._rows if r["kind"] == "invoice" and r["inv_idx"] == 1)
-ia, ib = cd._rows.index(row_a), cd._rows.index(row_b)
-
-# 程序化选中（筛选/初始/键盘）不应展开；单击才弹出
-def _click_row(d, row):
-    """模拟单击：先改变选中（真实点击会先触发内容载入），再触发 toggle。"""
-    d.table.selectRow(row)
-    d._on_cell_clicked(row, 0)
-
-cd.table.selectRow(ia)
-check("右栏：程序化选中不展开", cd._collapsed is True)
-
-_click_row(cd, ia)
-check("右栏：单击行 → 弹出", cd._collapsed is False)
-check("右栏：展开宽度=560", cd.right.width() == cd._expanded_w == 560, f"w={cd.right.width()}")
-check("右栏：展开后细轨隐藏", not cd.right_rail.isVisible())
-check("右栏：展开后内容可见", cd.right_body.isVisible())
-check("右栏：展开后拖拽条可见", cd._divider.isVisible())
-
-_click_row(cd, ia)
-check("右栏：再点同一行 → 收回", cd._collapsed is True)
-check("右栏：收回后宽度=36", cd.right.width() == 36, f"w={cd.right.width()}")
-
-_click_row(cd, ib)
-check("右栏：点另一行 → 弹出", cd._collapsed is False)
-_click_row(cd, ib)
-check("右栏：再点该行 → 收回", cd._collapsed is True)
-
-# 细轨点击 → 展开（真实鼠标事件）
-QTest.mouseClick(cd.right_rail, Qt.MouseButton.LeftButton)
-check("右栏：点细轨 → 展开", cd._collapsed is False)
-
-# 图钉：固定后常驻展开，点行不再收回
-QTest.mouseClick(cd.btn_pin, Qt.MouseButton.LeftButton)
-check("图钉：固定后 pinned=True", cd._pinned is True)
-check("图钉：文案变已固定", cd.btn_pin.text() == "已固定", cd.btn_pin.text())
-_click_row(cd, ia)   # 固定中：点行只切内容，不收回
-check("图钉：固定后点行不收回", cd._collapsed is False)
-QTest.mouseClick(cd.btn_pin, Qt.MouseButton.LeftButton)
-check("图钉：解除固定", cd._pinned is False)
-_click_row(cd, ia)   # 解除后点 ia（当前展开的是 ib）→ 仅切到 ia，保持展开
-check("图钉：解除后当前行切换保持展开", cd._collapsed is False)
-_click_row(cd, ia)   # 再点同一行 → 恢复收回行为
-check("图钉：解除后点行恢复收回", cd._collapsed is True)
-
-# 拖拽记忆宽度 + QSettings 持久化
-cd._track_expanded_w(700)
-cd.expand(animate=False)
-check("右栏：拖拽记忆 700", cd.right.width() == 700, f"w={cd.right.width()}")
-_s = U._layout_settings()
-check("右栏：宽度已持久化", str(_s.value("right_panel_w")) == "700",
-      f"got={_s.value('right_panel_w')}")
-check("右栏：图钉状态已持久化(解除)", str(_s.value("right_panel_pinned")) == "0",
-      f"got={_s.value('right_panel_pinned')}")
-
-# 幂等
-cd.collapse(animate=False)
-cd.collapse(animate=False)
-check("右栏：重复收回幂等", cd._collapsed is True)
-cd.expand(animate=False)
-cd.expand(animate=False)
-check("右栏：重复展开幂等", cd._collapsed is False)
-
-# 头部卡内含图钉按钮
-check("头部卡内含图钉按钮", cd.header_card is not None and cd.btn_pin.parent() is not None)
 
 # ------------------------------------------- 汇总
 bad = [n for n, ok, _ in results if not ok]

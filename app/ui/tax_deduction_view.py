@@ -22,7 +22,7 @@ from app.ui.column_layout import install_column_layout
 from app.ui.table_features import (
     install_accent_header, install_common_features, install_header_filter,
 )
-from app.ui.widgets import CaptionLabel, page_header
+from app.ui.widgets import CaptionLabel, SubtitleLabel
 
 # (表头, 字段, 类型)  t=原文  m=金额
 _COLS = [
@@ -63,7 +63,8 @@ class TaxDeductionView(QWidget):
         lay.setContentsMargins(28, 24, 28, 20)
         lay.setSpacing(12)
 
-        lay.addWidget(page_header("费用扣除",
+        lay.addWidget(SubtitleLabel("费用扣除"))
+        lay.addWidget(CaptionLabel(
             "导入每年税局导出的「1-12 月」个税费用扣除数据，一年一份。"
             "字段按列名关键词取值，表格新增的列会自动追加在末尾，减少的列留空。"))
 

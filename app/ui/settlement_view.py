@@ -8,15 +8,12 @@ from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QHBoxLayout,
     QLabel, QListWidget, QListWidgetItem, QMessageBox, QPlainTextEdit,
-    QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
+    QTabWidget, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
 from app.ui.column_layout import install_column_layout
 from app.ui.table_features import install_two_tier_header
-from app.ui.widgets import (
-    CaptionLabel, FrozenTableWidget, HeaderTabs, PageHeaderBar,
-    PrimaryPushButton, PushButton, apply_page_layout,
-)
+from app.ui.widgets import (CaptionLabel, FrozenTableWidget, PrimaryPushButton, PushButton, SubtitleLabel)
 
 from app.engine.person_settlement import build_settlement
 from app.exporter.person_settlement_exporter import export_all, export_one
@@ -44,23 +41,22 @@ def _merge_seq_name(seq, name) -> str:
 
 
 class SettlementView(QWidget):
-    _TAB_HELP = {
-        0: "按经办人+月份查看全年结算总表（收款/开票/未收/业务收入/费用）；可导出全部或指定经办人（支持多选）。",
-        1: "按经办人+月份预览并导出该月结算表（本期/本年累计/备注），口径对齐个人结算总表。",
-        2: "聘用律师业务收入结算表：按年份+月份汇总本年收入/报酬发放/住房公积金/保险费/汽油费，可导出当月或模板表。",
-        3: "律师收费情况（开票收入）：按年份+月份汇总收入本月/累计/期末未收/开票本月收回/收回以前应收款，可导出当月或模板表。",
-    }
-
     def __init__(self) -> None:
         super().__init__()
         outer = QVBoxLayout(self)
-        apply_page_layout(outer)
-        self.tabs = HeaderTabs()
+        outer.setContentsMargins(20, 16, 20, 16)
+        self.tabs = QTabWidget()
+        outer.addWidget(self.tabs)
         self.tab_personal = QWidget()
         self._lay_p = QVBoxLayout(self.tab_personal)
-        self._lay_p.setContentsMargins(0, 0, 0, 0)
+        self._lay_p.setContentsMargins(8, 10, 8, 10)
         self._lay_p.setSpacing(12)
         lay = self._lay_p
+
+        t = SubtitleLabel("个人结算总表")
+        lay.addWidget(t)
+        h = CaptionLabel("选择经办人查看结算总表；可导出全部或指定经办人（支持多选）。口径：收款/开票/未收/业务收入/费用。")
+        lay.addWidget(h)
 
         # ---- 筛选栏（经办人 + 月份 + 年份）----
         bar = QHBoxLayout()
@@ -160,14 +156,9 @@ class SettlementView(QWidget):
         self.tabs.addTab(self._build_report_tab(), "月度结算表")
         self.tabs.addTab(self._build_staff_income_tab(), "年度聘用结算表")
         self.tabs.addTab(self._build_invoice_income_tab(), "开票收入表")
-        self._header = PageHeaderBar()
-        self._help = self._header.set_tabs(self.tabs, self._TAB_HELP)
-        outer.addWidget(self._header)
-        outer.addWidget(self.tabs.stack, 1)
         self.tabs.currentChanged.connect(self._on_tab_changed)
 
     def _on_tab_changed(self, idx: int) -> None:
-        # ? 说明已由 PageHeaderBar 按 tab 切换，这里只按 tab 刷新数据
         if idx == 1:
             self.refresh_report()
         elif idx == 2:
@@ -527,7 +518,7 @@ class SettlementView(QWidget):
     def _build_report_tab(self) -> QWidget:
         w = QWidget()
         v = QVBoxLayout()
-        v.setContentsMargins(0, 0, 0, 0)
+        v.setContentsMargins(8, 10, 8, 10)
         v.setSpacing(10)
         w.setLayout(v)
         bar = QHBoxLayout()
@@ -673,7 +664,7 @@ class SettlementView(QWidget):
     def _build_staff_income_tab(self) -> QWidget:
         w = QWidget()
         v = QVBoxLayout()
-        v.setContentsMargins(0, 0, 0, 0)
+        v.setContentsMargins(8, 10, 8, 10)
         v.setSpacing(10)
         w.setLayout(v)
         bar = QHBoxLayout()
@@ -822,7 +813,7 @@ class SettlementView(QWidget):
     def _build_invoice_income_tab(self) -> QWidget:
         w = QWidget()
         v = QVBoxLayout()
-        v.setContentsMargins(0, 0, 0, 0)
+        v.setContentsMargins(8, 10, 8, 10)
         v.setSpacing(10)
         w.setLayout(v)
         bar = QHBoxLayout()

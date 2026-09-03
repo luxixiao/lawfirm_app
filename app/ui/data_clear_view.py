@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout, QWidget,
 )
 
-from app.ui.widgets import (CaptionLabel, PrimaryPushButton, page_header)
+from app.ui.widgets import (CaptionLabel, PrimaryPushButton, SubtitleLabel)
 from app.db import get_conn
 
 _CONFIRM_TEXT = "我确认清空数据"
@@ -32,7 +32,10 @@ class DataClearView(QWidget):
         lay.setContentsMargins(28, 24, 28, 20)
         lay.setSpacing(14)
 
-        lay.addWidget(page_header("数据情况", "清空全部业务数据（重新导入前使用）。基础数据将保留，详见下方说明。"))
+        t = SubtitleLabel("数据情况")
+        lay.addWidget(t)
+        h = CaptionLabel("清空全部业务数据（重新导入前使用）。基础数据将保留，详见下方说明。")
+        lay.addWidget(h)
 
         info = QPlainTextEdit()
         info.setReadOnly(True)

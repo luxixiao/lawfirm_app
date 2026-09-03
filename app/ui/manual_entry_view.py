@@ -13,15 +13,12 @@ from PySide6.QtCore import Qt, QDate
 from PySide6.QtWidgets import (
     QAbstractItemView, QAbstractSpinBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFormLayout,
     QHBoxLayout, QLabel, QLineEdit, QDateEdit, QHeaderView, QMessageBox, QPushButton,
-    QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
+    QTabWidget, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
 from app.db import get_conn
 from app.ui import scale
-from app.ui.widgets import (
-    CaptionLabel, HeaderTabs, PageHeaderBar, PrimaryPushButton, PushButton,
-    SubtitleLabel, apply_page_layout,
-)
+from app.ui.widgets import SubtitleLabel, CaptionLabel, PrimaryPushButton, PushButton
 from app.ui.column_layout import install_column_layout
 from app.engine.backfill_module import (
     list_pending_backfill, list_backfilled, load_invoice_detail,
@@ -30,27 +27,27 @@ from app.engine.backfill_module import (
 
 
 class ManualEntryView(QWidget):
-    _TAB_HELP = {
-        0: "被引用但 invoice 表中缺失的发票（红字原票缺失或应收对应缺失）；点击「补录」用引用它的红字发票信息预填。",
-        1: "已补录的期初/历史应收发票；可新增、编辑、删除（若仍被红字发票引用，删除后重新进入待补录）。补录数据与导入数据同模型计算。",
-    }
-
     def __init__(self) -> None:
         super().__init__()
         lay = QVBoxLayout(self)
-        apply_page_layout(lay)
+        lay.setContentsMargins(24, 20, 24, 20)
+        lay.setSpacing(10)
 
-        self.tabs = HeaderTabs()
+        t = SubtitleLabel("发票补录")
+        lay.addWidget(t)
+        h = QLabel("补录期初/历史应收的原始发票信息（红字原票缺失或应收对应发票缺失）。"
+                   "补录数据与导入数据同模型计算，不影响其他页面。")
+        h.setWordWrap(True)
+        lay.addWidget(h)
+
+        self.tabs = QTabWidget()
         self.tab_pending = self._make_table(
             ["开票日期", "发票号码", "对方", "价税合计", "状态", "收款金额", "对应红字发票", "操作"], "pending")
         self.tab_done = self._make_table(
             ["开票日期", "发票号码", "对方", "价税合计", "状态", "收款金额", "补录时间", "操作"], "done")
         self.tabs.addTab(self.tab_pending, "待补录发票")
         self.tabs.addTab(self.tab_done, "已补录发票")
-        self._header = PageHeaderBar()
-        self._help = self._header.set_tabs(self.tabs, self._TAB_HELP)
-        lay.addWidget(self._header)
-        lay.addWidget(self.tabs.stack, 1)
+        lay.addWidget(self.tabs, 1)
 
         # 已补录页操作按钮
         done_btns = QHBoxLayout()

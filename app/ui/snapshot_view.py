@@ -7,7 +7,7 @@ from PySide6.QtWidgets import (
     QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
-from app.ui.widgets import (page_header, PrimaryPushButton, PushButton)
+from app.ui.widgets import (SubtitleLabel, CaptionLabel, PrimaryPushButton, PushButton)
 from app.system.snapshot import delete_snapshot, list_snapshots, restore_snapshot, save_snapshot
 
 
@@ -18,7 +18,10 @@ class SnapshotView(QWidget):
         lay.setContentsMargins(24, 20, 24, 20)
         lay.setSpacing(10)
 
-        lay.addWidget(page_header("快照", "保存当前完整数据为快照；恢复快照可回到该时点。每次导入前自动保存快照。"))
+        t = SubtitleLabel("快照")
+        lay.addWidget(t)
+        h = QLabel("保存当前完整数据为快照；恢复快照可回到该时点。每次导入前自动保存快照。")
+        lay.addWidget(h)
 
         btns = QHBoxLayout()
         self.btn_save = QPushButton("保存快照")

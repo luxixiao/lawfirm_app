@@ -25,16 +25,8 @@ import app.ui.review_post_view as RP  # noqa: E402
 import app.engine.review_compare as RC  # noqa: E402
 from app.ui.import_review_view import ImportReviewView  # noqa: E402
 from app.ui.review_post_view import ReviewPostView  # noqa: E402
-import app.ui.unified_import_dialog as U  # noqa: E402
 from app.ui.unified_import_dialog import UnifiedImportDialog  # noqa: E402
 from app.importer import importer as _imp  # noqa: E402
-
-# 隔离右栏折叠状态持久化：指向临时 ini，避免读真实注册表造成不确定性
-import tempfile  # noqa: E402
-import os as _os  # noqa: E402
-from PySide6.QtCore import QSettings  # noqa: E402
-_QSFILE = _os.path.join(tempfile.mkdtemp(prefix="lawfirm_review_qs_"), "uimport.ini")
-U._layout_settings = lambda: QSettings(_QSFILE, QSettings.Format.IniFormat)
 
 
 # ---- 打桩 ----
@@ -138,9 +130,6 @@ check("下拉显示锁定账期", v.combo_period.currentData() == "2025-01",
 check("面板已载入数据", v.page_pre._data.get("period") == "2025-01")
 check("pending 已记录", v._pending == ("2025-01", "2025.1台账.xlsx"), str(v._pending))
 check("尚未写库", len(_commit_calls) == 0)
-check("嵌入模式下隐藏对话框自身标题", not v.page_pre._title.isVisible())
-check("嵌入模式下隐藏对话框自身说明", not v.page_pre._caption.isVisible())
-check("嵌入模式识别正确", v.page_pre._embedded)
 
 # ---------------------------------------------------------------- 3) 确认入库
 fin = []

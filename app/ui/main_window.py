@@ -25,7 +25,6 @@ from qframelesswindow.titlebar import TitleBar
 
 from app.db import get_conn
 from app.ui import scale, style
-from app.ui.widgets import animate_page_in
 from app.ui.sidebar import SidebarWidget
 from app.ui.batch_view import BatchView
 from app.ui.calc_sheet_view import CalcSheetView
@@ -399,10 +398,7 @@ class MainWindow(FramelessWindow):
         page = self._ensure_page(key)
         if page is None:
             return
-        if self.stack.currentWidget() is not page:
-            self.stack.setCurrentWidget(page)
-            # 整页淡入（动效真源 sidebar.MOTION，动效开关关时自动跳过）
-            animate_page_in(page)
+        self.stack.setCurrentWidget(page)
         grp = self._key_to_group.get(key)
         if grp is not None:
             self.sidebar.activate(key, grp)

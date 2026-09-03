@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (
     QPushButton, QVBoxLayout, QWidget,
 )
 
-from app.ui.widgets import (page_header, PrimaryPushButton, PushButton)
+from app.ui.widgets import (SubtitleLabel, CaptionLabel, PrimaryPushButton, PushButton)
 from app.importer.importer import (
     import_expense_file, import_invoice_file, import_salary_file, parse_ledger_file,
 )
@@ -74,10 +74,13 @@ class ImportView(QWidget):
         lay.setContentsMargins(24, 20, 24, 20)
         lay.setSpacing(12)
 
-        lay.addWidget(page_header("导入台账", "选择台账文件，系统自动识别类型与账期。每月导入顺序："
+        t = SubtitleLabel("导入台账")
+        lay.addWidget(t)
+        h = QLabel("选择台账文件，系统自动识别类型与账期。每月导入顺序："
                    "销项 → 发票台账 → 费用台账 → 工资表（职工清单首次导入一次即可）。\n"
                    "命名示例：工资表写作「工资25.1」= 工资表 2025 年 1 月；"
-                   "账期一律以文件名为准，导入日志会持久保存、关闭程序也不丢失。"))
+                   "账期一律以文件名为准，导入日志会持久保存、关闭程序也不丢失。")
+        lay.addWidget(h)
 
         btns = QHBoxLayout()
         self.btn_file = QPushButton("选择文件导入")

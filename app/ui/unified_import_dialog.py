@@ -24,13 +24,11 @@ from __future__ import annotations
 import copy
 from typing import Dict, List
 
-from PySide6.QtCore import (
-    Qt, QPoint, QTimer, Signal, QPropertyAnimation, Property, QEasingCurve, QSettings,
-)
+from PySide6.QtCore import Qt, QPoint, QTimer, Signal
 from PySide6.QtGui import QColor, QCursor
 from PySide6.QtWidgets import (
     QAbstractItemView, QButtonGroup, QDialog, QFrame,
-    QGridLayout, QHBoxLayout, QLabel, QMessageBox, QPushButton, QScrollArea,
+    QGridLayout, QHBoxLayout, QLabel, QMessageBox, QPushButton, QSplitter,
     QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
@@ -58,125 +56,6 @@ COL_STATUS, COL_KIND, COL_SRC, COL_NO, COL_BUYER, COL_AMT, COL_HANDLER, \
 
 FILTERS = ["待确认", "已确认", "高置信", "已跳过", "全部"]
 _PRIO = {"待确认": 0, "高置信": 1, "已跳过": 2}
-
-
-def _layout_settings() -> QSettings:
-    """右栏宽度 / 图钉状态的持久化目标（可被测试替换为临时 ini）。"""
-    return QSettings("lawfirm_app", "unified_import")
-
-
-class _CollapsiblePanel(QWidget):
-    """宽度可折叠容器：由 w 属性驱动 setFixedWidth，子控件 _rail 随尺寸铺满。
-
-    展开态承载正常内容；折叠态收窄到 _rail 宽度（细轨视觉）。"""
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self._w = 0
-        self._rail = None
-
-    def _gw(self):
-        return self._w
-
-    def _sw(self, v):
-        self._w = int(round(v))
-        self.setFixedWidth(self._w)
-        if self._rail is not None:
-            self._rail.setGeometry(0, 0, self._rail.width(), self.height())
-
-    w = Property(int, _gw, _sw)
-
-    def set_rail(self, rail: "QWidget") -> None:
-        self._rail = rail
-
-    def resizeEvent(self, e):
-        super().resizeEvent(e)
-        if self._rail is not None:
-            self._rail.setGeometry(0, 0, self._rail.width(), self.height())
-
-
-class _Rail(QFrame):
-    """细轨（折叠态视觉）：竖排文字 + 箭头，点击回调展开。"""
-
-    def __init__(self, text: str, on_click, parent=None):
-        super().__init__(parent)
-        self.setObjectName("rightRail")
-        self._on_click = on_click
-        self.setCursor(Qt.CursorShape.PointingHandCursor)
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(0, 10, 0, 10)
-        lay.setSpacing(6)
-        chev = QLabel("‹")
-        chev.setObjectName("railChevron")
-        chev.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop)
-        lay.addWidget(chev)
-        title = QLabel("\n".join(text))
-        title.setObjectName("railTitle")
-        title.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter)
-        lay.addWidget(title, 1)
-
-    def mouseReleaseEvent(self, e):
-        if e.button() == Qt.MouseButton.LeftButton:
-            if self._on_click:
-                self._on_click()
-            e.accept()
-        else:
-            super().mouseReleaseEvent(e)
-
-
-class _Divider(QFrame):
-    """4px 拖拽条：拖动改变右栏展开宽度（仅展开态生效）。
-
-    direction=1：拖向 +x 面板变宽（面板在条左侧）；direction=-1：面板在条右侧（右栏）。
-    """
-
-    def __init__(self, panel, direction: int = 1, lo: int = 360, hi: int = 1100,
-                 on_press=None, on_width=None, on_release=None, parent=None):
-        super().__init__(parent)
-        self.setObjectName("hDivider")
-        self._panel = panel
-        self._direction = direction
-        self._on_press = on_press
-        self._on_width = on_width
-        self._on_release = on_release
-        self._min = lo
-        self._max = hi
-        self._drag = False
-        self._sx = 0.0
-        self._sw = 0
-        self.setFixedWidth(4)
-        self.setCursor(Qt.CursorShape.SplitHCursor)
-
-    def mousePressEvent(self, e):
-        if e.button() == Qt.MouseButton.LeftButton:
-            self._drag = True
-            self._sx = e.globalPosition().x()
-            self._sw = self._panel.width()
-            if self._on_press:
-                self._on_press()
-            e.accept()
-        else:
-            super().mousePressEvent(e)
-
-    def mouseMoveEvent(self, e):
-        if self._drag:
-            dx = e.globalPosition().x() - self._sx
-            nw = max(self._min, min(self._max, int(self._sw + self._direction * dx)))
-            self._panel.setFixedWidth(nw)
-            if self._on_width:
-                self._on_width(nw)
-            e.accept()
-        else:
-            super().mouseMoveEvent(e)
-
-    def mouseReleaseEvent(self, e):
-        if e.button() == Qt.MouseButton.LeftButton:
-            was = self._drag
-            self._drag = False
-            if was and self._on_release:
-                self._on_release()
-            e.accept()
-        else:
-            super().mouseReleaseEvent(e)
 
 
 class UnifiedImportDialog(QWidget):
@@ -215,32 +94,22 @@ class UnifiedImportDialog(QWidget):
         self._rows: List[Dict] = []
         self.fix_panel = None
 
-        # 作为独立弹窗时保留标题与说明；嵌入 ImportReviewView 等页面时
-        # 页头已由外层提供，隐藏自身标题避免双重页头造成上方空白。
-        self._embedded = parent is not None
-
         self.setWindowTitle(f"发票台账导入确认 — {period}")
         if self.isWindow():
             self.resize(1240, 700)
 
         root = QVBoxLayout(self)
-        # 嵌入页面时上间距收紧，让内容区域尽可能往上顶，减少窗体顶部留白
-        root.setContentsMargins(20, 10 if self._embedded else 18, 20, 18)
+        root.setContentsMargins(20, 18, 20, 18)
         root.setSpacing(10)
 
         self._title = QLabel(f"发票台账导入确认 — {period}")
         self._title.setObjectName("pageTitle")
         root.addWidget(self._title)
-        self._caption = CaptionLabel(
+        root.addWidget(CaptionLabel(
             "解析失败的行与系统判定有疑问的行集中在同一张表：左侧筛选，右侧就地修正。"
             "「待修正」保存后立即重算并刷新；未处理的行在确认入库时自动跳过。"
             "双击任意行可对照原始台账行。"
-        )
-        root.addWidget(self._caption)
-
-        if self._embedded:
-            self._title.setVisible(False)
-            self._caption.setVisible(False)
+        ))
 
         # ---- 筛选栏 ----
         bar = QHBoxLayout()
@@ -262,14 +131,8 @@ class UnifiedImportDialog(QWidget):
         bar.addStretch()
         root.addLayout(bar)
 
-        # ---- 主体：左表（流体）+ 拖拽条 + 右栏（固定宽，可折叠/点行弹出） ----
-        self._rail_w = 36          # 折叠态细轨宽度
-        self._min_w = 400          # 右栏展开宽度下限
-        self._max_w = 900          # 右栏展开宽度上限
-        self._expanded_w = 560     # 右栏展开宽度（被拖拽/持久化更新）
-        self._collapsed = True     # 默认折叠成右侧细轨
-        self._pinned = False       # 图钉固定后常驻展开，点行不再收回
-        self._open_row_id = None   # 当前展开所对应的行（同行再点 → 收回）
+        # ---- 主体：左表 + 右面板 ----
+        self.splitter = QSplitter(Qt.Orientation.Horizontal)
 
         self.table = TableWidget(self)
         self.table.setColumnCount(len(HEADERS))
@@ -285,30 +148,13 @@ class UnifiedImportDialog(QWidget):
         self.table.setMinimumWidth(560)
         self.table.cellDoubleClicked.connect(self._cell_double_clicked)
         self.table.itemSelectionChanged.connect(self._load_right)
-        self.table.cellClicked.connect(self._on_cell_clicked)
+        self.splitter.addWidget(self.table)
 
         self._build_right_panel()
-
-        body = QHBoxLayout()
-        body.setContentsMargins(0, 0, 0, 0)
-        body.setSpacing(0)
-        body.addWidget(self.table, 1)
-        self._divider = _Divider(
-            self.right, direction=-1, lo=self._min_w, hi=self._max_w,
-            on_press=self._anim_stop,
-            on_width=self._track_expanded_w,
-            on_release=self._save_layout_state,
-        )
-        body.addWidget(self._divider)
-        body.addWidget(self.right)
-        root.addLayout(body, 1)
-
-        # 折叠 / 展开动画（宽度由 _CollapsiblePanel.w 属性驱动）
-        self._anim = QPropertyAnimation(self.right, b"w")
-        self._anim.setEasingCurve(QEasingCurve.Type.OutCubic)
-
-        # 初始状态：按上次记忆恢复（pinned → 常驻展开；否则折叠成细轨）
-        self._apply_layout_state()
+        self.splitter.addWidget(self.right)
+        self.splitter.setHandleWidth(8)
+        self.splitter.setSizes([760, 560])
+        root.addWidget(self.splitter, 1)
 
         # ---- 底部 ----
         self.lbl_summary = CaptionLabel("")
@@ -330,102 +176,6 @@ class UnifiedImportDialog(QWidget):
             self.load_data(data, period, staff_names, path, validator)
         else:
             self._rebuild()
-
-    # ------------------------------------------------------------------ #
-    # 右栏折叠 / 展开（默认折叠成细轨；点左表行弹出；图钉可固定常开）
-    # ------------------------------------------------------------------ #
-    def _anim_stop(self) -> None:
-        self._anim.stop()
-
-    def _track_expanded_w(self, w: int) -> None:
-        self._expanded_w = w
-
-    def _apply_layout_state(self) -> None:
-        """恢复上次右栏宽度与图钉状态（无记忆时默认折叠成细轨）。"""
-        s = _layout_settings()
-        try:
-            saved_w = int(s.value("right_panel_w", 560))
-        except (TypeError, ValueError):
-            saved_w = 560
-        self._expanded_w = max(self._min_w, min(self._max_w, saved_w))
-        self._pinned = str(s.value("right_panel_pinned", "0")).lower() in ("1", "true", "yes")
-        self.btn_pin.setChecked(self._pinned)
-        self.btn_pin.setText("已固定" if self._pinned else "固定")
-        if self._pinned:
-            self._collapsed = False
-            self.right_body.setVisible(True)
-            self.right_rail.setVisible(False)
-            self._divider.setVisible(True)
-            self.right.setFixedWidth(self._expanded_w)
-        else:
-            self._collapsed = True
-            self.right_body.setVisible(False)
-            self.right_rail.setVisible(True)
-            self._divider.setVisible(False)
-            self.right.setFixedWidth(self._rail_w)
-
-    def _save_layout_state(self) -> None:
-        s = _layout_settings()
-        s.setValue("right_panel_w", self._expanded_w)
-        s.setValue("right_panel_pinned", "1" if self._pinned else "0")
-
-    def _animate_to(self, w: int, animate: "bool | None" = None) -> None:
-        if animate is None:
-            from app.ui import style
-            animate = style.motion_enabled()
-        self._anim.stop()
-        if not animate:
-            self.right.setFixedWidth(w)
-            return
-        self._anim.setDuration(180)
-        self._anim.setStartValue(self.right.width())
-        self._anim.setEndValue(w)
-        self._anim.start()
-
-    def collapse(self, animate: "bool | None" = None) -> None:
-        if self._collapsed:
-            return
-        self._collapsed = True
-        self.right_body.setVisible(False)
-        self.right_rail.setVisible(True)
-        self._divider.setVisible(False)
-        self._animate_to(self._rail_w, animate)
-        self._save_layout_state()
-
-    def expand(self, animate: "bool | None" = None) -> None:
-        if not self._collapsed:
-            return
-        self._collapsed = False
-        self.right_rail.setVisible(False)
-        self._divider.setVisible(True)
-        self.right_body.setVisible(True)
-        self._animate_to(self._expanded_w, animate)
-        self._save_layout_state()
-
-    def _on_cell_clicked(self, _row: int, _col: int) -> None:
-        """点行弹出：点当前展开的行 → 收回细轨；点其它行 → 只切换内容保持展开。
-
-        图钉固定后点行只切换内容，不再收回。程序化选中（筛选切换/初始选中）不触发。
-        """
-        if self._pinned:
-            return
-        r = self._current_row()
-        if r is None:
-            return
-        rid = id(r)
-        if (not self._collapsed) and rid == self._open_row_id:
-            self.collapse()
-        else:
-            self._open_row_id = rid
-            self.expand()
-
-    def _toggle_pin(self) -> None:
-        """图钉：固定 → 常驻展开（点行不再收回）；解除 → 恢复点行弹出行为。"""
-        self._pinned = self.btn_pin.isChecked()
-        self.btn_pin.setText("已固定" if self._pinned else "固定")
-        if self._pinned:
-            self.expand(animate=False)
-        self._save_layout_state()
 
     # ------------------------------------------------------------------ #
     # 数据载入（嵌入面板可二次调用）
@@ -468,69 +218,11 @@ class UnifiedImportDialog(QWidget):
     # 右侧面板
     # ------------------------------------------------------------------ #
     def _build_right_panel(self) -> None:
-        # 右栏 = 可折叠容器（self.right 自身是可动画宽度的 _CollapsiblePanel）。
-        # 展开态：right_body = 「滚动内容(自然高度顶部对齐) + 操作栏(钉底)」；
-        # 折叠态：right_body 隐藏，只露出 right_rail（36px 细轨，点击展开）。
-        self.right = _CollapsiblePanel()
-        self.right.setObjectName("rightPanel")
-        outer = QVBoxLayout(self.right)
-        outer.setContentsMargins(0, 0, 0, 0)
-        outer.setSpacing(0)
-
-        self.right_body = QWidget()
-        self.right_body.setObjectName("rightBody")
-        rv = QVBoxLayout(self.right_body)
+        self.right = QWidget()
+        self.right.setMinimumWidth(400)
+        rv = QVBoxLayout(self.right)
         rv.setContentsMargins(0, 0, 0, 0)
         rv.setSpacing(10)
-
-        scroll = QScrollArea()
-        scroll.setObjectName("rightScroll")
-        scroll.setFrameShape(QFrame.Shape.NoFrame)
-        scroll.setWidgetResizable(True)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-
-        inner = QWidget()
-        inner.setObjectName("rightInner")
-        iv = QVBoxLayout(inner)
-        iv.setContentsMargins(0, 0, 0, 0)
-        iv.setSpacing(10)
-
-        # ---- 发票头部卡：状态行（右侧放图钉） + 发票号 + 购方/金额 ----
-        self.header_card = QFrame()
-        self.header_card.setObjectName("invoiceHeaderCard")
-        hb = QVBoxLayout(self.header_card)
-        hb.setContentsMargins(scale.px(16), scale.px(12), scale.px(16), scale.px(14))
-        hb.setSpacing(scale.px(6))
-        self.lbl_header_status = QLabel("—")
-        self.lbl_header_status.setObjectName("headerStatus")
-        self.btn_pin = PushButton("固定")
-        self.btn_pin.setObjectName("pinBtn")
-        self.btn_pin.setCheckable(True)
-        self.btn_pin.setFixedHeight(scale.px(24))
-        self.btn_pin.clicked.connect(self._toggle_pin)
-        top_row = QHBoxLayout()
-        top_row.setSpacing(scale.px(8))
-        top_row.addWidget(self.lbl_header_status)
-        top_row.addStretch(1)
-        top_row.addWidget(self.btn_pin)
-        hb.addLayout(top_row)
-        self.lbl_header_no = QLabel("—")
-        self.lbl_header_no.setObjectName("headerNo")
-        self.lbl_header_buyer = QLabel("—")
-        self.lbl_header_buyer.setObjectName("headerBuyer")
-        self.lbl_header_buyer.setWordWrap(True)
-        self.lbl_header_amt = QLabel("—")
-        self.lbl_header_amt.setObjectName("headerAmt")
-        self.lbl_header_amt.setAlignment(
-            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        header_row = QHBoxLayout()
-        header_row.setSpacing(scale.px(8))
-        header_row.addWidget(self.lbl_header_buyer, 1)
-        header_row.addWidget(self.lbl_header_amt)
-        hb.addWidget(self.lbl_header_no)
-        hb.addLayout(header_row)
-        iv.addWidget(self.header_card)
 
         card = QWidget()
         card.setObjectName("infoCard")
@@ -539,7 +231,8 @@ class UnifiedImportDialog(QWidget):
         cg.setSpacing(8)
         self._info: Dict[str, QLabel] = {}
         fields = [("来源", "src"), ("发票号", "no"), ("购方", "buyer"),
-                  ("金额", "amt"), ("收款认定", "receipt"), ("备注", "remark")]
+                  ("金额", "amt"), ("收款认定", "receipt"), ("备注", "remark"),
+                  ("原因 / 疑问", "reason")]
         for r, (label, key) in enumerate(fields):
             k = QLabel(label); k.setObjectName("infoKey")
             v = QLabel("—")
@@ -547,32 +240,18 @@ class UnifiedImportDialog(QWidget):
             cg.addWidget(k, r, 0)
             cg.addWidget(v, r, 1)
             self._info[key] = v
-        iv.addWidget(card)
+        rv.addWidget(card)
 
-        # 问题 / 异常块（仅显示原始问题文本，不附加"建议"类系统文案）
-        self.issue_block = QFrame()
-        self.issue_block.setObjectName("issueOk")
-        ib = QVBoxLayout(self.issue_block)
-        ib.setContentsMargins(scale.px(12), scale.px(10), scale.px(12), scale.px(10))
-        ib.setSpacing(scale.px(4))
-        self.issue_title = QLabel("问题 / 异常")
-        self.issue_title.setObjectName("issueTitle")
-        self.lbl_issue = QLabel("—")
-        self.lbl_issue.setWordWrap(True)
-        self.lbl_issue.setObjectName("issueBodyOk")
-        ib.addWidget(self.issue_title)
-        ib.addWidget(self.lbl_issue)
-        iv.addWidget(self.issue_block)
-
-        # 工具行：查看原始台账行（"看"非"改"，ghost 样式）
         row_btn = QHBoxLayout()
-        row_btn.setSpacing(8)
         self.btn_source = PushButton("查看原始台账行")
-        self.btn_source.setObjectName("toolLink")
         self.btn_source.clicked.connect(self._show_source)
         row_btn.addWidget(self.btn_source)
         row_btn.addStretch()
-        iv.addLayout(row_btn)
+        rv.addLayout(row_btn)
+
+        sep = QFrame(); sep.setObjectName("sep")
+        sep.setFrameShape(QFrame.Shape.HLine); sep.setFixedHeight(1)
+        rv.addWidget(sep)
 
         self._fix_host = QWidget()
         self._fix_host_ly = QVBoxLayout(self._fix_host)
@@ -580,43 +259,27 @@ class UnifiedImportDialog(QWidget):
         self._fix_host_ly.setSpacing(0)
         self.fix_panel = ProblemFixPanel(sorted(self._staff_set), self._period, self)
         self._fix_host_ly.addWidget(self.fix_panel, 1)
-        iv.addWidget(self._fix_host)
+        rv.addWidget(self._fix_host, 1)
 
-        scroll.setWidget(inner)
-        rv.addWidget(scroll, 1)
-
-        # 单一操作栏：次要组（左）+ 主行动（右，accent 高亮），钉在右栏底部
-        # （与左表底部对齐，不随内容滚动）
         ab = QHBoxLayout()
         ab.setSpacing(8)
-        self.btn_edit = PushButton("编辑")
-        self.btn_edit.clicked.connect(self._enter_edit_mode)
-        self.btn_refix = PushButton("重新修正")
-        self.btn_refix.clicked.connect(self._refix)
-        self.btn_skiprow = PushButton("跳过此行")
-        self.btn_skiprow.clicked.connect(self._skip_row)
         self.btn_save = PushButton("保存修改")
         self.btn_save.clicked.connect(self._save_fix)
-        self.btn_confirm_row = PushButton("确认并移出待处理")
+        self.btn_refix = PushButton("重新修正")
+        self.btn_refix.clicked.connect(self._refix)
+        self.btn_confirm_row = PushButton("确认")
         self.btn_confirm_row.clicked.connect(self._confirm_row)
-        left = QHBoxLayout()
-        left.setSpacing(8)
-        left.addWidget(self.btn_edit)
-        left.addWidget(self.btn_refix)
-        left.addWidget(self.btn_skiprow)
-        ab.addLayout(left)
-        ab.addStretch(1)
+        self.btn_edit = PushButton("编辑")
+        self.btn_edit.clicked.connect(self._enter_edit_mode)
+        self.btn_skiprow = PushButton("跳过此行")
+        self.btn_skiprow.clicked.connect(self._skip_row)
         ab.addWidget(self.btn_save)
+        ab.addWidget(self.btn_refix)
         ab.addWidget(self.btn_confirm_row)
+        ab.addWidget(self.btn_edit)
+        ab.addWidget(self.btn_skiprow)
+        ab.addStretch()
         rv.addLayout(ab)
-
-        outer.addWidget(self.right_body, 1)
-
-        # 折叠态细轨：竖排「详情」+ 箭头，点击展开（child of right，铺满 36px）
-        self.right_rail = _Rail("详情", self.expand, self.right)
-        self.right_rail.setFixedWidth(self._rail_w)
-        self.right_rail.setVisible(False)
-        self.right.set_rail(self.right_rail)
 
     # ------------------------------------------------------------------ #
     # 行模型
@@ -922,39 +585,12 @@ class UnifiedImportDialog(QWidget):
     def _load_right(self) -> None:
         r = self._current_row()
         if r is None:
-            self.lbl_header_status.setText("—")
-            self.lbl_header_no.setText("—")
-            self.lbl_header_buyer.setText("—")
-            self.lbl_header_amt.setText("—")
-            self.lbl_header_status.setStyleSheet("")
             self.fix_panel.set_problem(None)
             self.fix_panel.setVisible(False)
             self._set_actions()
             return
-
-        # 头部卡：状态 + 发票号 + 购方 + 金额
-        self.lbl_header_status.setText(r["status"])
-        self.lbl_header_no.setText(self._row_field(r, "no"))
-        self.lbl_header_buyer.setText(self._row_field(r, "buyer"))
-        self.lbl_header_amt.setText(self._row_field(r, "amt"))
-        status_color = {"待确认": AMBER, "高置信": GREEN, "已跳过": GRAY}.get(
-            r["status"], GRAY)
-        self.lbl_header_status.setStyleSheet(
-            f"color:{status_color.name()}; font-size:{scale.px(12)}px; font-weight:600;")
-
-        for key in ("src", "no", "buyer", "amt", "receipt", "remark"):
+        for key in ("src", "no", "buyer", "amt", "receipt", "remark", "reason"):
             self._info[key].setText(self._row_field(r, key))
-
-        # 问题块：仅显示原始问题文本，不附加任何"建议"类系统文案
-        reason = self._row_field(r, "reason")
-        is_issue = bool(reason) and not reason.startswith("✓") and reason != "—"
-        self.lbl_issue.setText(reason or "—")
-        self.lbl_issue.setObjectName("issueBody" if is_issue else "issueBodyOk")
-        self.issue_block.setObjectName("issueWarn" if is_issue else "issueOk")
-        self.lbl_issue.style().unpolish(self.lbl_issue)
-        self.lbl_issue.style().polish(self.lbl_issue)
-        self.issue_block.style().unpolish(self.issue_block)
-        self.issue_block.style().polish(self.issue_block)
 
         if r["kind"] == "invoice":
             # 所有发票行（高/低/已修正）均在右侧就地编辑（方案 A：统一右栏）
@@ -982,16 +618,6 @@ class UnifiedImportDialog(QWidget):
         self.btn_refix.setVisible(refix)
         self.btn_confirm_row.setVisible(confirm)
         self.btn_edit.setVisible(edit)
-        # 同一时刻至多一个主行动（accent 高亮），其余为次级
-        primary = (self.btn_confirm_row if confirm
-                   else self.btn_save if save
-                   else self.btn_edit if edit else None)
-        for btn in (self.btn_save, self.btn_refix, self.btn_skiprow,
-                    self.btn_confirm_row, self.btn_edit):
-            is_primary = btn is primary
-            btn.setObjectName("actionPrimary" if is_primary else "actionSecondary")
-            btn.style().unpolish(btn)
-            btn.style().polish(btn)
 
     def _show_source(self) -> None:
         r = self._current_row()
@@ -1021,11 +647,6 @@ class UnifiedImportDialog(QWidget):
         row = self._rows and self._current_row()
         if row is None:
             return
-        # 双击会先触发两次 cellClicked 的同行 toggle，可能把面板折回去；
-        # 双击的语义是「看原始行」，结束时保持右栏展开。
-        if self._collapsed:
-            self.expand()
-        self._open_row_id = id(row)
         self._show_source()
 
     def _save_fix(self) -> None:

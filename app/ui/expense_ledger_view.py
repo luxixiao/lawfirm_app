@@ -21,7 +21,7 @@ from app.ui.audit_view import AuditView
 from app.ui.column_layout import install_column_layout
 from app.ui.table_features import install_accent_header
 from app.ui.table_view import month_options_1_12, build_period
-from app.ui.widgets import CaptionLabel, page_header
+from app.ui.widgets import CaptionLabel, SubtitleLabel
 
 # 显示列（顺序 = 源文件列序，尾部附系统字段）
 _HEADERS = ["账期", "序号", "时间", "名称", "专票号码", "经手人", "经办人",
@@ -67,8 +67,11 @@ class ExpenseLedgerView(QWidget):
         lay.setContentsMargins(28, 24, 28, 20)
         lay.setSpacing(12)
 
-        lay.addWidget(page_header("费用台账", "查看费用台账源文件的全部内容（逐行 1:1）。"
-                         "支持账期/类型筛选、搜索、右键表头排序与按列筛选；右击行可编辑或查看修改记录。"))
+        t = SubtitleLabel("费用台账")
+        lay.addWidget(t)
+        h = CaptionLabel("查看费用台账源文件的全部内容（逐行 1:1）。"
+                         "支持账期/类型筛选、搜索、右键表头排序与按列筛选；右击行可编辑或查看修改记录。")
+        lay.addWidget(h)
 
         # ---- 筛选条 ----
         bar = QHBoxLayout()

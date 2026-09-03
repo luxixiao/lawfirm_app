@@ -11,12 +11,10 @@ from PySide6.QtCore import QDate, Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QDateEdit, QDialog, QDialogButtonBox, QDoubleSpinBox, QFormLayout, QHBoxLayout,
-    QLabel, QMenu, QMessageBox, QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
+    QLabel, QMenu, QMessageBox, QPushButton, QTabWidget, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
-from app.ui.widgets import (
-    HeaderTabs, PageHeaderBar, PrimaryPushButton, PushButton, apply_page_layout,
-)
+from app.ui.widgets import (SubtitleLabel, CaptionLabel, PrimaryPushButton, PushButton)
 from app.db import get_conn
 from app.engine.refund import evaluate_red_invoices, confirmed_refunds
 
@@ -36,21 +34,17 @@ DONE_HEADERS = ["红字发票日期", "红字发票号码", "原票日期", "原
 
 
 class RefundView(QWidget):
-    _TAB_HELP = {
-        0: "需退款但尚未（完全）确认的红字发票（原票以前月份且已收款）；含部分退款后的剩余应退。",
-        1: "已确认退款明细（红字发票日期/号码、原票日期/号码、经办人、退款金额、退款日期）；右击可修改退款金额与日期。",
-    }
-
     def __init__(self) -> None:
         super().__init__()
         lay = QVBoxLayout(self)
-        apply_page_layout(lay)
+        lay.setContentsMargins(24, 20, 24, 20)
+        lay.setSpacing(10)
 
-        # ---- 页头（tab 条 + ?）----
-        self.tabs = HeaderTabs()
-        self._header = PageHeaderBar()
-        self._help = self._header.set_tabs(self.tabs, self._TAB_HELP)
-        lay.addWidget(self._header)
+        t = SubtitleLabel("退款")
+        lay.addWidget(t)
+        h = QLabel("红字发票退款确认。分为「待确认」（需退款未确认）与「已确认」（已确认退款明细）；"
+                   "手动填写退款金额与日期，可多次确认（部分退款）。")
+        lay.addWidget(h)
 
         # ---- 待补录警告横幅 ----
         self.banner = QWidget()
@@ -84,6 +78,7 @@ class RefundView(QWidget):
         lay.addLayout(btns)
 
         # ---- 双子页 ----
+        self.tabs = QTabWidget()
         self.tab_pending = QTableWidget(0, len(PENDING_HEADERS))
         self.tab_pending.setHorizontalHeaderLabels(PENDING_HEADERS)
         self._setup_table(self.tab_pending, "pending")
@@ -95,7 +90,7 @@ class RefundView(QWidget):
         self.tab_done.customContextMenuRequested.connect(self._on_done_menu)
         self.tabs.addTab(self.tab_pending, "待确认")
         self.tabs.addTab(self.tab_done, "已确认")
-        lay.addWidget(self.tabs.stack, 1)
+        lay.addWidget(self.tabs, 1)
 
         self.refresh()
 

@@ -13,7 +13,7 @@ from datetime import datetime
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout, QHBoxLayout,
-    QInputDialog, QLabel, QLineEdit, QMessageBox, QPushButton,
+    QInputDialog, QLabel, QLineEdit, QMessageBox, QPushButton, QTabWidget,
     QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
@@ -24,30 +24,28 @@ from app.ui import scale
 from app.ui.column_layout import install_column_layout
 from app.ui.table_features import install_common_features, install_header_filter
 from app.ui.widgets import (
-    CaptionLabel, HeaderTabs, PageHeaderBar, PrimaryPushButton, PushButton,
-    apply_page_layout,
+    CaptionLabel, PrimaryPushButton, PushButton, SubtitleLabel,
 )
 
 
 class StaffView(QWidget):
-    _TAB_HELP = {
-        0: "职工花名册（基础数据）：导入/手动添加/修改/删除/停用启用；删除前校验业务引用，有引用则禁止删除并提示改用停用。台账导入时校验经办人是否在此名单中。",
-        1: "自定义员工类型。合伙/聘用/兼职为内置结算类型：禁止删除与改名（改名会断结算口径），说明可改；自定义类型可自由增删改名。仅合伙/聘用/兼职参与业务收入计算。",
-    }
-
     def __init__(self) -> None:
         super().__init__()
         lay = QVBoxLayout(self)
-        apply_page_layout(lay)
+        lay.setContentsMargins(24, 20, 24, 20)
+        lay.setSpacing(12)
 
-        self.tabs = HeaderTabs()
+        lay.addWidget(SubtitleLabel("员工管理"))
+        hint = QLabel("职工花名册（基础数据）：台账导入时校验经办人是否在此名单中。"
+                      "类型中只有「合伙 / 聘用 / 兼职」参与业务收入计算。")
+        hint.setObjectName("pageHint")
+        lay.addWidget(hint)
+
+        self.tabs = QTabWidget()
         self.tabs.addTab(self._build_staff_tab(), "员工名单")
         self.tabs.addTab(self._build_type_tab(), "员工类型")
-        self._header = PageHeaderBar()
-        self._help = self._header.set_tabs(self.tabs, self._TAB_HELP)
         self.tabs.currentChanged.connect(self._on_tab_changed)
-        lay.addWidget(self._header)
-        lay.addWidget(self.tabs.stack, 1)
+        lay.addWidget(self.tabs, 1)
 
         self.refresh()
 
@@ -136,8 +134,7 @@ class StaffView(QWidget):
         super().showEvent(event)
         self.refresh()
 
-    def _on_tab_changed(self, idx: int) -> None:
-        # ? 说明已由 PageHeaderBar 按 tab 切换，这里只刷新数据
+    def _on_tab_changed(self, _idx: int) -> None:
         self.refresh()
 
     def refresh(self) -> None:
