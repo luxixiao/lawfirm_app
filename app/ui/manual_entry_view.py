@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (
 
 from app.db import get_conn
 from app.ui import scale
-from app.ui.widgets import SubtitleLabel, CaptionLabel, PrimaryPushButton, PushButton
+from app.ui.widgets import CaptionLabel, SubtitleLabel, page_header, PrimaryPushButton, PushButton
 from app.ui.column_layout import install_column_layout
 from app.engine.backfill_module import (
     list_pending_backfill, list_backfilled, load_invoice_detail,
@@ -33,12 +33,8 @@ class ManualEntryView(QWidget):
         lay.setContentsMargins(24, 20, 24, 20)
         lay.setSpacing(10)
 
-        t = SubtitleLabel("发票补录")
-        lay.addWidget(t)
-        h = QLabel("补录期初/历史应收的原始发票信息（红字原票缺失或应收对应发票缺失）。"
-                   "补录数据与导入数据同模型计算，不影响其他页面。")
-        h.setWordWrap(True)
-        lay.addWidget(h)
+        lay.addWidget(page_header("发票补录", "补录期初/历史应收的原始发票信息（红字原票缺失或应收对应发票缺失）。"
+                   "补录数据与导入数据同模型计算，不影响其他页面。"))
 
         self.tabs = QTabWidget()
         self.tab_pending = self._make_table(

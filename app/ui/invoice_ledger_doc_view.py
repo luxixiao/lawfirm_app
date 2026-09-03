@@ -23,7 +23,7 @@ from app.ui.audit_view import AuditView
 from app.ui.column_layout import install_column_layout
 from app.ui.table_features import install_accent_header
 from app.ui.table_view import month_options_1_12, build_period
-from app.ui.widgets import CaptionLabel, PushButton, SubtitleLabel
+from app.ui.widgets import CaptionLabel, PushButton, page_header
 
 # 显示列定义：(表头, 取值函数)
 def _date_of(r: dict) -> str:
@@ -58,12 +58,9 @@ class InvoiceLedgerDocView(QWidget):
         lay.setContentsMargins(28, 24, 28, 20)
         lay.setSpacing(12)
 
-        t = SubtitleLabel("发票台账")
-        lay.addWidget(t)
-        h = CaptionLabel("数据来源：发票台账文档（最新一次导入），逐 sheet 逐行镜像；只读查看，可搜索/排序/筛选。"
+        lay.addWidget(page_header("发票台账", "数据来源：发票台账文档（最新一次导入），逐 sheet 逐行镜像；只读查看，可搜索/排序/筛选。"
                          "如需修改数据请前往「数据导入 → 导入复核」页（导入前确认 / 导入后回写，全程留痕）；"
-                         "右击可查看修改记录。")
-        lay.addWidget(h)
+                         "右击可查看修改记录。"))
 
         # 筛选条
         bar = QHBoxLayout()

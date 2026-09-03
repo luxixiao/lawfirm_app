@@ -30,7 +30,7 @@ from app.ui.table_features import (
     install_accent_header, install_common_features, install_header_filter,
 )
 from app.ui.table_view import month_options_1_12, build_period
-from app.ui.widgets import CaptionLabel, SubtitleLabel
+from app.ui.widgets import CaptionLabel, page_header
 
 # 编辑弹窗字段中文名
 FIELD_LABELS = {
@@ -258,8 +258,7 @@ class SalaryLedgerView(QWidget):
         lay.setContentsMargins(28, 24, 28, 20)
         lay.setSpacing(12)
 
-        lay.addWidget(SubtitleLabel("工资表"))
-        lay.addWidget(CaptionLabel(
+        lay.addWidget(page_header("工资表",
             "数据来源：工资文档（最新一次导入），逐 sheet 逐行镜像、保留所有原始列；"
             "账期以文件名为准。按 sheet 分标签展示，顶部年月/搜索对所有标签生效。"
         ))
