@@ -8,8 +8,19 @@
 """
 from __future__ import annotations
 
-from PySide6.QtCore import QRect, Qt
-from PySide6.QtGui import QColor, QPainter, QPen, QPalette
+from html import escape
+
+from PySide6.QtCore import (
+    Property,
+    QParallelAnimationGroup,
+    QRect,
+    QRectF,
+    Qt,
+    QPropertyAnimation,
+    QEasingCurve,
+    QTimer,
+)
+from PySide6.QtGui import QColor, QCursor, QFont, QPainter, QPen, QPalette
 from PySide6.QtWidgets import (
     QLabel,
     QPushButton,
@@ -18,7 +29,13 @@ from PySide6.QtWidgets import (
     QStyle,
     QStyleOptionViewItem,
     QTableWidget,
+    QGraphicsOpacityEffect,
+    QHBoxLayout,
+    QWidget,
 )
+
+from app.ui import scale, style
+from app.ui.sidebar import _dur, _curve, _mix
 
 
 class SubtitleLabel(QLabel):
@@ -174,3 +191,260 @@ class FrozenTableWidget(QTableWidget):
                 self.setCurrentCell(r, 0)
                 return
         super().mousePressEvent(event)
+
+
+# ===========================================================================
+# 页头帮助图标 + 悬浮说明卡
+#
+# 设计（见 design 决策记录）：
+# - 图标 A 静默圆点：24×24 透明命中区，正中 14px 正圆、1px 发丝描边、无底色；
+#   静止描边 border + 字符 text_mute，hover 描边 border_2 + 字符 text（仅颜色过渡）。
+# - 无说明文字时整枚图标隐藏。
+# - 悬浮卡 420px 极简：底 bg_table、描边 border_2、圆角 8、正文 12px 行高 1.6、色 text；
+#   无箭头、无顶部 accent 线；文字可选中复制；鼠标离图标（且不在卡上）才关。
+# - 进场 180ms 延迟防误触；opacity 0→1 + y +6→0（help_in 220ms OutQuart）；
+#   退场纯淡出（help_out 120ms OutCubic）；reduced-motion 下均瞬时落位。
+# - 动效单一真源在 sidebar.MOTION（help_in / help_out），复用 reduced-motion 开关。
+# ===========================================================================
+class HelpTip(QLabel):
+    """悬浮说明卡本体：纯展示，显隐与定位由 HelpIcon 调度。"""
+
+    def __init__(self, text: str, parent=None) -> None:
+        super().__init__(text, parent)
+        self.setObjectName("pageHelpTip")
+        # ToolTip 窗口：无任务栏条目、不抢焦点、置顶；Frameless 确保只显示自绘边框
+        self.setWindowFlags(Qt.WindowType.ToolTip | Qt.WindowType.FramelessWindowHint)
+        self.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.setWordWrap(True)
+        self.setMaximumWidth(scale.px(420))
+        # 用 QWidget 边距承载内边距（QSS padding 不计入 sizeHint，会裁内容）
+        self.setContentsMargins(scale.px(12), scale.px(12), scale.px(16), scale.px(16))
+        self._eff = QGraphicsOpacityEffect(self)
+        self.setGraphicsEffect(self._eff)
+        self._icon = None
+        self._text = text
+        self._target_x = 0
+        self._target_y = 0
+        self._slide = 0
+        self._show_anim = None
+        self._hide_anim = None
+        self._set_rich(text)
+
+    def _set_rich(self, text: str) -> None:
+        # 先关 wordWrap 量出自然宽度，再按 maxWidth 折行定稿（避免长文本撑出屏幕）
+        self.setWordWrap(False)
+        self.setText(f'<p style="line-height:160%;margin:0;color:inherit">{escape(text)}</p>')
+        self.adjustSize()
+        w = min(self.width(), scale.px(420))
+        self.setWordWrap(True)
+        self.setFixedWidth(w)
+        self.adjustSize()
+
+    def _get_slide(self) -> int:
+        return self._slide
+
+    def _set_slide(self, v: int) -> None:
+        self._slide = int(v)
+        self.move(self._target_x, self._target_y + self._slide)
+
+    slide = Property(int, _get_slide, _set_slide)
+
+    def enterEvent(self, event) -> None:  # noqa: N802
+        if self._icon is not None:
+            self._icon.on_tip_enter()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event) -> None:  # noqa: N802
+        if self._icon is not None:
+            self._icon.on_tip_leave()
+        super().leaveEvent(event)
+
+
+class HelpIcon(QLabel):
+    """页头「?」帮助图标：悬停 180ms 后弹出说明卡；无说明则整枚隐藏。"""
+
+    def __init__(self, text: str = "", parent=None) -> None:
+        super().__init__(parent)
+        self.setObjectName("helpIcon")
+        self.setFixedSize(scale.px(24), scale.px(24))
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setMouseTracking(True)
+        self._hover = 0.0
+        self._text = text or ""
+        self._tip: HelpTip | None = None
+        self._anim_hover = None
+        self._show_timer = QTimer(self)
+        self._show_timer.setSingleShot(True)
+        self._show_timer.timeout.connect(self._on_show_timeout)
+        self._hide_timer = QTimer(self)
+        self._hide_timer.setSingleShot(True)
+        self._hide_timer.timeout.connect(self._on_hide_timeout)
+        if not self._text:
+            self.hide()
+
+    # -- hover 颜色过渡属性 --
+    def _get_hover(self) -> float:
+        return self._hover
+
+    def _set_hover(self, v: float) -> None:
+        self._hover = v
+        self.update()
+
+    hoverProgress = Property(float, _get_hover, _set_hover)
+
+    def _run_hover(self, end: float) -> None:
+        if self._anim_hover is not None:
+            self._anim_hover.stop()
+        a = QPropertyAnimation(self, b"hoverProgress", self)
+        a.setDuration(_dur("hover"))
+        a.setEasingCurve(_curve("hover"))
+        a.setStartValue(self._hover)
+        a.setEndValue(end)
+        self._anim_hover = a
+        a.start()
+
+    # -- 显隐调度（被 HelpTip 回传） --
+    def on_tip_enter(self) -> None:
+        self._hide_timer.stop()
+
+    def on_tip_leave(self) -> None:
+        self._hide_timer.start(80)
+
+    def enterEvent(self, event) -> None:  # noqa: N802
+        if self._text:
+            self._run_hover(1.0)
+            self._hide_timer.stop()
+            self._show_timer.start(180)
+        super().enterEvent(event)
+
+    def leaveEvent(self, event) -> None:  # noqa: N802
+        if self._text:
+            self._run_hover(0.0)
+            self._show_timer.stop()
+            if self._tip is not None and self._tip.isVisible():
+                gp = self._tip.mapFromGlobal(QCursor.pos())
+                if not self._tip.rect().contains(gp):
+                    self._hide_timer.start(80)
+        super().leaveEvent(event)
+
+    def _on_show_timeout(self) -> None:
+        if self._tip is None:
+            self._tip = HelpTip(self._text)
+            self._tip._icon = self
+        self._show_tip()
+
+    def _on_hide_timeout(self) -> None:
+        self._hide_tip()
+
+    def _position_tip(self) -> None:
+        anchor_bl = self.mapToGlobal(self.rect().bottomLeft())
+        tip = self._tip
+        x = anchor_bl.x()
+        y = anchor_bl.y() + scale.px(6)
+        screen = self.screen()
+        if screen is not None:
+            sr = screen.availableGeometry()
+            pad = scale.px(12)
+            w = tip.width()
+            h = tip.height()
+            # 右越界 → 左移（右留 12px）
+            if x + w > sr.right() - pad:
+                x = sr.right() - pad - w
+            if x < sr.left() + pad:
+                x = sr.left() + pad
+            # 下越界 → 翻到图标上方
+            if y + h > sr.bottom() - pad:
+                anchor_tl = self.mapToGlobal(self.rect().topLeft())
+                y = anchor_tl.y() - scale.px(6) - h
+        tip._target_x = x
+        tip._target_y = y
+
+    def _show_tip(self) -> None:
+        tip = self._tip
+        if tip._hide_anim is not None:
+            tip._hide_anim.stop()
+            tip._hide_anim = None
+        self._position_tip()
+        tip.setVisible(True)
+        tip._eff.setOpacity(0.0)
+        tip._slide = 6
+        tip.move(tip._target_x, tip._target_y + 6)
+        dur = _dur("help_in")
+        a1 = QPropertyAnimation(tip._eff, b"opacity", tip)
+        a1.setDuration(dur)
+        a1.setEasingCurve(_curve("help_in"))
+        a1.setStartValue(0.0)
+        a1.setEndValue(1.0)
+        a2 = QPropertyAnimation(tip, b"slide", tip)
+        a2.setDuration(dur)
+        a2.setEasingCurve(_curve("help_in"))
+        a2.setStartValue(6)
+        a2.setEndValue(0)
+        grp = QParallelAnimationGroup(tip)
+        grp.addAnimation(a1)
+        grp.addAnimation(a2)
+        tip._show_anim = grp
+        grp.start()
+
+    def _hide_tip(self) -> None:
+        tip = self._tip
+        if tip is None or not tip.isVisible():
+            return
+        if tip._show_anim is not None:
+            tip._show_anim.stop()
+            tip._show_anim = None
+        a = QPropertyAnimation(tip._eff, b"opacity", tip)
+        a.setDuration(_dur("help_out"))
+        a.setEasingCurve(_curve("help_out"))
+        a.setStartValue(tip._eff.opacity())
+        a.setEndValue(0.0)
+        a.finished.connect(tip.hide)
+        tip._hide_anim = a
+        a.start()
+
+    # -- 自绘：14px 圆 + ? --
+    def paintEvent(self, event) -> None:  # noqa: N802
+        if not self._text:
+            return
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        pal = style.palette()
+        d = scale.px(14)
+        off = (self.width() - d) / 2.0
+        rect = QRectF(off, off, d, d)
+        stroke = _mix(QColor(pal["border"]), QColor(pal["border_2"]), self._hover)
+        char_col = _mix(QColor(pal["text_mute"]), QColor(pal["text"]), self._hover)
+        pen = QPen(stroke)
+        pen.setWidthF(1.0)
+        p.setPen(pen)
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawEllipse(rect)
+        p.setPen(char_col)
+        font = p.font()
+        font.setPixelSize(scale.px(11))
+        font.setWeight(QFont.Weight.Medium)
+        p.setFont(font)
+        p.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "?")
+        p.end()
+
+
+class PageHeader(QWidget):
+    """页头一行：[标题 | ?图标 | 弹性留白]；说明收进 ? 的悬浮卡。"""
+
+    def __init__(self, title: str, help_text: str = "", parent=None) -> None:
+        super().__init__(parent)
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(scale.px(8))
+        lay.addWidget(SubtitleLabel(title))
+        self._icon = HelpIcon(help_text)
+        lay.addWidget(self._icon)
+        lay.addStretch(1)
+
+    def help_icon(self) -> HelpIcon:
+        return self._icon
+
+
+def page_header(title: str, help_text: str = "") -> PageHeader:
+    """工厂：生成带 ? 帮助图标的页头。无 help_text 时图标自动隐藏。"""
+    return PageHeader(title, help_text)

@@ -148,6 +148,18 @@ QLabel#cellTip {{
 #pageHint  {{ color: {p['text_mute']}; font-size: {P(12)}; }}
 #placeholder {{ color: {p['text_faint']}; font-size: {P(14)}; padding: {P(40)}; }}
 
+/* ===== 页头帮助图标 + 悬浮说明卡 ===== */
+/* 图标自绘（见 widgets.HelpIcon），此处仅确保无默认底色干扰 */
+#helpIcon {{ background: transparent; }}
+/* 悬浮卡：底 bg_table / 描边 border_2 / 圆角 8 / 正文 12px；内边距由 QWidget 边距承载 */
+#pageHelpTip {{
+    background: {p['bg_table']};
+    border: 1px solid {p['border_2']};
+    border-radius: {P(8)};
+    color: {p['text']};
+    font-size: {P(12)};
+}}
+
 /* ===== 按钮 ===== */
 QPushButton {{
     background: {p['btn_bg']}; border: 1px solid {p['btn_border']};

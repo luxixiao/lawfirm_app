@@ -54,6 +54,9 @@ MOTION = {
     "rail_out": (180, QEasingCurve.Type.OutCubic),
     "chevron": (180, QEasingCurve.Type.OutCubic),
     "label": (120, QEasingCurve.Type.OutCubic),
+    # 悬浮说明卡：进场 opacity 0→1 + y +6→0；退场纯淡出（≈进场 55%，偏快）
+    "help_in": (220, QEasingCurve.Type.OutQuart),
+    "help_out": (120, QEasingCurve.Type.OutCubic),
 }
 
 

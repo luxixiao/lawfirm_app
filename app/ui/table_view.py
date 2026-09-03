@@ -47,12 +47,8 @@ class BaseTableView(QWidget):
         lay.setContentsMargins(28, 24, 28, 20)
         lay.setSpacing(12)
 
-        from app.ui.widgets import SubtitleLabel, CaptionLabel
-        t = SubtitleLabel(title)
-        lay.addWidget(t)
-        if hint:
-            h = CaptionLabel(hint)
-            lay.addWidget(h)
+        from app.ui.widgets import page_header, CaptionLabel
+        lay.addWidget(page_header(title, hint))
 
         # 筛选栏
         self.filters = QHBoxLayout()
