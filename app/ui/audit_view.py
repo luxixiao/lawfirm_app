@@ -20,7 +20,7 @@ from app.engine.change_log import (
 )
 from app.ui.column_layout import install_column_layout
 from app.ui.table_features import install_accent_header
-from app.ui.widgets import CaptionLabel, PushButton
+from app.ui.widgets import CaptionLabel, PushButton, page_header
 
 
 class AuditView(QWidget):
@@ -46,6 +46,17 @@ class AuditView(QWidget):
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(10)
+
+        # ---- 页头：标题 + ? 帮助图标 ----
+        hdr = QWidget()
+        hdr_lay = QHBoxLayout(hdr)
+        hdr_lay.setContentsMargins(0, 14, 0, 0)
+        hdr_lay.setSpacing(8)
+        hdr_lay.addWidget(page_header(
+            "修改记录",
+            "系统所有数据修改的留痕中心。可按表、记录 ID、关键字筛选，查看每笔改动的字段、旧值/新值与备注。"
+            "右击业务表行「查看修改记录」会自动定位到该行历史。"))
+        lay.addWidget(hdr)
 
         # 筛选条
         bar = QHBoxLayout()
