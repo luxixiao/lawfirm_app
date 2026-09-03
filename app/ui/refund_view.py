@@ -14,7 +14,7 @@ from PySide6.QtWidgets import (
     QLabel, QMenu, QMessageBox, QPushButton, QTabWidget, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
-from app.ui.widgets import (SubtitleLabel, CaptionLabel, PrimaryPushButton, PushButton)
+from app.ui.widgets import (page_header, PrimaryPushButton, PushButton)
 from app.db import get_conn
 from app.engine.refund import evaluate_red_invoices, confirmed_refunds
 
@@ -40,11 +40,8 @@ class RefundView(QWidget):
         lay.setContentsMargins(24, 20, 24, 20)
         lay.setSpacing(10)
 
-        t = SubtitleLabel("退款")
-        lay.addWidget(t)
-        h = QLabel("红字发票退款确认。分为「待确认」（需退款未确认）与「已确认」（已确认退款明细）；"
-                   "手动填写退款金额与日期，可多次确认（部分退款）。")
-        lay.addWidget(h)
+        lay.addWidget(page_header("退款", "红字发票退款确认。分为「待确认」（需退款未确认）与「已确认」（已确认退款明细）；"
+                   "手动填写退款金额与日期，可多次确认（部分退款）。"))
 
         # ---- 待补录警告横幅 ----
         self.banner = QWidget()
