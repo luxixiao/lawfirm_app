@@ -565,3 +565,49 @@ def apply_page_layout(lay) -> None:
     """页面顶层布局归一：左右 24 / 上下 16 / 间距 12（全部走 scale.px）。"""
     lay.setContentsMargins(scale.px(24), scale.px(16), scale.px(24), scale.px(16))
     lay.setSpacing(scale.px(12))
+
+
+# ===========================================================================
+# 页面切换动画（整页淡入）
+# ---------------------------------------------------------------------------
+# 与侧栏共用动效单一真源：sidebar.MOTION["page_in"]（200ms OutQuart）+
+# style.motion_enabled() 开关（关动效时直接落位，不做任何效果）。
+# 实现要点：
+#   - 只做 opacity 0→1，不做位移——QStackedWidget 的几何由布局接管，动 pos 会打架
+#   - QGraphicsEffect 同一时刻只能挂一层（见 HelpTip 的先例）→ 单飞：
+#     新动画启动前先清掉上一次的 effect 与动画
+#   - 动画结束立即移除 effect，避免常驻滤镜拖累表格渲染性能
+# ===========================================================================
+_fade = {"anim": None, "widget": None}
+
+
+def animate_page_in(widget) -> None:
+    """页面切入淡入：opacity 0→1。供 main_window.select() 在切页时调用。"""
+    if not style.motion_enabled():
+        return
+    if _fade["anim"] is not None:
+        _fade["anim"].stop()
+        _fade["anim"] = None
+    if _fade["widget"] is not None:
+        _fade["widget"].setGraphicsEffect(None)
+        _fade["widget"] = None
+
+    eff = QGraphicsOpacityEffect(widget)
+    eff.setOpacity(0.0)
+    widget.setGraphicsEffect(eff)
+
+    def _cleanup() -> None:
+        if _fade["widget"] is widget:
+            widget.setGraphicsEffect(None)
+            _fade["widget"] = None
+        _fade["anim"] = None
+
+    a = QPropertyAnimation(eff, b"opacity", widget)
+    a.setStartValue(0.0)
+    a.setEndValue(1.0)
+    a.setDuration(_dur("page_in"))
+    a.setEasingCurve(_curve("page_in"))
+    a.finished.connect(_cleanup)
+    a.start()
+    _fade["anim"] = a
+    _fade["widget"] = widget
