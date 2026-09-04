@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (
 
 from app.db import get_conn
 from app.ui import scale
-from app.ui.widgets import SubtitleLabel, CaptionLabel, PrimaryPushButton, PushButton
+from app.ui.widgets import SubtitleLabel, CaptionLabel, PrimaryPushButton, PushButton, tab_help_corner
 from app.ui.column_layout import install_column_layout
 from app.engine.backfill_module import (
     list_pending_backfill, list_backfilled, load_invoice_detail,
@@ -33,11 +33,6 @@ class ManualEntryView(QWidget):
         lay.setContentsMargins(24, 20, 24, 20)
         lay.setSpacing(10)
 
-        h = QLabel("补录期初/历史应收的原始发票信息（红字原票缺失或应收对应发票缺失）。"
-                   "补录数据与导入数据同模型计算，不影响其他页面。")
-        h.setWordWrap(True)
-        lay.addWidget(h)
-
         self.tabs = QTabWidget()
         self.tabs.tabBar().setObjectName("pageTitleBar")
         self.tab_pending = self._make_table(
@@ -46,6 +41,10 @@ class ManualEntryView(QWidget):
             ["开票日期", "发票号码", "对方", "价税合计", "状态", "收款金额", "补录时间", "操作"], "done")
         self.tabs.addTab(self.tab_pending, "待补录发票")
         self.tabs.addTab(self.tab_done, "已补录发票")
+        self.tabs.setCornerWidget(tab_help_corner(
+            "补录期初/历史应收的原始发票信息（红字原票缺失或应收对应发票缺失）。"
+            "补录数据与导入数据同模型计算，不影响其他页面。"
+        ), Qt.Corner.TopRightCorner)
         lay.addWidget(self.tabs, 1)
 
         # 已补录页操作按钮

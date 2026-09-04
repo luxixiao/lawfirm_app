@@ -24,7 +24,7 @@ from app.ui import scale
 from app.ui.column_layout import install_column_layout
 from app.ui.table_features import install_common_features, install_header_filter
 from app.ui.widgets import (
-    CaptionLabel, PrimaryPushButton, PushButton,
+    CaptionLabel, PrimaryPushButton, PushButton, tab_help_corner,
 )
 
 
@@ -35,16 +35,15 @@ class StaffView(QWidget):
         lay.setContentsMargins(24, 20, 24, 20)
         lay.setSpacing(12)
 
-        hint = QLabel("职工花名册（基础数据）：台账导入时校验经办人是否在此名单中。"
-                      "类型中只有「合伙 / 聘用 / 兼职」参与业务收入计算。")
-        hint.setObjectName("pageHint")
-        lay.addWidget(hint)
-
         self.tabs = QTabWidget()
         self.tabs.tabBar().setObjectName("pageTitleBar")
         self.tabs.addTab(self._build_staff_tab(), "员工名单")
         self.tabs.addTab(self._build_type_tab(), "员工类型")
         self.tabs.currentChanged.connect(self._on_tab_changed)
+        self.tabs.setCornerWidget(tab_help_corner(
+            "职工花名册（基础数据）：台账导入时校验经办人是否在此名单中。"
+            "类型中只有「合伙 / 聘用 / 兼职」参与业务收入计算。"
+        ), Qt.Corner.TopRightCorner)
         lay.addWidget(self.tabs, 1)
 
         self.refresh()

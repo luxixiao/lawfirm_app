@@ -13,7 +13,9 @@ from PySide6.QtWidgets import (
 
 from app.ui.column_layout import install_column_layout
 from app.ui.table_features import install_two_tier_header
-from app.ui.widgets import (CaptionLabel, FrozenTableWidget, PrimaryPushButton, PushButton)
+from app.ui.widgets import (
+    CaptionLabel, FrozenTableWidget, PrimaryPushButton, PushButton, tab_help_corner,
+)
 
 from app.engine.person_settlement import build_settlement
 from app.exporter.person_settlement_exporter import export_all, export_one
@@ -53,9 +55,6 @@ class SettlementView(QWidget):
         self._lay_p.setContentsMargins(8, 10, 8, 10)
         self._lay_p.setSpacing(12)
         lay = self._lay_p
-
-        h = CaptionLabel("选择经办人查看结算总表；可导出全部或指定经办人（支持多选）。口径：收款/开票/未收/业务收入/费用。")
-        lay.addWidget(h)
 
         # ---- 筛选栏（经办人 + 月份 + 年份）----
         bar = QHBoxLayout()
@@ -156,6 +155,10 @@ class SettlementView(QWidget):
         self.tabs.addTab(self._build_staff_income_tab(), "年度聘用结算表")
         self.tabs.addTab(self._build_invoice_income_tab(), "开票收入表")
         self.tabs.currentChanged.connect(self._on_tab_changed)
+        self.tabs.setCornerWidget(tab_help_corner(
+            "个人结算总表：选择经办人查看结算总表；可导出全部或指定经办人（支持多选）。"
+            "口径：收款/开票/未收/业务收入/费用。"
+        ), Qt.Corner.TopRightCorner)
 
     def _on_tab_changed(self, idx: int) -> None:
         if idx == 1:

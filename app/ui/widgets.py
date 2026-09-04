@@ -44,25 +44,31 @@ class CaptionLabel(QLabel):
 
 
 class HelpButton(QPushButton):
-    """「?」帮助按钮：鼠标进入立即弹说明气泡。
+    """「?」帮助按钮：悬停即时显示说明气泡（不闪烁）。
 
-    不依赖原生 tooltip 的 ~700ms 悬停延迟（真机上存在不触发的情况），
-    enterEvent 直接 QToolTip.showText，所见即所悬。
+    闪烁根因：enterEvent 手动 QToolTip.showText 与原生 tooltip 定时器双重
+    触发，气泡被隐藏再显示。改用 qfluentwidgets ToolTipFilter（showDelay=0
+    即时弹出，自绘气泡由过滤器统一管理显隐），原生 enterEvent 不再介入。
     """
 
     def __init__(self, parent=None) -> None:
         super().__init__("?", parent)
-        self._help_text = ""
+        from qfluentwidgets import ToolTipFilter
+        self.installEventFilter(ToolTipFilter(self, showDelay=0))
 
     def set_help_text(self, text: str) -> None:
-        self._help_text = text or ""
-        self.setToolTip(self._help_text)
+        self.setToolTip(text or "")
 
-    def enterEvent(self, event) -> None:  # noqa: N802
-        if self._help_text:
-            pos = self.mapToGlobal(QPoint(0, self.height() + _scale.px(6)))
-            QToolTip.showText(pos, self._help_text, self)
-        super().enterEvent(event)
+
+def tab_help_corner(text: str) -> QWidget:
+    """多 tab 页右上角「?」容器：说明收进 tooltip，放在 QTabWidget 栏位右侧。"""
+    w = QWidget()
+    lay = QHBoxLayout(w)
+    lay.setContentsMargins(0, _scale.px(10), _scale.px(12), 0)
+    hb = HelpButton()
+    hb.set_help_text(text)
+    lay.addWidget(hb)
+    return w
 
 
 class PageHeader(QWidget):
