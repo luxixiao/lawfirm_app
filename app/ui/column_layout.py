@@ -465,13 +465,18 @@ class TableColumnLayout(QObject):
             win.installEventFilter(self)
 
     def eventFilter(self, obj, event) -> bool:
+        # 与 _ensure_win 同因的兜底：shiboken 重包装导致 __init__ 未跑时，
+        # self.table 可能缺失，裸访问会在每次事件里刷 AttributeError。
+        table = getattr(self, "table", None)
+        if table is None:
+            return super().eventFilter(obj, event)
         self._ensure_win()  # 视图构造早于入窗，事件触发时再补绑窗口
-        if obj is self.table and event.type() == QEvent.Type.Resize:
-            if self.content_w is not None and self.table.columnCount():
+        if obj is table and event.type() == QEvent.Type.Resize:
+            if getattr(self, "content_w", None) is not None and table.columnCount():
                 self.apply(remeasure=False)
         elif obj is getattr(self, "_win", None) and event.type() == QEvent.Type.WindowStateChange:
             # 最大化/还原：延迟一帧，等布局稳定后再按比例重填（已显全列除外）
-            if self.content_w is not None and self.table.columnCount():
+            if getattr(self, "content_w", None) is not None and table.columnCount():
                 QTimer.singleShot(0, lambda: self.apply(remeasure=False))
         return super().eventFilter(obj, event)
 
