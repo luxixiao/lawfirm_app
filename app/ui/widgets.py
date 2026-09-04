@@ -43,9 +43,14 @@ class CaptionLabel(QLabel):
 
 
 class PageHeader(QWidget):
-    """单功能页统一页头：标题 + 可选说明 + 可选「?」帮助槽位。
+    """单功能页统一页头：标题 + 可选「?」（说明收进 ? 的 hover 提示）。
 
-    仅做结构与文案收敛；「?」气泡内容由独立的「? 帮助」任务注入（help_key 预留）。
+    说明（description）不再单独占一行可视文案，而是折进标题右侧「?」图标的
+    hover tooltip —— 常驻高度为 0，符合"不挤占内容空间"的要求；「?」的气泡
+    文案若由独立的「? 帮助」任务注入，则走 help_key 槽位。
+
+    外层不留边距：本组件是 SubtitleLabel / CaptionLabel 的 drop-in 替换，
+    外边距由宿主页面布局统一提供，避免与页面 padding 叠加导致标题多缩进。
     """
 
     def __init__(self, title: str, description: str = "", help_key: str | None = None, parent=None) -> None:
@@ -53,26 +58,24 @@ class PageHeader(QWidget):
         self.setObjectName("pageHeader")
         self._help_key = help_key
         root = QVBoxLayout(self)
-        root.setContentsMargins(_scale.px(24), _scale.px(16), _scale.px(24), _scale.px(16))
+        root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(_scale.px(4))
 
         top = QHBoxLayout()
         top.setSpacing(_scale.px(8))
         self.title_label = SubtitleLabel(title)
         top.addWidget(self.title_label)
-        if help_key:
+        # 「?」仅在有说明或帮助内容时出现；说明进 tooltip，不占常驻高度
+        if description or help_key:
             self.help_btn = QPushButton("?")
             self.help_btn.setObjectName("helpBtn")
             hs = _scale.px(20)
             self.help_btn.setFixedSize(hs, hs)
+            if description:
+                self.help_btn.setToolTip(description)
             top.addWidget(self.help_btn)
         top.addStretch(1)
         root.addLayout(top)
-
-        if description:
-            self.desc_label = CaptionLabel(description)
-            root.addWidget(self.desc_label)
-        # 说明与内容之间的 16px 间隙由本组件底部 margin 提供
 
 
 class PageHint(QLabel):
