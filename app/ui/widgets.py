@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.ui import scale as _scale
+from qfluentwidgets import ToolTipFilter, ToolTipPosition
 
 
 class SubtitleLabel(QLabel):
@@ -46,18 +47,30 @@ class CaptionLabel(QLabel):
 class HelpButton(QPushButton):
     """「?」帮助按钮：悬停即时显示说明气泡（不闪烁）。
 
-    闪烁根因：enterEvent 手动 QToolTip.showText 与原生 tooltip 定时器双重
-    触发，气泡被隐藏再显示。改用 qfluentwidgets ToolTipFilter（showDelay=0
-    即时弹出，自绘气泡由过滤器统一管理显隐），原生 enterEvent 不再介入。
+    - 气泡用 qfluentwidgets ToolTipFilter（showDelay=0 即时弹出，过滤器吞掉
+      原生 ToolTip 事件并统一显隐，无双触发闪烁）；位置在图标下方（BOTTOM）。
+    - 长文本折行：过滤器内部创建的 ToolTip 默认不换行，子类化 _createToolTip
+      开启 wordWrap 并限宽，过长说明自动多行显示；文本中的 \n 也生效。
     """
 
     def __init__(self, parent=None) -> None:
         super().__init__("?", parent)
-        from qfluentwidgets import ToolTipFilter
-        self.installEventFilter(ToolTipFilter(self, showDelay=0))
+        self.setObjectName("helpBtn")
+        self.installEventFilter(
+            _WrapToolTipFilter(self, showDelay=0, position=ToolTipPosition.BOTTOM))
 
     def set_help_text(self, text: str) -> None:
         self.setToolTip(text or "")
+
+
+class _WrapToolTipFilter(ToolTipFilter):
+    """ToolTipFilter 子类：气泡 label 开启自动换行并限宽（随字号档位缩放）。"""
+
+    def _createToolTip(self):
+        tip = super()._createToolTip()
+        tip.label.setWordWrap(True)
+        tip.label.setMaximumWidth(_scale.px(420))
+        return tip
 
 
 def tab_help_corner(text: str) -> QWidget:
@@ -102,7 +115,6 @@ class PageHeader(QWidget):
         # 「?」仅在有说明或帮助内容时出现；说明进 tooltip，不占常驻高度
         if description or help_key:
             self.help_btn = HelpButton()
-            self.help_btn.setObjectName("helpBtn")
             hs = _scale.px(20)
             self.help_btn.setFixedSize(hs, hs)
             if description:

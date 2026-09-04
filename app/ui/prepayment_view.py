@@ -156,7 +156,7 @@ class _OffsetDialog(QDialog):
         self._apply_filter()
 
 
-class PrepaymentView(QTabWidget):
+class PrepaymentView(QWidget):
     _PEND_KEYS = ["received_date", "buyer", "amount", "person_text", "case_no", "remark", "offset_total", "remain"]
     _PEND_NUMERIC = {2, 6, 7}
     _DONE_KEYS = ["p_buyer", "received_date", "p_amount", "invoice_no", "offset_amount", "offset_date", "remain"]
@@ -164,21 +164,26 @@ class PrepaymentView(QTabWidget):
 
     def __init__(self) -> None:
         super().__init__()
-        self.setDocumentMode(True)
-        self.tabBar().setObjectName("pageTitleBar")
-        self.setCornerWidget(tab_help_corner(
+        # 与「各类报表」页同构：QWidget 外层留边距 + 内嵌 QTabWidget（去 documentMode，避免顶部阴影）
+        root = QVBoxLayout(self)
+        root.setContentsMargins(20, 16, 20, 16)
+        root.setSpacing(0)
+        self.tabs = QTabWidget()
+        self.tabs.tabBar().setObjectName("pageTitleBar")
+        self.tabs.setCornerWidget(tab_help_corner(
             "【待核销】已入账未开票（sheet4）。选择预收款 → 核销到发票（可搜索对方/金额/经办人/案号）。"
             "核销只消耗预收款余额，不再重复记收款，不影响发票/收款/结算数据。\n"
             "【已核销】已做过核销的预收款及其冲抵明细。核销金额消耗预收款余额，不影响其它表。"
         ), Qt.Corner.TopRightCorner)
+        root.addWidget(self.tabs, 1)
 
         self.tab_pending = QWidget()
         self._build_pending()
-        self.addTab(self.tab_pending, "待核销预收款")
+        self.tabs.addTab(self.tab_pending, "待核销预收款")
 
         self.tab_done = QWidget()
         self._build_done()
-        self.addTab(self.tab_done, "已核销预收款")
+        self.tabs.addTab(self.tab_done, "已核销预收款")
 
         self._meta = {}
         self._pend_rows: list = []
