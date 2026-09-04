@@ -21,7 +21,7 @@ from app.db import get_conn
 from app.importer.importer import commit_ledger_import, validate_ledger_before_write
 from app.ui.review_post_view import ReviewPostView
 from app.ui.unified_import_dialog import UnifiedImportDialog
-from app.ui.widgets import CaptionLabel, ComboBox
+from app.ui.widgets import CaptionLabel, ComboBox, PageHeader
 
 
 def _ledger_periods() -> list:
@@ -46,6 +46,15 @@ class ImportReviewView(QWidget):
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(0)
+
+        # ---- 页头（本页 lay 是 0 边距全出血，页头自带缩进；说明收进「?」tooltip）----
+        lay.addWidget(PageHeader(
+            "导入复核",
+            "导入前逐行确认/修正：解析失败与系统判定存疑的行集中在同一张表，左侧筛选、"
+            "右侧就地修正，「待修正」保存后立即重算，未处理的行在确认入库时自动跳过，"
+            "双击任意行可对照原始台账行；导入后可切换账期回写修改，全程留痕。",
+            margins=(24, 16, 24, 0),
+        ))
 
         # ---- 顶部模式条：徽章 + 账期下拉（导入后可切、导入前锁定）----
         bar = QHBoxLayout()

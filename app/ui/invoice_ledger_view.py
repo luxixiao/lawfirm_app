@@ -17,7 +17,7 @@ from PySide6.QtWidgets import (
     QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
-from app.ui.widgets import CaptionLabel, SubtitleLabel
+from app.ui.widgets import CaptionLabel, PageHeader
 from app.ui.column_layout import install_column_layout
 from app.ui.table_features import install_accent_header
 from app.ui.table_view import month_options_1_12, build_period
@@ -71,11 +71,11 @@ class InvoiceLedgerView(QWidget):
         lay.setContentsMargins(28, 24, 28, 20)
         lay.setSpacing(12)
 
-        t = SubtitleLabel("销项发票")
-        lay.addWidget(t)
-        h = CaptionLabel("查看销项导入文档的全部原始信息（逐行 1:1 镜像），只读。"
-                         "红字发票整行浅红标注。支持搜索、点击表头排序、按开票年月筛选。")
-        lay.addWidget(h)
+        lay.addWidget(PageHeader(
+            "销项发票",
+            "查看销项导入文档的全部原始信息（逐行 1:1 镜像），只读。"
+            "红字发票整行浅红标注。支持搜索、点击表头排序、按开票年月筛选。",
+        ))
 
         # ---- 筛选条 ----
         fbar = QHBoxLayout()

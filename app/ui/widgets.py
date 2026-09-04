@@ -8,9 +8,10 @@
 """
 from __future__ import annotations
 
-from PySide6.QtCore import QRect, Qt
+from PySide6.QtCore import QPoint, QRect, Qt
 from PySide6.QtGui import QColor, QPainter, QPen, QPalette
 from PySide6.QtWidgets import (
+    QToolTip,
     QLabel,
     QPushButton,
     QComboBox,
@@ -18,7 +19,13 @@ from PySide6.QtWidgets import (
     QStyle,
     QStyleOptionViewItem,
     QTableWidget,
+    QHBoxLayout,
+    QVBoxLayout,
+    QWidget,
 )
+
+from app.ui import scale as _scale
+from qfluentwidgets import ToolTipFilter, ToolTipPosition
 
 
 class SubtitleLabel(QLabel):
@@ -31,6 +38,94 @@ class SubtitleLabel(QLabel):
 
 class CaptionLabel(QLabel):
     """辅助说明 / 筛选标签 -> #pageHint（style.py 控制灰色小字）"""
+
+    def __init__(self, text: str = "", parent=None) -> None:
+        super().__init__(text, parent)
+        self.setObjectName("pageHint")
+
+
+class HelpButton(QPushButton):
+    """「?」帮助按钮：悬停即时显示说明气泡（不闪烁）。
+
+    - 气泡用 qfluentwidgets ToolTipFilter（showDelay=0 即时弹出，过滤器吞掉
+      原生 ToolTip 事件并统一显隐，无双触发闪烁）；位置在图标下方（BOTTOM）。
+    - 长文本折行：过滤器内部创建的 ToolTip 默认不换行，子类化 _createToolTip
+      开启 wordWrap 并限宽，过长说明自动多行显示；文本中的 \n 也生效。
+    """
+
+    def __init__(self, parent=None) -> None:
+        super().__init__("?", parent)
+        self.setObjectName("helpBtn")
+        self.installEventFilter(
+            _WrapToolTipFilter(self, showDelay=0, position=ToolTipPosition.BOTTOM))
+
+    def set_help_text(self, text: str) -> None:
+        self.setToolTip(text or "")
+
+
+class _WrapToolTipFilter(ToolTipFilter):
+    """ToolTipFilter 子类：气泡 label 开启自动换行并限宽（随字号档位缩放）。"""
+
+    def _createToolTip(self):
+        tip = super()._createToolTip()
+        tip.label.setWordWrap(True)
+        tip.label.setMaximumWidth(_scale.px(420))
+        return tip
+
+
+def tab_help_corner(text: str) -> QWidget:
+    """多 tab 页右上角「?」容器：说明收进 tooltip，放在 QTabWidget 栏位右侧。"""
+    w = QWidget()
+    lay = QHBoxLayout(w)
+    lay.setContentsMargins(0, _scale.px(10), _scale.px(12), 0)
+    hb = HelpButton()
+    hb.set_help_text(text)
+    lay.addWidget(hb)
+    return w
+
+
+class PageHeader(QWidget):
+    """单功能页统一页头：标题 + 可选「?」（说明收进 ? 的 hover 提示）。
+
+    说明（description）不再单独占一行可视文案，而是折进标题右侧「?」图标的
+    hover tooltip —— 常驻高度为 0，符合"不挤占内容空间"的要求；「?」的气泡
+    文案若由独立的「? 帮助」任务注入，则走 help_key 槽位。
+
+    外层不留边距：本组件是 SubtitleLabel / CaptionLabel 的 drop-in 替换，
+    外边距由宿主页面布局统一提供，避免与页面 padding 叠加导致标题多缩进。
+    """
+
+    def __init__(self, title: str, description: str = "", help_key: str | None = None,
+                 parent=None, margins: tuple | None = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("pageHeader")
+        self._help_key = help_key
+        root = QVBoxLayout(self)
+        if margins:
+            # 全出血页面（自身 0 边距）用 margins 指定缩进，随字号档位缩放
+            root.setContentsMargins(*[_scale.px(m) for m in margins])
+        else:
+            root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(_scale.px(4))
+
+        top = QHBoxLayout()
+        top.setSpacing(_scale.px(8))
+        self.title_label = SubtitleLabel(title)
+        top.addWidget(self.title_label)
+        # 「?」仅在有说明或帮助内容时出现；说明进 tooltip，不占常驻高度
+        if description or help_key:
+            self.help_btn = HelpButton()
+            hs = _scale.px(20)
+            self.help_btn.setFixedSize(hs, hs)
+            if description:
+                self.help_btn.set_help_text(description)
+            top.addWidget(self.help_btn)
+        top.addStretch(1)
+        root.addLayout(top)
+
+
+class PageHint(QLabel):
+    """多 tab 模块页：tab 上方的一行细说明（灰、非粗体）。仅作模块级上下文。"""
 
     def __init__(self, text: str = "", parent=None) -> None:
         super().__init__(text, parent)

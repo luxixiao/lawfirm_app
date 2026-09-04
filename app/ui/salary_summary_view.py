@@ -19,7 +19,7 @@ from app.ui.column_layout import install_column_layout
 from app.ui.table_features import (
     install_accent_header, install_common_features, install_header_filter,
 )
-from app.ui.widgets import CaptionLabel, SubtitleLabel
+from app.ui.widgets import CaptionLabel, PageHeader
 
 _HEADERS = ["姓名", "类别", "月数", "每月工资累计", "代扣个所税", "代扣公积金", "实发金额"]
 
@@ -58,11 +58,12 @@ class SalarySummaryView(QWidget):
         lay.setContentsMargins(28, 24, 28, 20)
         lay.setSpacing(12)
 
-        lay.addWidget(SubtitleLabel("工资累计"))
-        lay.addWidget(CaptionLabel(
+        lay.addWidget(PageHeader(
+            "工资累计",
             "按月导入的工资数据在此跨月累计（按「姓名 + 类别」汇总）；"
             "月数按去重后的月份统计。双击某一行可查看该人的逐月明细。"
-            "本页只读汇总，原始数据仍以「台账查看 → 工资表」为准。"))
+            "本页只读汇总，原始数据仍以「台账查看 → 工资表」为准。",
+        ))
 
         # 筛选条
         bar = QHBoxLayout()

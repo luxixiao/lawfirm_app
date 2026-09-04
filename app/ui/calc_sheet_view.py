@@ -32,7 +32,7 @@ from app.exporter.calc_export import export_sheet, suggest_filename
 from app.ui.calc_dialogs import DataRefDialog, IndicatorManagerDialog, ParamDialog
 from app.ui import scale
 from app.ui.scale import PREFS_PATH
-from app.ui.widgets import CaptionLabel, SubtitleLabel
+from app.ui.widgets import CaptionLabel, PageHeader
 
 _ERR_RED = QColor("#C0392B")
 _FORMULA_GREEN = QColor("#1E7B34")
@@ -179,11 +179,12 @@ class CalcSheetView(QWidget):
         root.setContentsMargins(28, 24, 28, 20)
         root.setSpacing(12)
 
-        root.addWidget(SubtitleLabel("分成计算"))
-        root.addWidget(CaptionLabel(
+        root.addWidget(PageHeader(
+            "分成计算",
             "内嵌类 Excel 计算表：引用软件内数据（=DATA）、跨表引用、命名参数。"
             "查看模式默认只读；切到编辑模式后双击或直接输入即可修改，改动自动保存。"
-            "计算结果只读引用台账数据，绝不回写业务主表。"))
+            "计算结果只读引用台账数据，绝不回写业务主表。",
+        ))
 
         split = QSplitter(Qt.Orientation.Horizontal)
         self.split = split

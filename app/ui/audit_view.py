@@ -20,7 +20,7 @@ from app.engine.change_log import (
 )
 from app.ui.column_layout import install_column_layout
 from app.ui.table_features import install_accent_header
-from app.ui.widgets import CaptionLabel, PushButton
+from app.ui.widgets import CaptionLabel, PageHeader, PushButton
 
 
 class AuditView(QWidget):
@@ -38,13 +38,26 @@ class AuditView(QWidget):
              "handlers", "old_value", "new_value", "note"]
 
     def __init__(self, parent: QWidget | None = None, *,
-                 table_name: str | None = None, record_id: str | None = None) -> None:
+                 table_name: str | None = None, record_id: str | None = None,
+                 embedded: bool = False) -> None:
+        """embedded=True 表示被弹窗复用：此时不套页面级页头、不留外边距。
+
+        弹窗自身标题已是「修改记录 · 表名 #id」且带 16px 边距；若再套一个
+        「修改记录」大标题会形成双标题，且缩进会叠加成 16+28=44px。
+        """
         super().__init__(parent)
         self._preset_table = table_name
         self._preset_record = record_id
 
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(0, 0, 0, 0)
+        if embedded:
+            lay.setContentsMargins(0, 0, 0, 0)
+        else:
+            lay.setContentsMargins(28, 24, 28, 20)
+            lay.addWidget(PageHeader(
+                "修改记录",
+                "记录所有数据变更的留痕：谁在何时改了哪张表的哪条记录、哪个字段，新旧值一目了然；可按表/记录/关键字筛选。",
+            ))
         lay.setSpacing(10)
 
         # 筛选条

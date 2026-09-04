@@ -27,21 +27,27 @@ DEFAULT_SKIN = "notion_light"
 # ---------------------------------------------------------------------------
 def _light() -> dict:
     return {
-        "bg": "#FFFFFF", "bg_side": "#F7F7F5", "bg_hover": "#EFEFEC",
-        "bg_select": "#E9E9E7", "bg_table": "#FAFAF9", "border": "#E9E9E7",
+        "bg": "#FFFFFF", "canvas": "#f7f6f3", "bg_side": "#f7f6f3", "bg_hover": "#efedea",
+        "bg_select": "#e3e1db", "bg_table": "#fbfbfa", "border": "#e9e9e7",
         "border_2": "#DADAD7", "text": "#37352F", "text_mute": "#787774",
-        "text_faint": "#B3B1AD", "accent": "#37352F", "red": "#C0392B",
-        "green": "#1E8449", "white": "#FFFFFF",
-        "btn_bg": "#FFFFFF", "btn_border": "#DADAD7", "btn_hover": "#EFEFEC",
-        "btn_press": "#E9E9E7", "btn_pri_bg": "#37352F", "btn_pri_fg": "#FFFFFF",
+        "text_faint": "#9b9a97", "accent": "#37352F", "red": "#eb5757",
+        "green": "#0f7b6c", "white": "#FFFFFF",
+        "btn_bg": "#FFFFFF", "btn_border": "#DADAD7", "btn_hover": "#efedea",
+        "btn_press": "#e3e1db", "btn_pri_bg": "#37352F", "btn_pri_fg": "#FFFFFF",
         "btn_pri_hover": "#4F4D49", "btn_pri_press": "#2A2823", "grid": "#F1F1EF",
-        "warn_bg": "#FCEBEB", "warn_fg": "#C0392B",
+        "warn_bg": "#fdeced", "warn_fg": "#eb5757",
+        # 4 色强调（蓝/红/绿/黄）+ 浅底 —— Notion Style 升级（Batch 1b 起使用）
+        "accent_blue": "#2eaadc", "accent_blue_bg": "#e8f4fb",
+        "accent_blue_hover": "#2491c4", "accent_blue_press": "#1d7eab",
+        "accent_red": "#eb5757", "accent_red_bg": "#fdeced",
+        "accent_green": "#0f7b6c", "accent_green_bg": "#e6f4f0",
+        "accent_yellow": "#dfab01", "accent_yellow_bg": "#fbf3db",
     }
 
 
 def _dark() -> dict:
     return {
-        "bg": "#1F1F1E", "bg_side": "#262625", "bg_hover": "#2E2E2C",
+        "bg": "#1F1F1E", "canvas": "#1F1F1E", "bg_side": "#262625", "bg_hover": "#2E2E2C",
         "bg_select": "#3A3A37", "bg_table": "#2A2A28", "border": "#343432",
         "border_2": "#45453F", "text": "#E9E9E7", "text_mute": "#A0A09C",
         "text_faint": "#6B6B66", "accent": "#E9E9E7", "red": "#E07A6B",
@@ -50,6 +56,12 @@ def _dark() -> dict:
         "btn_press": "#45453F", "btn_pri_bg": "#E9E9E7", "btn_pri_fg": "#1F1F1E",
         "btn_pri_hover": "#FFFFFF", "btn_pri_press": "#CFCFCA", "grid": "#33332F",
         "warn_bg": "#3A2622", "warn_fg": "#E07A6B",
+        # 4 色强调（暗色版）+ 暗底
+        "accent_blue": "#4aa3d4", "accent_blue_bg": "#1e3a44",
+        "accent_blue_hover": "#5cb4e0", "accent_blue_press": "#6cc0ea",
+        "accent_red": "#e07a6b", "accent_red_bg": "#3a2622",
+        "accent_green": "#5cb98c", "accent_green_bg": "#1e3a33",
+        "accent_yellow": "#e0c060", "accent_yellow_bg": "#3a3420",
     }
 
 
@@ -75,7 +87,7 @@ def build_qss(p: dict, s: float = 1.0) -> str:
     font-size: {P(13)};
     color: {p['text']};
 }}
-QMainWindow, QWidget#pageArea {{ background: {p['bg']}; }}
+QMainWindow, QWidget#pageArea {{ background: {p['canvas']}; }}
 QToolTip {{
     background: {p['bg_table']};
     color: {p['text']};
@@ -141,31 +153,42 @@ QLabel#cellTip {{
 #sidebar QScrollArea {{ background: transparent; border: none; }}
 #sidebar QWidget#scrollContent {{ background: transparent; }}
 
+/* ===== 页头「?」帮助按钮（实心圆底，hover 仅加深背景） ===== */
+/* 注意：border-radius 不能写超大值（如 999px）——Qt QSS 会丢弃整条声明导致方角；
+   半径取按钮尺寸(20px)的一半，随字号档位同步缩放保持正圆 */
+QPushButton#helpBtn {{
+    background: {p['bg_hover']}; border: none; border-radius: {P(10)};
+    color: {p['text_mute']}; font-size: {P(12)}; font-weight: 700; padding: 0;
+}}
+QPushButton#helpBtn:hover {{ background: {p['bg_select']}; color: {p['text']}; }}
+QPushButton#helpBtn:pressed {{ background: {p['border_2']}; }}
+
 /* ===== 页面标题（视图自带，保留选择器兼容） ===== */
 #pageTitle {{ font-size: {P(20)}; font-weight: 700; color: {p['text']}; }}
 #pageHint  {{ color: {p['text_mute']}; font-size: {P(12)}; }}
 #placeholder {{ color: {p['text_faint']}; font-size: {P(14)}; padding: {P(40)}; }}
 
-/* ===== 按钮 ===== */
+/* ===== 按钮（次要：透明底 + 边框，hover 仅变背景；主按钮：强调蓝实底） ===== */
 QPushButton {{
-    background: {p['btn_bg']}; border: 1px solid {p['btn_border']};
+    background: transparent; border: 1px solid {p['btn_border']};
     border-radius: {P(8)}; padding: {P(7)} {P(16)}; color: {p['text']};
 }}
-QPushButton:hover {{ background: {p['btn_hover']}; border-color: {p['btn_border']}; }}
+QPushButton:hover {{ background: {p['bg_hover']}; border-color: {p['btn_border']}; }}
 QPushButton:pressed {{ background: {p['btn_press']}; }}
-QPushButton:disabled {{ color: {p['text_faint']}; background: {p['bg_table']}; }}
+QPushButton:disabled {{ color: {p['text_faint']}; background: transparent; border-color: {p['border']}; }}
 QPushButton#primary {{
-    background: {p['btn_pri_bg']}; color: {p['btn_pri_fg']}; border: none; font-weight: 600;
+    background: {p['accent_blue']}; color: #FFFFFF; border: none; font-weight: 600;
 }}
-QPushButton#primary:hover {{ background: {p['btn_pri_hover']}; }}
-QPushButton#primary:pressed {{ background: {p['btn_pri_press']}; }}
+QPushButton#primary:hover {{ background: {p['accent_blue_hover']}; }}
+QPushButton#primary:pressed {{ background: {p['accent_blue_press']}; }}
+QPushButton#primary:disabled {{ background: {p['btn_press']}; color: {p['text_faint']}; }}
 
 /* ===== 输入控件 ===== */
 QLineEdit, QComboBox, QDateEdit, QDoubleSpinBox {{
     background: {p['btn_bg']}; border: 1px solid {p['btn_border']};
     border-radius: {P(7)}; padding: {P(6)} {P(10)}; min-height: {P(18)}; color: {p['text']};
 }}
-QLineEdit:focus, QComboBox:focus, QDateEdit:focus, QDoubleSpinBox:focus {{ border-color: {p['text_faint']}; }}
+QLineEdit:focus, QComboBox:focus, QDateEdit:focus, QDoubleSpinBox:focus {{ border: 1px solid {p['accent_blue']}; }}
 QComboBox::drop-down {{ border: none; width: {P(22)}; }}
 QComboBox QAbstractItemView {{
     background: {p['btn_bg']}; border: 1px solid {p['border']}; border-radius: {P(8)}; padding: {P(4)};
@@ -207,7 +230,17 @@ QTabBar::tab {{
     border-bottom: 2px solid transparent; font-weight: 500;
 }}
 QTabBar::tab:hover {{ color: {p['text']}; }}
-QTabBar::tab:selected {{ color: {p['text']}; border-bottom: 2px solid {p['accent']}; font-weight: 600; }}
+QTabBar::tab:selected {{ color: {p['text']}; border-bottom: 2px solid {p['accent_blue']}; font-weight: 600; }}
+
+/* ===== 多 tab 页标题化 tab 栏（方案B）：字号/字重对齐页面标题 ===== */
+/* 仅作用于 6 个多 tab 页（tabBar objectName=pageTitleBar），不影响弹窗/其它 QTabWidget */
+QTabBar#pageTitleBar::tab {{
+    background: transparent; color: {p['text_mute']}; border: none;
+    border-bottom: 2px solid transparent; font-size: {P(20)}; font-weight: 700;
+    padding: {P(8)} {P(20)};
+}}
+QTabBar#pageTitleBar::tab:hover {{ color: {p['text']}; }}
+QTabBar#pageTitleBar::tab:selected {{ color: {p['text']}; border-bottom: 2px solid {p['accent_blue']}; font-weight: 700; }}
 
 /* ===== 标签 ===== */
 QLabel {{ color: {p['text']}; }}
@@ -245,13 +278,22 @@ QLabel#chipWarn {{
     border-radius: {P(14)}; padding: {P(6)} {P(14)}; color: {p['warn_fg']}; font-size: {P(12)}; font-weight: 600;
 }}
 QLabel#chipWarn QLabel#chipVal {{ color: {p['warn_fg']}; }}
+/* ===== 状态 chip 四色（蓝/红/绿/黄 + 浅底） ===== */
+QLabel#chipBlue {{ background: {p['accent_blue_bg']}; border: 1px solid {p['accent_blue_bg']}; border-radius: {P(14)}; padding: {P(6)} {P(14)}; color: {p['accent_blue']}; font-size: {P(12)}; }}
+QLabel#chipRed {{ background: {p['accent_red_bg']}; border: 1px solid {p['accent_red_bg']}; border-radius: {P(14)}; padding: {P(6)} {P(14)}; color: {p['accent_red']}; font-size: {P(12)}; }}
+QLabel#chipGreen {{ background: {p['accent_green_bg']}; border: 1px solid {p['accent_green_bg']}; border-radius: {P(14)}; padding: {P(6)} {P(14)}; color: {p['accent_green']}; font-size: {P(12)}; }}
+QLabel#chipYellow {{ background: {p['accent_yellow_bg']}; border: 1px solid {p['accent_yellow_bg']}; border-radius: {P(14)}; padding: {P(6)} {P(14)}; color: {p['accent_yellow']}; font-size: {P(12)}; }}
+QLabel#chipBlue QLabel#chipVal {{ color: {p['accent_blue']}; }}
+QLabel#chipRed QLabel#chipVal {{ color: {p['accent_red']}; }}
+QLabel#chipGreen QLabel#chipVal {{ color: {p['accent_green']}; }}
+QLabel#chipYellow QLabel#chipVal {{ color: {p['accent_yellow']}; }}
 QFrame#sep {{ background: {p['grid']}; border: none; }}
 
 /* ===== 费用类型卡片内的操作按钮 ===== */
 /* 全局 QPushButton padding 7px 16px 太宽，5 个一行时会被压到 sizeHint 以下导致文字被裁 */
 QFrame#card QPushButton#cardBtn {{
     padding: {P(4)} {P(10)}; font-size: {P(12)}; border-radius: {P(6)};
-    background: {p['btn_bg']}; border: 1px solid {p['btn_border']}; color: {p['text']};
+    background: transparent; border: 1px solid {p['btn_border']}; color: {p['text']};
 }}
 QFrame#card QPushButton#cardBtn:hover {{ background: {p['btn_hover']}; }}
 QFrame#card QPushButton#cardBtn:pressed {{ background: {p['btn_press']}; }}
@@ -263,7 +305,7 @@ QPushButton#chipBtn {{
 }}
 QPushButton#chipBtn:hover {{ background: {p['btn_hover']}; color: {p['text']}; }}
 QPushButton#chipBtn:checked {{
-    background: {p['accent']}; border-color: {p['accent']}; color: {p['bg']};
+    background: {p['accent_blue']}; border-color: {p['accent_blue']}; color: #FFFFFF;
 }}
 
 /* ===== 台账溯源卡片 ===== */
