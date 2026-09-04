@@ -23,6 +23,8 @@ from qfluentwidgets import InfoBar, InfoBarPosition
 from qframelesswindow import FramelessWindow
 from qframelesswindow.titlebar import TitleBar
 
+from app import __version__
+from app import __version__
 from app.db import get_conn
 from app.ui import scale, style
 from app.ui.sidebar import SidebarWidget
@@ -171,7 +173,7 @@ class AppTitleBar(TitleBar):
 class MainWindow(FramelessWindow):
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("律所开票收款统计")
+        self.setWindowTitle(f"律所开票收款统计 v{__version__}")
         self.setTitleBar(AppTitleBar(self))
         self.resize(1280, 820)
         # 不给主窗口设大下限：某些页面（宽表格）的 minimumSizeHint 可达 1700+，
