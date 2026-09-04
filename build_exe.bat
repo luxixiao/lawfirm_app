@@ -3,10 +3,37 @@ cd /d "%~dp0"
 
 rem ============================================================
 rem  律所开票收款统计 — 打包 EXE（v1.1.0）
-rem  前置：已运行 setup.bat 创建 venv 并安装依赖
-rem  本脚本仅在本机（已装依赖的 venv）执行，产出 dist\律所开票收款统计.exe
+rem  用法：双击本文件，或在 cmd 中 cd 到本目录后运行 build_exe.bat
+rem  全部输出会写入 build_log.txt，构建结束前窗口不会自动关闭
 rem ============================================================
 
+set "LOG=%~dp0build_log.txt"
+set "RC=0"
+echo ============================================ > "%LOG%"
+echo  律所开票收款统计 EXE 构建日志 >> "%LOG%"
+echo  开始时间: %date% %time% >> "%LOG%"
+echo ============================================ >> "%LOG%"
+
+call :build >> "%LOG%" 2>&1
+set "RC=%errorlevel%"
+
+echo. >> "%LOG%"
+if %RC%==0 (
+  echo [OK] 构建成功：dist\律所开票收款统计.exe >> "%LOG%"
+) else (
+  echo [FAIL] 构建失败（退出码 %RC%），请查看上方日志 >> "%LOG%"
+)
+echo ============================================ >> "%LOG%"
+
+echo.
+echo  日志已写入：%LOG%
+echo.
+type "%LOG%"
+echo.
+pause
+goto :eof
+
+:build
 set "PY="
 
 if exist "%USERPROFILE%\.lawfirm_venv\Scripts\python.exe" (
@@ -18,34 +45,34 @@ if exist "%USERPROFILE%\.lawfirm_venv\Scripts\python.exe" (
 )
 
 if not defined PY (
-    echo.
-    echo [Error] 未找到 Python 环境，请先运行 setup.bat。
-    echo.
-    pause
+    echo [错误] 未找到 Python 环境，请先运行 setup.bat 创建 venv。
     exit /b 1
 )
+echo 使用 Python: %PY%
+"%PY%" --version
 
-echo Using Python: %PY%
-
-echo [1/2] 确保 pyinstaller 已安装 ...
+echo [1/3] 校验并补齐构建依赖（pyinstaller / PySide6FramelessWindow）...
 "%PY%" -m pip install --upgrade pyinstaller
 if errorlevel 1 (
-    echo [Error] pyinstaller 安装失败，请检查网络后重试。
-    pause
+    echo [错误] pyinstaller 安装失败，请检查网络后重试。
     exit /b 1
 )
+"%PY%" -c "import importlib.util as u; raise SystemExit(0 if u.find_spec('PySide6FramelessWindow') else 1)" 2>nul
+if errorlevel 1 (
+    echo 检测到 PySide6FramelessWindow 缺失，正在安装 PySideSix-Frameless-Window ...
+    "%PY%" -m pip install PySideSix-Frameless-Window
+    if errorlevel 1 (
+        echo [错误] PySideSix-Frameless-Window 安装失败。
+        exit /b 1
+    )
+)
 
-echo [2/2] 构建 EXE ...
+echo [2/3] 运行 PyInstaller 构建 EXE（build_exe.spec）...
 "%PY%" -m PyInstaller build_exe.spec --noconfirm --clean
 if errorlevel 1 (
-    echo [Error] 构建失败，请查看上方日志。
-    pause
+    echo [错误] PyInstaller 构建失败，详见上方日志。
     exit /b 1
 )
 
-echo.
-echo ============================================================
-echo   构建完成：dist\律所开票收款统计.exe
-echo   版本信息：文件/产品版本 1.1.0（见 version_info.txt）
-echo ============================================================
-pause
+echo [3/3] 完成。
+exit /b 0

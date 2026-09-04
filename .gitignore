@@ -10,3 +10,4 @@ tests/_smoke_*.png
 # PyInstaller 构建产物（exe 由本机 build_exe.bat 生成，不进 git）
 build/
 dist/
+build_log.txt
