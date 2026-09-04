@@ -19,14 +19,14 @@ hiddenimports = [
     "qfluentwidgets",
     "qfluentwidgets.components",
     "qfluentwidgets.window",
-    "PySide6FramelessWindow",
+    "qframelesswindow",
     "openpyxl",
     "xlrd",
     "darkdetect",
 ]
 
 extra_datas, extra_binaries, extra_hiddenimports = [], [], []
-for pkg in ("qfluentwidgets", "PySide6FramelessWindow", "darkdetect"):
+for pkg in ("qfluentwidgets", "qframelesswindow", "darkdetect"):
     try:
         d, b, h = collect_all(pkg)
         extra_datas += d
