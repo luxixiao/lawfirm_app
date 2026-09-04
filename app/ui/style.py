@@ -154,8 +154,10 @@ QLabel#cellTip {{
 #sidebar QWidget#scrollContent {{ background: transparent; }}
 
 /* ===== 页头「?」帮助按钮（实心圆底，hover 仅加深背景） ===== */
+/* 注意：border-radius 不能写超大值（如 999px）——Qt QSS 会丢弃整条声明导致方角；
+   半径取按钮尺寸(20px)的一半，随字号档位同步缩放保持正圆 */
 QPushButton#helpBtn {{
-    background: {p['bg_hover']}; border: none; border-radius: {P(999)};
+    background: {p['bg_hover']}; border: none; border-radius: {P(10)};
     color: {p['text_mute']}; font-size: {P(12)}; font-weight: 700; padding: 0;
 }}
 QPushButton#helpBtn:hover {{ background: {p['bg_select']}; color: {p['text']}; }}

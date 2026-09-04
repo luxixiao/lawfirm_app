@@ -8,9 +8,10 @@
 """
 from __future__ import annotations
 
-from PySide6.QtCore import QRect, Qt
+from PySide6.QtCore import QPoint, QRect, Qt
 from PySide6.QtGui import QColor, QPainter, QPen, QPalette
 from PySide6.QtWidgets import (
+    QToolTip,
     QLabel,
     QPushButton,
     QComboBox,
@@ -40,6 +41,28 @@ class CaptionLabel(QLabel):
     def __init__(self, text: str = "", parent=None) -> None:
         super().__init__(text, parent)
         self.setObjectName("pageHint")
+
+
+class HelpButton(QPushButton):
+    """「?」帮助按钮：鼠标进入立即弹说明气泡。
+
+    不依赖原生 tooltip 的 ~700ms 悬停延迟（真机上存在不触发的情况），
+    enterEvent 直接 QToolTip.showText，所见即所悬。
+    """
+
+    def __init__(self, parent=None) -> None:
+        super().__init__("?", parent)
+        self._help_text = ""
+
+    def set_help_text(self, text: str) -> None:
+        self._help_text = text or ""
+        self.setToolTip(self._help_text)
+
+    def enterEvent(self, event) -> None:  # noqa: N802
+        if self._help_text:
+            pos = self.mapToGlobal(QPoint(0, self.height() + _scale.px(6)))
+            QToolTip.showText(pos, self._help_text, self)
+        super().enterEvent(event)
 
 
 class PageHeader(QWidget):
@@ -72,12 +95,12 @@ class PageHeader(QWidget):
         top.addWidget(self.title_label)
         # 「?」仅在有说明或帮助内容时出现；说明进 tooltip，不占常驻高度
         if description or help_key:
-            self.help_btn = QPushButton("?")
+            self.help_btn = HelpButton()
             self.help_btn.setObjectName("helpBtn")
             hs = _scale.px(20)
             self.help_btn.setFixedSize(hs, hs)
             if description:
-                self.help_btn.setToolTip(description)
+                self.help_btn.set_help_text(description)
             top.addWidget(self.help_btn)
         top.addStretch(1)
         root.addLayout(top)
