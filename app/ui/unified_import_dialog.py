@@ -102,14 +102,8 @@ class UnifiedImportDialog(QWidget):
         root.setContentsMargins(20, 18, 20, 18)
         root.setSpacing(10)
 
-        self._title = QLabel(f"发票台账导入确认 — {period}")
-        self._title.setObjectName("pageTitle")
-        root.addWidget(self._title)
-        root.addWidget(CaptionLabel(
-            "解析失败的行与系统判定有疑问的行集中在同一张表：左侧筛选，右侧就地修正。"
-            "「待修正」保存后立即重算并刷新；未处理的行在确认入库时自动跳过。"
-            "双击任意行可对照原始台账行。"
-        ))
+        # 页面级标题与说明由宿主 ImportReviewView 的 PageHeader 提供（本面板仅嵌入使用），
+        # 此处不再自带标题，避免双重页头；原说明文字已并入页头「?」tooltip。
 
         # ---- 筛选栏 ----
         bar = QHBoxLayout()

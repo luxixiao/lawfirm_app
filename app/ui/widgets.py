@@ -53,12 +53,17 @@ class PageHeader(QWidget):
     外边距由宿主页面布局统一提供，避免与页面 padding 叠加导致标题多缩进。
     """
 
-    def __init__(self, title: str, description: str = "", help_key: str | None = None, parent=None) -> None:
+    def __init__(self, title: str, description: str = "", help_key: str | None = None,
+                 parent=None, margins: tuple | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("pageHeader")
         self._help_key = help_key
         root = QVBoxLayout(self)
-        root.setContentsMargins(0, 0, 0, 0)
+        if margins:
+            # 全出血页面（自身 0 边距）用 margins 指定缩进，随字号档位缩放
+            root.setContentsMargins(*[_scale.px(m) for m in margins])
+        else:
+            root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(_scale.px(4))
 
         top = QHBoxLayout()
