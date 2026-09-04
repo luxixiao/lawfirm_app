@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (
     QTabWidget, QVBoxLayout, QWidget,
 )
 
-from app.ui.widgets import SubtitleLabel, PrimaryPushButton, PushButton
+from app.ui.widgets import PrimaryPushButton, PushButton
 from app.ui.column_layout import install_column_layout
 from app.ui.table_features import install_accent_header
 from app.db import get_conn
@@ -187,7 +187,6 @@ class PrepaymentView(QTabWidget):
         lay = QVBoxLayout(self.tab_pending)
         lay.setContentsMargins(24, 20, 24, 20)
         lay.setSpacing(10)
-        lay.addWidget(SubtitleLabel("待核销预收款"))
         lay.addWidget(QLabel(
             "已入账未开票（sheet4）。选择预收款 → 核销到发票（可搜索对方/金额/经办人/案号）。"
             "核销只消耗预收款余额，不再重复记收款，不影响发票/收款/结算数据。"))
@@ -218,7 +217,6 @@ class PrepaymentView(QTabWidget):
         lay = QVBoxLayout(self.tab_done)
         lay.setContentsMargins(24, 20, 24, 20)
         lay.setSpacing(10)
-        lay.addWidget(SubtitleLabel("已核销预收款"))
         lay.addWidget(QLabel("已做过核销的预收款及其冲抵明细。核销金额消耗预收款余额，不影响其它表。"))
 
         self.table_done = QTableWidget(0, 7)
