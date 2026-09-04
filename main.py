@@ -9,6 +9,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from PySide6.QtWidgets import QApplication  # noqa: E402
 from PySide6.QtCore import QTimer  # noqa: E402
 
+from app import __version__  # noqa: E402
 from app.db import init_db, run_received_snapshot_backfill  # noqa: E402
 from app.ui import style  # noqa: E402
 from app.ui.main_window import MainWindow  # noqa: E402
@@ -19,6 +20,7 @@ def main() -> int:
     init_db(backfill=False)
     app = QApplication(sys.argv)
     app.setApplicationName("律所开票收款统计")
+    app.setApplicationVersion(__version__)
     app.setStyle("Fusion")
     style.apply_skin(app, style.load_skin_pref())
     win = MainWindow()
