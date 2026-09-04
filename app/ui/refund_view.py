@@ -77,6 +77,7 @@ class RefundView(QWidget):
 
         # ---- 双子页 ----
         self.tabs = QTabWidget()
+        self.tabs.tabBar().setObjectName("pageTitleBar")
         self.tab_pending = QTableWidget(0, len(PENDING_HEADERS))
         self.tab_pending.setHorizontalHeaderLabels(PENDING_HEADERS)
         self._setup_table(self.tab_pending, "pending")

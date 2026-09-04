@@ -39,6 +39,7 @@ class ManualEntryView(QWidget):
         lay.addWidget(h)
 
         self.tabs = QTabWidget()
+        self.tabs.tabBar().setObjectName("pageTitleBar")
         self.tab_pending = self._make_table(
             ["开票日期", "发票号码", "对方", "价税合计", "状态", "收款金额", "对应红字发票", "操作"], "pending")
         self.tab_done = self._make_table(

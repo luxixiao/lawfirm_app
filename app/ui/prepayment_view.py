@@ -165,6 +165,7 @@ class PrepaymentView(QTabWidget):
     def __init__(self) -> None:
         super().__init__()
         self.setDocumentMode(True)
+        self.tabBar().setObjectName("pageTitleBar")
 
         self.tab_pending = QWidget()
         self._build_pending()

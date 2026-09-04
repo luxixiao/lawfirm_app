@@ -46,6 +46,7 @@ class SettlementView(QWidget):
         outer = QVBoxLayout(self)
         outer.setContentsMargins(20, 16, 20, 16)
         self.tabs = QTabWidget()
+        self.tabs.tabBar().setObjectName("pageTitleBar")
         outer.addWidget(self.tabs)
         self.tab_personal = QWidget()
         self._lay_p = QVBoxLayout(self.tab_personal)

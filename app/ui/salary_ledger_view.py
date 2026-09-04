@@ -282,6 +282,7 @@ class SalaryLedgerView(QWidget):
 
         # 分 sheet 标签
         self.tabs = QTabWidget()
+        self.tabs.tabBar().setObjectName("pageTitleBar")
         self._tabs: dict[str, _SheetTab] = {}
         for key in rs.SHEET_ORDER:
             tab = _SheetTab(key, on_changed=self.refresh)

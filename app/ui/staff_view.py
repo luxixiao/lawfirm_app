@@ -41,6 +41,7 @@ class StaffView(QWidget):
         lay.addWidget(hint)
 
         self.tabs = QTabWidget()
+        self.tabs.tabBar().setObjectName("pageTitleBar")
         self.tabs.addTab(self._build_staff_tab(), "员工名单")
         self.tabs.addTab(self._build_type_tab(), "员工类型")
         self.tabs.currentChanged.connect(self._on_tab_changed)

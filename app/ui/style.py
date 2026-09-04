@@ -232,6 +232,16 @@ QTabBar::tab {{
 QTabBar::tab:hover {{ color: {p['text']}; }}
 QTabBar::tab:selected {{ color: {p['text']}; border-bottom: 2px solid {p['accent_blue']}; font-weight: 600; }}
 
+/* ===== 多 tab 页标题化 tab 栏（方案B）：字号/字重对齐页面标题 ===== */
+/* 仅作用于 6 个多 tab 页（tabBar objectName=pageTitleBar），不影响弹窗/其它 QTabWidget */
+QTabBar#pageTitleBar::tab {{
+    background: transparent; color: {p['text_mute']}; border: none;
+    border-bottom: 2px solid transparent; font-size: {P(20)}; font-weight: 700;
+    padding: {P(8)} {P(20)};
+}}
+QTabBar#pageTitleBar::tab:hover {{ color: {p['text']}; }}
+QTabBar#pageTitleBar::tab:selected {{ color: {p['text']}; border-bottom: 2px solid {p['accent_blue']}; font-weight: 700; }}
+
 /* ===== 标签 ===== */
 QLabel {{ color: {p['text']}; }}
 QLabel#pageHint {{ color: {p['text_mute']}; }}
