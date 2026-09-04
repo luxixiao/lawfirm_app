@@ -1,0 +1,36 @@
+# UTF-8
+#
+# Windows 版本信息资源（由 PyInstaller 的 version= 引用）
+# 语言 0804 = 简体中文；代码页 1200(0x04B0) = Unicode
+VSVersionInfo(
+    ffi=FixedFileInfo(
+        filevers=(1, 1, 0, 0),
+        prodvers=(1, 1, 0, 0),
+        mask=0x3f,
+        flags=0x0,
+        OS=0x40004,
+        fileType=0x1,
+        subtype=0x0,
+        date=(0, 0),
+    ),
+    kids=[
+        StringFileInfo(
+            [
+                StringTable(
+                    u'080404B0',
+                    [
+                        StringStruct(u'CompanyName', u'浙江震天律师事务所'),
+                        StringStruct(u'FileDescription', u'律所开票收款统计'),
+                        StringStruct(u'FileVersion', u'1.1.0'),
+                        StringStruct(u'InternalName', u'lawfirm_app'),
+                        StringStruct(u'LegalCopyright', u'Copyright © 2026'),
+                        StringStruct(u'OriginalFilename', u'律所开票收款统计.exe'),
+                        StringStruct(u'ProductName', u'律所开票收款统计'),
+                        StringStruct(u'ProductVersion', u'1.1.0'),
+                    ],
+                )
+            ]
+        ),
+        VarFileInfo([VarStruct(u'Translation', [0x804, 1200])]),
+    ]
+)
