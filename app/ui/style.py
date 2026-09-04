@@ -153,14 +153,13 @@ QLabel#cellTip {{
 #sidebar QScrollArea {{ background: transparent; border: none; }}
 #sidebar QWidget#scrollContent {{ background: transparent; }}
 
-/* ===== 页头「?」帮助按钮（圆形，hover 仅变背景） ===== */
+/* ===== 页头「?」帮助按钮（实心圆底，hover 仅加深背景） ===== */
 QPushButton#helpBtn {{
-    background: {p['bg_table']}; border: 1px solid {p['border']};
-    border-radius: {P(999)}; color: {p['text_mute']}; font-size: {P(12)};
-    font-weight: 700; padding: 0;
+    background: {p['bg_hover']}; border: none; border-radius: {P(999)};
+    color: {p['text_mute']}; font-size: {P(12)}; font-weight: 700; padding: 0;
 }}
-QPushButton#helpBtn:hover {{ background: {p['bg_hover']}; color: {p['text']}; }}
-QPushButton#helpBtn:pressed {{ background: {p['bg_select']}; }}
+QPushButton#helpBtn:hover {{ background: {p['bg_select']}; color: {p['text']}; }}
+QPushButton#helpBtn:pressed {{ background: {p['border_2']}; }}
 
 /* ===== 页面标题（视图自带，保留选择器兼容） ===== */
 #pageTitle {{ font-size: {P(20)}; font-weight: 700; color: {p['text']}; }}

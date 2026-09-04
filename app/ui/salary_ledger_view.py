@@ -221,7 +221,7 @@ class _SheetTab(QWidget):
         v = QVBoxLayout(dlg)
         v.setContentsMargins(16, 16, 16, 16)
         v.setSpacing(10)
-        v.addWidget(AuditView(dlg, table_name="raw_salary", record_id=str(rid)), 1)
+        v.addWidget(AuditView(dlg, table_name="raw_salary", record_id=str(rid), embedded=True), 1)
         box = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         box.rejected.connect(dlg.reject)
         v.addWidget(box)

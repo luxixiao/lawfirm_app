@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (
     QMenu, QMessageBox, QScrollArea, QSizePolicy, QTextEdit, QVBoxLayout, QWidget,
 )
 
-from app.ui.widgets import CaptionLabel, PushButton, SubtitleLabel
+from app.ui.widgets import CaptionLabel, PageHeader, PushButton
 from app.db import get_conn
 from app.engine.change_log import log_change
 from app.engine import expense_cat as ec
@@ -296,10 +296,11 @@ class ExpenseCatView(QWidget):
         lay.setContentsMargins(28, 24, 28, 20)
         lay.setSpacing(12)
 
-        lay.addWidget(SubtitleLabel("费用类型"))
-        lay.addWidget(CaptionLabel(
+        lay.addWidget(PageHeader(
+            "费用类型",
             "按 5 类分组维护费用类型。卡片内拖动可调整顺序，拖到别的卡片即改归类；"
-            "双击类型名可改名。顺序与归类决定结算表的费用列序。"))
+            "双击类型名可改名。顺序与归类决定结算表的费用列序。",
+        ))
 
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)

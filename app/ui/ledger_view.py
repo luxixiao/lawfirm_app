@@ -14,7 +14,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout, QWidget,
 )
 
-from app.ui.widgets import (CaptionLabel, PushButton, SubtitleLabel)
+from app.ui.widgets import (CaptionLabel, PageHeader, PushButton)
 from app.db import get_conn
 from app.engine.change_log import log_change
 from app.ui.column_layout import install_column_layout
@@ -27,10 +27,10 @@ class LedgerView(QWidget):
         lay.setContentsMargins(28, 24, 28, 20)
         lay.setSpacing(12)
 
-        t = SubtitleLabel("费用台账")
-        lay.addWidget(t)
-        h = CaptionLabel("费用台账的查看与编辑（修改记录已移至左侧「数据导入 → 修改记录」独立页面）。")
-        lay.addWidget(h)
+        lay.addWidget(PageHeader(
+            "费用台账",
+            "费用台账的查看与编辑（修改记录已移至左侧「数据导入 → 修改记录」独立页面）。",
+        ))
 
         self.tab_expense = self._make_table(["账期", "经办人", "费用类型", "金额", "凭证号", "身份"], [0, 1, 2, 3, 5])
         lay.addWidget(self.tab_expense, 1)
