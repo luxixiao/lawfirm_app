@@ -18,7 +18,12 @@ from PySide6.QtWidgets import (
     QStyle,
     QStyleOptionViewItem,
     QTableWidget,
+    QHBoxLayout,
+    QVBoxLayout,
+    QWidget,
 )
+
+from app.ui import scale as _scale
 
 
 class SubtitleLabel(QLabel):
@@ -31,6 +36,47 @@ class SubtitleLabel(QLabel):
 
 class CaptionLabel(QLabel):
     """辅助说明 / 筛选标签 -> #pageHint（style.py 控制灰色小字）"""
+
+    def __init__(self, text: str = "", parent=None) -> None:
+        super().__init__(text, parent)
+        self.setObjectName("pageHint")
+
+
+class PageHeader(QWidget):
+    """单功能页统一页头：标题 + 可选说明 + 可选「?」帮助槽位。
+
+    仅做结构与文案收敛；「?」气泡内容由独立的「? 帮助」任务注入（help_key 预留）。
+    """
+
+    def __init__(self, title: str, description: str = "", help_key: str | None = None, parent=None) -> None:
+        super().__init__(parent)
+        self.setObjectName("pageHeader")
+        self._help_key = help_key
+        root = QVBoxLayout(self)
+        root.setContentsMargins(_scale.px(24), _scale.px(16), _scale.px(24), _scale.px(16))
+        root.setSpacing(_scale.px(4))
+
+        top = QHBoxLayout()
+        top.setSpacing(_scale.px(8))
+        self.title_label = SubtitleLabel(title)
+        top.addWidget(self.title_label)
+        if help_key:
+            self.help_btn = QPushButton("?")
+            self.help_btn.setObjectName("helpBtn")
+            hs = _scale.px(20)
+            self.help_btn.setFixedSize(hs, hs)
+            top.addWidget(self.help_btn)
+        top.addStretch(1)
+        root.addLayout(top)
+
+        if description:
+            self.desc_label = CaptionLabel(description)
+            root.addWidget(self.desc_label)
+        # 说明与内容之间的 16px 间隙由本组件底部 margin 提供
+
+
+class PageHint(QLabel):
+    """多 tab 模块页：tab 上方的一行细说明（灰、非粗体）。仅作模块级上下文。"""
 
     def __init__(self, text: str = "", parent=None) -> None:
         super().__init__(text, parent)

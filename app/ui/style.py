@@ -27,21 +27,26 @@ DEFAULT_SKIN = "notion_light"
 # ---------------------------------------------------------------------------
 def _light() -> dict:
     return {
-        "bg": "#FFFFFF", "bg_side": "#F7F7F5", "bg_hover": "#EFEFEC",
-        "bg_select": "#E9E9E7", "bg_table": "#FAFAF9", "border": "#E9E9E7",
+        "bg": "#FFFFFF", "canvas": "#f7f6f3", "bg_side": "#f7f6f3", "bg_hover": "#efedea",
+        "bg_select": "#e3e1db", "bg_table": "#fbfbfa", "border": "#e9e9e7",
         "border_2": "#DADAD7", "text": "#37352F", "text_mute": "#787774",
-        "text_faint": "#B3B1AD", "accent": "#37352F", "red": "#C0392B",
-        "green": "#1E8449", "white": "#FFFFFF",
-        "btn_bg": "#FFFFFF", "btn_border": "#DADAD7", "btn_hover": "#EFEFEC",
-        "btn_press": "#E9E9E7", "btn_pri_bg": "#37352F", "btn_pri_fg": "#FFFFFF",
+        "text_faint": "#9b9a97", "accent": "#37352F", "red": "#eb5757",
+        "green": "#0f7b6c", "white": "#FFFFFF",
+        "btn_bg": "#FFFFFF", "btn_border": "#DADAD7", "btn_hover": "#efedea",
+        "btn_press": "#e3e1db", "btn_pri_bg": "#37352F", "btn_pri_fg": "#FFFFFF",
         "btn_pri_hover": "#4F4D49", "btn_pri_press": "#2A2823", "grid": "#F1F1EF",
-        "warn_bg": "#FCEBEB", "warn_fg": "#C0392B",
+        "warn_bg": "#fdeced", "warn_fg": "#eb5757",
+        # 4 色强调（蓝/红/绿/黄）+ 浅底 —— Notion Style 升级（Batch 1b 起使用）
+        "accent_blue": "#2eaadc", "accent_blue_bg": "#e8f4fb",
+        "accent_red": "#eb5757", "accent_red_bg": "#fdeced",
+        "accent_green": "#0f7b6c", "accent_green_bg": "#e6f4f0",
+        "accent_yellow": "#dfab01", "accent_yellow_bg": "#fbf3db",
     }
 
 
 def _dark() -> dict:
     return {
-        "bg": "#1F1F1E", "bg_side": "#262625", "bg_hover": "#2E2E2C",
+        "bg": "#1F1F1E", "canvas": "#1F1F1E", "bg_side": "#262625", "bg_hover": "#2E2E2C",
         "bg_select": "#3A3A37", "bg_table": "#2A2A28", "border": "#343432",
         "border_2": "#45453F", "text": "#E9E9E7", "text_mute": "#A0A09C",
         "text_faint": "#6B6B66", "accent": "#E9E9E7", "red": "#E07A6B",
@@ -50,6 +55,11 @@ def _dark() -> dict:
         "btn_press": "#45453F", "btn_pri_bg": "#E9E9E7", "btn_pri_fg": "#1F1F1E",
         "btn_pri_hover": "#FFFFFF", "btn_pri_press": "#CFCFCA", "grid": "#33332F",
         "warn_bg": "#3A2622", "warn_fg": "#E07A6B",
+        # 4 色强调（暗色版）+ 暗底
+        "accent_blue": "#4aa3d4", "accent_blue_bg": "#1e3a44",
+        "accent_red": "#e07a6b", "accent_red_bg": "#3a2622",
+        "accent_green": "#5cb98c", "accent_green_bg": "#1e3a33",
+        "accent_yellow": "#e0c060", "accent_yellow_bg": "#3a3420",
     }
 
 
@@ -75,7 +85,7 @@ def build_qss(p: dict, s: float = 1.0) -> str:
     font-size: {P(13)};
     color: {p['text']};
 }}
-QMainWindow, QWidget#pageArea {{ background: {p['bg']}; }}
+QMainWindow, QWidget#pageArea {{ background: {p['canvas']}; }}
 QToolTip {{
     background: {p['bg_table']};
     color: {p['text']};
@@ -140,6 +150,15 @@ QLabel#cellTip {{
 }}
 #sidebar QScrollArea {{ background: transparent; border: none; }}
 #sidebar QWidget#scrollContent {{ background: transparent; }}
+
+/* ===== 页头「?」帮助按钮（圆形，hover 仅变背景） ===== */
+QPushButton#helpBtn {{
+    background: {p['bg_table']}; border: 1px solid {p['border']};
+    border-radius: {P(999)}; color: {p['text_mute']}; font-size: {P(12)};
+    font-weight: 700; padding: 0;
+}}
+QPushButton#helpBtn:hover {{ background: {p['bg_hover']}; color: {p['text']}; }}
+QPushButton#helpBtn:pressed {{ background: {p['bg_select']}; }}
 
 /* ===== 页面标题（视图自带，保留选择器兼容） ===== */
 #pageTitle {{ font-size: {P(20)}; font-weight: 700; color: {p['text']}; }}
