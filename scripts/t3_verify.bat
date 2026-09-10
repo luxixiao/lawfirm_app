@@ -13,7 +13,13 @@ REM  cmd.exe parses UTF-8 Chinese as GBK and garbles it, which
 REM  produces wrong filenames and "not a command" spam. All Chinese
 REM  text lives in scripts\t3_filediff.py (UTF-8 safe), never here.
 REM
-REM  Usage:  scripts\t3_verify.bat [year]     default: 2026
+REM  Usage:  scripts\t3_verify.bat [year]     default: 2025
+REM
+REM  Default year is 2025 to match the existing golden baseline in
+REM  tests\golden\person_settlement_exporter\ (all 42 files are year 2025).
+REM  Using a different default would silently overwrite that baseline,
+REM  because step [3/4] regenerates golden with the same %YEAR%.
+REM  You can still override it explicitly, e.g. scripts\t3_verify.bat 2026
 REM
 REM  Real data run (recommended once real ledger is imported):
 REM      scripts\t3_verify.bat 2025
@@ -33,7 +39,7 @@ REM "Could not find a part of the path".
 if not exist "csharp\out" md "csharp\out"
 if not exist "csharp\out\person_settlement" md "csharp\out\person_settlement"
 
-set "YEAR=2026"
+set "YEAR=2025"
 if not "%~1"=="" set "YEAR=%~1"
 
 echo ===============================================================
