@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <RootNamespace>LawFirm.Data</RootNamespace>
+    <AssemblyName>LawFirm.Data</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- 计划 §2.1 锁定：Dapper 2.1.x (Apache-2.0) + Microsoft.Data.Sqlite 10.x (MIT) -->
+    <PackageReference Include="Dapper" Version="2.1.35" />
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.0" />
+  </ItemGroup>
+
+</Project>

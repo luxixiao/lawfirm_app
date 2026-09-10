@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- WPF 单目标先启（计划 §1.2 / §3.1 Pilot 用 net10 单目标；Win7 后门推迟到全量期） -->
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <UseWPF>true</UseWPF>
+    <OutputType>WinExe</OutputType>
+    <RootNamespace>LawFirm.App</RootNamespace>
+    <AssemblyName>LawFirm.App</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- 只读期只依赖数据层；不引用任何写/迁移组件 -->
+    <ProjectReference Include="..\LawFirm.Data\LawFirm.Data.csproj" />
+  </ItemGroup>
+
+</Project>

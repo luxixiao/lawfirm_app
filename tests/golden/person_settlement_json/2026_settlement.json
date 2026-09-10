@@ -1,0 +1,19 @@
+{
+  "year": 2026,
+  "generated_by": "lawfirm_app scripts/dump_golden.py",
+  "generator_note": "person_settlement._compute 输出：每人 12 月 × 11 键 + 未收 + 费用",
+  "month_keys": [
+    "rec_open_cur",
+    "rec_cur_year",
+    "rec_prev_year",
+    "rec_refund_cur",
+    "rec_refund_prev",
+    "inv_open_received",
+    "inv_open_uncollected",
+    "inv_red_cur",
+    "inv_red_prev",
+    "inv_total",
+    "income"
+  ],
+  "persons": {}
+}
