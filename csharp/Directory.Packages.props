@@ -1,6 +1,9 @@
 <Project>
   <PropertyGroup>
     <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
+    <!-- 传递依赖 pinning：无此开关时下方 <PackageVersion> 只约束直接依赖，
+         经 NPOI/Microsoft.Data.Sqlite 传入的 ImageSharp/Crypto/SQLitePCLRaw 不会被提升 -->
+    <CentralPackageTransitivePinningEnabled>true</CentralPackageTransitivePinningEnabled>
     <!-- 保留 NuGet 审计：漏洞可见性视为长期资产，不做抑制 -->
     <NuGetAudit>true</NuGetAudit>
     <NuGetAuditMode>all</NuGetAuditMode>
