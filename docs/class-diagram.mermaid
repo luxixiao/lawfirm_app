@@ -1,0 +1,63 @@
+%% 个人结算总表导出器 - 类与数据结构关系（C# 端口）
+classDiagram
+    class PersonSettlementExporter {
+        +ExportOne(conn, person, path, year) string
+        +ExportAll(conn, outDir, year) List~string~
+        -WriteWs(ws, person, st, year, typeLabel) void
+        -HasDataYear(st) bool
+        -RowValues(st, months, key) double[]
+        -Subtotal(st, months, keys) double[]
+        -SafeFileName(person) string
+    }
+
+    class SettlementEngine {
+        +Build(conn, year, person, personType) Dictionary~string,PersonSettlement~
+    }
+
+    class ExpenseCatHelper {
+        +OrderedTypes(conn) List~string~
+    }
+
+    class PersonSettlement {
+        +string StaffType
+        +Dictionary~int,MonthData~ Months
+        +Dictionary~int,double~ UncollectedMonth
+        +double UncollectedTotal
+        +Dictionary~string,Dictionary~int,double~~ Expenses
+        +double UncollectedAcc
+    }
+
+    class MonthData {
+        +double RecOpenCur
+        +double RecCurYear
+        +double RecPrevYear
+        +double RecRefundCur
+        +double RecRefundPrev
+        +double InvOpenReceived
+        +double InvOpenUncollected
+        +double InvRedCur
+        +double InvRedPrev
+        +double InvTotal
+        +double Income
+    }
+
+    class XSSFWorkbook {
+        <<NPOI>>
+        +CreateSheet(name) ISheet
+        +Write(fs) void
+    }
+
+    class ISheet {
+        <<NPOI>>
+        +CreateRow(idx) IRow
+        +AddMergedRegion(range) int
+        +SetMargin(type, val) void
+    }
+
+    PersonSettlementExporter --> SettlementEngine : 调 Build
+    PersonSettlementExporter --> ExpenseCatHelper : 取费用顺序
+    PersonSettlementExporter --> PersonSettlement : 写 sheet
+    PersonSettlementExporter --> XSSFWorkbook : 建 workbook
+    XSSFWorkbook --> ISheet : 建 sheet
+    PersonSettlement "1" --> "12" MonthData : Months[1..12]
+    PersonSettlement "1" --> "*" PersonSettlement : Expenses[type][month]

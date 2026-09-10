@@ -1,0 +1,33 @@
+%% PersonSettlementExporter 关键调用序列（Python export_all / export_one → C# 等价）
+sequenceDiagram
+    participant CLI as LawFirm.Cli (Program)
+    participant Ex as PersonSettlementExporter
+    participant Eng as SettlementEngine
+    participant WS as WriteWs (ISheet)
+    participant FS as FileStream
+    participant NPOI as XSSFWorkbook
+
+    CLI->>Ex: ExportAll(conn, outDir, year)
+    Ex->>Eng: Build(conn, year)  // 全量，取人员集合 Keys
+    Eng-->>Ex: Dictionary<string,PersonSettlement>
+    loop 每个 person（Ordinal 排序）
+        Ex->>Ex: ExportOne(conn, person, path, year)
+        Ex->>NPOI: new XSSFWorkbook()
+        Ex->>Eng: Build(conn, year, person, null)  // st_all（汇总）
+        Eng-->>Ex: st_all
+        loop ptype in (合伙,聘用,兼职)
+            Ex->>Eng: Build(conn, year, person, ptype)
+            Eng-->>Ex: st
+            Ex->>Ex: HasDataYear(st)
+            alt HasDataYear == true
+                Ex->>NPOI: CreateSheet(person + ptype)
+                Ex->>WS: WriteWs(ws, person, st, year, ptype)
+            end
+        end
+        Ex->>NPOI: CreateSheet(person + "汇总")  // 恒出
+        Ex->>WS: WriteWs(ws, person, st_all, year, "汇总")
+        Ex->>FS: FileStream.Create(path); wb.Write(fs)
+    end
+    Ex-->>CLI: List<string> 文件路径
+
+    Note over WS: 标题A1:O1 / 表头15列 / 六个大节<br/>三行独立InvTotal / 四行UncollectedTotal / 六行费用小计<br/>页边距0.75/0.75/1.0/1.0（对齐golden空pageSetup）
