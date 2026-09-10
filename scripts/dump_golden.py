@@ -120,17 +120,14 @@ def dump_staff_income(year: int, month_to: int, out_dir: Path) -> List[Path]:
 
 
 def dump_settlement_report(year: int, month: int, out_dir: Path) -> List[Path]:
-    """月度结算表：多 sheet（每人各身份 + 汇总 + 公共费用），名单 = 全选。"""
+    """月度结算表：多 sheet（每人各身份 + 汇总 + 公共费用），名单 = 全选。
+
+    0 人场景已由导出器自身兜底（生成「无数据」占位 xlsx，合法且可比对），
+    故此处不再特判跳过——导出器即唯一事实来源。
+    """
     d = out_dir / "settlement_report_exporter"
     d.mkdir(parents=True, exist_ok=True)
     persons = sorted(person_settlement.build_settlement(year).keys())
-    if not persons:
-        # 当前年份无结算人员数据（build_settlement 返回 0 人）。导出器在 persons 为空时
-        # 会创建 0 个 sheet，openpyxl 的 wb.save 会抛 IndexError。golden 以「当前真实输出」
-        # 为准——无数据即无 golden，跳过而非硬崩溃，避免拖垮整个一次性 bat 流程。
-        print(f"[SKIP] settlement_report: year={year} 无结算人员数据（build_settlement 返回 0 人），"
-              f"导出器无法生成合法 xlsx（需 >=1 个 sheet），跳过本导出器。")
-        return []
     p = settlement_report_exporter.export_report(
         d / f"{year}年{month}月结算表.xlsx", year, month, persons)
     return [p]

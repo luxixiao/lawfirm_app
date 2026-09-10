@@ -244,16 +244,28 @@ def _compare_sheet(bws, cws, title: str, tol: float, report: DiffReport) -> None
             report.add("summary_row", title, f"row {r}", bs[r], cs[r], "汇总行数值不一致")
 
     # ---- 6. 页面设置 ----
-    _compare_page_setup(bws, cws, title, report)
+    _compare_page_setup(bws, cws, title, report, tol)
 
 
-def _compare_page_setup(bws, cws, title: str, report: DiffReport) -> None:
-    """比对 orientation / fitToWidth / fitToHeight / 四边 margins。"""
+def _compare_page_setup(bws, cws, title: str, report: DiffReport, tol: float = 1e-6) -> None:
+    """比对 orientation / fitToWidth / fitToHeight / 四边 margins。
+
+    归一化说明：
+    * fitToWidth / fitToHeight 在 SpreadsheetML 里 schema 默认值就是 1。openpyxl 会显式写
+      fitToWidth="1"，而 NPOI 的 CT_PageSetup 带 [DefaultValue(1)]、XmlSerializer 在等于
+      默认值时**省略**该属性，读回来是 None。二者对 Excel 语义完全等价，因此把 None 视为 1。
+    * 页边距按 tol 做浮点容差比较，避免 0.3 / 0.30000001192092896 这类二进制表示噪声。
+    """
     bp, cp = bws.page_setup, cws.page_setup
+
+    def fit(v):
+        # schema 默认值归一：None（未落盘）== 1
+        return 1 if v is None else v
+
     attrs = [
         ("orientation", lambda p: p.orientation),
-        ("fitToWidth", lambda p: p.fitToWidth),
-        ("fitToHeight", lambda p: p.fitToHeight),
+        ("fitToWidth", lambda p: fit(p.fitToWidth)),
+        ("fitToHeight", lambda p: fit(p.fitToHeight)),
     ]
     for name, getter in attrs:
         bv, cv = getter(bp), getter(cp)
@@ -264,7 +276,10 @@ def _compare_page_setup(bws, cws, title: str, report: DiffReport) -> None:
         for side in ("left", "right", "top", "bottom"):
             bv = getattr(bm, side, None) if bm is not None else None
             cv = getattr(cm, side, None) if cm is not None else None
-            if bv != cv:
+            if bv is None or cv is None:
+                if bv != cv:
+                    report.add("page_setup", title, f"margin.{side}", bv, cv, "页边距不一致")
+            elif abs(float(bv) - float(cv)) > tol:
                 report.add("page_setup", title, f"margin.{side}", bv, cv, "页边距不一致")
 
 

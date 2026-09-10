@@ -7,11 +7,12 @@
 - 万单位：      徐志庆8万、徐琦45000、傅强1万
 - 逗号分隔：    朱云，黄宝根                  （无金额 = 平摊）
 - 红字负数化：  总金额为负时，经办人金额取负（台账写正数 → 规范为负数）
+- 别名归一：    管理人报酬（道兴家私）→ 管理人   （见 _normalize_handler_text）
 """
 from __future__ import annotations
 
 import re
-from typing import List, Tuple
+from typing import Dict, List, Tuple
 
 from app.importer.excel_reader import ImportError_
 
@@ -24,6 +25,55 @@ _NAME = r"[\u4e00-\u9fa5·]{1,6}"
 _AMT = r"\d+(?:\.\d+)?"
 _SEG_WITH_AMT = re.compile(rf"^({_NAME})\s*({_AMT})\s*(万)?$")
 _SEG_NAME_ONLY = re.compile(rf"^({_NAME})$")
+
+# ---------------------------------------------------------------------------
+# 经办人别名归一
+# ---------------------------------------------------------------------------
+# 台账里「管理人」名下经常带后缀说明（项目/案由），如
+#   「管理人报酬（道兴家私）」「管理人报酬」「管理人（某某项目）」
+# 这些都指向同一个经办人「管理人」（花名册中的正式姓名）。
+# 归一策略：**以「管理人」开头的整段**折叠为「管理人」，后缀（含括号内容）丢弃。
+# 注意：segment 级归一，不是整列文本替换 —— 「徐志庆5000、管理人报酬（道兴家私）」
+# 只会把第二段折叠，第一段不受影响。
+_ALIAS_PREFIX: Dict[str, str] = {
+    "管理人": "管理人",
+}
+
+
+def _normalize_handler_text(text: str) -> str:
+    """按 segment 折叠经办人别名：以「管理人」开头的段 → 「管理人」。
+
+    - 只在段首命中别名前缀时折叠，避免「张三管理人」这类真名被误伤。
+    - 保留段内显式金额（如「管理人报酬（xx）3000」仍能取到 3000）。
+    - **不重写分隔符**：无别名命中时原样返回（连分隔符一起），零副作用。
+    """
+    text = (text or "").strip()
+    if not text:
+        return text
+
+    # 无任何别名前缀出现 -> 直接返回原文（连分隔符都不动）
+    if not any(p in text for p in _ALIAS_PREFIX):
+        return text
+
+    parts = _SEG_SPLIT.split(text)
+    seps = _SEG_SPLIT.findall(text)
+    out: List[str] = []
+    for i, seg in enumerate(parts):
+        if seg:
+            replaced = False
+            for prefix, canonical in _ALIAS_PREFIX.items():
+                if seg.startswith(prefix):
+                    suffix = seg[len(prefix):]
+                    m = re.search(rf"({_AMT})\s*(万)?$", suffix)
+                    out.append(canonical + m.group(0) if m else canonical)
+                    replaced = True
+                    break
+            if not replaced:
+                out.append(seg)
+        # 原样保留分隔符（含未消费的空白），保证文本结构不变
+        if i < len(seps):
+            out.append(seps[i])
+    return "".join(out)
 
 _CN_NUM = {
     "一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5,
@@ -60,6 +110,9 @@ def parse_handler_column(text: str, total_amount: float, invoice_no: str = "") -
     text = (text or "").strip()
     if not text:
         return []
+
+    # 别名归一（管理人报酬（xx）→ 管理人）；无命中时原样返回，零副作用
+    text = _normalize_handler_text(text)
 
     segs = [s for s in _SEG_SPLIT.split(text) if s]
     if not segs:

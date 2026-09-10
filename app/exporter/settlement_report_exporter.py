@@ -256,7 +256,20 @@ def export_report(out_path: str | Path, year: int, month: int, persons: list[str
 
     - persons 为姓名列表（含"公共费用"）
     - 每人按身份拆：X合伙 / X聘用 / X兼职（该身份有数据才出）+ X汇总（合并）
+    - persons 为空时生成一张「无数据」说明 sheet（保证 workbook 合法，永不崩）。
     """
+    out = Path(out_path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    if not persons:
+        # 业务层兜底：空名单不再依赖调用方跳过，直接产出合法占位 xlsx，
+        # 避免 openpyxl 在 0 个 sheet 时 wb.save 抛异常（原崩溃点已下沉到此）。
+        wb = openpyxl.Workbook()
+        wb.remove(wb.active)
+        ws = wb.create_sheet(title="无数据")
+        ws["A1"] = "无结算数据"
+        ws["A2"] = f"{year}年无结算人员数据，未生成结算表。"
+        wb.save(out)
+        return out
     data_all = build_settlement(year)
     wb = openpyxl.Workbook()
     wb.remove(wb.active)
@@ -284,7 +297,5 @@ def export_report(out_path: str | Path, year: int, month: int, persons: list[str
             # 无数据也出一个汇总空表（保持名单完整）
             ws = wb.create_sheet(title=f"{person}汇总")
             _write_sheet(ws, person, _empty_st(), year, month)
-    out = Path(out_path)
-    out.parent.mkdir(parents=True, exist_ok=True)
     wb.save(out)
     return out
