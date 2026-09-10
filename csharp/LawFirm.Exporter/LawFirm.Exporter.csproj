@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- T2 导出层：纯计算 + NPOI 写 xlsx，不依赖 WPF/UI。net10.0 与数据层一致。 -->
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <RootNamespace>LawFirm.Exporter</RootNamespace>
+    <AssemblyName>LawFirm.Exporter</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- 复用只读数据层（DbConnection / Dapper / Microsoft.Data.Sqlite 经其传递） -->
+    <ProjectReference Include="..\LawFirm.Data\LawFirm.Data.csproj" />
+    <!-- 计划 §5.3 锁定：NPOI 写 xlsx（与 openpyxl 产出逐格比对） -->
+    <!-- 版本由 csharp/Directory.Packages.props（CPM）统一管理 -->
+    <PackageReference Include="NPOI" />
+  </ItemGroup>
+
+</Project>

@@ -11,8 +11,9 @@
 
   <ItemGroup>
     <!-- 计划 §2.1 锁定：Dapper 2.1.x (Apache-2.0) + Microsoft.Data.Sqlite 10.x (MIT) -->
-    <PackageReference Include="Dapper" Version="2.1.35" />
-    <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.0" />
+    <!-- 版本由 csharp/Directory.Packages.props（CPM）统一管理 -->
+    <PackageReference Include="Dapper" />
+    <PackageReference Include="Microsoft.Data.Sqlite" />
   </ItemGroup>
 
 </Project>

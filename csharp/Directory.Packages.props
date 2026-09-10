@@ -1,0 +1,28 @@
+<Project>
+  <PropertyGroup>
+    <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
+    <!-- 保留 NuGet 审计：漏洞可见性视为长期资产，不做抑制 -->
+    <NuGetAudit>true</NuGetAudit>
+    <NuGetAuditMode>all</NuGetAuditMode>
+    <NuGetAuditLevel>low</NuGetAuditLevel>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- 原有直接依赖 -->
+    <PackageVersion Include="Dapper" Version="2.1.35" />
+    <PackageVersion Include="Microsoft.Data.Sqlite" Version="10.0.0" />
+    <PackageVersion Include="NPOI" Version="2.7.2" />
+
+    <!-- CVE 收敛：显式覆盖传递依赖 -->
+    <!-- GHSA-2cmq-823j-5qj8 (High) + GHSA-rxmq-m78w-7wmc (Moderate) -> 2.x 线最新 -->
+    <PackageVersion Include="SixLabors.ImageSharp" Version="2.1.13" />
+    <!-- 12 项 CVE（含 CVE-2026-47304 Critical）：net10.0 对齐 10.x 线最新无漏洞版 -->
+    <PackageVersion Include="System.Security.Cryptography.Xml" Version="10.0.12" />
+    <!-- 与上一行成对：NPOI 2.7.2 声明 Pkcs >=8.0.1，若 Xml 升 10.x 而 Pkcs 留 8.0.1
+         会在 NPOI 内部 crypto 栈造成大版本错配（MissingMethodException 风险，
+         且 xlsx 逐格比对抓不到），故两包同步升 10.0.12 -->
+    <PackageVersion Include="System.Security.Cryptography.Pkcs" Version="10.0.12" />
+    <!-- CVE-2025-6965 (Critical 9.8)：2.1.11 已 deprecated，2.1.12+ 内嵌 SQLite 3.53.0 -->
+    <PackageVersion Include="SQLitePCLRaw.bundle_e_sqlite3" Version="2.1.13" />
+  </ItemGroup>
+</Project>
