@@ -33,6 +33,19 @@ REM ===============================================================
 
 cd /d "%~dp0.."
 
+REM Stale-file guard: dump_golden.py / export_all only WRITE, they never
+REM clean the target dir. If the year's person set ever shrinks (DB row
+REM deleted/renamed), an old file would linger and the final diff would
+REM false-positive as "extra_in_candidate". So we wipe both directories
+REM before regenerating. Both are safe to delete: the candidate dir is
+REM gitignored throwaway output, and the golden dir (tests\golden\
+REM person_settlement_exporter) is also gitignored (by the pattern
+REM "personal settlement_*.xlsx" in .gitignore) so it holds no tracked
+REM files; dump_golden.py fully regenerates it right after, verified
+REM to be identical in cell content.
+if exist "csharp\out\person_settlement" rd /s /q "csharp\out\person_settlement"
+if exist "tests\golden\person_settlement_exporter" rd /s /q "tests\golden\person_settlement_exporter"
+
 REM Output dir: csharp\out is gitignored so it does not exist after a fresh
 REM clone or Seafile sync. Create it first, otherwise FileStream throws
 REM "Could not find a part of the path".
