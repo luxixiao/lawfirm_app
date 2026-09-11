@@ -19,10 +19,11 @@
         <Setter Property="Template">
             <Setter.Value>
                 <ControlTemplate TargetType="DataGridColumnHeader">
-                    <Border Background="{TemplateBinding Background}"
-                            BorderBrush="{TemplateBinding BorderBrush}"
-                            BorderThickness="{TemplateBinding BorderThickness}"
-                            ClipToBounds="False">
+                    <Grid>
+                        <Border Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                ClipToBounds="False">
                         <Grid ClipToBounds="False">
                             <Grid.RowDefinitions>
                                 <RowDefinition Height="*"/>
@@ -58,7 +59,11 @@
                                               VerticalAlignment="Center"
                                               Visibility="Collapsed"/>
                         </Grid>
-                    </Border>
+                        </Border>
+                        <Thumb x:Name="PART_RightHeaderGripper"
+                               Style="{StaticResource HeaderGripperStyle}"
+                               HorizontalAlignment="Right"/>
+                    </Grid>
                     <ControlTemplate.Triggers>
                         <DataTrigger Binding="{Binding Path=Column.(controls:TwoTierHeaderGrid.IsLead), RelativeSource={RelativeSource TemplatedParent}}" Value="True">
                             <Setter TargetName="LeadContent" Property="Visibility" Value="Visible"/>

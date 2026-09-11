@@ -342,6 +342,29 @@
         <Setter Property="Background" Value="Transparent"/>
     </Style>
 
+    <!-- 表头拖宽 Thumb（WPF DataGridColumnHeader 按名字找 PART_RightHeaderGripper 自动接拖拽逻辑；
+         自定义模板必须自带，否则列宽不可拖。命中区 8px 透明，hover/drag 显示细线） -->
+    <Style x:Key="HeaderGripperStyle" TargetType="Thumb">
+        <Setter Property="Cursor" Value="SizeWE"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Thumb">
+                    <Grid Width="8" Background="Transparent">
+                        <Rectangle x:Name="GripLine" Width="2" HorizontalAlignment="Center" Fill="Transparent"/>
+                    </Grid>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="GripLine" Property="Fill" Value="{StaticResource Border}"/>
+                        </Trigger>
+                        <Trigger Property="IsDragging" Value="True">
+                            <Setter TargetName="GripLine" Property="Fill" Value="{StaticResource TextMute}"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
     <!-- 单级表头：bgTable 底 + 底/右 1px 分隔线；排序列 HeaderSortBg（C9） -->
     <Style x:Key="NotionColumnHeaderStyle" TargetType="DataGridColumnHeader">
         <Setter Property="FontFamily" Value="{StaticResource AppFontFamily}"/>
@@ -356,13 +379,18 @@
         <Setter Property="Template">
             <Setter.Value>
                 <ControlTemplate TargetType="DataGridColumnHeader">
-                    <Border Background="{TemplateBinding Background}"
-                            BorderBrush="{TemplateBinding BorderBrush}"
-                            BorderThickness="{TemplateBinding BorderThickness}">
-                        <ContentPresenter Margin="{TemplateBinding Padding}"
-                                          HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
-                                          VerticalAlignment="{TemplateBinding VerticalContentAlignment}"/>
-                    </Border>
+                    <Grid>
+                        <Border Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}">
+                            <ContentPresenter Margin="{TemplateBinding Padding}"
+                                              HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                              VerticalAlignment="{TemplateBinding VerticalContentAlignment}"/>
+                        </Border>
+                        <Thumb x:Name="PART_RightHeaderGripper"
+                               Style="{StaticResource HeaderGripperStyle}"
+                               HorizontalAlignment="Right"/>
+                    </Grid>
                 </ControlTemplate>
             </Setter.Value>
         </Setter>
