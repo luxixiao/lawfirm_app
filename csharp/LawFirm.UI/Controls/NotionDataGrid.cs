@@ -5,6 +5,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Media;
+using LawFirm.UI.Services;
 
 namespace LawFirm.UI.Controls;
 
@@ -21,6 +22,7 @@ public class NotionDataGrid : DataGrid
 {
     public NotionDataGrid()
     {
+        Columns.CollectionChanged += OnColumnsCollectionChanged;
         CanUserAddRows = false;
         CanUserDeleteRows = false;
         CanUserResizeRows = false;
@@ -56,10 +58,10 @@ public class NotionDataGrid : DataGrid
 
     // ---- 列宽变化事件（QA B2） ----
     //
-    // WPF DataGrid 没有 ColumnWidthChanged 事件。DataGridColumn 实现了
-    // INotifyPropertyChanged，拖宽时以属性名 "Width"（用户拖动，Absolute）/
-    // "ActualWidth"（布局算出）通知。这里逐列订阅 PropertyChanged 并归一为
-    // 单一 ColumnWidthChanged 事件；列增删（OnColumnsChanged）时自动重新挂钩。
+    // WPF DataGrid 没有 ColumnWidthChanged 事件，且 DataGridColumn 并不实现
+    // INotifyPropertyChanged（CS1061 实测）。改用 DependencyPropertyDescriptor
+    // 监听 WidthProperty（用户拖动/程序化设置 Width 都会走该 DP）；
+    // 列增删时经 Columns.CollectionChanged 自动重新挂钩。
 
     /// <summary>任一列宽度变化时触发（用户拖宽 / 程序化设置 Width）。</summary>
     public event EventHandler? ColumnWidthChanged;
@@ -67,9 +69,12 @@ public class NotionDataGrid : DataGrid
     private readonly HashSet<DataGridColumn> _widthHooked = new();
 
     /// <summary>列集合变化（Add/Remove/Reset）→ 重新挂钩逐列 PropertyChanged。</summary>
-    protected override void OnColumnsChanged(NotifyCollectionChangedEventArgs e)
+    /// <remarks>
+    /// DataGrid 没有可重写的 OnColumnsChanged 虚方法（QA 后实测 CS0115）；
+    /// Columns 是 ObservableCollection，构造器里订阅 CollectionChanged 等价实现。
+    /// </remarks>
+    private void OnColumnsCollectionChanged(object? sender, NotifyCollectionChangedEventArgs e)
     {
-        base.OnColumnsChanged(e);
         if (e.Action == NotifyCollectionChangedAction.Reset)
         {
             _widthHooked.Clear();
@@ -90,20 +95,26 @@ public class NotionDataGrid : DataGrid
 
     private void HookColumnWidth(DataGridColumn col)
     {
-        if (_widthHooked.Add(col)) col.PropertyChanged += OnColumnPropertyChanged;
+        if (_widthHooked.Add(col))
+        {
+            var dpd = System.ComponentModel.DependencyPropertyDescriptor
+                .FromProperty(DataGridColumn.WidthProperty, typeof(DataGridColumn));
+            dpd.AddValueChanged(col, OnColumnWidthChanged);
+        }
     }
 
     private void UnhookColumnWidth(DataGridColumn col)
     {
-        if (_widthHooked.Remove(col)) col.PropertyChanged -= OnColumnPropertyChanged;
+        if (_widthHooked.Remove(col))
+        {
+            var dpd = System.ComponentModel.DependencyPropertyDescriptor
+                .FromProperty(DataGridColumn.WidthProperty, typeof(DataGridColumn));
+            dpd.RemoveValueChanged(col, OnColumnWidthChanged);
+        }
     }
 
-    private void OnColumnPropertyChanged(object? sender, PropertyChangedEventArgs e)
-    {
-        // 只透传宽度相关通知，避免 DisplayIndex 等噪音触发持久化
-        if (e.PropertyName == "Width" || e.PropertyName == "ActualWidth")
-            ColumnWidthChanged?.Invoke(this, EventArgs.Empty);
-    }
+    private void OnColumnWidthChanged(object? sender, EventArgs e)
+        => ColumnWidthChanged?.Invoke(this, EventArgs.Empty);
 
     /// <summary>列身份 = 稳定标题字符串（列集合不一致即整份丢弃，column_layout.py:64-65）。</summary>
     public IReadOnlyList<string> ColumnKeys()

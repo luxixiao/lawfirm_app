@@ -72,6 +72,18 @@ public static class ColumnLayoutManagerTests
             failures.Add($"case4: 期望空字典，实际 {string.Join(",", got.Select(kv => kv.Key + "=" + kv.Value))}");
     }
 
+    /// <summary>用例 5 变宽补 auto 列（QA Minor）：A fixed 原样，余量全给 B。</summary>
+    private static void Case5_WiderFillsAutoColumn(List<string> failures)
+    {
+        var cols = new List<ColumnLayoutManager.FillColumn>
+        {
+            new("A", ContentW: 200, Fixed: 200),
+            new("B", ContentW: 300),
+        };
+        var got = ColumnLayoutManager.ComputeFill(800, cols);
+        Check(failures, "case5", got, new Dictionary<string, int> { ["A"] = 200, ["B"] = 600 });
+    }
+
     private static void Check(List<string> failures, string caseName,
         Dictionary<string, int> got, Dictionary<string, int> expected)
     {

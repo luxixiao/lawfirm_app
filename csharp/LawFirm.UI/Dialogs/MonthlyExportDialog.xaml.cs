@@ -2,6 +2,7 @@
 using System.Linq;
 using System.Windows;
 using LawFirm.UI.Services;
+using LawFirm.UI.ViewModels;
 
 namespace LawFirm.UI.Dialogs;
 

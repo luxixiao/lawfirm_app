@@ -10,7 +10,7 @@ public sealed class GridRow
 {
     public GridRow(IReadOnlyDictionary<string, object?> cells, bool isBold = false, bool isTotal = false)
     {
-        Cells = cells;
+        Cells = new Dictionary<string, object?>(cells);
         IsBold = isBold;
         IsTotal = isTotal;
     }

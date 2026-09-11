@@ -14,7 +14,7 @@ namespace LawFirm.UI.Shell;
 /// </summary>
 public static class NavIcons
 {
-    private static Geometry? Parse(string data)
+    private static Geometry Parse(string data)
         => Geometry.Parse(data);
 
     /// <summary>数据导入：U 形托盘 + 下箭头（nav_icons.py 精确复刻）。</summary>

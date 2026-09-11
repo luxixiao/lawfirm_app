@@ -46,6 +46,7 @@ internal static class Program
                 case "--report" when i + 1 < args.Length: report = args[++i]; break;
                 case "--out-dir" when i + 1 < args.Length: outDir = args[++i]; break;
                 case "--person" when i + 1 < args.Length: onlyPersons.Add(args[++i]); break;
+                case "--selftest-ui" when i + 1 == args.Length: return RunUiSelfTest();
                 default:
                     Console.Error.WriteLine($"未知参数或缺少取值: {args[i]}");
                     return 2;
@@ -123,7 +124,7 @@ internal static class Program
         var failures = LawFirm.UI.Controls.ColumnLayoutManagerTests.RunAll();
         if (failures.Count == 0)
         {
-            Console.WriteLine("[OK] 4/4 cases passed.");
+            Console.WriteLine($"[OK] {5} cases passed.");
             return 0;
         }
         foreach (var f in failures) Console.Error.WriteLine($"[FAIL] {f}");

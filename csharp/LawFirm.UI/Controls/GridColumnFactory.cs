@@ -93,7 +93,7 @@ public static class GridColumnFactory
             Value = true,
         };
         trigger.Setters.Add(new Setter(TextElement.FontWeightProperty, FontWeights.Bold));
-        trigger.Setters.Add(new Setter(BackgroundProperty,
+        trigger.Setters.Add(new Setter(System.Windows.Controls.Control.BackgroundProperty,
             Application.Current?.TryFindResource("BgTable") as Brush ?? Brushes.WhiteSmoke));
         style.Triggers.Add(trigger);
         return style;

@@ -169,7 +169,7 @@ public partial class PersonalSettlementViewModel : ViewModelBase
             // QA B3：lambda 在 RunExportAsync 内 _cts 赋值之后才执行，取 Token 安全
             () => _exportService.ExportAllAsync(outDir, year, ProgressSink(), _cts!.Token),
             files => $"已生成 {files.Count} 份个人结算总表\n输出目录：{outDir}",
-            files => files.ForEach(f => AppendLog($"✓ {Path.GetFileName(f)}")));
+            files => { foreach (var f in files) AppendLog($"✓ {Path.GetFileName(f)}"); });
     }
 
     [RelayCommand(CanExecute = nameof(CanExport))]
@@ -195,7 +195,7 @@ public partial class PersonalSettlementViewModel : ViewModelBase
         await RunExportAsync(
             () => _exportService.ExportSelectedAsync(outDir, year, selected, ProgressSink(), _cts!.Token),
             files => $"已生成 {files.Count} 份\n输出目录：{outDir}",
-            files => files.ForEach(f => AppendLog($"✓ {Path.GetFileName(f)}")));
+            files => { foreach (var f in files) AppendLog($"✓ {Path.GetFileName(f)}"); });
     }
 
     /// <summary>导出月度结算表（gen_report：月份 + 多选员工，记忆上次选择；Python:445-517）。</summary>

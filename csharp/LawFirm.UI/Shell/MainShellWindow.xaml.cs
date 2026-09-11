@@ -91,7 +91,7 @@ public partial class MainShellWindow : Window
     }
 
     private const int WM_GETMINMAXINFO = 0x0024;
-    private const IntPtr MONITOR_DEFAULTTONEAREST = new(2);
+    private static readonly IntPtr MONITOR_DEFAULTTONEAREST = new(2);
 
     [StructLayout(LayoutKind.Sequential)]
     private struct POINT { public int x; public int y; }

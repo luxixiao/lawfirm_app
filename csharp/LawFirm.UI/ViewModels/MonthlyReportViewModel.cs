@@ -48,8 +48,7 @@ public partial class MonthlyReportViewModel : ViewModelBase
     [ObservableProperty] private IReadOnlyList<PersonalSettlementViewModel.TypeOption> _typeOptions;
     [ObservableProperty] private PersonalSettlementViewModel.TypeOption? _personType;
     [ObservableProperty] private int _month = 1;
-    [ObservableProperty] private IReadOnlyList<Services.SettlementQueryService.ReportRow> _rows =
-        Array.Empty<SettlementQueryService.ReportRow>();
+    [ObservableProperty] private IReadOnlyList<GridRow> _rows = Array.Empty<GridRow>();
     [ObservableProperty] private string _summaryText = "请选择经办人";
 
     partial void OnPersonChanged(PersonalSettlementViewModel.PersonOption? value) => _ = RefreshAsync();
@@ -63,7 +62,7 @@ public partial class MonthlyReportViewModel : ViewModelBase
         var name = Person?.Name;
         if (name is null)
         {
-            Rows = Array.Empty<SettlementQueryService.ReportRow>();
+            Rows = Array.Empty<GridRow>();
             SummaryText = "请选择经办人";
             return;
         }

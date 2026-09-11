@@ -188,7 +188,7 @@ public static class SettlementQueryService
             ? R2(Enumerable.Range(1, month).Sum(x => st.UncollectedMonth.GetValueOrDefault(x, 0.0)))
             : R2(st.UncollectedTotal);
         rows.Add(Row("四、未收款金额",
-            Val(mo => st.UncollectedMonth.GetValueOrDefault(mo, 0.0)), false, uncollectedCum));
+            Val(x => x.InvOpenUncollected), false, uncollectedCum));
         // 五
         rows.Add(Row("五、业务收入", Val(x => x.Income), false));
         // 六（Σ 全部费用类型逐月）
@@ -198,7 +198,7 @@ public static class SettlementQueryService
             for (int i = 0; i < lastMonth; i++)
             {
                 double s = 0;
-                foreach (var t in st.Expenses) s += st.Expenses[t].GetValueOrDefault(i + 1, 0.0);
+                foreach (var t in st.Expenses.Values) s += t.GetValueOrDefault(i + 1, 0.0);
                 s = R2(s);
                 cells6[colKeys[i + 1]] = s;
                 sum6 += s;
@@ -338,7 +338,7 @@ public static class SettlementQueryService
         string n = (name ?? string.Empty).Trim();
         if (s.Length == 0) return n;
         if (n.Length == 0) return s;
-        string sep = s.Any(ch => CnNum.Contains(ch)) ? "、" : ".";
+        string sep = CnNum.Any(s.Contains) ? "、" : ".";
         return $"{s}{sep}{n}";
     }
 
