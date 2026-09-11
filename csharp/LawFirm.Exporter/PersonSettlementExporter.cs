@@ -242,7 +242,7 @@ public static class PersonSettlementExporter
             {
                 var cc = row.CreateCell(2 + k);
                 // 空值只套样式、不 SetCellValue（否则会落盘 t="n" 无值/0，与 golden 的 None 不一致）
-                if (vals[k].HasValue) cc.SetCellValue(vals[k].Value);
+                if (vals[k].HasValue) cc.SetCellValue(vals[k]!.Value);
                 cc.CellStyle = bold ? numBold : num;
             }
         }
