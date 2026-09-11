@@ -47,6 +47,7 @@ internal static class Program
                 case "--out-dir" when i + 1 < args.Length: outDir = args[++i]; break;
                 case "--person" when i + 1 < args.Length: onlyPersons.Add(args[++i]); break;
                 case "--selftest-ui" when i + 1 == args.Length: return RunUiSelfTest();
+                case "--diag-persons" when i + 1 == args.Length: return RunDiagPersons();
                 default:
                     Console.Error.WriteLine($"未知参数或缺少取值: {args[i]}");
                     return 2;
@@ -129,5 +130,35 @@ internal static class Program
         }
         foreach (var f in failures) Console.Error.WriteLine($"[FAIL] {f}");
         return 1;
+    }
+
+    /// <summary>
+    /// 诊断：「各类报表」页数据路径（LatestDataYear → PersonNames）。
+    /// 复现 UI 初始化链路但不进 WPF；异常全捕获打印，用于排查经办人下拉为空。
+    /// 退出码 0=正常，1=抛异常。
+    /// </summary>
+    private static int RunDiagPersons()
+    {
+        try
+        {
+            Console.WriteLine($"[INFO] DB = {DbConnection.FindDatabase()}");
+            int latest = LawFirm.UI.Services.SettlementQueryService.LatestDataYear();
+            Console.WriteLine($"[OK] LatestDataYear() = {latest}");
+            for (int y = latest; y >= latest - 3; y--)
+            {
+                var names = LawFirm.UI.Services.SettlementQueryService.PersonNames(y);
+                string preview = names.Count > 0
+                    ? "：" + string.Join("、", names.Take(8)) + (names.Count > 8 ? " …" : "")
+                    : "（空）";
+                Console.WriteLine($"[OK] PersonNames({y}) -> {names.Count} 人{preview}");
+            }
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[FAIL] {ex.GetType().Name}: {ex.Message}");
+            Console.WriteLine(ex.StackTrace);
+            return 1;
+        }
     }
 }
