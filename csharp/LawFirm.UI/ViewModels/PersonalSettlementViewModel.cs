@@ -60,7 +60,9 @@ public partial class PersonalSettlementViewModel : ViewModelBase
     {
         if (_initialized) return;
         _initialized = true;
-        _ = ReloadPersonsAsync();
+        // 默认选「最近有数据的年份」（settlement_view.py:143-150）；赋值触发 OnYearChanged → ReloadPersonsAsync
+        var latest = SettlementQueryService.LatestDataYear();
+        Year = Years.FirstOrDefault(y => y.Value == latest) ?? Years[0];
     }
     private bool _initialized;
 
@@ -301,11 +303,12 @@ public partial class PersonalSettlementViewModel : ViewModelBase
 
     private void AppendLog(string line) => LogText = LogText.Length == 0 ? line : LogText + "\n" + line;
 
-    /// <summary>目录选择（.NET 8+ WPF OpenFolderDialog；各 tab 共用）。</summary>
+    /// <summary>目录选择（.NET 8+ WPF OpenFolderDialog；各 tab 共用）。Owner 绑主窗口，避免对话框弹到后面看似「无反应」。</summary>
     public static string? PickFolder()
     {
-        // TODO(verify): Microsoft.Win32.OpenFolderDialog 为 .NET 8+ WPF API，net10 下应可用
         var dlg = new Microsoft.Win32.OpenFolderDialog { Title = "选择输出目录" };
-        return dlg.ShowDialog() == true ? dlg.FolderName : null;
+        var owner = System.Windows.Application.Current?.MainWindow;
+        bool? ok = owner is not null ? dlg.ShowDialog(owner) : dlg.ShowDialog();
+        return ok == true ? dlg.FolderName : null;
     }
 }
