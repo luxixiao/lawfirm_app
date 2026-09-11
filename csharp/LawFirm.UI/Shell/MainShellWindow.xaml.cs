@@ -77,12 +77,17 @@ public partial class MainShellWindow : Window
             if (monitor != IntPtr.Zero)
             {
                 var info = new MONITORINFO();
-                GetMonitorInfo(monitor, ref info);
-                // 工作区 = 去掉任务栏后的区域；最大化时限制到工作区
-                mmi.ptMaxPosition.x = Math.Abs(info.rcWork.left - info.rcMonitor.left);
-                mmi.ptMaxPosition.y = Math.Abs(info.rcWork.top - info.rcMonitor.top);
-                mmi.ptMaxSize.x = Math.Abs(info.rcWork.right - info.rcWork.left);
-                mmi.ptMaxSize.y = Math.Abs(info.rcWork.bottom - info.rcWork.top);
+                // ★ cbSize 必须先填，否则 GetMonitorInfo 直接失败、rcWork 全 0
+                //   → ptMaxSize=(0,0) → 最大化后窗口 0×0（表现就是「界面消失」）
+                info.cbSize = Marshal.SizeOf(typeof(MONITORINFO));
+                if (GetMonitorInfo(monitor, ref info))
+                {
+                    // 工作区 = 去掉任务栏后的区域；最大化时限制到工作区
+                    mmi.ptMaxPosition.x = Math.Abs(info.rcWork.left - info.rcMonitor.left);
+                    mmi.ptMaxPosition.y = Math.Abs(info.rcWork.top - info.rcMonitor.top);
+                    mmi.ptMaxSize.x = Math.Abs(info.rcWork.right - info.rcWork.left);
+                    mmi.ptMaxSize.y = Math.Abs(info.rcWork.bottom - info.rcWork.top);
+                }
             }
             Marshal.StructureToPtr(mmi, lParam, true);
             handled = true;

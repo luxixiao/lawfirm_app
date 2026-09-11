@@ -10,7 +10,7 @@ namespace LawFirm.UI.Views.Settlement;
 
 /// <summary>
 /// Tab1 个人结算总表：动态列重建（月份模式 14 列 ↔ 1~mo 月列模式）
-/// + 列布局持久化（StatePage=settlement / StateName=personal）。
+/// + 列布局持久化（StatePage=settlement / StateName=personal/{经办人}/{月份选项}）。
 ///
 /// 持久化时机（对齐 Python column_layout.py 语义）：
 /// - VM 列集合变化 → 重建列 → **读取**存档并应用（列集合不一致时 Store 自动丢弃回退默认）；
@@ -63,19 +63,28 @@ public partial class PersonalSettlementTab : UserControl
         }
     }
 
-    // ---- 列布局持久化（C3） ----
+    // ---- 列布局持久化（C3；用户增强：C 方案 = 经办人 × 月份视图 各存一份） ----
+    //
+    // 键 = "personal/{经办人}/{月份选项值}"：换人/换视图自动换档，
+    // 列集合不一致时 ColumnStateStore 自动丢弃旧档回退默认（原有语义）。
+
+    private string StateKey()
+    {
+        var person = (_vm?.Person?.Name ?? "").Replace("/", "_").Replace("\\", "_");
+        return $"personal/{person}/{_vm?.Month?.Value ?? 0}";
+    }
 
     private void LoadColumnState()
     {
         var keys = Grid.ColumnKeys();
         if (keys.Count == 0) return;
-        var state = _store.Load("settlement", "personal", keys);
+        var state = _store.Load("settlement", StateKey(), keys);
         Grid.ApplyColumnState(state);
     }
 
     private void SaveColumnState()
     {
         if (_applying) return;   // 重建触发的 resize 不是用户行为，不写存档
-        _store.Save("settlement", "personal", Grid.CaptureColumnState());
+        _store.Save("settlement", StateKey(), Grid.CaptureColumnState());
     }
 }
