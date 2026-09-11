@@ -58,6 +58,10 @@ public static class SettlementReportExporter
             wsEmpty.SetMargin(MarginType.RightMargin, 0.75f);
             wsEmpty.SetMargin(MarginType.TopMargin, 1.0f);
             wsEmpty.SetMargin(MarginType.BottomMargin, 1.0f);
+            // header/footer 同样要显式写：NPOI 默认 0.3，openpyxl 默认 0.5。
+            // 四边写对了但漏了这两边时，diff_xlsx.py 目前只比四边不会报，将来扩到六边会立刻红。
+            wsEmpty.SetMargin(MarginType.HeaderMargin, 0.5f);
+            wsEmpty.SetMargin(MarginType.FooterMargin, 0.5f);
             Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(outPath))!);
             using var fsEmpty = new FileStream(outPath, FileMode.Create, FileAccess.Write);
             wbEmpty.Write(fsEmpty);

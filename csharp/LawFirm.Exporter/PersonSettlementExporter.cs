@@ -197,6 +197,14 @@ public static class PersonSettlementExporter
         var num = Make(false, HorizontalAlignment.Right, true);            // C..O（不加粗）
         var numBold = Make(true, HorizontalAlignment.Right, true);         // C..O（加粗）
 
+        // 表头样式 = 加粗 + 居中 + F2F2F2 实心底 + 边框（对齐 Python 的 BOLD + HEAD_FILL）。
+        // 之前这里直接复用 centerText（bold=false 且无填充），而注释却写着「加粗+填充」，
+        // 属于注释与实现不符的视觉回归；diff_xlsx.py 不比 font/fill，7 维全绿也看不出来。
+        var headerText = Make(true, HorizontalAlignment.Center, false);
+        if (headerText is XSSFCellStyle xsHeader)
+            xsHeader.SetFillForegroundColor(new XSSFColor(new byte[] { 0xF2, 0xF2, 0xF2 }));
+        headerText.FillPattern = FillPattern.SolidForeground;
+
         // ---- 标题行（第 1 行，合并 A1:O1）----
         var r0 = ws.CreateRow(0);
         r0.HeightInPoints = 28;
@@ -219,7 +227,7 @@ public static class PersonSettlementExporter
         {
             var c = r1.CreateCell(j);
             c.SetCellValue(Headers[j]);
-            c.CellStyle = centerText;   // 加粗 + 居中 + 填充 + 边框
+            c.CellStyle = headerText;   // 加粗 + 居中 + F2F2F2 填充 + 边框（Python BOLD + HEAD_FILL）
         }
 
         // ---- 数据行（第 3 行起）----
