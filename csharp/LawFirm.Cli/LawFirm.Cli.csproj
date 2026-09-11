@@ -1,8 +1,10 @@
-<Project Sdk="Microsoft.NET.Sdk">
+﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <!-- T2 命令行入口：只读打开 lawfirm.db，跑结算引擎 + NPOI 导出，产出可供 diff 的 xlsx -->
-    <TargetFramework>net10.0</TargetFramework>
+    <!-- T5：改 net10.0-windows 以引用 LawFirm.UI（--selftest-ui 跑 ComputeFill 单测）；
+         对 dotnet build/run 与 t2/t3_verify.bat 透明（同为 Windows 本机执行） -->
+    <TargetFramework>net10.0-windows</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <LangVersion>latest</LangVersion>
@@ -14,6 +16,7 @@
   <ItemGroup>
     <ProjectReference Include="..\LawFirm.Data\LawFirm.Data.csproj" />
     <ProjectReference Include="..\LawFirm.Exporter\LawFirm.Exporter.csproj" />
+    <ProjectReference Include="..\LawFirm.UI\LawFirm.UI.csproj" />
   </ItemGroup>
 
 </Project>

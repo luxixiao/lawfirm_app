@@ -1,0 +1,26 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- T5 UI 类库（规格 t5-ui-skeleton-spec.md §2）：产品 UI 与 App 验证壳职责分离 -->
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <OutputType>Library</OutputType>
+    <RootNamespace>LawFirm.UI</RootNamespace>
+    <AssemblyName>LawFirm.UI</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="CommunityToolkit.Mvvm" />
+    <!-- HandyControl 暂不引入（规格 §7.3 / U8 已裁定：T5 期不引入，推迟全量期） -->
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- 显式优于隐式：Exporter 依赖 Data；UI 经 Exporter 触数据、经 Data 只读开连接 -->
+    <ProjectReference Include="..\LawFirm.Exporter\LawFirm.Exporter.csproj" />
+    <ProjectReference Include="..\LawFirm.Data\LawFirm.Data.csproj" />
+  </ItemGroup>
+
+</Project>

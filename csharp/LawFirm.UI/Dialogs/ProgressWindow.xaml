@@ -1,0 +1,50 @@
+﻿<Window x:Class="LawFirm.UI.Dialogs.ProgressWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="正在生成" Width="420" SizeToContent="Height"
+        WindowStyle="None" ResizeMode="NoResize"
+        ShowInTaskbar="False" Topmost="False"
+        WindowStartupLocation="CenterOwner"
+        Background="Transparent"
+        FontFamily="{StaticResource AppFontFamily}">
+    <!--
+      异步进度窗（规格 §6.3）：非模态 Show() + Owner（门槛：导出期间主窗可拖动可重绘）；
+      ProgressBar 重写模板（NotionProgressBar：Border + 宽度指示），取消按钮 → CancelCommand。
+    -->
+    <Border Background="{StaticResource Bg}"
+            BorderBrush="{StaticResource Border}"
+            BorderThickness="1" CornerRadius="10" Margin="12">
+        <Border.Effect>
+            <DropShadowEffect BlurRadius="12" ShadowDepth="2" Opacity="0.18"/>
+        </Border.Effect>
+        <Grid Margin="24">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+            </Grid.RowDefinitions>
+
+            <TextBlock Grid.Row="0" Text="正在生成个人结算总表"
+                       FontSize="{StaticResource FontDialogTitleSize}"
+                       FontWeight="Bold" Foreground="{StaticResource Text}"/>
+            <TextBlock Grid.Row="1" Margin="0,10,0,0"
+                       Text="{Binding StatusText}"
+                       FontSize="{StaticResource FontCaptionSize}"
+                       Foreground="{StaticResource TextMute}" TextTrimming="CharacterEllipsis"/>
+            <ProgressBar Grid.Row="2" Margin="0,12,0,0"
+                         Style="{StaticResource NotionProgressBar}"
+                         Value="{Binding ProgressValue, Mode=OneWay}"/>
+            <TextBlock Grid.Row="3" Margin="0,6,0,0"
+                       HorizontalAlignment="Right"
+                       Text="{Binding ProgressValue, Mode=OneWay, StringFormat={}{0:N0}%}"
+                       FontSize="{StaticResource FontCaptionSize}"
+                       Foreground="{StaticResource TextMute}"/>
+            <Button Grid.Row="4" Margin="0,16,0,0"
+                    Content="取消" Style="{StaticResource NotionButton}"
+                    HorizontalAlignment="Right" MinWidth="88"
+                    Command="{Binding CancelCommand}"/>
+        </Grid>
+    </Border>
+</Window>

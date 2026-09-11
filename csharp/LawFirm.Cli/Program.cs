@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -111,5 +111,22 @@ internal static class Program
             Console.Error.WriteLine($"[ERROR] 导出失败: {ex.Message}");
             return 1;
         }
+    }
+
+    /// <summary>
+    /// T5 自测：ComputeFill 4 个单测（ColumnLayoutManagerTests，规格 T5.2 验收 ⑦）。
+    /// 不触数据库、不触 UI 线程；退出码 0=全绿，1=有失败。
+    /// </summary>
+    private static int RunUiSelfTest()
+    {
+        Console.WriteLine("[INFO] T5 ComputeFill self-test...");
+        var failures = LawFirm.UI.Controls.ColumnLayoutManagerTests.RunAll();
+        if (failures.Count == 0)
+        {
+            Console.WriteLine("[OK] 4/4 cases passed.");
+            return 0;
+        }
+        foreach (var f in failures) Console.Error.WriteLine($"[FAIL] {f}");
+        return 1;
     }
 }

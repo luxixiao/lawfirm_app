@@ -1,4 +1,4 @@
-<Project>
+﻿<Project>
   <PropertyGroup>
     <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
     <!-- 传递依赖 pinning：无此开关时下方 <PackageVersion> 只约束直接依赖，
@@ -15,6 +15,9 @@
     <PackageVersion Include="Dapper" Version="2.1.35" />
     <PackageVersion Include="Microsoft.Data.Sqlite" Version="10.0.0" />
     <PackageVersion Include="NPOI" Version="2.7.2" />
+
+    <!-- T5 UI（规格 §7）：CommunityToolkit.Mvvm 必需（源生成器）；HandyControl 已裁定不引入（U8） -->
+    <PackageVersion Include="CommunityToolkit.Mvvm" Version="8.4.0" />
 
     <!-- CVE 收敛：显式覆盖传递依赖 -->
     <!-- GHSA-2cmq-823j-5qj8 (High) + GHSA-rxmq-m78w-7wmc (Moderate) -> 2.x 线最新 -->

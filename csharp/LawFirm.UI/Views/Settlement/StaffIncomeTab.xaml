@@ -1,0 +1,57 @@
+﻿<UserControl x:Class="LawFirm.UI.Views.Settlement.StaffIncomeTab"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:controls="clr-namespace:LawFirm.UI.Controls">
+    <!--
+      Tab3 年度聘用结算表（settlement_view.py:666-733 对齐）：
+      年份（共享）/月份 + 两级表头 12 列（序号/姓名 整高 + 5 组各跨 2 列）+ 合计行 + 导出两按钮。
+      列与两级结构由代码后置构建（GridColumnFactory + TwoTierHeaderGrid）。
+    -->
+    <Grid Margin="8,10,8,10">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <StackPanel Grid.Row="0" Orientation="Horizontal">
+            <TextBlock Style="{StaticResource CaptionLabel}" Text="年份" Margin="0,0,6,0"/>
+            <ComboBox Style="{StaticResource NotionCombo}" MinWidth="90"
+                      ItemsSource="{Binding Personal.YearItems}"
+                      DisplayMemberPath="Label"
+                      SelectedItem="{Binding Personal.Year, Mode=OneWay}"
+                      IsEnabled="False"
+                      ToolTip="年份与「个人结算总表」tab 共享，在该 tab 切换"/>
+            <TextBlock Style="{StaticResource CaptionLabel}" Text="月份" Margin="12,0,6,0"/>
+            <ComboBox Style="{StaticResource NotionCombo}" MinWidth="90"
+                      ItemsSource="{Binding MonthChoices}"
+                      DisplayMemberPath="Label"
+                      SelectedValue="{Binding Month, Mode=TwoWay}"
+                      SelectedValuePath="Value"/>
+        </StackPanel>
+
+        <controls:NotionDataGrid x:Name="Grid" Grid.Row="1" Margin="0,10,0,0"
+                                 Style="{StaticResource NotionDataGridStyle}"
+                                 FrozenColumnCount="1"
+                                 ColumnHeaderHeight="44"
+                                 ItemsSource="{Binding Rows}"/>
+
+        <Grid Grid.Row="2" Margin="0,10,0,0">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+            <Button Style="{StaticResource NotionButton}" Content="导出当月"
+                    ToolTip="仅导出当前预览月份的单个 sheet"
+                    Command="{Binding ExportCurrentMonthCommand}"/>
+            <Button Grid.Column="1" Style="{StaticResource NotionButton}" Content="导出模板表"
+                    Margin="10,0,0,0"
+                    ToolTip="导出 1~选中月 全部月份 sheet（从新到旧排序，仿模板文件形态）"
+                    Command="{Binding ExportTemplateCommand}"/>
+            <TextBlock Grid.Column="2" Style="{StaticResource CaptionLabel}"
+                       HorizontalAlignment="Right" VerticalAlignment="Center"
+                       Text="{Binding SummaryText}"/>
+        </Grid>
+    </Grid>
+</UserControl>

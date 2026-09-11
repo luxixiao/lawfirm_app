@@ -1,0 +1,396 @@
+﻿<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <!--
+      Notion 风控件样式（规格 §1.3 / §4.5 / §5.2 / §6.3）。
+      依赖：Palette.xaml / Typography.xaml（须先合并，见 App.xaml）。
+      注意：本文件不引用 CodeBehind 类型；表格相关样式同样在此定义，
+      NotionDataGrid 通过实例级 Style（NotionDataGridStyle）应用，避免 DefaultStyleKey/Generic.xaml 的解析时序陷阱。
+    -->
+
+    <!-- ======================== 按钮（V12：style.py:172-184） ======================== -->
+
+    <!-- 次按钮：透明底 + #DADAD7 描边 + 圆角 8 + 内边距 7/16，hover #efedea -->
+    <Style x:Key="NotionButton" TargetType="Button">
+        <Setter Property="FontFamily" Value="{StaticResource AppFontFamily}"/>
+        <Setter Property="FontSize" Value="{StaticResource FontBaseSize}"/>
+        <Setter Property="Foreground" Value="{StaticResource Text}"/>
+        <Setter Property="Background" Value="Transparent"/>
+        <Setter Property="BorderBrush" Value="{StaticResource Border2}"/>
+        <Setter Property="BorderThickness" Value="1"/>
+        <Setter Property="Padding" Value="16,7"/>
+        <Setter Property="Cursor" Value="Hand"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                    <Border x:Name="Root"
+                            Background="{TemplateBinding Background}"
+                            BorderBrush="{TemplateBinding BorderBrush}"
+                            BorderThickness="{TemplateBinding BorderThickness}"
+                            CornerRadius="8"
+                            Padding="{TemplateBinding Padding}">
+                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="Root" Property="Background" Value="{StaticResource BgHover}"/>
+                        </Trigger>
+                        <Trigger Property="IsPressed" Value="True">
+                            <Setter TargetName="Root" Property="Background" Value="{StaticResource BgSelect}"/>
+                        </Trigger>
+                        <Trigger Property="IsEnabled" Value="False">
+                            <Setter Property="Opacity" Value="0.45"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- 主按钮：#2eaadc 白字，hover 加深（对应 Python PrimaryPushButton） -->
+    <Style x:Key="PrimaryButton" TargetType="Button" BasedOn="{StaticResource NotionButton}">
+        <Setter Property="Foreground" Value="White"/>
+        <Setter Property="Background" Value="{StaticResource AccentBlue}"/>
+        <Setter Property="BorderThickness" Value="0"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                    <Border x:Name="Root"
+                            Background="{TemplateBinding Background}"
+                            CornerRadius="8"
+                            Padding="{TemplateBinding Padding}">
+                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="Root" Property="Background" Value="#3FB8E5"/>
+                        </Trigger>
+                        <Trigger Property="IsPressed" Value="True">
+                            <Setter TargetName="Root" Property="Background" Value="#2896C2"/>
+                        </Trigger>
+                        <Trigger Property="IsEnabled" Value="False">
+                            <Setter Property="Opacity" Value="0.45"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- ======================== 下拉框（V13：style.py:187-196 / settlement_view.py:93-108） ======================== -->
+
+    <Style x:Key="NotionComboItem" TargetType="ComboBoxItem">
+        <Setter Property="FontFamily" Value="{StaticResource AppFontFamily}"/>
+        <Setter Property="FontSize" Value="{StaticResource FontBaseSize}"/>
+        <Setter Property="Foreground" Value="{StaticResource Text}"/>
+        <Setter Property="Padding" Value="10,6"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="ComboBoxItem">
+                    <Border x:Name="Root" Background="Transparent" Padding="{TemplateBinding Padding}">
+                        <ContentPresenter VerticalAlignment="Center"/>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsHighlighted" Value="True">
+                            <Setter TargetName="Root" Property="Background" Value="{StaticResource BgHover}"/>
+                        </Trigger>
+                        <Trigger Property="IsSelected" Value="True">
+                            <Setter TargetName="Root" Property="Background" Value="{StaticResource Border}"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <Style x:Key="NotionCombo" TargetType="ComboBox">
+        <Setter Property="FontFamily" Value="{StaticResource AppFontFamily}"/>
+        <Setter Property="FontSize" Value="{StaticResource FontBaseSize}"/>
+        <Setter Property="Foreground" Value="{StaticResource Text}"/>
+        <Setter Property="Background" Value="{StaticResource Bg}"/>
+        <Setter Property="BorderBrush" Value="{StaticResource Border2}"/>
+        <Setter Property="BorderThickness" Value="1"/>
+        <Setter Property="Padding" Value="10,5"/>
+        <Setter Property="MinHeight" Value="30"/>
+        <Setter Property="ItemContainerStyle" Value="{StaticResource NotionComboItem}"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="ComboBox">
+                    <Grid>
+                        <ToggleButton x:Name="Toggle"
+                                      Focusable="False"
+                                      ClickMode="Press"
+                                      IsChecked="{Binding IsDropDownOpen, Mode=TwoWay, RelativeSource={RelativeSource TemplatedParent}}">
+                            <ToggleButton.Template>
+                                <ControlTemplate TargetType="ToggleButton">
+                                    <Border x:Name="Root"
+                                            Background="{StaticResource Bg}"
+                                            BorderBrush="{StaticResource Border2}"
+                                            BorderThickness="1"
+                                            CornerRadius="6">
+                                        <Path Data="M0,0 L4,4 L8,0" Stretch="None"
+                                              HorizontalAlignment="Right" VerticalAlignment="Center"
+                                              Margin="0,0,10,0"
+                                              Stroke="{StaticResource TextMute}" StrokeThickness="1.5"/>
+                                    </Border>
+                                    <ControlTemplate.Triggers>
+                                        <Trigger Property="IsMouseOver" Value="True">
+                                            <Setter TargetName="Root" Property="Background" Value="{StaticResource BgHover}"/>
+                                        </Trigger>
+                                    </ControlTemplate.Triggers>
+                                </ControlTemplate>
+                            </ToggleButton.Template>
+                        </ToggleButton>
+                        <ContentPresenter x:Name="Selected"
+                                          Content="{TemplateBinding SelectionBoxItem}"
+                                          ContentTemplate="{TemplateBinding SelectionBoxItemTemplate}"
+                                          ContentTemplateSelector="{TemplateBinding ItemTemplateSelector}"
+                                          Margin="{TemplateBinding Padding}"
+                                          HorizontalAlignment="Left"
+                                          VerticalAlignment="Center"
+                                          IsHitTestVisible="False"/>
+                        <Popup x:Name="Popup"
+                               IsOpen="{TemplateBinding IsDropDownOpen}"
+                               Placement="Bottom"
+                               AllowsTransparency="True"
+                               PopupAnimation="Fade">
+                            <Border Background="{StaticResource Bg}"
+                                    BorderBrush="{StaticResource Border2}"
+                                    BorderThickness="1"
+                                    CornerRadius="6"
+                                    Margin="0,2,0,0"
+                                    MinWidth="180"
+                                    MaxHeight="320">
+                                <Border.Effect>
+                                    <DropShadowEffect BlurRadius="8" ShadowDepth="1" Opacity="0.15"/>
+                                </Border.Effect>
+                                <ScrollViewer VerticalScrollBarVisibility="Auto" Margin="2">
+                                    <ItemsPresenter/>
+                                </ScrollViewer>
+                            </Border>
+                        </Popup>
+                    </Grid>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsEnabled" Value="False">
+                            <Setter Property="Opacity" Value="0.45"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- ======================== 日志框（settlement_view.py:137-141） ======================== -->
+
+    <Style x:Key="LogBox" TargetType="TextBox">
+        <Setter Property="FontFamily" Value="{StaticResource AppFontFamily}"/>
+        <Setter Property="FontSize" Value="{StaticResource FontCaptionSize}"/>
+        <Setter Property="Foreground" Value="{StaticResource Text}"/>
+        <Setter Property="Background" Value="{StaticResource Bg}"/>
+        <Setter Property="BorderBrush" Value="{StaticResource Border}"/>
+        <Setter Property="BorderThickness" Value="1"/>
+        <Setter Property="Padding" Value="8,6"/>
+        <Setter Property="VerticalScrollBarVisibility" Value="Auto"/>
+    </Style>
+
+    <!-- ======================== 页标题化 Tab（style.py:237-243：20px/700 + 选中底边 2px accent_blue） ======================== -->
+
+    <Style x:Key="PageTitleTabItem" TargetType="TabItem">
+        <Setter Property="FontFamily" Value="{StaticResource AppFontFamily}"/>
+        <Setter Property="FontSize" Value="{StaticResource FontPageTitleSize}"/>
+        <Setter Property="FontWeight" Value="Bold"/>
+        <Setter Property="Foreground" Value="{StaticResource TextMute}"/>
+        <Setter Property="Cursor" Value="Hand"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="TabItem">
+                    <Grid Margin="0,0,12,0">
+                        <StackPanel>
+                            <ContentPresenter ContentSource="Header" Margin="8,10,8,6"
+                                              TextElement.Foreground="{TemplateBinding Foreground}"/>
+                            <Rectangle x:Name="Underline" Height="2" Fill="Transparent"
+                                       Margin="8,0,8,0"/>
+                        </StackPanel>
+                    </Grid>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsSelected" Value="True">
+                            <Setter Property="Foreground" Value="{StaticResource Text}"/>
+                            <Setter TargetName="Underline" Property="Fill" Value="{StaticResource AccentBlue}"/>
+                        </Trigger>
+                        <MultiTrigger>
+                            <MultiTrigger.Conditions>
+                                <Condition Property="IsMouseOver" Value="True"/>
+                                <Condition Property="IsSelected" Value="False"/>
+                            </MultiTrigger.Conditions>
+                            <Setter Property="Foreground" Value="{StaticResource Text}"/>
+                        </MultiTrigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <Style x:Key="PageTitleTabControl" TargetType="TabControl">
+        <Setter Property="Background" Value="Transparent"/>
+        <Setter Property="BorderThickness" Value="0"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="TabControl">
+                    <Grid RowSpacing="0">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="*"/>
+                        </Grid.RowDefinitions>
+                        <Border Grid.Row="0" BorderBrush="{StaticResource Border}"
+                                BorderThickness="0,0,0,1">
+                            <TabPanel IsItemsHost="True" Margin="12,0,12,0"/>
+                        </Border>
+                        <ContentPresenter Grid.Row="1" ContentSource="SelectedContent" Margin="0,12,0,0"/>
+                    </Grid>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- ======================== 细滚动条（V14：style.py:218-224：10px 圆角把手 text_faint 无箭头） ======================== -->
+
+    <Style x:Key="NotionScrollThumb" TargetType="Thumb">
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Thumb">
+                    <Border Background="{StaticResource TextFaint}" CornerRadius="5" Margin="2"/>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <Style x:Key="NotionScrollBar" TargetType="ScrollBar">
+        <Setter Property="Background" Value="Transparent"/>
+        <Setter Property="Width" Value="10"/>
+        <Setter Property="MinWidth" Value="10"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="ScrollBar">
+                    <Grid Background="Transparent">
+                        <Track x:Name="PART_Track" IsDirectionReversed="True">
+                            <Track.Thumb>
+                                <Thumb Style="{StaticResource NotionScrollThumb}"/>
+                            </Track.Thumb>
+                        </Track>
+                    </Grid>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="Orientation" Value="Horizontal">
+                            <Setter Property="Width" Value="Auto"/>
+                            <Setter Property="Height" Value="10"/>
+                            <Setter Property="MinHeight" Value="10"/>
+                            <Setter TargetName="PART_Track" Property="IsDirectionReversed" Value="False"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- ======================== 进度条（规格 §6.3：Border + 宽度 Rectangle，无渐变） ======================== -->
+
+    <Style x:Key="NotionProgressBar" TargetType="ProgressBar">
+        <Setter Property="Height" Value="6"/>
+        <Setter Property="Minimum" Value="0"/>
+        <Setter Property="Maximum" Value="100"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="ProgressBar">
+                    <Grid>
+                        <Border x:Name="PART_Track" Background="{StaticResource Border}" CornerRadius="3"/>
+                        <Border x:Name="PART_Indicator" Background="{StaticResource AccentBlue}"
+                                CornerRadius="3" HorizontalAlignment="Left"/>
+                    </Grid>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- ======================== 表格（规格 §4.5） ======================== -->
+
+    <!-- 单元格：无边框、透明底；选中只改底色不动 Foreground（C7 选中保色） -->
+    <Style x:Key="NotionCellStyle" TargetType="DataGridCell">
+        <Setter Property="BorderThickness" Value="0"/>
+        <Setter Property="Background" Value="Transparent"/>
+        <Setter Property="Foreground" Value="{StaticResource Text}"/>
+        <Setter Property="Padding" Value="10,0"/>
+        <Setter Property="FontSize" Value="{StaticResource FontBaseSize}"/>
+        <Setter Property="FontFamily" Value="{StaticResource AppFontFamily}"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="DataGridCell">
+                    <Border Background="{TemplateBinding Background}"
+                            Padding="{TemplateBinding Padding}">
+                        <ContentPresenter VerticalAlignment="Center"/>
+                    </Border>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+        <Style.Triggers>
+            <Trigger Property="IsSelected" Value="True">
+                <Setter Property="Background" Value="{StaticResource BgSelect}"/>
+            </Trigger>
+        </Style.Triggers>
+    </Style>
+
+    <!-- 行 -->
+    <Style x:Key="NotionRowStyle" TargetType="DataGridRow">
+        <Setter Property="Background" Value="Transparent"/>
+    </Style>
+
+    <!-- 单级表头：bgTable 底 + 底/右 1px 分隔线；排序列 HeaderSortBg（C9） -->
+    <Style x:Key="NotionColumnHeaderStyle" TargetType="DataGridColumnHeader">
+        <Setter Property="FontFamily" Value="{StaticResource AppFontFamily}"/>
+        <Setter Property="FontSize" Value="{StaticResource FontBaseSize}"/>
+        <Setter Property="Foreground" Value="{StaticResource Text}"/>
+        <Setter Property="Background" Value="{StaticResource BgTable}"/>
+        <Setter Property="BorderBrush" Value="{StaticResource Border}"/>
+        <Setter Property="BorderThickness" Value="0,0,1,1"/>
+        <Setter Property="Padding" Value="10,0"/>
+        <Setter Property="HorizontalContentAlignment" Value="Left"/>
+        <Setter Property="VerticalContentAlignment" Value="Center"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="DataGridColumnHeader">
+                    <Border Background="{TemplateBinding Background}"
+                            BorderBrush="{TemplateBinding BorderBrush}"
+                            BorderThickness="{TemplateBinding BorderThickness}">
+                        <ContentPresenter Margin="{TemplateBinding Padding}"
+                                          HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                          VerticalAlignment="{TemplateBinding VerticalContentAlignment}"/>
+                    </Border>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+        <Style.Triggers>
+            <Trigger Property="SortDirection" Value="Ascending">
+                <Setter Property="Background" Value="{StaticResource HeaderSortBg}"/>
+            </Trigger>
+            <Trigger Property="SortDirection" Value="Descending">
+                <Setter Property="Background" Value="{StaticResource HeaderSortBg}"/>
+            </Trigger>
+        </Style.Triggers>
+    </Style>
+
+    <!-- 表格本体（实例级样式；行为属性在 NotionDataGrid 构造器设置） -->
+    <Style x:Key="NotionDataGridStyle" TargetType="DataGrid">
+        <Setter Property="Background" Value="{StaticResource Bg}"/>
+        <Setter Property="BorderBrush" Value="{StaticResource Border}"/>
+        <Setter Property="BorderThickness" Value="1"/>
+        <Setter Property="RowBackground" Value="Transparent"/>
+        <Setter Property="AlternatingRowBackground" Value="Transparent"/>
+        <Setter Property="HeadersVisibility" Value="Column"/>
+        <Setter Property="GridLinesVisibility" Value="Horizontal"/>
+        <Setter Property="HorizontalGridLinesBrush" Value="{StaticResource GridLine}"/>
+        <Setter Property="CellStyle" Value="{StaticResource NotionCellStyle}"/>
+        <Setter Property="RowStyle" Value="{StaticResource NotionRowStyle}"/>
+        <Setter Property="ColumnHeaderStyle" Value="{StaticResource NotionColumnHeaderStyle}"/>
+        <Setter Property="ScrollViewer.VerticalScrollBarVisibility" Value="Auto"/>
+        <Setter Property="ScrollViewer.HorizontalScrollBarVisibility" Value="Auto"/>
+    </Style>
+
+</ResourceDictionary>

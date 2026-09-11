@@ -1,0 +1,61 @@
+﻿<UserControl x:Class="LawFirm.UI.Views.Settlement.MonthlyReportTab"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:controls="clr-namespace:LawFirm.UI.Controls">
+    <!--
+      Tab2 月度结算表（_build_report_tab / refresh_report，settlement_view.py:520-663 对齐）：
+      年份/月份/经办人/类型 + 4 列预览（项目/本期/本年累计/备注，备注灰字）+ 导出按钮。
+      列静态（DataGridTextColumn 声明式），首列冻结。
+    -->
+    <Grid Margin="8,10,8,10">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <StackPanel Grid.Row="0" Orientation="Horizontal">
+            <TextBlock Style="{StaticResource CaptionLabel}" Text="年份" Margin="0,0,6,0"/>
+            <ComboBox Style="{StaticResource NotionCombo}" MinWidth="90"
+                      ItemsSource="{Binding YearItems}"
+                      DisplayMemberPath="Label"
+                      SelectedItem="{Binding Year, Mode=OneWay}"
+                      IsEnabled="False"
+                      ToolTip="年份与「个人结算总表」tab 共享，在该 tab 切换"/>
+            <TextBlock Style="{StaticResource CaptionLabel}" Text="月份" Margin="12,0,6,0"/>
+            <ComboBox Style="{StaticResource NotionCombo}" MinWidth="90"
+                      ItemsSource="{Binding MonthChoices}"
+                      DisplayMemberPath="Label"
+                      SelectedValue="{Binding Month, Mode=TwoWay}"
+                      SelectedValuePath="Value"/>
+            <TextBlock Style="{StaticResource CaptionLabel}" Text="经办人" Margin="12,0,6,0"/>
+            <ComboBox Style="{StaticResource NotionCombo}" MinWidth="150"
+                      ItemsSource="{Binding PersonOptions}"
+                      DisplayMemberPath="Label"
+                      SelectedItem="{Binding Person, Mode=TwoWay}"/>
+            <TextBlock Style="{StaticResource CaptionLabel}" Text="类型" Margin="12,0,6,0"/>
+            <ComboBox Style="{StaticResource NotionCombo}" MinWidth="90"
+                      ItemsSource="{Binding TypeOptions}"
+                      DisplayMemberPath="Label"
+                      SelectedItem="{Binding PersonType, Mode=TwoWay}"/>
+        </StackPanel>
+
+        <controls:NotionDataGrid x:Name="Grid" Grid.Row="1" Margin="0,10,0,0"
+                                 Style="{StaticResource NotionDataGridStyle}"
+                                 FrozenColumnCount="1"
+                                 ColumnHeaderHeight="34"
+                                 ItemsSource="{Binding Rows}"/>
+
+        <Grid Grid.Row="2" Margin="0,10,0,0">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+            <Button Style="{StaticResource NotionButton}" Content="导出月度结算表"
+                    Command="{Binding ExportMonthlyCommand}"/>
+            <TextBlock Grid.Column="1" Style="{StaticResource CaptionLabel}"
+                       HorizontalAlignment="Right" VerticalAlignment="Center"
+                       Text="{Binding SummaryText}"/>
+        </Grid>
+    </Grid>
+</UserControl>

@@ -1,0 +1,33 @@
+﻿<Window x:Class="LawFirm.UI.Samples.TwoTierMinSampleWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:controls="clr-namespace:LawFirm.UI.Controls"
+        Title="T5.2 首日最小验证：两级表头 + 冻结列 + 像素滚动"
+        Width="760" Height="420"
+        WindowStyle="ToolWindow"
+        Background="{StaticResource Canvas}"
+        FontFamily="{StaticResource AppFontFamily}">
+    <!--
+      T5.2 首日最小验证（规格 U5 / R1 / 验收 ①）：
+      「1 列普通 + 2 列两级 + FrozenColumnCount=1 + ScrollUnit=Pixel」四者共存。
+      验证点：
+      1) 横向滚动时「序号」冻结列不动；
+      2) 「本年收入」大类文字跨 本月/累计 两列居中，且拖动列宽时实时同步；
+      3) 鼠标滚轮为平滑像素滚动（非整行跳）；
+      4) 选中行后红字仍为红（选中保色）；
+      5) QA M3 观察项：拖大「本月」列宽，「本年收入」文字宽度应实时跟随
+         （SelfWidth attached DP 通知 → MultiBinding 重求值）。
+      打开方式：主窗内按 F12（MainShellWindow 注册的调试入口）。
+      本窗口任何一项异常 → 立即上报（表格方案需走规格 §4.3 Plan B），不要继续 T5.3。
+    -->
+    <Grid Margin="16">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+        <TextBlock Grid.Row="0" Style="{StaticResource CaptionLabel}"
+                   Text="两级表头 + 冻结列 + 像素滚动 最小验证样本（拖动列宽观察大类文字同步；横向滚动观察冻结列）"/>
+        <controls:NotionDataGrid x:Name="SampleGrid" Grid.Row="1" Margin="0,10,0,0"
+                                 Style="{StaticResource NotionDataGridStyle}"/>
+    </Grid>
+</Window>

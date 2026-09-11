@@ -1,0 +1,48 @@
+﻿<Window x:Class="LawFirm.UI.Shell.MainShellWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:shell="clr-namespace:LawFirm.UI.Shell"
+        xmlns:shellChrome="clr-namespace:System.Windows.Shell;assembly=PresentationFramework"
+        Title="律所台账" Width="1280" Height="820"
+        MinWidth="1100" MinHeight="650"
+        WindowStyle="None" AllowsTransparency="False"
+        UseLayoutRounding="True"
+        Background="{StaticResource Canvas}"
+        FontFamily="{StaticResource AppFontFamily}">
+    <!--
+      无边框主窗（规格 §3.1，对齐 main_window.py:173-287）：
+      - WindowStyle=None + WindowChrome（CaptionHeight=36 拖拽 + 边缘缩放 6px）
+      - AllowsTransparency=False（保持硬件加速与 Aero 吸附）
+      - 最大化遮任务栏补偿：代码后置 SourceInitialized 挂 WM_GETMINMAXINFO（U1 采纳 WM 方案）
+    -->
+    <shellChrome:WindowChrome.WindowChrome>
+        <shellChrome:WindowChrome CaptionHeight="36"
+                                  ResizeBorderThickness="6"
+                                  GlassFrameThickness="0"
+                                  CornerRadius="0"
+                                  UseAeroCaptionButtons="False"/>
+    </shellChrome:WindowChrome.WindowChrome>
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="36"/>
+            <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+
+        <Grid Grid.Row="0" Grid.RowSpan="1">
+            <shell:TitleBar x:Name="TitleBarHost" PageTitle="{Binding CurrentPageTitle}"/>
+        </Grid>
+
+        <Grid Grid.Row="1">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+
+            <shell:Sidebar Grid.Column="0" x:Name="SidebarHost" DataContext="{Binding}"/>
+
+            <!-- 页面栈：NavigationService.GetOrCreatePage(key) 的结果放这里 -->
+            <ContentControl Grid.Column="1" x:Name="PageHost"
+                            Focusable="False"/>
+        </Grid>
+    </Grid>
+</Window>

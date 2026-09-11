@@ -1,0 +1,18 @@
+﻿<UserControl x:Class="LawFirm.UI.Views.PlaceholderView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <!--
+      「功能待迁移」占位页（U11）：21 个未迁移页统一展示，
+      保证导航结构 100% 对齐、视觉接近度达标，同时不虚报功能。
+    -->
+    <Grid Background="{StaticResource Canvas}">
+        <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center">
+            <TextBlock Style="{StaticResource PageTitleText}"
+                       HorizontalAlignment="Center"
+                       Text="功能待迁移"/>
+            <TextBlock Style="{StaticResource CaptionLabel}"
+                       HorizontalAlignment="Center" Margin="0,10,0,0"
+                       Text="{Binding PageKey, RelativeSource={RelativeSource AncestorType=UserControl}, StringFormat=页面标识：{0}}"/>
+        </StackPanel>
+    </Grid>
+</UserControl>

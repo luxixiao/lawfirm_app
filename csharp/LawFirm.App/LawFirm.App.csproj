@@ -1,4 +1,4 @@
-<Project Sdk="Microsoft.NET.Sdk">
+﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <!-- WPF 单目标先启（计划 §1.2 / §3.1 Pilot 用 net10 单目标；Win7 后门推迟到全量期） -->
@@ -13,7 +13,8 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <!-- 只读期只依赖数据层；不引用任何写/迁移组件 -->
+    <!-- T5：App 保留唯一 WinExe 入口，产品 UI 全部在 LawFirm.UI（规格 §2.1） -->
+    <ProjectReference Include="..\LawFirm.UI\LawFirm.UI.csproj" />
     <ProjectReference Include="..\LawFirm.Data\LawFirm.Data.csproj" />
   </ItemGroup>
 

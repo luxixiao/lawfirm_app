@@ -1,0 +1,64 @@
+﻿<Window x:Class="LawFirm.UI.Dialogs.MonthlyExportDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="导出月度结算表" Width="400" Height="520"
+        WindowStartupLocation="CenterOwner"
+        Background="{StaticResource Canvas}"
+        FontFamily="{StaticResource AppFontFamily}">
+    <!--
+      导出月度结算表弹窗（gen_report 的 QDialog，settlement_view.py:455-498）：
+      月份下拉 + 员工多选（默认上次选择，prefs.report_persons）+ 全选 + 确定/取消。
+    -->
+    <Grid Margin="16">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <StackPanel Grid.Row="0" Orientation="Horizontal">
+            <TextBlock Style="{StaticResource CaptionLabel}" Text="月份" Margin="0,0,8,0"/>
+            <ComboBox x:Name="MonthCombo" Style="{StaticResource NotionCombo}" MinWidth="90"
+                      ItemsSource="{Binding MonthItems}"
+                      DisplayMemberPath="Label"
+                      SelectedItem="{Binding SelectedMonth, Mode=TwoWay}"/>
+        </StackPanel>
+
+        <TextBlock Grid.Row="1" Style="{StaticResource CaptionLabel}" Margin="0,12,0,4"
+                   Text="{Binding Tip}"/>
+
+        <ListBox Grid.Row="2" x:Name="PersonList"
+                 Background="{StaticResource Bg}"
+                 BorderBrush="{StaticResource Border2}" BorderThickness="1"
+                 ItemsSource="{Binding Items}">
+            <ListBox.ItemTemplate>
+                <DataTemplate>
+                    <CheckBox Content="{Binding Name}"
+                              IsChecked="{Binding IsChecked, Mode=TwoWay}"
+                              Margin="8,4"
+                              FontFamily="{StaticResource AppFontFamily}"
+                              FontSize="{StaticResource FontBaseSize}"
+                              Foreground="{StaticResource Text}"/>
+                </DataTemplate>
+            </ListBox.ItemTemplate>
+        </ListBox>
+
+        <Grid Grid.Row="3" Margin="0,12,0,0">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+            <CheckBox Grid.Column="0" Content="全选" VerticalAlignment="Center"
+                      FontFamily="{StaticResource AppFontFamily}"
+                      Foreground="{StaticResource Text}"
+                      Checked="OnToggleAll" Unchecked="OnToggleAll"/>
+            <Button Grid.Column="2" Content="取消" Style="{StaticResource NotionButton}"
+                    MinWidth="80" Margin="0,0,8,0" Click="OnCancel"/>
+            <Button Grid.Column="3" Content="确定" Style="{StaticResource PrimaryButton}"
+                    MinWidth="80" Click="OnOk"/>
+        </Grid>
+    </Grid>
+</Window>

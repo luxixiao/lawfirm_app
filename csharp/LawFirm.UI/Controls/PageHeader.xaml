@@ -1,0 +1,22 @@
+﻿<UserControl x:Class="LawFirm.UI.Controls.PageHeader"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <!--
+      页头（规格 §2.3 Controls/PageHeader）：标题 + 「?」帮助气泡。
+      对应 Python tab_help_corner（settlement_view.py:158-161）与页标题（style.py:167）。
+    -->
+    <Grid>
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="*"/>
+            <ColumnDefinition Width="Auto"/>
+        </Grid.ColumnDefinitions>
+        <TextBlock Grid.Column="0" Style="{StaticResource PageTitleText}" Text="{Binding Title}"/>
+        <Button Grid.Column="1" x:Name="HelpButton" Focusable="False"
+                ToolTip="{Binding HelpText}" Cursor="Help"
+                Content="?" Width="22" Height="22"
+                FontFamily="{StaticResource AppFontFamily}" FontSize="12"
+                Foreground="{StaticResource TextMute}"
+                Background="Transparent" BorderThickness="0"
+                VerticalAlignment="Top" Margin="0,2,0,0"/>
+    </Grid>
+</UserControl>

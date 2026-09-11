@@ -1,0 +1,40 @@
+﻿<UserControl x:Class="LawFirm.UI.Views.Settlement.SettlementView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:views="clr-namespace:LawFirm.UI.Views.Settlement"
+             xmlns:controls="clr-namespace:LawFirm.UI.Controls">
+    <!--
+      「各类报表」页宿主（规格 §5.2）：4 个 tab + 右上角「?」帮助（tab_help_corner 等价）。
+      tab 名与顺序逐字对齐 settlement_view.py:153-156。
+    -->
+    <Grid Background="{StaticResource Canvas}">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+
+        <TabControl Style="{StaticResource PageTitleTabControl}"
+                    SelectedIndex="{Binding SelectedTabIndex, Mode=TwoWay}">
+            <TabItem Header="个人结算总表" Style="{StaticResource PageTitleTabItem}">
+                <views:PersonalSettlementTab DataContext="{Binding Personal}"/>
+            </TabItem>
+            <TabItem Header="月度结算表" Style="{StaticResource PageTitleTabItem}">
+                <views:MonthlyReportTab DataContext="{Binding Monthly}"/>
+            </TabItem>
+            <TabItem Header="年度聘用结算表" Style="{StaticResource PageTitleTabItem}">
+                <views:StaffIncomeTab DataContext="{Binding StaffIncome}"/>
+            </TabItem>
+            <TabItem Header="开票收入表" Style="{StaticResource PageTitleTabItem}">
+                <views:InvoiceIncomeTab DataContext="{Binding InvoiceIncome}"/>
+            </TabItem>
+        </TabControl>
+
+        <!-- 右上角 ? 帮助（对应 tab_help_corner，settlement_view.py:158-161） -->
+        <Button HorizontalAlignment="Right" VerticalAlignment="Top"
+                Margin="0,14,16,0"
+                Content="?" Width="22" Height="22" Focusable="False" Cursor="Help"
+                FontFamily="{StaticResource AppFontFamily}" FontSize="12"
+                Foreground="{StaticResource TextMute}" Background="Transparent"
+                BorderThickness="0"
+                ToolTip="个人结算总表：选择经办人查看结算总表；可导出全部或指定经办人（支持多选）。口径：收款/开票/未收/业务收入/费用。"/>
+    </Grid>
+</UserControl>
