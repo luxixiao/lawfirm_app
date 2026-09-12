@@ -3,6 +3,8 @@ __pycache__/
 .venv/
 # 运行时数据(Seafile同步, 不进git)
 data/
+# 写通道备份快照(S1)：绝不进 git（其中可能含整库业务数据）
+data/backups/
 # 个人结算总表导出
 个人结算总表_*.xlsx
 # UI 无头冒烟截图产物

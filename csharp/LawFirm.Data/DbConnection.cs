@@ -49,6 +49,54 @@ public static class DbConnection
     }
 
     /// <summary>
+    /// 读写打开指定路径的 SQLite 数据库，返回已 Open 的连接（基础数据维护的**首个写通道**）。
+    /// 调用方负责 using 释放。本方法只负责「打开」，**不**负责备份/事务/串行化——
+    /// 那些一律走 <see cref="WriteGuard"/>，绝不要在别处裸用本方法直接写。
+    /// </summary>
+    /// <param name="dbPath">lawfirm.db 的绝对或相对路径；文件必须已存在。</param>
+    /// <exception cref="ArgumentException">dbPath 为空。</exception>
+    /// <exception cref="FileNotFoundException">文件不存在。</exception>
+    public static SqliteConnection OpenReadWrite(string dbPath)
+    {
+        if (string.IsNullOrWhiteSpace(dbPath))
+            throw new ArgumentException("dbPath 不能为空", nameof(dbPath));
+        if (!File.Exists(dbPath))
+            throw new FileNotFoundException($"数据库文件不存在: {dbPath}", dbPath);
+
+        // 读写模式：库必须已存在，故用 Mode=ReadWrite（**绝不**用 ReadWriteCreate）——
+        // 拼错路径时不能凭空造出一个空库，那会让用户误以为「数据全没了」。
+        // Pooling=false：写连接必须真正关闭（触发 checkpoint 并释放文件句柄），
+        // 否则默认连接池会长期持有 db 文件锁，令 WAL checkpoint / 文件操作被占用阻塞。
+        // DefaultTimeout=5：**这才是命令忙等（BUSY）等待上限的真正开关**——它决定本连接
+        // 上所有命令（含 BeginTransaction 内部命令）的 CommandTimeout（默认 30 秒！）。
+        // Microsoft.Data.Sqlite 在每次执行命令时用 CommandTimeout 去调 sqlite3_busy_timeout，
+        // 会把连接级 PRAGMA busy_timeout 覆盖掉；故写锁下若只设 PRAGMA，实际会等满 ~30 秒。
+        var builder = new SqliteConnectionStringBuilder
+        {
+            DataSource = dbPath,
+            Mode = SqliteOpenMode.ReadWrite,
+            Pooling = false,
+            DefaultTimeout = 5,
+        };
+
+        var conn = new SqliteConnection(builder.ConnectionString);
+        conn.Open();
+
+        // 外键约束开启（每连接非持久，与 Python 侧一致）。
+        // 关于忙等上限：**真正生效的是上面的 DefaultTimeout=5（→ 每条命令的 CommandTimeout）**，
+        // Microsoft.Data.Sqlite 每次执行命令都会用它覆盖 sqlite3_busy_timeout；这里的
+        // PRAGMA busy_timeout 仅对「不经 SqliteCommand 包裹的裸 SQL 路径」有个兜底意义，
+        // 不构成命令级等待上限——不要误以为设了它等 5 秒就够了。
+        conn.Execute("PRAGMA foreign_keys = ON;");
+        conn.Execute("PRAGMA busy_timeout = 5000;");
+
+        // 刻意的不对称：此处**不设** PRAGMA query_only=ON。
+        // query_only 是只读通道的纵深防御（见 OpenReadOnly），写通道若也设上，
+        // 任何 INSERT/UPDATE/DELETE 都会被连接级拒绝；两条通道的防御必须相反。
+        return conn;
+    }
+
+    /// <summary>
     /// 数据库定位结果（R-M2：把「本次到底用了哪个 db、为什么」显式暴露给 UI / CLI）。
     /// 三机实测时，Seafile 同步 + 残留 LAWFIRM_DB 会导致「读到的不是我以为的那个库」，
     /// 静默兜底是最危险的——所以这里把来源与尝试过的候选全部带出来。
