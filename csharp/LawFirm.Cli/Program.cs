@@ -50,6 +50,7 @@ internal static class Program
                 case "--selftest-ui" when i + 1 == args.Length: return RunUiSelfTest();
                 case "--diag-db" when i + 1 == args.Length: return RunDiagDb();
                 case "--diag-shell" when i + 1 == args.Length: return RunDiagShell();
+                case "--diag-sidebar" when i + 1 == args.Length: return RunDiagSidebar();
                 case "--diag-persons" when i + 1 == args.Length: return RunDiagPersons();
                 default:
                     Console.Error.WriteLine($"未知参数或缺少取值: {args[i]}");
@@ -153,17 +154,7 @@ internal static class Program
                 var db = LawFirm.UI.Services.DbStatusService.Current;
                 info = $"IsOk={db.IsOk}; Display={db.Display}; Source={db.SourceText}; Path={db.FullPath}";
 
-                // 无 Application 时 StaticResource 无处可查（Palette/Typography/… 由 App.xaml 合并），
-                // 这里按 App.xaml 同样顺序补上，模拟真实启动环境。
-                var app = new System.Windows.Application();
-                foreach (string theme in new[] { "Palette", "Typography", "NotionControls", "Generic" })
-                {
-                    app.Resources.MergedDictionaries.Add(new System.Windows.ResourceDictionary
-                    {
-                        Source = new Uri($"pack://application:,,,/LawFirm.UI;component/Themes/{theme}.xaml", UriKind.Absolute),
-                    });
-                }
-
+                var app = CreateAppWithResources();
                 var w = new LawFirm.UI.Shell.MainShellWindow();
                 info += $"; Title={w.Title}";
                 w.Close();
@@ -196,6 +187,175 @@ internal static class Program
         Console.WriteLine("[OK] 主窗 XAML 解析通过（含侧栏数据库状态区）");
         Console.WriteLine($"[INFO] {info}");
         return 0;
+    }
+
+    /// <summary>
+    /// 按 App.xaml 的顺序合并主题字典。无 Application 时 StaticResource 无处可查，
+    /// 会在 InitializeComponent 里抛 XamlParseException（假失败），必须先补上。
+    /// </summary>
+    private static System.Windows.Application CreateAppWithResources()
+    {
+        var app = new System.Windows.Application();
+        foreach (string theme in new[] { "Palette", "Typography", "NotionControls", "Generic" })
+        {
+            app.Resources.MergedDictionaries.Add(new System.Windows.ResourceDictionary
+            {
+                Source = new Uri($"pack://application:,,,/LawFirm.UI;component/Themes/{theme}.xaml", UriKind.Absolute),
+            });
+        }
+        return app;
+    }
+
+    /// <summary>离屏跑一轮布局（Measure/Arrange 两遍，让嵌套 ItemsControl 生成容器）。</summary>
+    private static void OffscreenLayout(System.Windows.FrameworkElement root, double w, double h)
+    {
+        var size = new System.Windows.Size(w, h);
+        for (int pass = 0; pass < 2; pass++)
+        {
+            root.Measure(size);
+            root.Arrange(new System.Windows.Rect(0, 0, w, h));
+            root.UpdateLayout();
+        }
+    }
+
+    private static IEnumerable<System.Windows.DependencyObject> VisualDescendants(System.Windows.DependencyObject root)
+    {
+        int n = System.Windows.Media.VisualTreeHelper.GetChildrenCount(root);
+        for (int i = 0; i < n; i++)
+        {
+            var child = System.Windows.Media.VisualTreeHelper.GetChild(root, i);
+            yield return child;
+            foreach (var d in VisualDescendants(child)) yield return d;
+        }
+    }
+
+    /// <summary>侧栏子项面板（DataTemplate 里 x:Name="GroupPanel" 的 ItemsControl）中可见的个数。</summary>
+    private static List<System.Windows.Controls.ItemsControl> GroupPanels(System.Windows.DependencyObject side)
+        => VisualDescendants(side)
+            .OfType<System.Windows.Controls.ItemsControl>()
+            .Where(ic => ic.Name == "GroupPanel")
+            .ToList();
+
+    /// <summary>
+    /// 沿视觉树向上逐级检查 Visibility —— WPF 的"可见"是祖先链继承的：
+    /// 面板设成 Collapsed 后，子元素自己的 Visibility 属性仍是 Visible，
+    /// 只看自身属性会误判（离线树里也没法用 IsVisible，它要求有呈现源）。
+    /// </summary>
+    private static bool ChainVisible(System.Windows.DependencyObject d)
+    {
+        var cur = d;
+        while (cur is not null)
+        {
+            if (cur is System.Windows.UIElement ui && ui.Visibility != System.Windows.Visibility.Visible)
+                return false;
+            cur = System.Windows.Media.VisualTreeHelper.GetParent(cur);
+        }
+        return true;
+    }
+
+    private static int CountVisiblePanels(System.Windows.DependencyObject side)
+        => GroupPanels(side).Count(p => ChainVisible(p));
+
+    /// <summary>子项面板内**视觉上真能看见**的子项文字个数（收起态必须为 0）。</summary>
+    private static int CountVisibleItemTexts(System.Windows.DependencyObject side)
+    {
+        int n = 0;
+        foreach (var panel in GroupPanels(side))
+        {
+            foreach (var d in VisualDescendants(panel))
+            {
+                if (d is System.Windows.Controls.TextBlock tb
+                    && !string.IsNullOrEmpty(tb.Text)
+                    && ChainVisible(tb))
+                {
+                    n++;
+                }
+            }
+        }
+        return n;
+    }
+
+    /// <summary>
+    /// 诊断：侧栏收起态行为（不弹窗，离屏布局后检查视觉树）。
+    ///
+    /// 覆盖 T5.1 折叠语义：收起时**子项面板整块收起**。只隐藏组名不够——
+    /// 子项行会继续渲染，窄宽度下文字被压成单字（"导…/导…/修…"），
+    /// 且撑高内容触发竖向滚动条，滚动条再吃掉 17px 宽把文字彻底裁掉。
+    /// 退出码 0=通过，1=失败。
+    /// </summary>
+    private static int RunDiagSidebar()
+    {
+        var failures = new List<string>();
+        string info = string.Empty;
+
+        var t = new Thread(() =>
+        {
+            try
+            {
+                var app = CreateAppWithResources();
+                var nav = new LawFirm.UI.Shell.NavigationService();
+                var side = new LawFirm.UI.Shell.Sidebar { DataContext = nav };
+                var host = new System.Windows.Controls.Grid();
+                host.Children.Add(side);
+
+                // 展开态基线：必须有真实的子项面板与文字，否则是"测试夹具没跑起来"，不是功能通过
+                OffscreenLayout(host, 240, 900);
+                int expPanels = CountVisiblePanels(side);
+                int expTexts = CountVisibleItemTexts(side);
+                info = $"展开：可见面板 {expPanels}，可见子项文字 {expTexts}";
+                if (expPanels == 0) failures.Add("展开态应至少有一个可见子项面板，实际 0（夹具可能没生效）");
+                if (expTexts == 0) failures.Add("展开态应至少有一条可见子项文字，实际 0（夹具可能没生效）");
+
+                // 收起态：面板必须全部收起、子项文字一条都不许可见
+                side.IsCollapsed = true;
+                OffscreenLayout(host, 60, 900);
+                int colPanels = CountVisiblePanels(side);
+                int colTexts = CountVisibleItemTexts(side);
+                info += $"；收起：可见面板 {colPanels}，可见子项文字 {colTexts}";
+                if (colPanels != 0)
+                    failures.Add($"收起态子项面板应全部收起，实际仍有 {colPanels} 个可见（单字溢出/滚动条根因）");
+                if (colTexts != 0)
+                    failures.Add($"收起态不应有可见子项文字，实际 {colTexts} 条");
+
+                // 再展开：面板要能回来（触发器是可逆的）
+                side.IsCollapsed = false;
+                OffscreenLayout(host, 240, 900);
+                int rePanels = CountVisiblePanels(side);
+                info += $"；再展开：可见面板 {rePanels}";
+                if (rePanels != expPanels)
+                    failures.Add($"再展开后可见面板数应回到 {expPanels}，实际 {rePanels}（收起不可逆）");
+
+                host.Children.Clear();
+                app.Shutdown();
+            }
+            catch (Exception ex)
+            {
+                failures.Add($"{ex.GetType().Name}: {ex.Message}");
+            }
+            finally
+            {
+                System.Windows.Threading.Dispatcher.CurrentDispatcher.InvokeShutdown();
+            }
+        });
+        t.SetApartmentState(ApartmentState.STA);
+        t.IsBackground = true;
+        t.Start();
+
+        if (!t.Join(TimeSpan.FromSeconds(60)))
+        {
+            Console.WriteLine("[FAIL] 侧栏冒烟超时（60s）");
+            return 1;
+        }
+
+        Console.WriteLine($"[INFO] {info}");
+        if (failures.Count == 0)
+        {
+            Console.WriteLine("[OK] 侧栏收起态语义通过（收起不渲染子项）");
+            return 0;
+        }
+        foreach (string f in failures) Console.Error.WriteLine($"[FAIL] {f}");
+        Console.WriteLine($"[FAIL] {failures.Count} 项未通过");
+        return 1;
     }
 
     /// <summary>

@@ -216,6 +216,13 @@
                                         </BeginStoryboard>
                                     </DataTrigger.ExitActions>
                                 </DataTrigger>
+                                <!-- 收起态（图标列）：整块子项面板收起。
+                                     只隐藏组名是不够的——子项行仍会渲染：窄宽度下文字被压成单字
+                                     （"导…/导…/修…"），且这些行继续撑高内容触发竖向滚动条，
+                                     滚动条再吃掉 17px 宽 → 文字被彻底裁掉、只剩选中底色块。 -->
+                                <DataTrigger Binding="{Binding Path=IsCollapsed, RelativeSource={RelativeSource AncestorType=UserControl}}" Value="True">
+                                    <Setter TargetName="GroupPanel" Property="Visibility" Value="Collapsed"/>
+                                </DataTrigger>
                             </DataTemplate.Triggers>
                         </DataTemplate>
                     </ItemsControl.ItemTemplate>
