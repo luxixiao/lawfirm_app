@@ -32,6 +32,26 @@
 
 > 完整 8 步准备动作、每日 10 步操作、报错关键词判读、记录表 → 见 `docs\t6-lock-conflict-check.md` 第三节。
 
+### ② 配套可观测性改造（R-M4 / R-M2，2026-09-12 已落地）
+
+> 目的：3 天实测里最容易出现的**假故障**是「读到的不是我以为的那个库」。
+> 改造后无需猜，界面与命令行都能一眼确认。
+
+| 编号 | 原风险 | 处置 | 验证 |
+|------|--------|------|------|
+| **R-M4** | `FindDatabase()` 兜底路径算成 `bin\data\lawfirm.db`（必然不存在）且**不做存在性校验**，把「找不到」伪装成正常路径 | ①逐级向上查到盘符根；②每个候选做 **File.Exists + SQLite 文件头**双重校验（挡 Seafile 半截/0 字节文件）；③全部落空则抛 `FileNotFoundException`，**列出逐条尝试过的候选** | 仓库外运行 → 打印 6 条 `[跳过] …（文件不存在）` 并 exit 1，不再返回假路径 |
+| **R-M2** | 残留 `LAWFIRM_DB` 会**静默**把程序指到旧副本 | ①侧栏底部常驻「数据库：lawfirm.db」，找不到标红；②悬浮看完整路径 + 来源 + 完整查找过程；③点击复制路径；④窗口标题带数据库绝对路径；⑤残留变量被忽略时显式标注「已设置但不可用，本次已忽略」 | `--diag-shell` 冒烟通过：`IsOk=True / Display=数据库：lawfirm.db / Title=律所台账 — …\data\lawfirm.db` |
+| 附带 | 库定位失败会在建页阶段把整个窗口带崩 | `PersonalSettlementViewModel.InitializeOnce()` 加 try/catch，只写日志不崩窗 | 代码路径已覆盖 |
+
+新增诊断命令（三机报障时先跑这两个）：
+
+```
+dotnet run --project csharp\LawFirm.Cli -- --diag-db       # 数据库定位链路（env/来源/路径/逐条查找过程），找不到 exit 1
+dotnet run --project csharp\LawFirm.Cli -- --diag-shell    # 主窗 XAML 冒烟（不弹窗，纯构造 + 关窗）
+```
+
+**回归**：改动后跑 T2 真实数据闸门（2025-12，73 sheet），官方 `diff_xlsx.py` 判定 **PASS（7 维全绿，RC=0）** —— 数据层改动未影响任何导出数值。
+
 ---
 
 ## 二、③ 用户主观评分表（≥4/5 为通过）

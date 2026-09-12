@@ -1,7 +1,8 @@
 ﻿<UserControl x:Class="LawFirm.UI.Shell.Sidebar"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-             xmlns:shell="clr-namespace:LawFirm.UI.Shell">
+             xmlns:shell="clr-namespace:LawFirm.UI.Shell"
+             xmlns:services="clr-namespace:LawFirm.UI.Services">
     <!--
       分组折叠侧栏（规格 §3.3，对齐 sidebar.py 方案 A）：
       - 宽 240（展开）/ 60（收起），宽度动画由代码后置驱动（收 240ms OutQuart / 展 180ms OutCubic）
@@ -18,6 +19,7 @@
             <Grid.RowDefinitions>
                 <RowDefinition Height="Auto"/>
                 <RowDefinition Height="*"/>
+                <RowDefinition Height="Auto"/>
             </Grid.RowDefinitions>
 
             <!-- 折叠按钮（Row0） -->
@@ -219,6 +221,56 @@
                     </ItemsControl.ItemTemplate>
                 </ItemsControl>
             </ScrollViewer>
+
+            <!-- 底部数据库状态（R-M2 可观测性）：常驻显示当前 lawfirm.db 文件名，
+                 悬浮看完整路径 / 来源 / 查找过程，点击复制路径。
+                 三机 Seafile 同步下，残留 LAWFIRM_DB 会把程序静默指到旧副本，
+                 有这一行就能一眼看出「读的是不是我以为的那个库」。 -->
+            <Border Grid.Row="2"
+                    Background="Transparent"
+                    BorderBrush="{StaticResource Border}" BorderThickness="0,1,0,0"
+                    Padding="12,6,10,6" Cursor="Hand"
+                    MouseLeftButtonUp="OnDbPathClick"
+                    ToolTipService.ShowDuration="60000"
+                    ToolTip="{Binding Source={x:Static services:DbStatusService.Current}, Path=Detail}">
+                <Grid>
+                    <TextBlock x:Name="DbText"
+                               Text="{Binding Source={x:Static services:DbStatusService.Current}, Path=Display}">
+                        <TextBlock.Style>
+                            <Style TargetType="TextBlock" BasedOn="{StaticResource CaptionLabel}">
+                                <Setter Property="TextTrimming" Value="CharacterEllipsis"/>
+                                <Style.Triggers>
+                                    <!-- 未找到 / 库不可用：标红，避免静默读空 -->
+                                    <DataTrigger Binding="{Binding Source={x:Static services:DbStatusService.Current}, Path=IsOk}" Value="False">
+                                        <Setter Property="Foreground" Value="#C0392B"/>
+                                        <Setter Property="FontWeight" Value="SemiBold"/>
+                                    </DataTrigger>
+                                    <!-- 收起态（图标列）：只留一个点，悬浮仍可看路径 -->
+                                    <DataTrigger Binding="{Binding Path=IsCollapsed, RelativeSource={RelativeSource AncestorType=UserControl}}" Value="True">
+                                        <Setter Property="Visibility" Value="Collapsed"/>
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </TextBlock.Style>
+                    </TextBlock>
+
+                    <TextBlock x:Name="DbDot" Text="●" HorizontalAlignment="Center">
+                        <TextBlock.Style>
+                            <Style TargetType="TextBlock" BasedOn="{StaticResource CaptionLabel}">
+                                <Setter Property="Visibility" Value="Collapsed"/>
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding Source={x:Static services:DbStatusService.Current}, Path=IsOk}" Value="False">
+                                        <Setter Property="Foreground" Value="#C0392B"/>
+                                    </DataTrigger>
+                                    <DataTrigger Binding="{Binding Path=IsCollapsed, RelativeSource={RelativeSource AncestorType=UserControl}}" Value="True">
+                                        <Setter Property="Visibility" Value="Visible"/>
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </TextBlock.Style>
+                    </TextBlock>
+                </Grid>
+            </Border>
         </Grid>
     </Border>
 </UserControl>

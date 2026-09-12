@@ -1,5 +1,7 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
+using System.Text;
 using Dapper;
 using Microsoft.Data.Sqlite;
 
@@ -47,28 +49,155 @@ public static class DbConnection
     }
 
     /// <summary>
-    /// 在仓库中定位 data/lawfirm.db：
-    /// 1) 环境变量 LAWFIRM_DB（最高优先，便于本机指向任意副本）；
-    /// 2) 从程序输出目录向上逐级查找 data/lawfirm.db（与 data/ 在仓库根同级）；
-    /// 3) 兜底到计划约定的相对输出路径。
-    /// 不依赖当前工作目录，简单且稳健。
+    /// 数据库定位结果（R-M2：把「本次到底用了哪个 db、为什么」显式暴露给 UI / CLI）。
+    /// 三机实测时，Seafile 同步 + 残留 LAWFIRM_DB 会导致「读到的不是我以为的那个库」，
+    /// 静默兜底是最危险的——所以这里把来源与尝试过的候选全部带出来。
     /// </summary>
-    public static string FindDatabase()
+    public sealed class DatabaseResolution
     {
-        string? env = Environment.GetEnvironmentVariable("LAWFIRM_DB");
-        if (!string.IsNullOrWhiteSpace(env) && File.Exists(env))
-            return env;
+        /// <summary>命中的绝对路径；未命中为 null。</summary>
+        public string? Path { get; init; }
 
-        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        /// <summary>来源：env / walkup / cwd / none。</summary>
+        public string Source { get; init; } = "none";
+
+        /// <summary>环境变量 LAWFIRM_DB 的原始值（未设置则 null）。</summary>
+        public string? EnvValue { get; init; }
+
+        /// <summary>LAWFIRM_DB 设了但不可用（文件不存在 / 非 SQLite）→ 已被忽略。</summary>
+        public bool EnvIgnored { get; init; }
+
+        /// <summary>按顺序尝试过的候选（含不可用原因），用于报错与诊断输出。</summary>
+        public IReadOnlyList<string> Tried { get; init; } = Array.Empty<string>();
+
+        public bool Found => Path is not null;
+
+        public string SourceText => Source switch
+        {
+            "env" => "环境变量 LAWFIRM_DB",
+            "walkup" => "程序目录向上查找 data/lawfirm.db",
+            "cwd" => "当前目录向上查找 data/lawfirm.db",
+            _ => "未找到",
+        };
+    }
+
+    /// <summary>
+    /// 在仓库中定位 data/lawfirm.db（不抛异常版本，供 UI / 诊断使用）：
+    /// 1) 环境变量 LAWFIRM_DB（最高优先，便于本机指向任意副本）；
+    /// 2) 从程序输出目录逐级向上查找 data/lawfirm.db；
+    /// 3) 从当前工作目录逐级向上查找 data/lawfirm.db。
+    ///
+    /// 每一步都做 **文件存在 + SQLite 头** 双重校验（R-M4）：
+    /// 旧实现兜底直接拼出 bin\data\lawfirm.db（必然不存在）且不做 File.Exists，
+    /// 结果是把「找不到」伪装成一个看起来正常的路径，错误被推到下游才炸。
+    /// </summary>
+    public static DatabaseResolution ResolveDatabase()
+    {
+        var tried = new List<string>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        string? env = Environment.GetEnvironmentVariable("LAWFIRM_DB");
+        bool envIgnored = false;
+        if (!string.IsNullOrWhiteSpace(env))
+        {
+            if (IsUsableSqlite(env))
+            {
+                string full = Path.GetFullPath(env);
+                tried.Add($"[命中] 环境变量 LAWFIRM_DB = {full}");
+                return new DatabaseResolution
+                {
+                    Path = full, Source = "env", EnvValue = env, Tried = tried,
+                };
+            }
+            envIgnored = true;
+            tried.Add($"[忽略] 环境变量 LAWFIRM_DB = {env}（{ReasonNotUsable(env)}）");
+        }
+
+        // 起点 1：程序输出目录（bin\Debug\net10.0-windows\ → …\lawfirm_app\）
+        var hit = WalkUp(AppContext.BaseDirectory, "walkup", tried, seen);
+        if (hit is not null)
+            return new DatabaseResolution { Path = hit.Path, Source = hit.Source, EnvValue = env, EnvIgnored = envIgnored, Tried = tried };
+
+        // 起点 2：当前工作目录（dotnet run / 快捷方式的工作目录可能与程序目录不同）
+        hit = WalkUp(Directory.GetCurrentDirectory(), "cwd", tried, seen);
+        if (hit is not null)
+            return new DatabaseResolution { Path = hit.Path, Source = hit.Source, EnvValue = env, EnvIgnored = envIgnored, Tried = tried };
+
+        return new DatabaseResolution
+        {
+            Source = "none", EnvValue = env, EnvIgnored = envIgnored, Tried = tried,
+        };
+    }
+
+    private static DatabaseResolution? WalkUp(string start, string source, List<string> tried, HashSet<string> seen)
+    {
+        var dir = new DirectoryInfo(start ?? ".");
         while (dir != null)
         {
             string candidate = Path.Combine(dir.FullName, "data", "lawfirm.db");
-            if (File.Exists(candidate))
-                return candidate;
+            if (seen.Add(candidate))
+                tried.Add(IsUsableSqlite(candidate)
+                    ? $"[命中] {candidate}"
+                    : $"[跳过] {candidate}（{ReasonNotUsable(candidate)}）");
+            if (IsUsableSqlite(candidate))
+                return new DatabaseResolution { Path = candidate, Source = source };
             dir = dir.Parent;
         }
+        return null;
+    }
 
-        // 兜底：从输出目录向上两级寻 data/（兼容 `dotnet run` 工作目录与计划描述）。
-        return Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "data", "lawfirm.db"));
+    /// <summary>
+    /// 定位 data/lawfirm.db；找不到则抛出**列出全部候选**的 FileNotFoundException
+    /// （旧实现返回一个不存在的路径，报错信息完全误导）。
+    /// </summary>
+    public static string FindDatabase()
+    {
+        var r = ResolveDatabase();
+        if (r.Found) return r.Path!;
+
+        var sb = new StringBuilder();
+        sb.AppendLine("未找到可用的 data/lawfirm.db，已按顺序尝试：");
+        foreach (string t in r.Tried) sb.AppendLine("  " + t);
+        sb.Append("处理办法：设置环境变量 LAWFIRM_DB 指向 lawfirm.db，或把程序放到仓库目录下运行。");
+        throw new FileNotFoundException(sb.ToString());
+    }
+
+    private static readonly byte[] SqliteMagic = "SQLite format 3\0"u8.ToArray();
+
+    /// <summary>存在且是真正的 SQLite 文件（Seafile 同步中断可能产生 0 字节/半截文件）。</summary>
+    private static bool IsUsableSqlite(string path)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(path) || !File.Exists(path)) return false;
+            var fi = new FileInfo(path);
+            if (fi.Length < 100) return false;
+            using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+            var head = new byte[16];
+            if (fs.Read(head, 0, 16) != 16) return false;
+            for (int i = 0; i < 16; i++)
+                if (head[i] != SqliteMagic[i]) return false;
+            return true;
+        }
+        catch
+        {
+            // 只读探测：被占用 / 权限不足 / 路径非法 都按「不可用」处理，不抛给调用方
+            return false;
+        }
+    }
+
+    private static string ReasonNotUsable(string path)
+    {
+        try
+        {
+            if (!File.Exists(path)) return "文件不存在";
+            var fi = new FileInfo(path);
+            if (fi.Length < 100) return $"文件过小（{fi.Length} 字节，可能被同步截断）";
+            return "不是 SQLite 文件";
+        }
+        catch (Exception ex)
+        {
+            return "无法读取：" + ex.Message;
+        }
     }
 }

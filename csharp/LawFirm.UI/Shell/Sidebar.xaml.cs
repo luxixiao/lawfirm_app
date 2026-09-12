@@ -76,4 +76,25 @@ public partial class Sidebar : UserControl
             nav.Select(item.Key);
         }
     }
+
+    /// <summary>
+    /// 点击底部数据库状态 → 复制完整路径到剪贴板（R-M2：三机对账/报障时直接粘路径）。
+    /// 未找到库时改为弹出明细，避免"点了没反应"。
+    /// </summary>
+    private void OnDbPathClick(object sender, System.Windows.Input.MouseButtonEventArgs e)
+    {
+        var db = Services.DbStatusService.Current;
+        if (db.IsOk)
+        {
+            bool ok = db.CopyPathToClipboard();
+            if (sender is FrameworkElement fe)
+                fe.ToolTip = ok ? "已复制到剪贴板：\n" + db.FullPath : db.Detail;
+            return;
+        }
+
+        System.Windows.MessageBox.Show(
+            db.Detail, "数据库定位失败",
+            System.Windows.MessageBoxButton.OK,
+            System.Windows.MessageBoxImage.Warning);
+    }
 }

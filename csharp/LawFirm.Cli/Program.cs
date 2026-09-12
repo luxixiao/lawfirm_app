@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Threading;
 using LawFirm.Data;
 using LawFirm.Exporter;
 using Microsoft.Data.Sqlite;
@@ -47,6 +48,8 @@ internal static class Program
                 case "--out-dir" when i + 1 < args.Length: outDir = args[++i]; break;
                 case "--person" when i + 1 < args.Length: onlyPersons.Add(args[++i]); break;
                 case "--selftest-ui" when i + 1 == args.Length: return RunUiSelfTest();
+                case "--diag-db" when i + 1 == args.Length: return RunDiagDb();
+                case "--diag-shell" when i + 1 == args.Length: return RunDiagShell();
                 case "--diag-persons" when i + 1 == args.Length: return RunDiagPersons();
                 default:
                     Console.Error.WriteLine($"未知参数或缺少取值: {args[i]}");
@@ -129,6 +132,93 @@ internal static class Program
             return 0;
         }
         foreach (var f in failures) Console.Error.WriteLine($"[FAIL] {f}");
+        return 1;
+    }
+
+    /// <summary>
+    /// 诊断：主窗 XAML 解析冒烟（不 Show，纯构造 + 关窗）。
+    /// 侧栏底部新增了数据库状态区（x:Static 绑定），一旦 StaticResource/类型名写错，
+    /// 这里会直接 XamlParseException 失败，避免"编译过了但一启动白屏"。
+    /// 退出码 0=通过，1=失败。
+    /// </summary>
+    private static int RunDiagShell()
+    {
+        Exception? failure = null;
+        string info = string.Empty;
+
+        var t = new Thread(() =>
+        {
+            try
+            {
+                var db = LawFirm.UI.Services.DbStatusService.Current;
+                info = $"IsOk={db.IsOk}; Display={db.Display}; Source={db.SourceText}; Path={db.FullPath}";
+
+                // 无 Application 时 StaticResource 无处可查（Palette/Typography/… 由 App.xaml 合并），
+                // 这里按 App.xaml 同样顺序补上，模拟真实启动环境。
+                var app = new System.Windows.Application();
+                foreach (string theme in new[] { "Palette", "Typography", "NotionControls", "Generic" })
+                {
+                    app.Resources.MergedDictionaries.Add(new System.Windows.ResourceDictionary
+                    {
+                        Source = new Uri($"pack://application:,,,/LawFirm.UI;component/Themes/{theme}.xaml", UriKind.Absolute),
+                    });
+                }
+
+                var w = new LawFirm.UI.Shell.MainShellWindow();
+                info += $"; Title={w.Title}";
+                w.Close();
+                app.Shutdown();
+            }
+            catch (Exception ex)
+            {
+                failure = ex;
+            }
+            finally
+            {
+                System.Windows.Threading.Dispatcher.CurrentDispatcher.InvokeShutdown();
+            }
+        });
+        t.SetApartmentState(ApartmentState.STA);
+        t.IsBackground = true;
+        t.Start();
+
+        if (!t.Join(TimeSpan.FromSeconds(30)))
+        {
+            Console.WriteLine("[FAIL] 主窗构造超时（30s）");
+            return 1;
+        }
+        if (failure is not null)
+        {
+            Console.WriteLine($"[FAIL] {failure.GetType().Name}: {failure.Message}");
+            Console.WriteLine(failure.StackTrace);
+            return 1;
+        }
+        Console.WriteLine("[OK] 主窗 XAML 解析通过（含侧栏数据库状态区）");
+        Console.WriteLine($"[INFO] {info}");
+        return 0;
+    }
+
+    /// <summary>
+    /// 诊断：数据库定位链路（R-M2 / R-M4）。打印环境变量、命中来源、最终路径与逐条查找过程。
+    /// 三机实测报障时先跑这个：一眼看出是不是残留 LAWFIRM_DB 或 Seafile 同步导致的空/半截文件。
+    /// 退出码 0=找到，1=未找到。
+    /// </summary>
+    private static int RunDiagDb()
+    {
+        var r = DbConnection.ResolveDatabase();
+        Console.WriteLine($"[INFO] LAWFIRM_DB = {(string.IsNullOrWhiteSpace(r.EnvValue) ? "（未设置）" : r.EnvValue)}"
+            + (r.EnvIgnored ? "  ← 已设置但不可用，本次已忽略" : ""));
+        Console.WriteLine($"[INFO] 来源 = {r.SourceText}");
+        if (r.Found)
+        {
+            var fi = new FileInfo(r.Path!);
+            Console.WriteLine($"[OK] DB = {r.Path}");
+            Console.WriteLine($"[OK] 大小 = {fi.Length} 字节，最后修改 = {fi.LastWriteTime:yyyy-MM-dd HH:mm:ss}");
+            return 0;
+        }
+
+        Console.WriteLine("[FAIL] 未找到可用的 lawfirm.db，查找过程：");
+        foreach (string t in r.Tried) Console.WriteLine("  " + t);
         return 1;
     }
 

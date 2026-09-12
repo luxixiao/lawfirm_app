@@ -22,6 +22,10 @@ public partial class MainShellWindow : Window
         DataContext = _nav;   // TitleBar/Sidebar 经继承获得 DataContext
         _nav.NavigateRequested += OnNavigateRequested;
 
+        // R-M2：窗口标题带数据库路径，任务栏悬浮即可确认「读的是哪个库」
+        var db = Services.DbStatusService.Current;
+        Title = db.IsOk ? $"律所台账 — {db.FullPath}" : "律所台账 — 未找到数据库";
+
         SourceInitialized += (_, _) => ApplyMaximizeWorkAreaFix();
         Loaded += (_, _) =>
         {

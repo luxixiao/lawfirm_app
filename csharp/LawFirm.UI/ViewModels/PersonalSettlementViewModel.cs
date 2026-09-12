@@ -60,8 +60,21 @@ public partial class PersonalSettlementViewModel : ViewModelBase
     {
         if (_initialized) return;
         _initialized = true;
-        // 默认选「最近有数据的年份」（settlement_view.py:143-150）；赋值触发 OnYearChanged → ReloadPersonsAsync
-        var latest = SettlementQueryService.LatestDataYear();
+
+        // R-M2：数据库定位失败时不要在建页阶段把整个窗口带崩——
+        // 侧栏底部会标红 + 窗口标题写明「未找到数据库」，这里只留日志。
+        int latest;
+        try
+        {
+            // 默认选「最近有数据的年份」（settlement_view.py:143-150）；赋值触发 OnYearChanged → ReloadPersonsAsync
+            latest = SettlementQueryService.LatestDataYear();
+        }
+        catch (Exception ex)
+        {
+            LogText = $"[数据库不可用] {ex.Message}";
+            Year = Years[0];
+            return;
+        }
         Year = Years.FirstOrDefault(y => y.Value == latest) ?? Years[0];
     }
     private bool _initialized;
