@@ -115,4 +115,69 @@ public static class StaffService
 
         StaffTypeService.DeleteStaff(conn, name);
     }
+
+    /// <summary>
+    /// 导入职工清单（<c>app/ui/staff_view.py::import_staff</c> 的移植）。<b>整段须在同一事务内</b>、
+    /// 经 <see cref="WriteGuard.Execute"/>（带备份）调用：
+    /// <list type="number">
+    ///   <item>写一条 import_batch（batch_type='staff', period='0000', file_name=basename, file_hash, imported_at=now）。</item>
+    ///   <item>取 batch_id。</item>
+    ///   <item><see cref="StaffTypeService.EnsureTypes"/> 补齐未知类型（全空则用 ["聘用"]）。</item>
+    ///   <item>逐条：类型空 → "聘用"；命中同名 → UPDATE（计入「更新」）；否则 INSERT（计入「新增」）。</item>
+    /// </list>
+    /// 本方法不 Commit。
+    /// </summary>
+    /// <param name="conn">调用方持有的可写连接（应为写闸门内的事务连接）。</param>
+    /// <param name="rows">解析出的职工行。</param>
+    /// <param name="fileName">原始文件路径或文件名（内部只取 basename 入库）。</param>
+    /// <param name="fileHash">文件 MD5（小写十六进制）。</param>
+    /// <returns>(新增数, 更新数)。</returns>
+    /// <exception cref="ArgumentNullException">conn 为 null。</exception>
+    public static (int NewCount, int UpdatedCount) ImportStaff(
+        SqliteConnection conn, IReadOnlyList<StaffImportRow> rows, string fileName, string fileHash)
+    {
+        if (conn is null) throw new ArgumentNullException(nameof(conn));
+        if (rows is null) throw new ArgumentNullException(nameof(rows));
+
+        string baseName = Path.GetFileName(fileName ?? "");
+        string importedAt = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
+
+        conn.Execute(
+            "INSERT INTO import_batch (batch_type, period, file_name, file_hash, imported_at) " +
+            "VALUES ('staff', '0000', @fileName, @fileHash, @importedAt)",
+            new { fileName = baseName, fileHash, importedAt });
+        long batchId = conn.ExecuteScalar<long>("SELECT last_insert_rowid()");
+
+        // 导入的类型若不在类型表中，自动补入（is_builtin=0）；全空则补「聘用」。
+        var typeNames = new List<string>();
+        foreach (StaffImportRow r in rows)
+            if (!string.IsNullOrEmpty(r.StaffType)) typeNames.Add(r.StaffType);
+        if (typeNames.Count == 0) typeNames.Add("聘用");
+        StaffTypeService.EnsureTypes(conn, typeNames);
+
+        int nNew = 0, nDup = 0;
+        foreach (StaffImportRow r in rows)
+        {
+            string stype = r.StaffType;
+            if (string.IsNullOrEmpty(stype)) stype = "聘用";
+
+            int? id = conn.ExecuteScalar<int?>("SELECT id FROM staff WHERE name = @name", new { name = r.Name });
+            if (id is not null)
+            {
+                conn.Execute(
+                    "UPDATE staff SET staff_type = @stype, note = @note, is_active = 1 WHERE id = @id",
+                    new { stype, note = r.Note, id = id.Value });
+                nDup++;
+            }
+            else
+            {
+                conn.Execute(
+                    "INSERT INTO staff (name, staff_type, is_active, note, source, import_batch_id) " +
+                    "VALUES (@name, @stype, 1, @note, 'import', @bid)",
+                    new { name = r.Name, stype, note = r.Note, bid = batchId });
+                nNew++;
+            }
+        }
+        return (nNew, nDup);
+    }
 }

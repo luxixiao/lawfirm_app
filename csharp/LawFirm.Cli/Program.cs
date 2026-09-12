@@ -3,10 +3,15 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Threading;
+using Dapper;
 using LawFirm.Data;
+using LawFirm.Data.Expense;
 using LawFirm.Data.Staff;
 using LawFirm.Exporter;
 using Microsoft.Data.Sqlite;
+using NPOI.HSSF.UserModel;
+using NPOI.SS.UserModel;
+using NPOI.XSSF.UserModel;
 
 namespace LawFirm.Cli;
 
@@ -57,6 +62,8 @@ internal static class Program
                 case "--diag-switch-monthly" when i + 1 == args.Length: return RunDiagSwitchMonthly();
                 case "--diag-write-selftest" when i + 1 == args.Length: return RunWriteSelfTest();
                 case "--diag-base-data" when i + 1 == args.Length: return RunDiagBaseData();
+                case "--diag-expense-cat" when i + 1 == args.Length: return RunDiagExpenseCat();
+                case "--diag-staff-import" when i + 1 == args.Length: return RunDiagStaffImport();
                 default:
                     Console.Error.WriteLine($"未知参数或缺少取值: {args[i]}");
                     return 2;
@@ -1259,6 +1266,531 @@ internal static class Program
         Console.WriteLine($"[{(allPass ? "OK" : "FAIL")}] 基础数据引擎自测：{results.FindAll(r => r.Ok).Count}/{results.Count} 项通过");
         Console.WriteLine($"[INFO] 真实库 LastWriteTime（测试后）= {new FileInfo(realDb).LastWriteTime:yyyy-MM-dd HH:mm:ss.fff}（应与测试前一致）");
         return allPass ? 0 : 1;
+    }
+
+    /// <summary>把真实库（含 -wal/-shm 若存在）复制到临时目录的 copyDb，供诊断在副本上跑。</summary>
+    private static void CopyDbToTemp(string realDb, string tempDir, string copyDb)
+    {
+        Directory.CreateDirectory(tempDir);
+        File.Copy(realDb, copyDb, overwrite: true);
+        if (File.Exists(realDb + "-wal")) File.Copy(realDb + "-wal", copyDb + "-wal", overwrite: true);
+        if (File.Exists(realDb + "-shm")) File.Copy(realDb + "-shm", copyDb + "-shm", overwrite: true);
+    }
+
+    /// <summary>
+    /// 诊断：费用类型引擎自测（--diag-expense-cat，Batch 2b）。
+    /// 只在 %TEMP% 副本上写；最高优先级断言：<see cref="ExpenseCatService.OrderedTypes"/>
+    /// 与 <see cref="ExpenseCatHelper.OrderedTypes"/> 逐元素相等。退出码 0=全通过。
+    /// </summary>
+    private static int RunDiagExpenseCat()
+    {
+        var results = new List<(string Name, bool Ok, string Detail)>();
+        void Check(string name, bool ok, string detail = "") => results.Add((name, ok, detail));
+
+        var res = DbConnection.ResolveDatabase();
+        if (!res.Found)
+        {
+            Console.Error.WriteLine("[FAIL] 未找到可用的 lawfirm.db，查找过程：");
+            foreach (string t in res.Tried) Console.Error.WriteLine("  " + t);
+            return 1;
+        }
+
+        string realDb = res.Path!;
+        DateTime realBefore = new FileInfo(realDb).LastWriteTime;
+        DateTime? realWalBefore = File.Exists(realDb + "-wal") ? new FileInfo(realDb + "-wal").LastWriteTime : null;
+        DateTime? realShmBefore = File.Exists(realDb + "-shm") ? new FileInfo(realDb + "-shm").LastWriteTime : null;
+        string realBackupDir = WriteGuard.BackupDirFor(realDb);
+        bool realBackupDirBefore = Directory.Exists(realBackupDir);
+        int realBackupCountBefore = WriteGuard.BackupCount(realDb);
+
+        Console.WriteLine("[INFO] 费用类型引擎自测（--diag-expense-cat）");
+        Console.WriteLine($"[INFO] 真实库 = {realDb}");
+        Console.WriteLine($"[INFO] 真实库 LastWriteTime（测试前）= {realBefore:yyyy-MM-dd HH:mm:ss.fff}");
+
+        string tempDir = Path.Combine(Path.GetTempPath(),
+            "lawfirm-expense-" + DateTime.Now.ToString("yyyyMMddHHmmss"));
+        string copyDb = Path.Combine(tempDir, "lawfirm.db");
+        string backupDir = WriteGuard.BackupDirFor(copyDb);
+
+        int gateCalls = 0, backupsCreated = 0;
+
+        try
+        {
+            CopyDbToTemp(realDb, tempDir, copyDb);
+            Console.WriteLine($"[INFO] 临时副本 = {copyDb}");
+
+            Exception? TryGate(string reason, Action<SqliteConnection, SqliteTransaction> work)
+            {
+                var before = new HashSet<string>(FileList(backupDir), StringComparer.OrdinalIgnoreCase);
+                gateCalls++;
+                try { WriteGuard.Execute(copyDb, reason, work); }
+                catch (Exception ex) { backupsCreated += CountNewBackups(backupDir, before); return ex; }
+                backupsCreated += CountNewBackups(backupDir, before);
+                return null;
+            }
+
+            // 引导：补齐 5 分类（幂等维护写，不计入用户变更基线）
+            Exception? boot = TryGate("初始化费用分类（幂等补齐）",
+                (c, t) => ExpenseCatService.EnsureCategories(c));
+            Check("0. 引导 EnsureCategories 幂等执行成功", boot is null, boot is null ? "" : boot.Message);
+
+            // ---- 1. ListCategories ----
+            List<ExpenseCategoryRow> cats;
+            using (var ro = DbConnection.OpenReadOnly(copyDb)) cats = ExpenseCatService.ListCategories(ro);
+            bool order1 = cats.Select(x => x.Name).SequenceEqual(ExpenseCatService.Categories);
+            var countsReal = new Dictionary<string, int>();
+            foreach (string c in ExpenseCatService.Categories) countsReal[c] = 0;
+            using (var ro = DbConnection.OpenReadOnly(copyDb))
+            using (var cmd = ro.CreateCommand())
+            {
+                cmd.CommandText = "SELECT category FROM expense_cat";
+                using var r = cmd.ExecuteReader();
+                while (r.Read())
+                {
+                    string raw = r.IsDBNull(0) ? "" : r.GetString(0);
+                    countsReal[ExpenseCatService.NormCat(raw)]++;
+                }
+            }
+            bool counts1 = cats.All(x => countsReal.TryGetValue(x.Name, out int cc) && cc == x.Count);
+            Check("1. ListCategories 恰 5 类、顺序==固定分类、计数与库内一致",
+                cats.Count == 5 && order1 && counts1,
+                string.Join("；", cats.Select(x => $"{x.Name}={x.Count}")));
+
+            // ---- 2. OrderedTypes 等价（最高优先级） ----
+            List<string> svc2, helper2;
+            using (var ro = DbConnection.OpenReadOnly(copyDb))
+            {
+                svc2 = ExpenseCatService.OrderedTypes(ro);
+                helper2 = ExpenseCatHelper.OrderedTypes(ro);
+            }
+            bool eq2 = svc2.SequenceEqual(helper2);
+            Check("2. ExpenseCatService.OrderedTypes == ExpenseCatHelper.OrderedTypes（逐元素）", eq2,
+                $"service({svc2.Count})=[{string.Join(",", svc2)}] || helper({helper2.Count})=[{string.Join(",", helper2)}]");
+
+            // ---- 3. AddType 非法分类归一 + 重名 ----
+            Exception? add3 = TryGate("新增费用类型", (c, t) => ExpenseCatService.AddType(c, "费用测试类型", "垃圾"));
+            Exception? dup3 = TryGate("新增费用类型", (c, t) => ExpenseCatService.AddType(c, "费用测试类型", "其他"));
+            bool norm3;
+            using (var ro = DbConnection.OpenReadOnly(copyDb))
+                norm3 = ExpenseCatService.TypesByCategory(ro).TryGetValue("其他", out var l3) && l3.Contains("费用测试类型");
+            Check("3. AddType 非法分类归一为「其他」/ 重名抛「费用类型已存在：费用测试类型」",
+                add3 is null && norm3 && dup3 is ExpenseCatException && dup3.Message == "费用类型已存在：费用测试类型",
+                $"add={(add3?.Message ?? "ok")},归一其他={norm3},dup='{dup3?.Message}'");
+
+            // ---- 4. RenameType 同步 expense_cat + expense_ledger ----
+            Exception? ledger4 = TryGate("新增费用台账探针", (c, t) =>
+            {
+                using var cmd = c.CreateCommand();
+                cmd.Transaction = t;
+                cmd.CommandText = "INSERT INTO expense_ledger (period, expense_type) VALUES ('0000', '费用测试类型')";
+                cmd.ExecuteNonQuery();
+            });
+            Exception? ren4 = TryGate("改名费用类型",
+                (c, t) => ExpenseCatService.RenameType(c, "费用测试类型", "费用测试类型2"));
+            bool cat4, led4;
+            using (var ro = DbConnection.OpenReadOnly(copyDb))
+            {
+                Dictionary<string, string> m4 = ExpenseCatService.GetMap(ro);
+                cat4 = m4.ContainsKey("费用测试类型2") && !m4.ContainsKey("费用测试类型");
+                led4 = ExpenseCatService.TypeReferenceCount(ro, "费用测试类型2") >= 1
+                       && ExpenseCatService.TypeReferenceCount(ro, "费用测试类型") == 0;
+            }
+            Check("4. RenameType 同时改 expense_cat 与 expense_ledger.expense_type",
+                ledger4 is null && ren4 is null && cat4 && led4,
+                $"cat同步={cat4},ledger同步={led4}");
+
+            // ---- 5. DeleteType 只删配置 ----
+            int ledBefore5;
+            using (var ro = DbConnection.OpenReadOnly(copyDb))
+                ledBefore5 = ExpenseCatService.TypeReferenceCount(ro, "费用测试类型2");
+            Exception? del5 = TryGate("删除费用类型", (c, t) => ExpenseCatService.DeleteType(c, "费用测试类型2"));
+            bool goneCfg5; int ledAfter5;
+            using (var ro = DbConnection.OpenReadOnly(copyDb))
+            {
+                goneCfg5 = !ExpenseCatService.GetMap(ro).ContainsKey("费用测试类型2");
+                ledAfter5 = ExpenseCatService.TypeReferenceCount(ro, "费用测试类型2");
+            }
+            Check("5. DeleteType 仅删配置，历史台账行保留",
+                del5 is null && goneCfg5 && ledAfter5 == ledBefore5 && ledAfter5 >= 1,
+                $"配置已删={goneCfg5},台账 前={ledBefore5} 后={ledAfter5}");
+
+            // ---- 6. 脏数据归类 ----
+            Exception? dirty6 = TryGate("新增脏分类探针", (c, t) =>
+            {
+                using var cmd = c.CreateCommand();
+                cmd.Transaction = t;
+                cmd.CommandText = "INSERT INTO expense_cat (expense_type, category, sort_order) " +
+                    "VALUES ('脏类型X', '垃圾', COALESCE((SELECT MAX(sort_order) FROM expense_cat),0)+1)";
+                cmd.ExecuteNonQuery();
+            });
+            bool dirtied6;
+            using (var ro = DbConnection.OpenReadOnly(copyDb))
+                dirtied6 = ExpenseCatService.TypesByCategory(ro).TryGetValue("其他", out var l6) && l6.Contains("脏类型X");
+            Check("6. 脏分类（'垃圾'）归入兜底「其他」", dirty6 is null && dirtied6,
+                $"入库={dirty6 is null},归其他={dirtied6}");
+
+            // ---- 7. MoveInCategory / 边界 / SaveLayout ----
+            bool move7 = false; string moveDetail7 = "";
+            List<string> catCandidates;
+            using (var ro = DbConnection.OpenReadOnly(copyDb))
+                catCandidates = ExpenseCatService.TypesByCategory(ro)
+                    .Where(kv => kv.Value.Count >= 2).Select(kv => kv.Key).ToList();
+            if (catCandidates.Count > 0)
+            {
+                string cat7 = catCandidates[0];
+                List<string> before7, after7;
+                using (var ro = DbConnection.OpenReadOnly(copyDb)) before7 = ExpenseCatService.GetByCategory(ro, cat7);
+                string second7 = before7[1];
+                Exception? mv = TryGate("类内上移费用类型", (c, t) => ExpenseCatService.MoveInCategory(c, second7, -1));
+                using (var ro = DbConnection.OpenReadOnly(copyDb)) after7 = ExpenseCatService.GetByCategory(ro, cat7);
+                var exp7 = new List<string>(before7);
+                (exp7[0], exp7[1]) = (exp7[1], exp7[0]);
+                move7 = mv is null && after7.SequenceEqual(exp7);
+                moveDetail7 = $"[{cat7}] {string.Join(",", before7)} -> {string.Join(",", after7)}";
+            }
+            Exception? boundGate = TryGate("类内上移费用类型（边界）", (c, t) =>
+            {
+                var byCat = ExpenseCatService.TypesByCategory(c);
+                string first = byCat.First(kv => kv.Value.Count >= 1).Value[0];
+                if (ExpenseCatService.MoveInCategory(c, first, -1))
+                    throw new InvalidOperationException("越界应返回 false");
+                if (ExpenseCatService.MoveInCategory(c, "不存在的类型ZZZ", -1))
+                    throw new InvalidOperationException("不存在应返回 false");
+            });
+            Exception? layout7 = TryGate("保存费用类型布局", (c, t) =>
+            {
+                var byCat = ExpenseCatService.TypesByCategory(c);
+                ExpenseCatService.SaveLayout(c, byCat);
+            });
+            bool contig7; string contigDetail7;
+            using (var ro = DbConnection.OpenReadOnly(copyDb))
+            using (var cmd = ro.CreateCommand())
+            {
+                cmd.CommandText = "SELECT expense_type, category, sort_order FROM expense_cat ORDER BY sort_order";
+                using var r = cmd.ExecuteReader();
+                int expected = 1; bool ok = true; int lastCatIdx = -1;
+                var parts = new List<string>();
+                while (r.Read())
+                {
+                    string cat = r.IsDBNull(1) ? "" : r.GetString(1);
+                    int so = r.GetInt32(2);
+                    if (so != expected) ok = false;
+                    expected++;
+                    int ci = Array.IndexOf(ExpenseCatService.Categories, ExpenseCatService.NormCat(cat));
+                    if (ci < lastCatIdx) ok = false;
+                    lastCatIdx = ci;
+                    if (parts.Count < 60) parts.Add($"{so}:{cat}");
+                }
+                contig7 = ok;
+                contigDetail7 = string.Join(" ", parts);
+            }
+            Check("7. 类内上移生效 + 越界/不存在返回 false 不写；SaveLayout 后全局 sort_order 连续 1..N 且按分类顺序",
+                move7 && boundGate is null && layout7 is null && contig7,
+                $"上移={move7}({moveDetail7})；边界false={boundGate is null}；layout={(layout7?.Message ?? "ok")}；连续1..N={contig7} [{contigDetail7}]");
+
+            // ---- 8. 读方法纯读 ----
+            int b8a = WriteGuard.BackupCount(copyDb);
+            using (var ro = DbConnection.OpenReadOnly(copyDb))
+            {
+                _ = ExpenseCatService.ListCategories(ro);
+                _ = ExpenseCatService.OrderedTypes(ro);
+                _ = ExpenseCatService.TypesByCategory(ro);
+            }
+            int b8b = WriteGuard.BackupCount(copyDb);
+            Check("8. 读方法纯读（ListCategories/OrderedTypes/TypesByCategory 不产生备份）",
+                b8b == b8a, $"{b8a} -> {b8b}（用户变更经闸门 {gateCalls} 次，观测新建备份 {backupsCreated} 份）");
+
+            // ---- 9. 真实库未触碰 ----
+            DateTime realAfter = new FileInfo(realDb).LastWriteTime;
+            DateTime? realWalAfter = File.Exists(realDb + "-wal") ? new FileInfo(realDb + "-wal").LastWriteTime : null;
+            DateTime? realShmAfter = File.Exists(realDb + "-shm") ? new FileInfo(realDb + "-shm").LastWriteTime : null;
+            bool dbSame = realAfter == realBefore;
+            bool walSame = Nullable.Equals(realWalAfter, realWalBefore);
+            bool shmSame = Nullable.Equals(realShmAfter, realShmBefore);
+            bool backupsUntouched = realBackupDirBefore
+                ? WriteGuard.BackupCount(realDb) == realBackupCountBefore
+                : !Directory.Exists(realBackupDir);
+            Check("9. 真实库未被触碰（文件时间一致 / 未创建 data\\backups）",
+                dbSame && walSame && shmSame && backupsUntouched,
+                $"db {realBefore:HH:mm:ss.fff}->{realAfter:HH:mm:ss.fff}, wal同={walSame}, shm同={shmSame}, 备份目录存在={Directory.Exists(realBackupDir)}");
+        }
+        catch (Exception ex)
+        {
+            Check("! 自测过程异常", false, $"{ex.GetType().Name}: {ex.Message}");
+            Console.Error.WriteLine(ex.ToString());
+        }
+        finally
+        {
+            try { Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools(); } catch { /* 忽略 */ }
+            try { if (Directory.Exists(tempDir)) Directory.Delete(tempDir, recursive: true); }
+            catch { /* 临时目录清理失败不影响结论 */ }
+        }
+
+        Console.WriteLine();
+        foreach (var r in results)
+            Console.WriteLine($"  [{(r.Ok ? "PASS" : "FAIL")}] {r.Name}"
+                + (string.IsNullOrEmpty(r.Detail) ? "" : $"  —— {r.Detail}"));
+
+        bool allPass = results.Count > 0 && results.TrueForAll(r => r.Ok);
+        Console.WriteLine();
+        Console.WriteLine($"[{(allPass ? "OK" : "FAIL")}] 费用类型引擎自测：{results.FindAll(r => r.Ok).Count}/{results.Count} 项通过");
+        Console.WriteLine($"[INFO] 真实库 LastWriteTime（测试后）= {new FileInfo(realDb).LastWriteTime:yyyy-MM-dd HH:mm:ss.fff}（应与测试前一致）");
+        return allPass ? 0 : 1;
+    }
+
+    /// <summary>用 NPOI 生成一份职工清单测试文件（xls=true 用 HSSF，否则 XSSF；.xlsm 也用 XSSF 写）。</summary>
+    private static void WriteStaffWorkbook(string path, bool xls, List<object?[]> rows)
+    {
+        IWorkbook wb = xls ? new HSSFWorkbook() : new XSSFWorkbook();
+        ISheet ws = wb.CreateSheet("职工");
+        for (int ri = 0; ri < rows.Count; ri++)
+        {
+            IRow row = ws.CreateRow(ri);
+            object?[] cells = rows[ri];
+            for (int ci = 0; ci < cells.Length; ci++)
+            {
+                object? v = cells[ci];
+                if (v is null) continue;
+                ICell cell = row.CreateCell(ci);
+                if (v is double dd) cell.SetCellValue(dd);
+                else if (v is bool bb) cell.SetCellValue(bb);
+                else cell.SetCellValue(v.ToString());
+            }
+        }
+        using var fs = new FileStream(path, FileMode.Create, FileAccess.Write);
+        wb.Write(fs);
+    }
+
+    /// <summary>
+    /// 诊断：职工清单导入解析 + 导入写流程（--diag-staff-import，Batch 2b）。
+    /// 现场用 NPOI 生成 .xlsx/.xls/.xlsm 三份临时文件解析比对；导入写流程跑在 %TEMP% 副本上。
+    /// 退出码 0=全通过。
+    /// </summary>
+    private static int RunDiagStaffImport()
+    {
+        var results = new List<(string Name, bool Ok, string Detail)>();
+        void Check(string name, bool ok, string detail = "") => results.Add((name, ok, detail));
+
+        var res = DbConnection.ResolveDatabase();
+        if (!res.Found)
+        {
+            Console.Error.WriteLine("[FAIL] 未找到可用的 lawfirm.db，查找过程：");
+            foreach (string t in res.Tried) Console.Error.WriteLine("  " + t);
+            return 1;
+        }
+
+        string realDb = res.Path!;
+        DateTime realBefore = new FileInfo(realDb).LastWriteTime;
+        DateTime? realWalBefore = File.Exists(realDb + "-wal") ? new FileInfo(realDb + "-wal").LastWriteTime : null;
+        DateTime? realShmBefore = File.Exists(realDb + "-shm") ? new FileInfo(realDb + "-shm").LastWriteTime : null;
+        string realBackupDir = WriteGuard.BackupDirFor(realDb);
+        bool realBackupDirBefore = Directory.Exists(realBackupDir);
+        int realBackupCountBefore = WriteGuard.BackupCount(realDb);
+
+        Console.WriteLine("[INFO] 职工清单导入自测（--diag-staff-import）");
+        Console.WriteLine($"[INFO] 真实库 = {realDb}");
+        Console.WriteLine($"[INFO] 真实库 LastWriteTime（测试前）= {realBefore:yyyy-MM-dd HH:mm:ss.fff}");
+
+        string tempDir = Path.Combine(Path.GetTempPath(),
+            "lawfirm-staffimport-" + DateTime.Now.ToString("yyyyMMddHHmmss"));
+        string copyDb = Path.Combine(tempDir, "lawfirm.db");
+        string backupDir = WriteGuard.BackupDirFor(copyDb);
+
+        int gateCalls = 0, backupsCreated = 0;
+
+        try
+        {
+            CopyDbToTemp(realDb, tempDir, copyDb);
+            Console.WriteLine($"[INFO] 临时副本 = {copyDb}");
+
+            Exception? TryGate(string reason, Action<SqliteConnection, SqliteTransaction> work)
+            {
+                var before = new HashSet<string>(FileList(backupDir), StringComparer.OrdinalIgnoreCase);
+                gateCalls++;
+                try { WriteGuard.Execute(copyDb, reason, work); }
+                catch (Exception ex) { backupsCreated += CountNewBackups(backupDir, before); return ex; }
+                backupsCreated += CountNewBackups(backupDir, before);
+                return null;
+            }
+
+            // 测试数据：说明行在最前（表头不在第 0 行）、一行空姓名（跳过）、一行空类型（导入兜底聘用）、
+            // 一个数值备注（2025.0 → "2025"）、一个全新类型（导入应自动补入）。
+            var dataRows = new List<object?[]>
+            {
+                new object?[] { "职工清单（模板说明行，非表头）" },
+                new object?[] { "姓名", "类型", "备注" },
+                new object?[] { "张三", "聘用", "A" },
+                new object?[] { "", "兼职", "空姓名应被跳过" },
+                new object?[] { "李四", "", "空类型应兜底聘用" },
+                new object?[] { "王五", "汽油费", 2025.0 },
+                new object?[] { "赵六", "合伙", "" },
+                new object?[] { "孙七", "测试新类型", "新类型应补入" },
+            };
+
+            string xlsx = Path.Combine(tempDir, "职工清单.xlsx");
+            string xls = Path.Combine(tempDir, "职工清单.xls");
+            string xlsm = Path.Combine(tempDir, "职工清单.xlsm");
+            WriteStaffWorkbook(xlsx, xls: false, dataRows);
+            WriteStaffWorkbook(xls, xls: true, dataRows);
+            WriteStaffWorkbook(xlsm, xls: false, dataRows);
+
+            // ---- 1. 三种格式解析成功且结果一致 ----
+            static string Signature(List<StaffImportRow> rows)
+                => string.Join("|", rows.Select(r => $"{r.Name}/{r.StaffType}/{r.Note}"));
+            var pXlsx = StaffImportParser.ParseStaffFile(xlsx);
+            var pXls = StaffImportParser.ParseStaffFile(xls);
+            var pXlsm = StaffImportParser.ParseStaffFile(xlsm);
+            string sXlsx = Signature(pXlsx.Staff), sXls = Signature(pXls.Staff), sXlsm = Signature(pXlsm.Staff);
+            bool skip1 = pXlsx.Staff.All(r => r.Name.Length > 0);
+            bool emptyType1 = pXlsx.Staff.Any(r => r.Name == "李四" && r.StaffType == "");
+            bool numeric1 = pXlsx.Staff.Any(r => r.Name == "王五" && r.Note == "2025");
+            Check("1. .xlsx/.xls/.xlsm 均解析成功且结果一致；空姓名跳过；数值备注→整数文本",
+                sXlsx == sXls && sXls == sXlsm && pXlsx.Staff.Count == 5 && skip1 && emptyType1 && numeric1,
+                $"[{sXlsx}]（xls/xlsm 与 xlsx {(sXlsx == sXls && sXls == sXlsm ? "一致" : "不一致")}）");
+
+            // ---- 2. 表头不在第 0 行仍能定位 ----
+            Check("2. 表头行不在第 0 行仍能定位（说明行在前）",
+                pXlsx.Staff.Count == 5 && sXlsx.Contains("张三/聘用/A"),
+                $"解析 {pXlsx.Staff.Count} 行，首行={pXlsx.Staff.FirstOrDefault()?.Name}");
+
+            // ---- 3. 错误路径 ----
+            string noName = Path.Combine(tempDir, "无姓名列.xlsx");
+            WriteStaffWorkbook(noName, false, new List<object?[]>
+            {
+                new object?[] { "名字", "类型", "备注" },
+                new object?[] { "张三", "聘用", "A" },
+            });
+            string headerOnly = Path.Combine(tempDir, "仅表头.xlsx");
+            WriteStaffWorkbook(headerOnly, false, new List<object?[]>
+            {
+                new object?[] { "姓名", "类型", "备注" },
+            });
+            string csv = Path.Combine(tempDir, "职工清单.csv");
+            File.WriteAllText(csv, "姓名,类型\n张三,聘用\n", new System.Text.UTF8Encoding(false));
+            string missing = Path.Combine(tempDir, "不存在.xlsx");
+
+            string e1 = TryParseError(noName);
+            string e2 = TryParseError(headerOnly);
+            string e3 = TryParseError(csv);
+            string e4 = TryParseError(missing);
+            Check("3. 错误路径文案精确（无姓名列 / 仅表头 / .csv / 文件不存在）",
+                e1 == "未找到表头（需包含'姓名'和'类型'列）"
+                    && e2 == "文件中没有有效的职工数据"
+                    && e3 == "不支持的文件格式: .csv（支持 .xls/.xlsx/.xlsm）"
+                    && e4 == $"文件不存在: {missing}",
+                $"noName='{e1}'; headerOnly='{e2}'; csv='{e3}'; missing='{e4}'");
+
+            // ---- 4. file_hash == 独立 MD5 ----
+            string expectHash = Convert.ToHexString(
+                System.Security.Cryptography.MD5.HashData(File.ReadAllBytes(xlsx))).ToLowerInvariant();
+            Check("4. file_hash == 独立计算的 MD5", pXlsx.FileHash == expectHash,
+                $"parser={pXlsx.FileHash}, 独立={expectHash}");
+
+            // ---- 5. 导入写流程 ----
+            long batchBefore = CountRows(copyDb, "SELECT COUNT(*) FROM import_batch;");
+            long staffBefore = CountRows(copyDb, "SELECT COUNT(*) FROM staff;");
+            (int NewCount, int UpdatedCount) imp1 = (0, 0);
+            Exception? impEx1 = TryGate("导入职工清单", (c, t) =>
+                imp1 = StaffService.ImportStaff(c, pXlsx.Staff, "职工清单.xlsx", pXlsx.FileHash));
+            long batchAfter = CountRows(copyDb, "SELECT COUNT(*) FROM import_batch;");
+            long staffAfter = CountRows(copyDb, "SELECT COUNT(*) FROM staff;");
+            long newType;
+            string liSiType, wangWuNote;
+            using (var ro = DbConnection.OpenReadOnly(copyDb))
+            {
+                newType = ro.ExecuteScalar<long>(
+                    "SELECT COUNT(*) FROM staff_type_def WHERE name = '测试新类型'");
+                liSiType = ro.ExecuteScalar<string?>(
+                    "SELECT staff_type FROM staff WHERE name = '李四'") ?? "(缺失)";
+                wangWuNote = ro.ExecuteScalar<string?>(
+                    "SELECT note FROM staff WHERE name = '王五'") ?? "(缺失)";
+            }
+            bool impOk1 = impEx1 is null
+                && batchAfter - batchBefore == 1
+                && imp1.NewCount + imp1.UpdatedCount == pXlsx.Staff.Count
+                && staffAfter - staffBefore == imp1.NewCount
+                && newType == 1
+                && liSiType == "聘用"
+                && wangWuNote == "2025";
+            Check("5. 导入：import_batch +1；(新增,更新) 与库内一致；未知类型自动补入；空类型兜底聘用",
+                impOk1,
+                $"batch {batchBefore}->{batchAfter}；新增={imp1.NewCount} 更新={imp1.UpdatedCount}；staff {staffBefore}->{staffAfter}；新类型补入={newType}；李四型='{liSiType}'；王五备注='{wangWuNote}'；err={impEx1?.Message ?? "-"}");
+
+            // ---- 6. 重跑同一份文件：全部更新、不新增 ----
+            (int NewCount, int UpdatedCount) imp2 = (0, 0);
+            Exception? impEx2 = TryGate("导入职工清单", (c, t) =>
+                imp2 = StaffService.ImportStaff(c, pXlsx.Staff, "职工清单.xlsx", pXlsx.FileHash));
+            long staffAfter2 = CountRows(copyDb, "SELECT COUNT(*) FROM staff;");
+            Check("6. 重跑同一文件：全为更新、0 新增、staff 行数不变",
+                impEx2 is null && imp2.NewCount == 0 && imp2.UpdatedCount == pXlsx.Staff.Count
+                    && staffAfter2 == staffAfter,
+                $"新增={imp2.NewCount} 更新={imp2.UpdatedCount}；staff {staffAfter}->{staffAfter2}；err={impEx2?.Message ?? "-"}");
+
+            // ---- 7. 读方法纯读 ----
+            int b7a = WriteGuard.BackupCount(copyDb);
+            using (var ro = DbConnection.OpenReadOnly(copyDb))
+            {
+                _ = StaffService.ListStaff(ro);
+                _ = StaffTypeService.ListTypes(ro);
+            }
+            int b7b = WriteGuard.BackupCount(copyDb);
+            Check("7. 读方法纯读（ListStaff/ListTypes 不产生备份）", b7b == b7a,
+                $"{b7a} -> {b7b}（用户变更经闸门 {gateCalls} 次，观测新建备份 {backupsCreated} 份）");
+
+            // ---- 8. 真实库未触碰 ----
+            DateTime realAfter = new FileInfo(realDb).LastWriteTime;
+            DateTime? realWalAfter = File.Exists(realDb + "-wal") ? new FileInfo(realDb + "-wal").LastWriteTime : null;
+            DateTime? realShmAfter = File.Exists(realDb + "-shm") ? new FileInfo(realDb + "-shm").LastWriteTime : null;
+            bool dbSame = realAfter == realBefore;
+            bool walSame = Nullable.Equals(realWalAfter, realWalBefore);
+            bool shmSame = Nullable.Equals(realShmAfter, realShmBefore);
+            bool backupsUntouched = realBackupDirBefore
+                ? WriteGuard.BackupCount(realDb) == realBackupCountBefore
+                : !Directory.Exists(realBackupDir);
+            Check("8. 真实库未被触碰（文件时间一致 / 未创建 data\\backups）",
+                dbSame && walSame && shmSame && backupsUntouched,
+                $"db {realBefore:HH:mm:ss.fff}->{realAfter:HH:mm:ss.fff}, wal同={walSame}, shm同={shmSame}, 备份目录存在={Directory.Exists(realBackupDir)}");
+        }
+        catch (Exception ex)
+        {
+            Check("! 自测过程异常", false, $"{ex.GetType().Name}: {ex.Message}");
+            Console.Error.WriteLine(ex.ToString());
+        }
+        finally
+        {
+            try { Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools(); } catch { /* 忽略 */ }
+            try { if (Directory.Exists(tempDir)) Directory.Delete(tempDir, recursive: true); }
+            catch { /* 临时目录清理失败不影响结论 */ }
+        }
+
+        Console.WriteLine();
+        foreach (var r in results)
+            Console.WriteLine($"  [{(r.Ok ? "PASS" : "FAIL")}] {r.Name}"
+                + (string.IsNullOrEmpty(r.Detail) ? "" : $"  —— {r.Detail}"));
+
+        bool allPass = results.Count > 0 && results.TrueForAll(r => r.Ok);
+        Console.WriteLine();
+        Console.WriteLine($"[{(allPass ? "OK" : "FAIL")}] 职工清单导入自测：{results.FindAll(r => r.Ok).Count}/{results.Count} 项通过");
+        Console.WriteLine($"[INFO] 真实库 LastWriteTime（测试后）= {new FileInfo(realDb).LastWriteTime:yyyy-MM-dd HH:mm:ss.fff}（应与测试前一致）");
+        return allPass ? 0 : 1;
+    }
+
+    /// <summary>尝试解析并返回异常消息；未抛异常返回 "(未抛出)"（供错误路径断言）。</summary>
+    private static string TryParseError(string path)
+    {
+        try
+        {
+            StaffImportParser.ParseStaffFile(path);
+            return "(未抛出)";
+        }
+        catch (StaffImportException ex)
+        {
+            return ex.Message;
+        }
+        catch (Exception ex)
+        {
+            return ex.GetType().Name + ": " + ex.Message;
+        }
     }
 
     /// <summary>备份目录中「不在 before 集合里」的新文件个数（用于观测每次写入新建的快照）。</summary>

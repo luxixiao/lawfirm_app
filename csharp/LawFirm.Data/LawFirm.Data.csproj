@@ -14,6 +14,9 @@
     <!-- 版本由 csharp/Directory.Packages.props（CPM）统一管理 -->
     <PackageReference Include="Dapper" />
     <PackageReference Include="Microsoft.Data.Sqlite" />
+    <!-- Batch 2b：职工清单解析器（app/importer/staff_import.py）需读 .xls/.xlsx/.xlsm，
+         用 NPOI 实现（与导出层同版本，CPM 统一管理；离线已还原）。 -->
+    <PackageReference Include="NPOI" />
   </ItemGroup>
 
 </Project>
