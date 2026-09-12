@@ -22,6 +22,13 @@ public partial class PersonalSettlementViewModel : ViewModelBase
     private readonly ExportService _exportService = new();
     private CancellationTokenSource? _cts;
 
+    /// <summary>
+    /// 自刷新抑制开关：SyncTypesAndRefreshAsync 内程序化设置 <see cref="PersonType"/> 时置 true，
+    /// 避免 <see cref="OnPersonTypeChanged"/> 自触发一次多余的全量 RefreshAsync
+    /// （对齐 Python 原版 settlement_view.py:225 的 blockSignals 语义）。
+    /// </summary>
+    private bool _suppressRefresh;
+
     /// <summary>年份选项（今年往前 3 年）。</summary>
     public sealed record YearOption(int Value)
     {
@@ -105,7 +112,11 @@ public partial class PersonalSettlementViewModel : ViewModelBase
     partial void OnYearChanged(YearOption? value) => _ = ReloadPersonsAsync();
     partial void OnPersonChanged(PersonOption? value) => _ = SyncTypesAndRefreshAsync();
     partial void OnMonthChanged(MonthOption? value) => _ = RefreshAsync();
-    partial void OnPersonTypeChanged(TypeOption? value) => _ = RefreshAsync();
+    partial void OnPersonTypeChanged(TypeOption? value)
+    {
+        if (_suppressRefresh) return;
+        _ = RefreshAsync();
+    }
 
     private int YearValue => Year?.Value ?? DateTime.Now.Year;
     private int MonthValue => Month?.Value ?? 0;
@@ -140,8 +151,18 @@ public partial class PersonalSettlementViewModel : ViewModelBase
         var types = new List<TypeOption> { new TypeOption(null, "汇总") };
         types.AddRange(available.Select(pt => new TypeOption(pt, pt)));
         // 单身份自动选中该身份；多身份默认汇总（settlement_view.py:230-232）
-        Types = types;
-        PersonType = types.Count == 2 ? types[1] : types[0];
+        // 程序化设置 PersonType 会被 OnPersonTypeChanged 捕获而多发一次 RefreshAsync；
+        // 用 _suppressRefresh 抑制之，随后只保留下面唯一一次 await RefreshAsync()。
+        _suppressRefresh = true;
+        try
+        {
+            Types = types;
+            PersonType = types.Count == 2 ? types[1] : types[0];
+        }
+        finally
+        {
+            _suppressRefresh = false;
+        }
         await RefreshAsync();
     }
 

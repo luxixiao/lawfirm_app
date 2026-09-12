@@ -17,6 +17,13 @@ public partial class MonthlyReportViewModel : ViewModelBase
 {
     private readonly ExportService _exportService = new();
 
+    /// <summary>
+    /// 自刷新抑制开关：RefreshAsync 内程序化设置 <see cref="PersonType"/> 时置 true，
+    /// 避免 <see cref="OnPersonTypeChanged"/> 自触发一次多余的全量 RefreshAsync
+    /// （对齐 Python 原版 settlement_view.py:599-605 对 r_type 的 blockSignals 语义）。
+    /// </summary>
+    private bool _suppressRefresh;
+
     public MonthlyReportViewModel(PersonalSettlementViewModel personal)
     {
         Personal = personal;
@@ -52,7 +59,11 @@ public partial class MonthlyReportViewModel : ViewModelBase
     [ObservableProperty] private string _summaryText = "请选择经办人";
 
     partial void OnPersonChanged(PersonalSettlementViewModel.PersonOption? value) => _ = RefreshAsync();
-    partial void OnPersonTypeChanged(PersonalSettlementViewModel.TypeOption? value) => _ = RefreshAsync();
+    partial void OnPersonTypeChanged(PersonalSettlementViewModel.TypeOption? value)
+    {
+        if (_suppressRefresh) return;
+        _ = RefreshAsync();
+    }
     partial void OnMonthChanged(int value) => _ = RefreshAsync();
 
     /// <summary>切换到本 tab 时刷新（_on_tab_changed）。</summary>
@@ -72,8 +83,19 @@ public partial class MonthlyReportViewModel : ViewModelBase
         var types = new List<PersonalSettlementViewModel.TypeOption> { new(null, "汇总") };
         types.AddRange(available.Select(pt => new PersonalSettlementViewModel.TypeOption(pt, pt)));
         TypeOptions = types;
-        if (PersonType is null || !types.Any(t => t.Value == PersonType.Value))
-            PersonType = types.Count == 2 ? types[1] : types[0];
+        // 程序化设置 PersonType 会被 OnPersonTypeChanged 捕获而多发一次 RefreshAsync；
+        // 用 _suppressRefresh 抑制之（语义与 Python r_type blockSignals 一致），随后本次
+        // RefreshAsync 继续用新 PersonType 构建行，不再额外启动第二次刷新。
+        _suppressRefresh = true;
+        try
+        {
+            if (PersonType is null || !types.Any(t => t.Value == PersonType.Value))
+                PersonType = types.Count == 2 ? types[1] : types[0];
+        }
+        finally
+        {
+            _suppressRefresh = false;
+        }
 
         var result = await Task.Run(() =>
             SettlementQueryService.BuildMonthlyRows(

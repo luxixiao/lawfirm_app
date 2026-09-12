@@ -29,6 +29,13 @@ public static class SettlementQueryService
     private static readonly string[] CnNum = { "一", "二", "三", "四", "五", "六", "七", "八", "九", "十" };
     private static readonly string[] PersonTypes = { "合伙", "聘用", "兼职" };
 
+    /// <summary>
+    /// 诊断计数：本进程内 <see cref="SettlementEngine.Build"/> 的累计调用次数。
+    /// **仅用于性能诊断**（如「切换经办人」重复刷新的量化），业务逻辑不依赖它。
+    /// 线程安全：所有调用点一律经 <see cref="System.Threading.Interlocked.Increment(ref int)"/> 自增。
+    /// </summary>
+    public static int BuildCallCount;
+
     private static SqliteConnection OpenConn() => DbConnection.OpenReadOnly(DbConnection.FindDatabase());
 
     private static double R2(double v) => Math.Round(v, 2);
@@ -44,6 +51,7 @@ public static class SettlementQueryService
         for (int y = cur; y > cur - 4; y--)
         {
             using var conn = OpenConn();
+            System.Threading.Interlocked.Increment(ref BuildCallCount);
             if (SettlementEngine.Build(conn, y).Count > 0) return y;
         }
         return cur;
@@ -53,6 +61,7 @@ public static class SettlementQueryService
     public static List<string> PersonNames(int year)
     {
         using var conn = OpenConn();
+        System.Threading.Interlocked.Increment(ref BuildCallCount);
         return SettlementEngine.Build(conn, year).Keys
             .OrderBy(k => k, StringComparer.Ordinal).ToList();
     }
@@ -64,6 +73,7 @@ public static class SettlementQueryService
         using var conn = OpenConn();
         foreach (var pt in PersonTypes)
         {
+            System.Threading.Interlocked.Increment(ref BuildCallCount);
             var st = SettlementEngine.Build(conn, year, person, pt).GetValueOrDefault(person);
             if (HasAny(st)) available.Add(pt);
         }
@@ -106,6 +116,7 @@ public static class SettlementQueryService
     public static PersonalRowsResult BuildPersonalRows(int year, string person, string? personType, int month)
     {
         using var conn = OpenConn();
+        System.Threading.Interlocked.Increment(ref BuildCallCount);
         var data = SettlementEngine.Build(conn, year, person, personType);
         var st = data.GetValueOrDefault(person);
         if (st is null)
@@ -258,6 +269,7 @@ public static class SettlementQueryService
     public static MonthlyRowsResult BuildMonthlyRows(int year, string person, string? personType, int month)
     {
         using var conn = OpenConn();
+        System.Threading.Interlocked.Increment(ref BuildCallCount);
         var data = SettlementEngine.Build(conn, year, person, personType);
         var st = data.GetValueOrDefault(person);
         if (st is null)
@@ -407,6 +419,7 @@ public static class SettlementQueryService
     public static StaffIncomeResult BuildStaffIncomeRows(int year, int month)
     {
         using var conn = OpenConn();
+        System.Threading.Interlocked.Increment(ref BuildCallCount);
         var data = SettlementEngine.Build(conn, year);
         var persons = StaffEmployees(conn, year, month);
         // 费用归类映射：expense_type → category（Python get_map()）
@@ -500,6 +513,7 @@ public static class SettlementQueryService
     public static InvoiceIncomeResult BuildInvoiceIncomeRows(int year, int month)
     {
         using var conn = OpenConn();
+        System.Threading.Interlocked.Increment(ref BuildCallCount);
         var data = SettlementEngine.Build(conn, year);
         var persons = MainPersons(conn, year, month);
         var rows = new List<InvoiceIncomeRow>();

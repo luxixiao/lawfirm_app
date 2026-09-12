@@ -52,6 +52,8 @@ internal static class Program
                 case "--diag-shell" when i + 1 == args.Length: return RunDiagShell();
                 case "--diag-sidebar" when i + 1 == args.Length: return RunDiagSidebar();
                 case "--diag-persons" when i + 1 == args.Length: return RunDiagPersons();
+                case "--diag-switch" when i + 1 == args.Length: return RunDiagSwitch();
+                case "--diag-switch-monthly" when i + 1 == args.Length: return RunDiagSwitchMonthly();
                 default:
                     Console.Error.WriteLine($"未知参数或缺少取值: {args[i]}");
                     return 2;
@@ -410,5 +412,364 @@ internal static class Program
             Console.WriteLine(ex.StackTrace);
             return 1;
         }
+    }
+
+    /// <summary>
+    /// 诊断：「切换经办人」重复全量刷新量化（性能回归门）。
+    ///
+    /// 背景：PersonalSettlementViewModel.OnPersonTypeChanged 会在 SyncTypesAndRefreshAsync
+    /// 设 PersonType 时被自触发，导致一次切人跑两遍 RefreshAsync（引擎两遍 + ColumnsChanged 两遍）。
+    /// 本命令用 SettlementQueryService.BuildCallCount 与 VM 的 Rows/SummaryText 变更事件量化：
+    ///   - 修复前：一次切换 = 2 遍刷新 / 5 次 Build
+    ///   - 修复后：一次切换 = 1 遍刷新 / 4 次 Build
+    ///
+    /// 完成信号：设 Person 后等 400ms 无新 Rows/SummaryText 事件（静默判定），单次与整体均 30s 超时。
+    /// 退出码 0=全部切换完成，1=超时/初始化失败。
+    /// </summary>
+    private static int RunDiagSwitch()
+    {
+        Console.WriteLine("[INFO] 「切换经办人」重复刷新量化诊断（--diag-switch）");
+        Console.WriteLine($"[INFO] DB = {DbConnection.FindDatabase()}");
+
+        LawFirm.UI.ViewModels.PersonalSettlementViewModel vm;
+        try
+        {
+            vm = new LawFirm.UI.ViewModels.PersonalSettlementViewModel();
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[FAIL] VM 构造失败: {ex.GetType().Name}: {ex.Message}");
+            return 1;
+        }
+
+        var probe = new SwitchProbe();
+        vm.PropertyChanged += probe.OnPropertyChanged;
+
+        try
+        {
+            // 1. 初始化 + 轮询等人员列表就绪
+            vm.InitializeOnce();
+            var readySw = System.Diagnostics.Stopwatch.StartNew();
+            while (vm.Persons.Count <= 1 && readySw.ElapsedMilliseconds < 30_000)
+                Thread.Sleep(50);
+            if (vm.Persons.Count <= 1)
+            {
+                Console.Error.WriteLine($"[FAIL] 人员列表未就绪（30s 超时，Persons={vm.Persons.Count}）");
+                Console.Error.WriteLine($"[INFO] LogText={vm.LogText}");
+                return 1;
+            }
+            Console.WriteLine($"[INFO] 人员列表就绪：共 {vm.Persons.Count} 项（首项为占位）");
+            if (vm.Persons.Count < 3)
+            {
+                Console.Error.WriteLine($"[FAIL] 有效人员不足（需 >= 3 项，实际 {vm.Persons.Count}）");
+                return 1;
+            }
+
+            int year = vm.Year?.Value ?? DateTime.Now.Year;
+
+            // 「自动选中身份」= 恰好单一身份时选中该身份，否则「汇总」
+            //（对应 SyncTypesAndRefreshAsync: types.Count == 2 ? types[1] : types[0]）。
+            string AutoType(LawFirm.UI.ViewModels.PersonalSettlementViewModel.PersonOption p)
+            {
+                if (p.Name is null) return "占位";
+                var av = LawFirm.UI.Services.SettlementQueryService.AvailableTypes(year, p.Name);
+                return av.Count == 1 ? av[0] : "汇总";
+            }
+
+            // 默认按任务说明取 Persons[1]/[2]；但只有当两人「自动选中身份」不同时，
+            // 切人才会改变 PersonType 从而触发被修复的那次自刷新。若二者相同，
+            // 自动改取一对「自动身份不同」的人做确定性复现（并打印说明）。
+            var pa = vm.Persons[1];
+            var pb = vm.Persons[2];
+            string ta = AutoType(pa), tb = AutoType(pb);
+            bool switchedPair = false;
+            if (ta == tb)
+            {
+                for (int i = 1; i < vm.Persons.Count; i++)
+                {
+                    if (vm.Persons[i].Name is null) continue;
+                    string ti = AutoType(vm.Persons[i]);
+                    if (ti == ta) continue;
+                    pa = vm.Persons[1];
+                    pb = vm.Persons[i];
+                    tb = ti;
+                    switchedPair = true;
+                    break;
+                }
+            }
+            Console.WriteLine($"[INFO] 交替对象：A = {pa.Name}（自动身份「{ta}」），B = {pb.Name}（自动身份「{tb}」）"
+                + (switchedPair ? "  [注：Persons[1]/[2] 自动身份相同，已改取差异对以确保复现]" : "  [取 Persons[1]/[2]]"));
+            if (ta == tb)
+                Console.WriteLine("[WARN] 未找到自动身份不同的一对；本数据下切人不会改变 PersonType，基线与修复后可能相同");
+
+            Console.WriteLine("[INFO] 计时口径：净耗时 = 「设 Person」→「最后一次 Rows/SummaryText 事件」；"
+                + "400ms 静默窗口仅用于结束判定，不计入耗时。");
+
+            // 结束判定：设 Person 后，等 Rows 事件出现且连续 400ms 无新事件（总超时 30s）；
+            // 计时只取「设 Person」到「最后一次事件」的净耗时，静默尾部不计入。
+            (bool Ok, long NetMs, int Builds, int Passes) SwitchTo(
+                LawFirm.UI.ViewModels.PersonalSettlementViewModel.PersonOption target)
+            {
+                probe.Reset();
+                LawFirm.UI.Services.SettlementQueryService.BuildCallCount = 0;
+                long t0 = System.Diagnostics.Stopwatch.GetTimestamp();   // 计时起点（高精度）：设 Person 的那一刻
+                vm.Person = target;   // 触发 OnPersonChanged → SyncTypesAndRefreshAsync（后台接续）
+                var sw = System.Diagnostics.Stopwatch.StartNew();
+                while (sw.ElapsedMilliseconds < 30_000)
+                {
+                    if (probe.RowsCount >= 1 && probe.MillisSinceLastEvent >= 400)
+                        break;
+                    Thread.Sleep(10);
+                }
+                bool ok = sw.ElapsedMilliseconds < 30_000;
+                double netMsD = SwitchProbe.TicksToMs(probe.LastEventTimestamp - t0);   // 计时终点：最后一次事件时刻
+                long netMs = netMsD < 0 ? 0 : (long)Math.Round(netMsD);
+                return (ok, netMs, LawFirm.UI.Services.SettlementQueryService.BuildCallCount, probe.RowsCount);
+            }
+
+            // 预热一次（不计入统计），让 PersonType / Types 达到稳定基线。
+            var warm = SwitchTo(pa);
+            Console.WriteLine($"[INFO] 预热切至 {pa.Name}：净耗时 {warm.NetMs} ms，Build {warm.Builds}，刷新 {warm.Passes} 遍");
+
+            // 2. 交替切换 10 次并统计
+            var msList = new List<long>();
+            var buildList = new List<int>();
+            var passList = new List<int>();
+            bool allOk = true;
+            for (int k = 0; k < 10; k++)
+            {
+                var target = (k % 2 == 0) ? pb : pa;
+                var r = SwitchTo(target);
+                if (!r.Ok) allOk = false;
+                msList.Add(r.NetMs);
+                buildList.Add(r.Builds);
+                passList.Add(r.Passes);
+                Console.WriteLine($"  第 {k + 1,2} 次 → {target.Name,-8}：净耗时 {r.NetMs,5} ms   Build {r.Builds}   刷新 {r.Passes} 遍");
+            }
+
+            long medMs = Median(msList);
+            int medBuild = (int)Median(buildList.Select(x => (long)x).ToList());
+            int medPass = (int)Median(passList.Select(x => (long)x).ToList());
+
+            Console.WriteLine($"[RESULT] 中位净耗时 = {medMs} ms（不含 400ms 静默窗口），中位 Build = {medBuild}，中位刷新 = {medPass} 遍");
+            Console.WriteLine($"[RESULT] 净耗时分布 = [{string.Join(",", msList)}] ms");
+            Console.WriteLine($"[RESULT] Build 次数分布 = [{string.Join(",", buildList)}]");
+            Console.WriteLine($"[RESULT] 刷新遍数分布 = [{string.Join(",", passList)}]");
+            Console.WriteLine(medPass == 1 && medBuild == 4
+                ? "[OK] 与修复后预期一致（1 遍刷新 / 4 次 Build）"
+                : medPass == 2 && medBuild == 5
+                    ? "[WARN] 与修复前基线一致（2 遍刷新 / 5 次 Build）——可能未应用修复"
+                    : "[INFO] 数值不在 1遍/4Build 与 2遍/5Build 两种预期内，请人工核对");
+
+            return allOk ? 0 : 1;
+        }
+        finally
+        {
+            vm.PropertyChanged -= probe.OnPropertyChanged;
+        }
+    }
+
+    /// <summary>
+    /// 诊断：Tab2「月度结算表」重复全量刷新量化（--diag-switch-monthly）。
+    ///
+    /// 同一根因的第二处：MonthlyReportViewModel.RefreshAsync 内程序化设置 PersonType
+    /// （仅当当前类型不在该人身份集合内时）会触发 OnPersonTypeChanged → 再跑一遍 RefreshAsync。
+    /// 每次 RefreshAsync = AvailableTypes(3 次 Build) + BuildMonthlyRows(1 次 Build) = 4 次 Build，
+    /// 故重复一遍后为 8 次 Build / 2 遍刷新；修复后应为 4 次 Build / 1 遍刷新。
+    /// 计时口径同个人表：净耗时 = 设 Person → 最后一次 Rows/SummaryText 事件，400ms 静默不计入。
+    /// </summary>
+    private static int RunDiagSwitchMonthly()
+    {
+        Console.WriteLine("[INFO] 「月度结算表」重复刷新量化诊断（--diag-switch-monthly）");
+        Console.WriteLine($"[INFO] DB = {DbConnection.FindDatabase()}");
+
+        LawFirm.UI.ViewModels.PersonalSettlementViewModel personal;
+        try
+        {
+            personal = new LawFirm.UI.ViewModels.PersonalSettlementViewModel();
+            personal.InitializeOnce();
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[FAIL] Personal VM 构造失败: {ex.GetType().Name}: {ex.Message}");
+            return 1;
+        }
+
+        var readySw = System.Diagnostics.Stopwatch.StartNew();
+        while (personal.Persons.Count <= 1 && readySw.ElapsedMilliseconds < 30_000)
+            Thread.Sleep(50);
+        if (personal.Persons.Count <= 1)
+        {
+            Console.Error.WriteLine($"[FAIL] 人员列表未就绪（30s 超时，Persons={personal.Persons.Count}）");
+            return 1;
+        }
+        if (personal.Persons.Count < 3)
+        {
+            Console.Error.WriteLine($"[FAIL] 有效人员不足（需 >= 3 项，实际 {personal.Persons.Count}）");
+            return 1;
+        }
+        Console.WriteLine($"[INFO] 人员列表就绪：共 {personal.Persons.Count} 项（首项为占位）");
+
+        var probe = new SwitchProbe();
+        LawFirm.UI.ViewModels.MonthlyReportViewModel vm;
+        try
+        {
+            vm = new LawFirm.UI.ViewModels.MonthlyReportViewModel(personal);
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[FAIL] Monthly VM 构造失败: {ex.GetType().Name}: {ex.Message}");
+            return 1;
+        }
+        vm.PropertyChanged += probe.OnPropertyChanged;
+
+        try
+        {
+            int year = personal.Year?.Value ?? DateTime.Now.Year;
+            string AutoType(LawFirm.UI.ViewModels.PersonalSettlementViewModel.PersonOption p)
+            {
+                if (p.Name is null) return "占位";
+                var av = LawFirm.UI.Services.SettlementQueryService.AvailableTypes(year, p.Name);
+                return av.Count == 1 ? av[0] : "汇总";
+            }
+
+            var pa = personal.Persons[1];
+            var pb = personal.Persons[2];
+            string ta = AutoType(pa), tb = AutoType(pb);
+            bool switchedPair = false;
+            if (ta == tb)
+            {
+                for (int i = 1; i < personal.Persons.Count; i++)
+                {
+                    if (personal.Persons[i].Name is null) continue;
+                    string ti = AutoType(personal.Persons[i]);
+                    if (ti == ta) continue;
+                    pa = personal.Persons[1];
+                    pb = personal.Persons[i];
+                    tb = ti;
+                    switchedPair = true;
+                    break;
+                }
+            }
+            Console.WriteLine($"[INFO] 交替对象：A = {pa.Name}（自动身份「{ta}」），B = {pb.Name}（自动身份「{tb}」）"
+                + (switchedPair ? "  [Persons[1]/[2] 自动身份相同，已改取差异对]" : "  [取 Persons[1]/[2]]"));
+            Console.WriteLine("[INFO] 计时口径：净耗时 = 「设 Person」→「最后一次 Rows/SummaryText 事件」；400ms 静默窗口仅用于结束判定，不计入。");
+
+            // 结束判定：设 Person 后等 Rows 事件出现且连续 400ms 无新事件（总超时 30s）；净耗时只取到末事件。
+            (bool Ok, long NetMs, int Builds, int Passes) SwitchTo(
+                LawFirm.UI.ViewModels.PersonalSettlementViewModel.PersonOption target)
+            {
+                probe.Reset();
+                LawFirm.UI.Services.SettlementQueryService.BuildCallCount = 0;
+                long t0 = System.Diagnostics.Stopwatch.GetTimestamp();   // 计时起点（高精度）
+                vm.Person = target;   // 触发 OnPersonChanged → RefreshAsync（后台接续）
+                var sw = System.Diagnostics.Stopwatch.StartNew();
+                while (sw.ElapsedMilliseconds < 30_000)
+                {
+                    if (probe.RowsCount >= 1 && probe.MillisSinceLastEvent >= 400)
+                        break;
+                    Thread.Sleep(10);
+                }
+                bool ok = sw.ElapsedMilliseconds < 30_000;
+                double netMsD = SwitchProbe.TicksToMs(probe.LastEventTimestamp - t0);   // 计时终点：最后一次事件时刻
+                long netMs = netMsD < 0 ? 0 : (long)Math.Round(netMsD);
+                return (ok, netMs, LawFirm.UI.Services.SettlementQueryService.BuildCallCount, probe.RowsCount);
+            }
+
+            var warm = SwitchTo(pa);
+            Console.WriteLine($"[INFO] 预热切至 {pa.Name}：净耗时 {warm.NetMs} ms，Build {warm.Builds}，刷新 {warm.Passes} 遍");
+
+            var msList = new List<long>();
+            var buildList = new List<int>();
+            var passList = new List<int>();
+            bool allOk = true;
+            for (int k = 0; k < 10; k++)
+            {
+                var target = (k % 2 == 0) ? pb : pa;
+                var r = SwitchTo(target);
+                if (!r.Ok) allOk = false;
+                msList.Add(r.NetMs);
+                buildList.Add(r.Builds);
+                passList.Add(r.Passes);
+                Console.WriteLine($"  第 {k + 1,2} 次 → {target.Name,-8}：净耗时 {r.NetMs,5} ms   Build {r.Builds}   刷新 {r.Passes} 遍");
+            }
+
+            long medMs = Median(msList);
+            int medBuild = (int)Median(buildList.Select(x => (long)x).ToList());
+            int medPass = (int)Median(passList.Select(x => (long)x).ToList());
+
+            Console.WriteLine($"[RESULT] 中位净耗时 = {medMs} ms（不含 400ms 静默窗口），中位 Build = {medBuild}，中位刷新 = {medPass} 遍");
+            Console.WriteLine($"[RESULT] 净耗时分布 = [{string.Join(",", msList)}] ms");
+            Console.WriteLine($"[RESULT] Build 次数分布 = [{string.Join(",", buildList)}]");
+            Console.WriteLine($"[RESULT] 刷新遍数分布 = [{string.Join(",", passList)}]");
+            Console.WriteLine(medPass == 1 && medBuild == 4
+                ? "[OK] 与修复后预期一致（月度表 1 遍刷新 / 4 次 Build）"
+                : medPass == 2 && medBuild == 8
+                    ? "[WARN] 与修复前基线一致（月度表 2 遍刷新 / 8 次 Build）——可能未应用修复"
+                    : "[INFO] 数值不在 1遍/4Build 与 2遍/8Build 两种预期内，请人工核对");
+
+            return allOk ? 0 : 1;
+        }
+        finally
+        {
+            vm.PropertyChanged -= probe.OnPropertyChanged;
+        }
+    }
+
+    /// <summary>中位数（偶数个取中间两数平均，向下取整）。空集合返回 0。</summary>
+    private static long Median(List<long> values)
+    {
+        if (values.Count == 0) return 0;
+        var sorted = new List<long>(values);
+        sorted.Sort();
+        int mid = sorted.Count / 2;
+        return sorted.Count % 2 == 1
+            ? sorted[mid]
+            : (sorted[mid - 1] + sorted[mid]) / 2;
+    }
+
+    /// <summary>
+    /// 订阅 PersonalSettlementViewModel.PropertyChanged，对 Rows / SummaryText 变更计数，
+    /// 并记录最近一次事件的时刻（供 400ms 静默判定）。事件在后台线程触发，故一律用 Interlocked/Volatile。
+    /// </summary>
+    private sealed class SwitchProbe
+    {
+        private int _rows;
+        private int _summary;
+        private long _lastTs = System.Diagnostics.Stopwatch.GetTimestamp();
+
+        public void Reset()
+        {
+            Interlocked.Exchange(ref _rows, 0);
+            Interlocked.Exchange(ref _summary, 0);
+            Interlocked.Exchange(ref _lastTs, System.Diagnostics.Stopwatch.GetTimestamp());
+        }
+
+        public void OnPropertyChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
+        {
+            if (e.PropertyName == "Rows")
+            {
+                Interlocked.Increment(ref _rows);
+                Interlocked.Exchange(ref _lastTs, System.Diagnostics.Stopwatch.GetTimestamp());
+            }
+            else if (e.PropertyName == "SummaryText")
+            {
+                Interlocked.Increment(ref _summary);
+                Interlocked.Exchange(ref _lastTs, System.Diagnostics.Stopwatch.GetTimestamp());
+            }
+        }
+
+        public int RowsCount => Volatile.Read(ref _rows);
+        public int SummaryCount => Volatile.Read(ref _summary);
+
+        /// <summary>距最后一次事件的高精度毫秒数（供 400ms 静默判定）。</summary>
+        public double MillisSinceLastEvent
+            => TicksToMs(System.Diagnostics.Stopwatch.GetTimestamp() - Interlocked.Read(ref _lastTs));
+
+        /// <summary>最近一次 Rows/SummaryText 事件的绝对高精度时刻戳；净耗时 = 末事件戳 − 设 Person 戳。</summary>
+        public long LastEventTimestamp => Interlocked.Read(ref _lastTs);
+
+        /// <summary>Stopwatch 刻度 → 毫秒。</summary>
+        public static double TicksToMs(long ticks) => ticks * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
     }
 }
