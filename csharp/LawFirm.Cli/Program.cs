@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq;
 using System.Threading;
 using LawFirm.Data;
+using LawFirm.Data.Staff;
 using LawFirm.Exporter;
 using Microsoft.Data.Sqlite;
 
@@ -54,6 +55,8 @@ internal static class Program
                 case "--diag-persons" when i + 1 == args.Length: return RunDiagPersons();
                 case "--diag-switch" when i + 1 == args.Length: return RunDiagSwitch();
                 case "--diag-switch-monthly" when i + 1 == args.Length: return RunDiagSwitchMonthly();
+                case "--diag-write-selftest" when i + 1 == args.Length: return RunWriteSelfTest();
+                case "--diag-base-data" when i + 1 == args.Length: return RunDiagBaseData();
                 default:
                     Console.Error.WriteLine($"未知参数或缺少取值: {args[i]}");
                     return 2;
@@ -715,6 +718,599 @@ internal static class Program
             vm.PropertyChanged -= probe.OnPropertyChanged;
         }
     }
+
+    /// <summary>
+    /// 诊断：写入通道自测（--diag-write-selftest，Batch 1「A + 三保险」验收）。
+    ///
+    /// **绝不触碰真实 data/lawfirm.db**：先把真实库连同 -wal/-shm 复制到 %TEMP%，
+    /// 所有写入只发生在临时副本上，跑完连同临时备份目录一起删除。
+    /// 逐条打印 PASS/FAIL，全部通过才返回 0。
+    /// </summary>
+    private static int RunWriteSelfTest()
+    {
+        var results = new List<(string Name, bool Ok, string Detail)>();
+        void Check(string name, bool ok, string detail = "") => results.Add((name, ok, detail));
+
+        var res = DbConnection.ResolveDatabase();
+        if (!res.Found)
+        {
+            Console.Error.WriteLine("[FAIL] 未找到可用的 lawfirm.db，查找过程：");
+            foreach (string t in res.Tried) Console.Error.WriteLine("  " + t);
+            return 1;
+        }
+
+        string realDb = res.Path!;
+        DateTime realBefore = new FileInfo(realDb).LastWriteTime;
+        Console.WriteLine("[INFO] 写入通道自测（--diag-write-selftest）");
+        Console.WriteLine($"[INFO] 真实库 = {realDb}");
+        Console.WriteLine($"[INFO] 真实库 LastWriteTime（测试前）= {realBefore:yyyy-MM-dd HH:mm:ss.fff}");
+
+        string tempDir = Path.Combine(Path.GetTempPath(),
+            "lawfirm-selftest-" + DateTime.Now.ToString("yyyyMMddHHmmss"));
+        string copyDb = Path.Combine(tempDir, "lawfirm.db");
+
+        try
+        {
+            Directory.CreateDirectory(tempDir);
+            File.Copy(realDb, copyDb, overwrite: true);
+            if (File.Exists(realDb + "-wal")) File.Copy(realDb + "-wal", copyDb + "-wal", overwrite: true);
+            if (File.Exists(realDb + "-shm")) File.Copy(realDb + "-shm", copyDb + "-shm", overwrite: true);
+            Console.WriteLine($"[INFO] 临时副本 = {copyDb}（-wal/-shm 若存在已一并复制）");
+
+            string backupDir = WriteGuard.BackupDirFor(copyDb);
+            Console.WriteLine($"[INFO] 副本备份目录 = {backupDir}");
+
+            // ========== 断言 1 & 2：一次写入 → staff 探针行 + change_log 恰好 +1 ==========
+            long changeBefore = CountRows(copyDb, "SELECT COUNT(*) FROM change_log;");
+            long probeId = WriteGuard.Execute<long>(copyDb, "写通道自测-新增员工", (conn, tx) =>
+            {
+                using (var ins = conn.CreateCommand())
+                {
+                    ins.Transaction = tx;
+                    ins.CommandText =
+                        "INSERT INTO staff (name, staff_type, is_active, note, source) " +
+                        "VALUES ($n, $t, 1, '', 'selftest');";
+                    ins.Parameters.AddWithValue("$n", "__selftest__");
+                    ins.Parameters.AddWithValue("$t", "聘用");
+                    ins.ExecuteNonQuery();
+                }
+                long id;
+                using (var q = conn.CreateCommand())
+                {
+                    q.Transaction = tx;
+                    q.CommandText = "SELECT last_insert_rowid();";
+                    id = Convert.ToInt64(q.ExecuteScalar());
+                }
+
+                // 同一事务内追加一条修改记录，与上面的 INSERT 一起提交（验证 ChangeLog 端口）。
+                ChangeLog.Log(conn, "staff", id.ToString(), "create", null, "__selftest__",
+                    note: "写通道自测", friendlyTable: "员工");
+                return id;
+            });
+
+            long staffRows = CountRows(copyDb, "SELECT COUNT(*) FROM staff WHERE name = '__selftest__';");
+            Check("1. staff 探针行已提交", staffRows == 1, $"name='__selftest__' 命中 {staffRows} 行（id={probeId}）");
+
+            long changeAfter = CountRows(copyDb, "SELECT COUNT(*) FROM change_log;");
+            long delta = changeAfter - changeBefore;
+            string[] logRow = ReadRow(copyDb,
+                "SELECT table_name, field, old_value, new_value FROM change_log ORDER BY id DESC LIMIT 1;");
+            bool logOk = delta == 1
+                && logRow.Length == 4
+                && logRow[0] == "staff"
+                && logRow[1] == "create"
+                && logRow[2] == ""
+                && logRow[3] == "__selftest__";
+            Check("2. change_log 恰好 +1 行且内容正确", logOk,
+                $"delta={delta}, table_name={AtStr(logRow, 0)}, field={AtStr(logRow, 1)}, " +
+                $"old_value='{AtStr(logRow, 2)}', new_value='{AtStr(logRow, 3)}'");
+
+            // ========== 断言 3：备份恰好 1 个且为真 SQLite 文件 ==========
+            string[] backups = FileList(backupDir);
+            int backupCount = WriteGuard.BackupCount(copyDb);
+            bool headerOk = backups.Length == 1 && HasSqliteHeader(backups[0]);
+            Check("3. 备份目录恰好 1 个 lawfirm-*.db 且为真 SQLite 文件", backupCount == 1 && headerOk,
+                $"BackupCount={backupCount}, 实际文件={backups.Length}, SQLite 头={(backups.Length == 1 ? HasSqliteHeader(backups[0]).ToString() : "n/a")}");
+
+            // ========== 断言 4：滚动保留 = 10（删最旧、留最新） ==========
+            // 已产生 1 个备份；再写 15 次 → 共 16 个 → 应只保留最新 10 个。
+            var createdOrder = new List<string>();
+            if (backups.Length == 1) createdOrder.Add(backups[0]);
+            for (int k = 0; k < 15; k++)
+            {
+                int kk = k;
+                var before = new HashSet<string>(FileList(backupDir), StringComparer.OrdinalIgnoreCase);
+                WriteGuard.Execute(copyDb, $"写通道自测-保留策略 {kk + 1}", (conn, tx) =>
+                {
+                    using var cmd = conn.CreateCommand();
+                    cmd.Transaction = tx;
+                    cmd.CommandText = "UPDATE staff SET note = $n WHERE name = '__selftest__';";
+                    cmd.Parameters.AddWithValue("$n", "keep-" + kk);
+                    cmd.ExecuteNonQuery();
+                });
+                foreach (string f in FileList(backupDir))
+                    if (!before.Contains(f)) createdOrder.Add(f);
+            }
+
+            string[] survivors = FileList(backupDir);
+            int totalCreated = createdOrder.Count;
+            var expectedKept = new HashSet<string>(
+                createdOrder.Skip(Math.Max(0, totalCreated - WriteGuard.RetentionCount)),
+                StringComparer.OrdinalIgnoreCase);
+            var survivorSet = new HashSet<string>(survivors, StringComparer.OrdinalIgnoreCase);
+            bool retentionOk = survivors.Length == WriteGuard.RetentionCount && survivorSet.SetEquals(expectedKept);
+            Check($"4. 滚动保留 = {WriteGuard.RetentionCount}（删最旧、留最新）", retentionOk,
+                $"共创建 {totalCreated} 个，现存 {survivors.Length} 个，" +
+                (retentionOk ? "保留集合 == 最新 10 个" : "保留集合 != 最新 10 个"));
+
+            // ========== 断言 5：忙错误翻译 ==========
+            // 真实锁会与 busy_timeout(5s) 纠缠且受平台影响，故**直接**构造 SqliteException(...,5/6)
+            // 走与 Execute 完全相同的 TranslateBusy 分支来验证（明确说明：非真实锁）。
+            var fakeBusy = new SqliteException("database is locked", 5);
+            var fakeLocked = new SqliteException("database table is locked", 6);
+            var translated5 = WriteGuard.TranslateBusy(fakeBusy, "写通道自测");
+            var translated6 = WriteGuard.TranslateBusy(fakeLocked, "写通道自测");
+            var untouched = WriteGuard.TranslateBusy(new InvalidOperationException("无关错误"), "写通道自测");
+            bool busyOk =
+                translated5 is DbBusyException b5 && b5.Message == WriteGuard.BusyMessage && ReferenceEquals(b5.InnerException, fakeBusy) &&
+                translated6 is DbBusyException b6 && b6.Message == WriteGuard.BusyMessage && ReferenceEquals(b6.InnerException, fakeLocked) &&
+                untouched is InvalidOperationException;
+            Check("5. 忙错误翻译为 DbBusyException（直接构造 SqliteException(...,5/6) 走翻译分支）", busyOk,
+                $"code5->{translated5.GetType().Name}, code6->{translated6.GetType().Name}, " +
+                $"文案一致={(translated5 is DbBusyException m && m.Message == WriteGuard.BusyMessage)}");
+
+            // ========== 断言 6：真实写锁 → DbBusyException，且等待 ≈ DefaultTimeout(5s)，解锁后可写 ==========
+            // 复刻 verifier 的 T3（原手工构造异常的测法覆盖不到此场景）：
+            // WAL 下必须用裸 SQL 的 BEGIN EXCLUSIVE —— 默认 BeginTransaction 是 deferred、不加锁，测不出来。
+            // 锁连接全程保持打开；另起线程跑 WriteGuard.Execute，测量到异常的真实耗时。
+            // 下界 4s 证明「确实按 ~5s 在等」（而非立刻失败）；上界 12s 远低于修复前的 ~34s，
+            // 故一旦 DefaultTimeout 被回退，本断言必然抓得住。
+            var lockerBuilder = new SqliteConnectionStringBuilder
+            {
+                DataSource = copyDb,
+                Mode = SqliteOpenMode.ReadWrite,
+                Pooling = false,
+            };
+            DbBusyException? lockedBusy = null;
+            long lockedMs = -1;
+            using (var locker = new SqliteConnection(lockerBuilder.ConnectionString))
+            {
+                locker.Open();
+                using (var begin = locker.CreateCommand())
+                {
+                    begin.CommandText = "BEGIN EXCLUSIVE;";
+                    begin.ExecuteNonQuery();
+                }
+
+                var worker = new Thread(() =>
+                {
+                    var sw = System.Diagnostics.Stopwatch.StartNew();
+                    try
+                    {
+                        WriteGuard.Execute(copyDb, "写通道自测-真实锁", (conn, tx) =>
+                        {
+                            using var cmd = conn.CreateCommand();
+                            cmd.Transaction = tx;
+                            cmd.CommandText = "UPDATE staff SET note = 'locked' WHERE name = '__selftest__';";
+                            cmd.ExecuteNonQuery();
+                        });
+                    }
+                    catch (DbBusyException ex)
+                    {
+                        lockedBusy = ex;
+                    }
+                    catch
+                    {
+                        // 非 DbBusyException：保持 lockedBusy=null，下方断言自然失败
+                    }
+                    finally
+                    {
+                        lockedMs = sw.ElapsedMilliseconds;
+                    }
+                });
+                worker.IsBackground = true;
+                worker.Start();
+                worker.Join(TimeSpan.FromSeconds(30));
+
+                // 释放写锁
+                using (var rollback = locker.CreateCommand())
+                {
+                    rollback.CommandText = "ROLLBACK;";
+                    rollback.ExecuteNonQuery();
+                }
+            }
+
+            // 解锁后再写一次，必须成功
+            bool postUnlockOk = false;
+            try
+            {
+                WriteGuard.Execute(copyDb, "写通道自测-解锁后写入", (conn, tx) =>
+                {
+                    using var cmd = conn.CreateCommand();
+                    cmd.Transaction = tx;
+                    cmd.CommandText = "UPDATE staff SET note = 'unlocked' WHERE name = '__selftest__';";
+                    cmd.ExecuteNonQuery();
+                });
+                postUnlockOk = CountRows(copyDb,
+                    "SELECT COUNT(*) FROM staff WHERE name = '__selftest__' AND note = 'unlocked';") == 1;
+            }
+            catch
+            {
+                postUnlockOk = false;
+            }
+
+            bool realLockOk = lockedBusy is not null
+                && lockedBusy.Message == WriteGuard.BusyMessage
+                && lockedMs >= 4000 && lockedMs <= 12000
+                && postUnlockOk;
+            Check("6. 真实 EXCLUSIVE 锁 → DbBusyException，等待≈5s（4–12s），解锁后可写", realLockOk,
+                $"耗时={lockedMs} ms, 类型={(lockedBusy?.GetType().Name ?? "(未捕获)")}, " +
+                $"文案一致={(lockedBusy?.Message == WriteGuard.BusyMessage)}, 解锁后可写={postUnlockOk}");
+        }
+        catch (Exception ex)
+        {
+            Check("! 自测过程异常", false, $"{ex.GetType().Name}: {ex.Message}");
+            Console.Error.WriteLine(ex.ToString());
+        }
+        finally
+        {
+            // 默认连接池会留驻已 Dispose 的只读连接（文件句柄不释放），先清空连接池再删临时目录。
+            try { Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools(); } catch { /* 忽略 */ }
+            try { if (Directory.Exists(tempDir)) Directory.Delete(tempDir, recursive: true); }
+            catch { /* 临时目录清理失败不影响结论 */ }
+        }
+
+        Console.WriteLine();
+        foreach (var r in results)
+            Console.WriteLine($"  [{(r.Ok ? "PASS" : "FAIL")}] {r.Name}"
+                + (string.IsNullOrEmpty(r.Detail) ? "" : $"  —— {r.Detail}"));
+
+        bool allPass = results.Count > 0 && results.TrueForAll(r => r.Ok);
+        Console.WriteLine();
+        Console.WriteLine($"[{(allPass ? "OK" : "FAIL")}] 写入通道自测：{results.FindAll(r => r.Ok).Count}/{results.Count} 项通过");
+        Console.WriteLine($"[INFO] 真实库 LastWriteTime（测试后）= {new FileInfo(realDb).LastWriteTime:yyyy-MM-dd HH:mm:ss.fff}（应与测试前一致）");
+        return allPass ? 0 : 1;
+    }
+
+    /// <summary>
+    /// 诊断：基础数据引擎自测（--diag-base-data，Batch 2a「员工类型 / 员工 CRUD」验收）。
+    ///
+    /// <b>绝不触碰真实 data/lawfirm.db</b>：先把真实库连同 -wal/-shm 复制到 %TEMP%，
+    /// 所有写入只发生在临时副本上（走 <see cref="WriteGuard"/> 写闸门），跑完连同临时备份目录一起删除。
+    /// 逐条打印 PASS/FAIL，全部通过才返回 0。
+    /// </summary>
+    private static int RunDiagBaseData()
+    {
+        var results = new List<(string Name, bool Ok, string Detail)>();
+        void Check(string name, bool ok, string detail = "") => results.Add((name, ok, detail));
+
+        var res = DbConnection.ResolveDatabase();
+        if (!res.Found)
+        {
+            Console.Error.WriteLine("[FAIL] 未找到可用的 lawfirm.db，查找过程：");
+            foreach (string t in res.Tried) Console.Error.WriteLine("  " + t);
+            return 1;
+        }
+
+        string realDb = res.Path!;
+        DateTime realBefore = new FileInfo(realDb).LastWriteTime;
+        DateTime? realWalBefore = File.Exists(realDb + "-wal") ? new FileInfo(realDb + "-wal").LastWriteTime : null;
+        DateTime? realShmBefore = File.Exists(realDb + "-shm") ? new FileInfo(realDb + "-shm").LastWriteTime : null;
+        string realBackupDir = WriteGuard.BackupDirFor(realDb);
+        bool realBackupDirBefore = Directory.Exists(realBackupDir);
+        int realBackupCountBefore = WriteGuard.BackupCount(realDb);
+
+        Console.WriteLine("[INFO] 基础数据引擎自测（--diag-base-data）");
+        Console.WriteLine($"[INFO] 真实库 = {realDb}");
+        Console.WriteLine($"[INFO] 真实库 LastWriteTime（测试前）= {realBefore:yyyy-MM-dd HH:mm:ss.fff}");
+        Console.WriteLine($"[INFO] 真实备份目录 = {realBackupDir}（存在={realBackupDirBefore}，现有 {realBackupCountBefore} 份）");
+
+        string tempDir = Path.Combine(Path.GetTempPath(),
+            "lawfirm-basedata-" + DateTime.Now.ToString("yyyyMMddHHmmss"));
+        string copyDb = Path.Combine(tempDir, "lawfirm.db");
+        string backupDir = WriteGuard.BackupDirFor(copyDb);
+
+        int gateCalls = 0;       // 用户变更（含校验失败）经过写闸门的次数
+        int backupsCreated = 0;  // 观测到的新增备份文件数
+
+        try
+        {
+            Directory.CreateDirectory(tempDir);
+            File.Copy(realDb, copyDb, overwrite: true);
+            if (File.Exists(realDb + "-wal")) File.Copy(realDb + "-wal", copyDb + "-wal", overwrite: true);
+            if (File.Exists(realDb + "-shm")) File.Copy(realDb + "-shm", copyDb + "-shm", overwrite: true);
+            Console.WriteLine($"[INFO] 临时副本 = {copyDb}（-wal/-shm 若存在已一并复制）");
+            Console.WriteLine($"[INFO] 副本备份目录 = {backupDir}");
+
+            // 每次经闸门的变更都统计「新建了几个备份文件」：滚动保留会删除最旧的，
+            // 故不能只看总数，必须用「调用前后文件集差集」观测（最新的那份永不被删）。
+            Exception? TryGate(string reason, Action<SqliteConnection, SqliteTransaction> work)
+            {
+                var before = new HashSet<string>(FileList(backupDir), StringComparer.OrdinalIgnoreCase);
+                gateCalls++;
+                try
+                {
+                    WriteGuard.Execute(copyDb, reason, work);
+                }
+                catch (Exception ex)
+                {
+                    backupsCreated += CountNewBackups(backupDir, before);
+                    return ex;
+                }
+                backupsCreated += CountNewBackups(backupDir, before);
+                return null;
+            }
+
+            // ---- 断言 0：引导补齐（幂等维护写；不计入用户变更基线） ----
+            Exception? boot = TryGate("初始化员工类型（幂等补齐）",
+                (c, t) => StaffTypeService.EnsureDefaults(c));
+            Check("0. 引导 EnsureDefaults 幂等执行成功", boot is null, boot is null ? "" : boot.Message);
+            int backupBaseline = WriteGuard.BackupCount(copyDb);
+            gateCalls = 0; backupsCreated = 0;   // 重置：其后只统计「用户变更」
+
+            // ---- 断言 1：内置类型 ----
+            List<StaffTypeRow> types;
+            using (var ro = DbConnection.OpenReadOnly(copyDb)) types = StaffTypeService.ListTypes(ro);
+            bool builtinOk = Array.TrueForAll(StaffTypeService.BuiltinTypes, bn =>
+            {
+                var t = types.FirstOrDefault(x => x.Name == bn);
+                return t is not null && t.IsBuiltin && StaffTypeService.IsComputable(bn);
+            });
+            bool extraOk = Array.TrueForAll(StaffTypeService.DefaultExtra, en =>
+            {
+                var t = types.FirstOrDefault(x => x.Name == en);
+                return t is not null && !t.IsBuiltin && !StaffTypeService.IsComputable(en);
+            });
+            Check("1. 内置三类 is_builtin=1 且参与计算；挂靠/其他 is_builtin=0 且不参与",
+                builtinOk && extraOk,
+                "类型=" + string.Join("、", types.Select(t =>
+                    $"{t.Name}(builtin={(t.IsBuiltin ? 1 : 0)},calc={(StaffTypeService.IsComputable(t.Name) ? 1 : 0)},n={t.StaffCount})")));
+
+            // ---- 断言 2：IsComputable 真值表 ----
+            var truth = new (string? In, bool Exp)[]
+            {
+                ("合伙", true), ("聘用", true), ("兼职", true),
+                ("挂靠", false), ("其他", false), ("顾问", false),
+                ("合伙人助理", true), ("", false), (null, false), (" 聘用 ", true),
+            };
+            var truthBad = truth.Where(x => StaffTypeService.IsComputable(x.In) != x.Exp).ToList();
+            Check("2. IsComputable 真值表（含「合伙人助理」→true、null/空白→false、去空白）",
+                truthBad.Count == 0,
+                string.Join("；", truth.Select(x =>
+                    $"{(x.In is null ? "null" : $"「{x.In}」")}→{(StaffTypeService.IsComputable(x.In) ? "true" : "false")}")));
+
+            // ---- 断言 3：AddType 成功 / 重复 / 超长 ----
+            Exception? ex3add = TryGate("新增员工类型", (c, t) => StaffTypeService.AddType(c, "顾问", ""));
+            using (var ro = DbConnection.OpenReadOnly(copyDb)) types = StaffTypeService.ListTypes(ro);
+            bool visible3 = types.Any(x => x.Name == "顾问");
+            Exception? ex3dup = TryGate("新增员工类型", (c, t) => StaffTypeService.AddType(c, "顾问", ""));
+            Exception? ex3len = TryGate("新增员工类型", (c, t) => StaffTypeService.AddType(c, new string('测', 21), ""));
+            string dupMsg = ex3dup?.Message ?? "";
+            string lenMsg = ex3len?.Message ?? "";
+            Check("3. AddType 成功可见 / 重复报「类型已存在：顾问」/ 21 字报「类型名过长（≤20 字符）」",
+                ex3add is null && visible3
+                    && ex3dup is StaffTypeException && dupMsg == "类型已存在：顾问"
+                    && ex3len is StaffTypeException && lenMsg == "类型名过长（≤20 字符）",
+                $"add={(ex3add?.Message ?? "ok")},visible={visible3},dup='{dupMsg}',len='{lenMsg}'");
+
+            // ---- 断言 4：RenameType 同步更新 staff_type_def 与 staff.staff_type ----
+            bool ins4 = false;
+            Exception? ex4ins = TryGate("新增员工",
+                (c, t) => ins4 = StaffService.AddManual(c, "__basedata_probe__", "顾问", "", ""));
+            Exception? ex4ren = TryGate("改名员工类型",
+                (c, t) => StaffTypeService.RenameType(c, "顾问", "高级顾问"));
+            bool defFollowed4, staffFollowed4;
+            using (var ro = DbConnection.OpenReadOnly(copyDb))
+            {
+                defFollowed4 = StaffTypeService.GetType(ro, "高级顾问") is not null
+                               && StaffTypeService.GetType(ro, "顾问") is null;
+                var probe = StaffService.ListStaff(ro).FirstOrDefault(s => s.Name == "__basedata_probe__");
+                staffFollowed4 = probe is not null && probe.StaffType == "高级顾问";
+            }
+            Check("4. RenameType 同步更新 staff_type_def 与 staff.staff_type（自定义类型跟随改名）",
+                ex4ins is null && ins4 && ex4ren is null && defFollowed4 && staffFollowed4,
+                $"insert={ins4},rename={(ex4ren?.Message ?? "ok")},defFollowed={defFollowed4},staffFollowed={staffFollowed4}");
+
+            // ---- 断言 5：内置类型禁止改名 / 删除 ----
+            Exception? ex5ren = TryGate("改名员工类型", (c, t) => StaffTypeService.RenameType(c, "合伙", "合伙X"));
+            Exception? ex5del = TryGate("删除员工类型", (c, t) => StaffTypeService.DeleteType(c, "合伙"));
+            Check("5. 内置类型禁止改名（断结算口径）/ 禁止删除",
+                ex5ren is StaffTypeException
+                    && ex5ren.Message == "「合伙」是内置结算类型，禁止改名（改名会断结算口径）"
+                    && ex5del is StaffTypeException
+                    && ex5del.Message == "「合伙」是内置结算类型，禁止删除",
+                $"rename='{ex5ren?.Message}',delete='{ex5del?.Message}'");
+
+            // ---- 断言 6：在用类型禁止删除（精确文案）/ 未用类型删除成功 ----
+            const string expect6 = "还有 1 名员工属于该类型，请先把他们改成别的类型再删除";
+            Exception? ex6use = TryGate("删除员工类型", (c, t) => StaffTypeService.DeleteType(c, "高级顾问"));
+            Exception? ex6upd = TryGate("修改员工",
+                (c, t) => StaffService.Update(c, "__basedata_probe__", "聘用", "", ""));
+            Exception? ex6del = TryGate("删除员工类型", (c, t) => StaffTypeService.DeleteType(c, "高级顾问"));
+            bool gone6;
+            using (var ro = DbConnection.OpenReadOnly(copyDb))
+                gone6 = StaffTypeService.GetType(ro, "高级顾问") is null;
+            Check("6. 在用类型禁止删除（精确「还有 1 名员工…」文案）/ 未用类型删除成功",
+                ex6use is StaffTypeException && ex6use.Message == expect6
+                    && ex6upd is null && ex6del is null && gone6,
+                $"inUse='{ex6use?.Message}',update={(ex6upd?.Message ?? "ok")},delUnused={(ex6del?.Message ?? "ok")},gone={gone6}");
+
+            // ---- 断言 7：MoveType 上移生效且 sort_order 重写为连续 1..N ----
+            List<string> orderBefore;
+            using (var ro = DbConnection.OpenReadOnly(copyDb))
+                orderBefore = StaffTypeService.ListTypes(ro).Select(x => x.Name).ToList();
+            bool moved7 = false;
+            string moveDetail7 = $"类型过少（{orderBefore.Count}），跳过";
+            if (orderBefore.Count >= 2)
+            {
+                string moveTarget = orderBefore[1];
+                Exception? ex7 = TryGate("调整类型顺序", (c, t) => StaffTypeService.MoveType(c, moveTarget, -1));
+                List<StaffTypeRow> after7;
+                using (var ro = DbConnection.OpenReadOnly(copyDb)) after7 = StaffTypeService.ListTypes(ro);
+                List<string> namesAfter = after7.Select(x => x.Name).ToList();
+                bool contiguous = after7.Select((x, i) => x.SortOrder == i + 1).All(b => b);
+                var expected = new List<string>(orderBefore);
+                (expected[1], expected[0]) = (expected[0], expected[1]);
+                moved7 = ex7 is null && contiguous && namesAfter.SequenceEqual(expected);
+                moveDetail7 = $"before=[{string.Join(",", orderBefore)}], after=[{string.Join(",", namesAfter)}], " +
+                    $"sort=[{string.Join(",", after7.Select(x => x.SortOrder))}], contiguous={contiguous}";
+            }
+            Check("7. MoveType 上移生效且 sort_order 重写为连续 1..N", moved7, moveDetail7);
+
+            // ---- 断言 8：ListTypes / ListStaff 为纯读（备份数不变） ----
+            int bk8a = WriteGuard.BackupCount(copyDb);
+            using (var ro = DbConnection.OpenReadOnly(copyDb)) _ = StaffTypeService.ListTypes(ro);
+            using (var ro = DbConnection.OpenReadOnly(copyDb)) _ = StaffService.ListStaff(ro);
+            int bk8b = WriteGuard.BackupCount(copyDb);
+            Check("8. ListTypes / ListStaff 为纯读（不触发备份，备份数不变）", bk8b == bk8a, $"{bk8a} -> {bk8b}");
+
+            // ---- 断言 9：引用计数抽样 + 删除行为 ----
+            List<string> staffNames;
+            using (var ro = DbConnection.OpenReadOnly(copyDb))
+                staffNames = StaffService.ListStaff(ro).Select(s => s.Name).ToList();
+            var samples9 = new List<string>();
+            string? zeroRef9 = null, inUse9 = null;
+            StaffReferenceCount? inUseRefs9 = null;
+            foreach (string nm in staffNames)
+            {
+                StaffReferenceCount r;
+                using (var ro = DbConnection.OpenReadOnly(copyDb)) r = StaffTypeService.StaffReferenceCount(ro, nm);
+                if (samples9.Count < 8)
+                    samples9.Add($"{nm}[cd{r.ChargeDetail},el{r.ExpenseLedger},rs{r.RawSalary},col{r.Collection},tot{r.Total}]");
+                if (r.Total == 0 && zeroRef9 is null) zeroRef9 = nm;
+                if (r.Total > 0 && inUse9 is null) { inUse9 = nm; inUseRefs9 = r; }
+            }
+            Check("9a. StaffReferenceCount 抽样（真实引用条数）", samples9.Count > 0, string.Join("；", samples9));
+
+            bool delZeroOk = false;
+            string delZeroDetail = "无 0 引用员工可测";
+            if (zeroRef9 is not null)
+            {
+                Exception? exd = TryGate("删除员工", (c, t) => StaffService.Delete(c, zeroRef9));
+                bool goneZ;
+                using (var ro = DbConnection.OpenReadOnly(copyDb))
+                    goneZ = StaffService.ListStaff(ro).All(s => s.Name != zeroRef9);
+                delZeroOk = exd is null && goneZ;
+                delZeroDetail = $"删除「{zeroRef9}」-> {(exd is null ? "成功" : exd.Message)}，已消失={goneZ}";
+            }
+
+            bool delUseOk = false;
+            string delUseDetail = "无有引用员工可测";
+            if (inUse9 is not null && inUseRefs9 is not null)
+            {
+                string detail = string.Join("、",
+                    inUseRefs9.NonZeroInOrder().Select(x => $"{x.Table} {x.Count} 条"));
+                string expect9 =
+                    $"「{inUse9}」在业务数据中有引用（{detail}）。\n"
+                    + "直接删除会让结算表查不到其身份、业务收入按 0 计。\n"
+                    + "如该员工已离职，请改用「停用 / 启用」。";
+                Exception? exu = TryGate("删除员工", (c, t) => StaffService.Delete(c, inUse9));
+                bool stillThere;
+                using (var ro = DbConnection.OpenReadOnly(copyDb))
+                    stillThere = StaffService.ListStaff(ro).Any(s => s.Name == inUse9);
+                delUseOk = exu is StaffInUseException && exu.Message == expect9 && stillThere;
+                delUseDetail = $"「{inUse9}」refs=[{detail}] -> {(exu is null ? "未抛出(异常!)" : exu.GetType().Name)}，仍在册={stillThere}";
+            }
+            Check("9b. 0 引用员工可删 / 有引用员工抛 StaffInUseException（含分表明细）",
+                delZeroOk && delUseOk, delZeroDetail + "；" + delUseDetail);
+
+            // ---- 断言 10：备份新增 = 用户变更次数 ----
+            int bkFinal = WriteGuard.BackupCount(copyDb);
+            int expectedSurvive = Math.Min(backupBaseline + gateCalls, WriteGuard.RetentionCount);
+            Check("10. 备份新增份数 = 用户变更经闸门次数（每次恰 1 份）",
+                backupsCreated == gateCalls && bkFinal == expectedSurvive,
+                $"用户变更经闸门 {gateCalls} 次，观测新建备份 {backupsCreated} 份；" +
+                $"基线 {backupBaseline} → 现存 {bkFinal}（保留上限 {WriteGuard.RetentionCount}，预期 {expectedSurvive}）");
+
+            // ---- 断言 11：真实库未被触碰 ----
+            DateTime realAfter = new FileInfo(realDb).LastWriteTime;
+            DateTime? realWalAfter = File.Exists(realDb + "-wal") ? new FileInfo(realDb + "-wal").LastWriteTime : null;
+            DateTime? realShmAfter = File.Exists(realDb + "-shm") ? new FileInfo(realDb + "-shm").LastWriteTime : null;
+            bool dbSame = realAfter == realBefore;
+            bool walSame = Nullable.Equals(realWalAfter, realWalBefore);
+            bool shmSame = Nullable.Equals(realShmAfter, realShmBefore);
+            bool backupsUntouched = realBackupDirBefore
+                ? WriteGuard.BackupCount(realDb) == realBackupCountBefore
+                : !Directory.Exists(realBackupDir);
+            Check("11. 真实库未被触碰（文件时间一致 / 未创建 data\\backups）",
+                dbSame && walSame && shmSame && backupsUntouched,
+                $"db {realBefore:HH:mm:ss.fff}->{realAfter:HH:mm:ss.fff}, wal同={walSame}, shm同={shmSame}, " +
+                $"备份目录存在={Directory.Exists(realBackupDir)}");
+        }
+        catch (Exception ex)
+        {
+            Check("! 自测过程异常", false, $"{ex.GetType().Name}: {ex.Message}");
+            Console.Error.WriteLine(ex.ToString());
+        }
+        finally
+        {
+            try { Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools(); } catch { /* 忽略 */ }
+            try { if (Directory.Exists(tempDir)) Directory.Delete(tempDir, recursive: true); }
+            catch { /* 临时目录清理失败不影响结论 */ }
+        }
+
+        Console.WriteLine();
+        foreach (var r in results)
+            Console.WriteLine($"  [{(r.Ok ? "PASS" : "FAIL")}] {r.Name}"
+                + (string.IsNullOrEmpty(r.Detail) ? "" : $"  —— {r.Detail}"));
+
+        bool allPass = results.Count > 0 && results.TrueForAll(r => r.Ok);
+        Console.WriteLine();
+        Console.WriteLine($"[{(allPass ? "OK" : "FAIL")}] 基础数据引擎自测：{results.FindAll(r => r.Ok).Count}/{results.Count} 项通过");
+        Console.WriteLine($"[INFO] 真实库 LastWriteTime（测试后）= {new FileInfo(realDb).LastWriteTime:yyyy-MM-dd HH:mm:ss.fff}（应与测试前一致）");
+        return allPass ? 0 : 1;
+    }
+
+    /// <summary>备份目录中「不在 before 集合里」的新文件个数（用于观测每次写入新建的快照）。</summary>
+    private static int CountNewBackups(string dir, HashSet<string> before)
+        => FileList(dir).Count(f => !before.Contains(f));
+
+    /// <summary>只读连接执行 SELECT，返回单个整数（COUNT 等）。</summary>
+    private static long CountRows(string dbPath, string sql)
+    {
+        using var conn = DbConnection.OpenReadOnly(dbPath);
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = sql;
+        object? v = cmd.ExecuteScalar();
+        return v is null || v is DBNull ? 0L : Convert.ToInt64(v, System.Globalization.CultureInfo.InvariantCulture);
+    }
+
+    /// <summary>只读连接执行 SELECT，取第一行并按列转字符串（NULL -> ""）。</summary>
+    private static string[] ReadRow(string dbPath, string sql)
+    {
+        using var conn = DbConnection.OpenReadOnly(dbPath);
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = sql;
+        using var r = cmd.ExecuteReader();
+        if (!r.Read()) return Array.Empty<string>();
+        var vals = new string[r.FieldCount];
+        for (int i = 0; i < r.FieldCount; i++)
+            vals[i] = r.IsDBNull(i) ? "" : r.GetValue(i)?.ToString() ?? "";
+        return vals;
+    }
+
+    /// <summary>备份目录中的 lawfirm-*.db 列表（目录不存在返回空）。</summary>
+    private static string[] FileList(string dir)
+        => Directory.Exists(dir) ? Directory.GetFiles(dir, "lawfirm-*.db") : Array.Empty<string>();
+
+    /// <summary>文件头 16 字节是否为 SQLite 魔数「SQLite format 3\0」。</summary>
+    private static bool HasSqliteHeader(string path)
+    {
+        try
+        {
+            using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+            var head = new byte[16];
+            if (fs.Read(head, 0, 16) != 16) return false;
+            return System.Text.Encoding.ASCII.GetString(head, 0, 16) == "SQLite format 3\0";
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>取数组第 i 项，越界返回 "(缺失)"（用于安全拼诊断文本）。</summary>
+    private static string AtStr(string[] arr, int i) => i < arr.Length ? arr[i] : "(缺失)";
 
     /// <summary>中位数（偶数个取中间两数平均，向下取整）。空集合返回 0。</summary>
     private static long Median(List<long> values)
