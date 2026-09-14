@@ -10,12 +10,13 @@
 """
 from __future__ import annotations
 
+import openpyxl
 from typing import Dict, List
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QAbstractItemView, QDialog, QDialogButtonBox, QFrame, QLayout,
-    QGridLayout, QHBoxLayout, QInputDialog, QLabel, QListWidget, QListWidgetItem,
+    QGridLayout, QHBoxLayout, QInputDialog, QFileDialog, QLabel, QListWidget, QListWidgetItem,
     QMenu, QMessageBox, QScrollArea, QSizePolicy, QTextEdit, QVBoxLayout, QWidget,
 )
 
@@ -318,9 +319,14 @@ class ExpenseCatView(QWidget):
         self.hint = CaptionLabel("")
         foot.addWidget(self.hint)
         foot.addStretch()
-        btn_sync = PushButton("从费用台账同步")
-        btn_sync.clicked.connect(self._sync)
-        foot.addWidget(btn_sync)
+        btn_export = PushButton("导出")
+        btn_export.setToolTip("将所有费用类型（分类/说明/归类/顺序）导出为 Excel")
+        btn_export.clicked.connect(self._export)
+        foot.addWidget(btn_export)
+        btn_import = PushButton("导入")
+        btn_import.setToolTip("从 Excel 整表替换所有费用类型配置")
+        btn_import.clicked.connect(self._import)
+        foot.addWidget(btn_import)
         btn_reset = PushButton("刷新")
         btn_reset.clicked.connect(self.refresh)
         foot.addWidget(btn_reset)
@@ -334,7 +340,6 @@ class ExpenseCatView(QWidget):
 
     # -- 渲染 -----------------------------------------------------------
     def refresh(self) -> None:
-        ec.sync_from_ledger()
         cats = ec.list_categories()
         # 首次/分类数量变化时重建卡片
         if {c["name"] for c in cats} != set(self._cards):
@@ -365,10 +370,44 @@ class ExpenseCatView(QWidget):
         total = sum(len(v) for v in by_cat.values())
         self.hint.setText(f"共 {total} 个费用类型，{len(cats)} 个分类")
 
-    def _sync(self) -> None:
-        ec.sync_from_ledger()
+    # -- 配置导入 / 导出（Excel） --------------------------------------
+    def _export(self) -> None:
+        path, _ = QFileDialog.getSaveFileName(
+            self, "导出费用类型", "费用类型配置.xlsx", "Excel 文件 (*.xlsx)")
+        if not path:
+            return
+        try:
+            _export_excel(path, ec.export_all())
+        except Exception as e:  # noqa: BLE001
+            QMessageBox.critical(self, "导出失败", str(e))
+            return
+        QMessageBox.information(self, "已导出", f"已导出费用类型配置到：\n{path}")
+
+    def _import(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self, "导入费用类型", "", "Excel 文件 (*.xlsx *.xlsm)")
+        if not path:
+            return
+        try:
+            data = _import_excel(path)
+        except Exception as e:  # noqa: BLE001
+            QMessageBox.critical(self, "导入失败", str(e))
+            return
+        if not data["types"]:
+            QMessageBox.warning(self, "导入失败", "文件中没有可用的费用类型数据")
+            return
+        if QMessageBox.question(
+                self, "确认导入",
+                f"导入将【整表替换】当前全部费用类型配置（共 {len(data['types'])} 个类型）。\n"
+                "建议先导出一份备份。确定继续？") != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            ec.import_all(data)
+        except Exception as e:  # noqa: BLE001
+            QMessageBox.critical(self, "导入失败", str(e))
+            return
         self.refresh()
-        QMessageBox.information(self, "已同步", "已从费用台账补齐缺失的费用类型。")
+        QMessageBox.information(self, "已导入", "费用类型配置已更新。")
 
     # -- 落库 -----------------------------------------------------------
     def _layout_now(self) -> Dict[str, List[str]]:
@@ -468,3 +507,55 @@ class ExpenseCatView(QWidget):
             for i in range(card.list.count()):
                 it = card.list.item(i)
                 it.setSelected(it.text() == name)
+
+
+# ---------------------------------------------------------------------------
+# Excel 配置导入 / 导出（费用类型整表备份迁移）
+# ---------------------------------------------------------------------------
+
+def _export_excel(path: str, data: Dict) -> None:
+    """把费用类型配置写成双 sheet Excel：分类 / 类型。"""
+    wb = openpyxl.Workbook()
+    ws_cat = wb.active
+    ws_cat.title = "分类"
+    ws_cat.append(["分类", "说明", "顺序"])
+    for c in data["categories"]:
+        ws_cat.append([c["name"], c.get("note", ""), c.get("sort_order", 0)])
+    ws_type = wb.create_sheet("类型")
+    ws_type.append(["类型", "分类", "顺序"])
+    for t in data["types"]:
+        ws_type.append([t["expense_type"], t["category"], t.get("sort_order", 0)])
+    wb.save(path)
+
+
+def _import_excel(path: str) -> Dict:
+    """读取双 sheet Excel，还原为 {categories, types}（兼容单 sheet 旧格式）。"""
+    wb = openpyxl.load_workbook(path, data_only=True)
+    cats, types = [], []
+    if "分类" in wb.sheetnames:
+        for row in wb["分类"].iter_rows(min_row=2, values_only=True):
+            if row and row[0] not in (None, ""):
+                cats.append({
+                    "name": str(row[0]).strip(),
+                    "note": str(row[1]) if len(row) > 1 and row[1] is not None else "",
+                    "sort_order": int(row[2]) if len(row) > 2 and row[2] is not None else 0,
+                })
+    if "类型" in wb.sheetnames:
+        for row in wb["类型"].iter_rows(min_row=2, values_only=True):
+            if row and row[0] not in (None, ""):
+                types.append({
+                    "expense_type": str(row[0]).strip(),
+                    "category": str(row[1]).strip() if len(row) > 1 and row[1] else ec.FALLBACK_CATEGORY,
+                    "sort_order": int(row[2]) if len(row) > 2 and row[2] is not None else 0,
+                })
+    if not cats and not types and wb.sheetnames:
+        ws = wb[wb.sheetnames[0]]
+        for row in ws.iter_rows(min_row=2, values_only=True):
+            if row and row[0] not in (None, "") and len(row) >= 2 and row[1] not in (None, ""):
+                cats.append({"name": str(row[0]).strip(),
+                             "note": str(row[3]) if len(row) > 3 and row[3] is not None else "",
+                             "sort_order": 0})
+                types.append({"expense_type": str(row[1]).strip(),
+                              "category": str(row[0]).strip(),
+                              "sort_order": int(row[2]) if len(row) > 2 and row[2] is not None else 0})
+    return {"categories": cats, "types": types}

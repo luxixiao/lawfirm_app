@@ -348,3 +348,42 @@ def save_layout(layout: Dict[str, List[str]], conn=None) -> None:
         conn.commit()
     finally:
         _close(own, conn)
+
+
+# ---------------------------------------------------------------------------
+# 配置整表导出 / 导入（Excel 备份迁移用）
+# ---------------------------------------------------------------------------
+
+def export_all(conn=None) -> Dict:
+    """导出全部费用类型配置：分类说明 + 类型归类 + 全局顺序。"""
+    own, conn = _own_conn(conn)
+    try:
+        cats = [{"name": c["name"], "note": c["note"] or "", "sort_order": c["sort_order"]}
+                for c in list_categories(conn)]
+        types = [{"expense_type": r["expense_type"], "category": r["category"],
+                  "sort_order": r["sort_order"]}
+                 for r in conn.execute(
+                     "SELECT expense_type, category, sort_order FROM expense_cat ORDER BY sort_order")]
+        return {"categories": cats, "types": types}
+    finally:
+        _close(own, conn)
+
+
+def import_all(data: Dict, conn=None) -> None:
+    """整表替换费用类型配置（分类说明 + 类型归类 + 顺序）。"""
+    own, conn = _own_conn(conn)
+    try:
+        conn.execute("DELETE FROM expense_cat")
+        conn.execute("DELETE FROM expense_category")
+        for c in data.get("categories", []):
+            conn.execute("INSERT INTO expense_category(name, note, sort_order) VALUES(?,?,?)",
+                         (str(c["name"]), str(c.get("note", "") or ""), int(c.get("sort_order", 0) or 0)))
+        for t in data.get("types", []):
+            conn.execute("INSERT INTO expense_cat(expense_type, category, sort_order) VALUES(?,?,?)",
+                         (str(t["expense_type"]),
+                          str(t.get("category", FALLBACK_CATEGORY) or FALLBACK_CATEGORY),
+                          int(t.get("sort_order", 0) or 0)))
+        ensure_categories(conn)   # 兜底：保证 5 个固定分类存在
+        conn.commit()
+    finally:
+        _close(own, conn)

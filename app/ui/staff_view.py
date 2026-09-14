@@ -260,6 +260,16 @@ class StaffView(QWidget):
             return
         st.move_type(name, direction)
         self._refresh_types()
+        self._reselect_type(name)
+
+    def _reselect_type(self, name: str) -> None:
+        """移动后让选中行跟随该类型（按类型名定位新行）。"""
+        for r in range(self.type_table.rowCount()):
+            item = self.type_table.item(r, 0)
+            if item is not None and item.data(Qt.ItemDataRole.UserRole) == name:
+                self.type_table.selectRow(r)
+                self.type_table.setCurrentCell(r, 0)
+                return
 
     # ================================================================== #
     # 员工 CRUD

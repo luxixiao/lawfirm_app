@@ -694,12 +694,12 @@ def import_expense_file(path: str, period: str) -> Dict:
     items = parse_expense_file(path, period)
     conn = get_conn()
     try:
+        # 费用台账导入：经手人(真实发生/字段 handler)不校验花名册；
+        # 仅校验经办人(承担人员/字段 actual_handler)
         names = []
         for it in items:
             if it["actual_handler"]:
                 names.append(it["actual_handler"])
-            if it["handler"]:
-                names.append(it["handler"])
         missing = _validate_handler_names(conn, names, "费用台账")
         if missing:
             raise ImportError_(
