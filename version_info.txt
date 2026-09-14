@@ -24,7 +24,7 @@ VSVersionInfo(
                         StringStruct(u'FileVersion', u'1.2.0'),
                         StringStruct(u'InternalName', u'lawfirm_app'),
                         StringStruct(u'LegalCopyright', u'Copyright © 2026'),
-                        StringStruct(u'OriginalFilename', u'律所开票收款统计.exe'),
+                        StringStruct(u'OriginalFilename', u'lawfirm_app.exe'),
                         StringStruct(u'ProductName', u'律所开票收款统计'),
                         StringStruct(u'ProductVersion', u'1.2.0'),
                     ],

@@ -59,7 +59,7 @@ exe = EXE(
     a.zipfiles,
     a.datas,
     [],
-    name="律所开票收款统计",
+    name="lawfirm_app",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
