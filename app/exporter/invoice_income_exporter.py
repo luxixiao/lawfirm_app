@@ -30,10 +30,10 @@ LEFT = Alignment(horizontal="left", vertical="center")
 
 
 def _main_persons(conn, year: int, month: int) -> list:
-    """主表名单：合伙/聘用/兼职 且在职；入职月份晚于当前月排除"""
+    """主表名单：合伙/聘用/兼职（不过滤 is_active，见「停用」功能已取消）；入职月份晚于当前月排除"""
     rows = conn.execute(
         "SELECT name, hire_month FROM staff "
-        "WHERE staff_type IN ('合伙','聘用','兼职') AND is_active=1 ORDER BY name"
+        "WHERE staff_type IN ('合伙','聘用','兼职') ORDER BY name"
     ).fetchall()
     cur = f"{year}-{month:02d}"
     out = []

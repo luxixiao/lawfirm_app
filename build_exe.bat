@@ -46,7 +46,7 @@ echo Using Python: %PY%
 "%PY%" --version
 
 echo [1/3] Checking and installing build deps (pyinstaller / PySide6FramelessWindow)...
-"%PY%" -m pip install --upgrade pyinstaller
+"%PY%" -m pip install "pyinstaller==6.22.3"
 if errorlevel 1 (
     echo [ERROR] pyinstaller install failed. Check your network.
     exit /b 1

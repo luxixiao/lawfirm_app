@@ -65,6 +65,9 @@ check("Tab2=员工类型", view.tabs.tabText(1) == "员工类型")
 # ===== 员工名单 =====
 check("4 名员工", view.table.rowCount() == 4, f"got={view.table.rowCount()}")
 check("姓名列有值", view.table.item(0, 0).text() != "")
+check("员工名单 4 列（「状态」列已随停用功能移除）",
+      view.table.columnCount() == 4, f"got={view.table.columnCount()}")
+check("「停用 / 启用」按钮已移除", not hasattr(view, "btn_toggle"))
 
 # ===== 员工类型 =====
 check("预置 5 类", view.type_table.rowCount() == 5, f"got={view.type_table.rowCount()}")

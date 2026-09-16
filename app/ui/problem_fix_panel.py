@@ -71,12 +71,12 @@ class ProblemFixPanel(QWidget):
         root.setSpacing(10)
 
         # ---------- 发票行 ----------
-        self.inv_box = QWidget()
+        self.inv_box = QWidget(self)
         iv = QVBoxLayout(self.inv_box)
         iv.setContentsMargins(0, 0, 0, 0)
         iv.setSpacing(10)
 
-        card = QWidget()
+        card = QWidget(self)
         card.setObjectName("infoCard")
         cg = QGridLayout(card)
         cg.setContentsMargins(0, 0, 0, 0)
@@ -131,7 +131,7 @@ class ProblemFixPanel(QWidget):
         root.addWidget(self.inv_box)
 
         # ---------- 预收款行 ----------
-        self.pp_box = QWidget()
+        self.pp_box = QWidget(self)
         pv = QVBoxLayout(self.pp_box)
         pv.setContentsMargins(0, 0, 0, 0)
         pv.setSpacing(10)
@@ -190,7 +190,7 @@ class ProblemFixPanel(QWidget):
         self._render_rows(self._prefill_rows(p))
         self.hint.setText(
             "发票行：经办人须在职工花名册中；开票金额合计须等于开票总额；"
-            "填了收款金额须同时填收款日期（支持 2025-02 或 2025-02-13）。"
+            "填了收款金额须同时填收款日期（支持 2025-02 / 25.2.13 / 2025.2.13 / 2025-02-13 等写法）。"
         )
 
     def current_problem(self) -> dict | None:

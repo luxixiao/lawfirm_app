@@ -1,7 +1,8 @@
 """导入复核 — 导入前留痕（确认入库后补录人工干预，spec §12.6 / §14）
 
 导入确认页的人工干预分两类，在「确认入库」写库成功后统一落 change_log：
-- fix（修正问题行，凭空填）：1 条 field='(导入修正)'，old=''，new=摘要
+- fix（修正问题行，凭空填）：1 条 field='(导入修正)'，old=该行原始台账原文摘要，
+  new=修正后摘要
 - edit（编辑已解析行）：逐字段 field=列名 old→new，备注/收款有变补摘要行
 
 两类均：friendly_table='发票台账 · 导入修正'（修改记录页「修改表名」列可见
@@ -56,6 +57,22 @@ def _fix_summary(new: Dict) -> str:
     if new.get("buyer"):
         parts.append(f"对方 {new['buyer']}")
     return "；".join(parts) or "（空）"
+
+
+def _fix_old_summary(old: Dict) -> str:
+    """fix 条目的旧值摘要：问题行在台账里的原始文本（解析失败当时的原文）。"""
+    parts = []
+    if old.get("invoice_date"):
+        parts.append(f"开票日期 {old['invoice_date']}")
+    if old.get("total_amount"):
+        parts.append(f"金额 {old['total_amount']}")
+    if old.get("handler_text"):
+        parts.append(f"经办人 {old['handler_text']}")
+    if old.get("remark_raw"):
+        parts.append(f"备注 {old['remark_raw']}")
+    if old.get("buyer"):
+        parts.append(f"对方 {old['buyer']}")
+    return "；".join(parts) or "（原始台账行无可读字段）"
 
 
 def _field_rows(item: Dict) -> List[tuple]:
@@ -115,7 +132,8 @@ def log_import_fixes(batch_id: int, items: List[Dict]) -> Dict:
             )
             note = "导入时人工修正" if it.get("kind") == "fix" else "导入时人工编辑"
             if it.get("kind") == "fix":
-                log_change(conn, "raw_ledger", str(rid), "(导入修正)", "",
+                log_change(conn, "raw_ledger", str(rid), "(导入修正)",
+                           _fix_old_summary(old),
                            _fix_summary(it.get("new") or {}), note, **ctx)
             else:
                 field_rows = _field_rows(it)

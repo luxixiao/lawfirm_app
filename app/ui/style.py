@@ -168,6 +168,13 @@ QPushButton#helpBtn:pressed {{ background: {p['border_2']}; }}
 #pageHint  {{ color: {p['text_mute']}; font-size: {P(12)}; }}
 #placeholder {{ color: {p['text_faint']}; font-size: {P(14)}; padding: {P(40)}; }}
 
+/* ===== 弹窗内的小节标题 ===== */
+/* 弹窗里的小节标题若沿用页面级 #pageTitle（20px），会比同弹窗的表单标签/正文
+   大一大截，视觉上很割裂；这里与 #infoVal 对齐（15px 粗体）。 */
+QLabel#dialogTitle {{ font-size: {P(15)}; font-weight: 700; color: {p['text']}; }}
+QLabel#dialogInfo {{ font-size: {P(13)}; color: {p['text']}; }}
+QLabel#dialogRef {{ font-size: {P(12)}; color: {p['text_mute']}; }}
+
 /* ===== 按钮（次要：透明底 + 边框，hover 仅变背景；主按钮：强调蓝实底） ===== */
 QPushButton {{
     background: transparent; border: 1px solid {p['btn_border']};
@@ -201,7 +208,11 @@ QTableWidget {{
     border: 1px solid {p['border']}; border-radius: {P(10)}; gridline-color: {p['grid']};
     selection-background-color: {p['bg_select']}; selection-color: {p['text']};
 }}
-QTableWidget::item {{ padding: {P(6)} {P(10)}; border: none; }}
+/* 纵向 padding 只留 1px：Qt 会把「单元格内嵌控件(setCellWidget)」的几何按本 padding
+   内缩，6px 上下 padding 会让 30px 行高里只剩 17px 给按钮 → 按钮被压扁、文字贴边被裁
+   （补录页「补录」按钮就是这么被裁的）。文字本身在行矩形内垂直居中绘制，去掉纵向
+   padding 视觉上只少了原本被裁掉的那部分，不会让文字偏移。 */
+QTableWidget::item {{ padding: {P(1)} {P(10)}; border: none; }}
 QTableWidget::item:selected {{ background: {p['bg_select']}; }}
 /* 注意：此处不要写 color。选中态文字色由单元格 setForeground + TableBehaviorDelegate
    的 initStyleOption 接管（红字/绿字选中仍保持原色）；在此写 color 会覆盖委托，
@@ -297,6 +308,23 @@ QFrame#card QPushButton#cardBtn {{
 }}
 QFrame#card QPushButton#cardBtn:hover {{ background: {p['btn_hover']}; }}
 QFrame#card QPushButton#cardBtn:pressed {{ background: {p['btn_press']}; }}
+
+/* ===== 表格行内操作按钮（补录 / 编辑 / 删除…） ===== */
+/* 行内按钮受列宽与行高双重挤压，故用同一套紧凑内边距 + 小一号字：
+   各页表格里的「操作」按钮外观统一，且任何字号档位下都不会被裁。 */
+QPushButton#rowBtn {{
+    padding: {P(2)} {P(10)}; font-size: {P(12)}; border-radius: {P(6)};
+    background: transparent; border: 1px solid {p['btn_border']}; color: {p['text']};
+}}
+QPushButton#rowBtn:hover {{ background: {p['btn_hover']}; }}
+QPushButton#rowBtn:pressed {{ background: {p['btn_press']}; }}
+
+/* ===== 日期输入右侧的日历按钮 ===== */
+QToolButton#datePickBtn {{
+    background: transparent; border: none; color: {p['text_mute']};
+    font-size: {P(11)}; padding: 0 {P(5)};
+}}
+QToolButton#datePickBtn:hover {{ color: {p['text']}; background: {p['bg_hover']}; border-radius: {P(5)}; }}
 
 /* ===== 筛选胶囊（导入确认对话框的状态筛选）===== */
 QPushButton#chipBtn {{

@@ -44,6 +44,18 @@ class CaptionLabel(QLabel):
         self.setObjectName("pageHint")
 
 
+class DialogTitleLabel(QLabel):
+    """弹窗内的小节标题 -> #dialogTitle（15px 粗体）。
+
+    弹窗里不要用 SubtitleLabel（页面级 20px），否则标题比同弹窗的
+    表单标签/正文大一大截，显得割裂。
+    """
+
+    def __init__(self, text: str = "", parent=None) -> None:
+        super().__init__(text, parent)
+        self.setObjectName("dialogTitle")
+
+
 class HelpButton(QPushButton):
     """「?」帮助按钮：悬停即时显示说明气泡（不闪烁）。
 

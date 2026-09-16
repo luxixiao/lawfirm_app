@@ -11,3 +11,9 @@ tests/_smoke_*.png
 build/
 dist/
 build_log.txt
+# 临时探针 / 调试脚本与产物（_t*.py 与 _t*.txt 为一次性排查用）
+_t*.py
+_t*.txt
+_test_*.bat
+app_icon_preview.png
+lawfirm_accounting.db

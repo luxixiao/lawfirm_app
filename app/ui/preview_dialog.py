@@ -25,6 +25,7 @@ from app.db import get_conn
 from app.engine.import_confidence import evaluate
 from app.ui import scale
 from app.ui.ledger_source import show_ledger_source
+from app.diag import get_logger
 from app.ui.table_view import auto_fit_columns
 from app.ui.widgets import CaptionLabel, PrimaryPushButton, PushButton, TableWidget
 
@@ -139,6 +140,7 @@ class PreviewDialog(QDialog):
 
     def __init__(self, data: Dict, period: str, parent=None, path: str = "") -> None:
         super().__init__(parent)
+        get_logger().warning("INSTANTIATE PreviewDialog (deprecated standalone preview dialog)")
         self._data = data
         self._path = path
         self._file_name = path.replace("\\", "/").split("/")[-1] if path else "导入文件"

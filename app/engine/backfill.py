@@ -4,7 +4,27 @@
 """
 from __future__ import annotations
 
+from typing import Iterable, List
+
 from app.db import get_conn
+
+# 非员工经办人白名单（公共费用等）。与导入校验共用同一份，避免两处口径漂移。
+HANDLER_WHITELIST = {"公共", "行政"}
+
+
+def is_period_before(ym: str, period: str) -> bool:
+    """开票月份(YYYY-MM) 是否早于导入账期月份 —— 期外口径 a（已确认）。
+
+    "早于"按 YYYY-MM 字符串字典序比较（同年同月格式下等价于时间序）。
+    仅用于 sheet3（应收账款）：期外票不再自动建 invoice，而是转入「补录原票」，
+    由用户逐张确认后写入（见 app.engine.raw_ledger.deferred_sheet3_invoices）。
+
+    本函数为唯一口径来源：导入期切分（app.importer.ledger_import.split_deferred）
+    与补录列表派生（app.engine.raw_ledger）共用，避免两处判定漂移。
+    """
+    ym = (ym or "").strip()
+    period = (period or "").strip()
+    return bool(ym) and bool(period) and ym < period
 
 
 def norm_type(staff_type) -> str:
@@ -18,8 +38,33 @@ def norm_type(staff_type) -> str:
     return "其他"
 
 
+def all_staff_names(conn) -> set:
+    """花名册全部姓名（**不过滤 is_active**，「停用」功能已取消）。"""
+    return {r["name"] for r in conn.execute("SELECT name FROM staff")}
+
+
+def missing_handlers(conn, names: Iterable[str]) -> List[str]:
+    """返回「不在花名册、且不在白名单」的经办人（去重 + 升序）。
+
+    导入写前校验与补录保存校验共用本函数，保证两处口径完全一致
+    （否则同一个人在一个入口被拦、在另一个入口放行）。
+    """
+    staff = all_staff_names(conn)
+    out = set()
+    for raw in names:
+        n = (raw or "").strip()
+        if n and n not in staff and n not in HANDLER_WHITELIST:
+            out.add(n)
+    return sorted(out)
+
+
 def staff_type_of(conn, name: str) -> str:
-    r = conn.execute("SELECT staff_type FROM staff WHERE name=? AND is_active=1", (name,)).fetchone()
+    """姓名 → 结算身份（合伙/聘用/兼职/其他）。**不过滤 is_active**。
+
+    离职人员仍会有历史业务数据，若按 is_active 过滤会返回 '' → norm_type 落成
+    「其他」→ 其结算业务收入被判 0。故一律按花名册取真实类型。
+    """
+    r = conn.execute("SELECT staff_type FROM staff WHERE name=?", (name,)).fetchone()
     return norm_type(r["staff_type"]) if r else ""
 
 

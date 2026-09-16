@@ -129,7 +129,8 @@ def main() -> int:
         st.delete_staff("李四", conn)
         FAILS.append("有引用仍被删除")
     except StaffInUseError as e:
-        check("有引用拒绝删除并提示停用", "停用" in str(e), f"msg={e}")
+        check("有引用拒绝删除并说明后果",
+              "业务收入按 0 计" in str(e) and "保留" in str(e), f"msg={e}")
     check("拒绝后员工仍在", conn.execute(
         "SELECT COUNT(*) AS n FROM staff WHERE name='李四'").fetchone()["n"] == 1)
 

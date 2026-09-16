@@ -25,6 +25,7 @@ from app.importer.date_utils import normalize_date
 from app.importer.excel_reader import ImportError_
 from app.importer.parse_handler import parse_handler_column
 from app.ui import scale
+from app.diag import get_logger
 from app.ui.widgets import (
     CaptionLabel, ComboBox, LineEdit, PrimaryPushButton, PushButton,
     SubtitleLabel, TableWidget,
@@ -56,6 +57,7 @@ def _money(x: float) -> str:
 class ProblemDialog(QDialog):
     def __init__(self, problems: list, staff_names: list, period: str, parent=None) -> None:
         super().__init__(parent)
+        get_logger().warning("INSTANTIATE ProblemDialog (deprecated standalone import dialog)")
         self.setWindowTitle("发票台账导入 - 问题行修正")
         self.resize(1180, 620)
         self._problems = problems
@@ -74,7 +76,8 @@ class ProblemDialog(QDialog):
         root.addWidget(t)
         h = CaptionLabel(
             "以下行解析失败，请在右侧逐经办人修正后保存；无法修正可跳过（不入库）。"
-            "经办人须为职工花名册中的姓名；收款日期支持 2025-02 或 2025-02-13。"
+            "经办人须为职工花名册中的姓名；收款日期支持 2025-02 / 25.2.13 / 2025.2.13 / "
+            "2025-02-13 等写法。"
             "开票金额合计须等于开票总额；填了收款金额必须同时填收款日期。"
         )
         root.addWidget(h)

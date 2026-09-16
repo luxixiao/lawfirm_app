@@ -468,6 +468,10 @@ def init_db(backfill: bool = True) -> None:
             "WHERE sheet_key = 'problem_fix' "
             "AND sheet_name IN ('sheet1','sheet2','sheet3','sheet4')"
         )
+        # 迁移：「停用」功能已取消 —— 离职人员仍会发生业务，用全局开关表达"不再参与"
+        # 属口径错误（会连带把其所有年份的结算身份判成「其他」→ 业务收入 0）。
+        # 历史停用记录统一恢复为在职；is_active 列保留但不再出现 0 值。
+        conn.execute("UPDATE staff SET is_active = 1 WHERE is_active != 1")
         # 迁移：收款认定快照（方案E）全量回溯——对尚无快照的 active 批次重解析存档源，
         # 还原「导入时源声称收款」(expected) 与「按账期窗口过滤的累计库」(actual)。
         # 幂等：仅补齐缺快照批次；单批次失败跳过，不阻断启动。

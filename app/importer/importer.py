@@ -16,22 +16,25 @@ from pathlib import Path
 from typing import Dict, List, Tuple
 
 from app.db import get_conn
-from app.engine.backfill import norm_type, staff_type_of
+from app.engine.backfill import (
+    HANDLER_WHITELIST, all_staff_names, missing_handlers, norm_type, staff_type_of,
+)
 from app.engine.raw_ledger import SHEET_LABELS
 from app.importer.expense_import import parse_expense_file
 from app.importer.invoice_import import parse_invoice_file, parse_invoice_workbook
-from app.importer.ledger_import import parse_ledger_file
+from app.importer.ledger_import import is_deferred_invoice, parse_ledger_file, split_deferred
 from app.importer.salary_import import parse_salary_file
 from app.importer.excel_reader import ImportError_
 
 ARCHIVE_ROOT = Path(__file__).resolve().parent.parent.parent / "data" / "archive"
 
-# 非员工经办人白名单（公共费用等）
-HANDLER_WHITELIST = {"公共", "行政"}
+# 非员工经办人白名单（公共费用等）已移至 app.engine.backfill，与补录校验共用同一份。
+# 此处保留模块级别名（历史引用兼容）。
 
 
 def _staff_names(conn) -> set:
-    return {r["name"] for r in conn.execute("SELECT name FROM staff WHERE is_active=1")}
+    """花名册全部姓名（**不过滤 is_active**，「停用」已取消）。"""
+    return all_staff_names(conn)
 
 
 def _archive_file(src: str, batch_type: str, period: str) -> str:
@@ -319,8 +322,9 @@ def _inherit_existing_handlers(conn, inv: Dict) -> None:
 
     - 新发票（库内无 charge_detail）：保持当前解析（多人无金额则均分）。
     - 源行含金额：以本次为准，不继承。
-    - 源行纯人名 + 库内已有同集合具体分摊：用历史金额替换均分金额，
-      并回写 handler_text，使台账镜像与归一化表一致、编辑时不再被均分覆盖。
+    - 源行纯人名 + 库内已有同集合具体分摊：用历史金额替换均分金额（供 charge_detail），
+      并回写 handler_text 保持一致；台账镜表本身固定写台账原文（见 _insert_raw_ledger），
+      纯人名与库内具体分摊的差异由复核页「纯人名均分沿用首月拆分」豁免兜住。
     """
     handlers = inv.get("handlers") or []
     if not handlers:
@@ -350,14 +354,29 @@ def _inherit_existing_handlers(conn, inv: Dict) -> None:
 
 
 def _insert_raw_ledger(conn, item: dict, batch_id: int, kind: str) -> None:
-    """把发票台账解析结果逐行 1:1 镜像进 raw_ledger（synced=1）。"""
+    """把发票台账解析结果逐行 1:1 镜像进 raw_ledger（synced=1）。
+
+    镜像的文本字段（经办人/对方/案号）一律取【原始台账行】（raw_row + header），
+    而不是解析或人工修改后的值：否则导入前复核页手工补录的经办人（源台账本就为空）
+    会被写进镜像，使导入后复核页「源」侧显示手工值而非台账原文，源/库无法对照。
+    仅当拿不到原始行（无 header/raw_row 的程序化构造行）才回退用解析值。
+    发票号码仍取解析值——问题行常需纠正号码，镜像必须存纠正后的号才能与库对齐。
+    """
     seq = _raw_cell(item.get("raw_row"), item.get("header"), "序号")
+    has_raw = bool(item.get("header")) and bool(item.get("raw_row"))
     if kind == "invoice":
         date_raw = _raw_cell(item.get("raw_row"), item.get("header"), "开票日期", "开具日期")
         recv_raw = ""
         amt = item.get("total_amount") or 0.0
         amt_raw = _raw_cell(item.get("raw_row"), item.get("header"), "金额", "开票金额")
-        handler = item.get("handler_text") or ""
+        if has_raw:
+            handler = _raw_cell(item.get("raw_row"), item.get("header"), "经办人")
+            buyer = _raw_cell(item.get("raw_row"), item.get("header"), "对方", "购方")
+            case_no = _raw_cell(item.get("raw_row"), item.get("header"), "案号")
+        else:
+            handler = item.get("handler_text") or ""
+            buyer = item.get("buyer") or ""
+            case_no = item.get("case_no") or ""
         remark_raw = item.get("remark_raw")
         remark = remark_raw if remark_raw is not None else (item.get("remark") or "")
     else:  # prepayment (sheet4)
@@ -365,7 +384,14 @@ def _insert_raw_ledger(conn, item: dict, batch_id: int, kind: str) -> None:
         recv_raw = _raw_cell(item.get("raw_row"), item.get("header"), "收到日期")
         amt = item.get("amount") or 0.0
         amt_raw = _raw_cell(item.get("raw_row"), item.get("header"), "金额")
-        handler = item.get("person_text") or ""
+        if has_raw:
+            handler = _raw_cell(item.get("raw_row"), item.get("header"), "经办人")
+            buyer = _raw_cell(item.get("raw_row"), item.get("header"), "对方", "购方")
+            case_no = _raw_cell(item.get("raw_row"), item.get("header"), "案号")
+        else:
+            handler = item.get("person_text") or ""
+            buyer = item.get("buyer") or ""
+            case_no = item.get("case_no") or ""
         remark = item.get("remark") or ""
     conn.execute(
         """INSERT INTO raw_ledger
@@ -373,8 +399,8 @@ def _insert_raw_ledger(conn, item: dict, batch_id: int, kind: str) -> None:
             amount_raw, amount_num, handler_text, remark, case_no, recv_date_raw, kind, synced, import_batch_id)
            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?)""",
         (item.get("sheet") or "", item.get("sheet_name") or "", item.get("row_no") or 0,
-         seq, date_raw, item.get("invoice_no") or "", item.get("buyer") or "",
-         amt_raw, amt, handler, remark, item.get("case_no") or "",
+         seq, date_raw, item.get("invoice_no") or "", buyer,
+         amt_raw, amt, handler, remark, case_no,
          recv_raw, kind, batch_id),
     )
 
@@ -443,17 +469,19 @@ def import_invoice_file(path: str, period: str) -> Dict:
 # 发票台账
 # ---------------------------------------------------------------------------
 def _validate_handler_names(conn, names: List[str], context: str) -> List[str]:
-    """校验经办人是否在花名册，返回未匹配名单"""
-    staff = _staff_names(conn)
-    missing = []
-    for n in names:
-        if n and n not in staff and n not in HANDLER_WHITELIST:
-            missing.append(n)
-    return missing
+    """校验经办人是否在花名册（或白名单），返回未匹配名单（去重 + 升序）。
+
+    与补录保存校验共用 `backfill.missing_handlers`，保证两处口径完全一致。
+    """
+    return missing_handlers(conn, names)
 
 
-def _apply_resolved(data: Dict, resolved: List[Dict]) -> None:
-    """把问题行修正结果合并回解析数据：fix 行转正常结构追加，skip 行忽略"""
+def _apply_resolved(data: Dict, resolved: List[Dict], period: str) -> None:
+    """把问题行修正结果合并回解析数据：fix 行转正常结构追加，skip 行忽略
+
+    修正行若落在 sheet3 且开票月份早于账期，则同样转入 deferred（补录原票），
+    与解析期口径一致——避免「修正后反而被自动建票」的不一致。
+    """
     for item in resolved:
         if item["action"] != "fix":
             continue
@@ -497,9 +525,10 @@ def _apply_resolved(data: Dict, resolved: List[Dict]) -> None:
             })
 
     # 修正行此前不计入 sheet_totals，会导致「台账 sheet1+sheet2 合计 vs 销项合计」
-    # 校验漏算修正行而误判失败。这里按 sheet 重新归集全部发票（含修正行）并重算。
+    # 校验漏算修正行而误判失败。这里按 sheet 重新归集全部发票（含修正行与已转入
+    # deferred 的期外行，保持源口径）并重算。
     totals: dict = {}
-    for inv in data.get("invoices", []):
+    for inv in list(data.get("invoices", [])) + list(data.get("deferred", [])):
         key = inv.get("sheet") or ""
         if key:
             totals[key] = totals.get(key, 0.0) + (inv.get("total_amount") or 0.0)
@@ -509,6 +538,9 @@ def _apply_resolved(data: Dict, resolved: List[Dict]) -> None:
             data["sheet_totals"].get("sheet1", 0.0)
             + data["sheet_totals"].get("sheet2", 0.0)
         )
+
+    # 修正出来的 sheet3 期外行同样转补录（与解析期口径一致）
+    split_deferred(data, period)
 
 
 def validate_ledger_before_write(data: Dict, period: str) -> str | None:
@@ -536,8 +568,12 @@ def validate_ledger_before_write(data: Dict, period: str) -> str | None:
                 )
 
         # ---- 校验 2：经办人必须在花名册 ----
+        # sheet3 期外票本次不落库（转入补录原票），其经办人不在本次校验范围内；
+        # 补录保存时由 save_backfill 用同一份 missing_handlers 再校验一次。
         all_handlers: List[str] = []
         for inv in data.get("invoices", []):
+            if is_deferred_invoice(inv, period):
+                continue
             all_handlers += [h[0] for h in (inv.get("handlers") or [])]
         missing = _validate_handler_names(conn, all_handlers, "发票台账")
         if missing:
@@ -575,7 +611,7 @@ def import_ledger_file(path: str, period: str,
         resolved = on_problems(data["problems"])
         if resolved is None:
             raise ImportError_("已取消导入")
-        _apply_resolved(data, resolved)
+        _apply_resolved(data, resolved, period)
         data["problems"] = []
     if on_preview is not None and on_confirm is None:
         confirmed = on_preview(data)
@@ -583,6 +619,8 @@ def import_ledger_file(path: str, period: str,
             raise ImportError_("已取消导入")
         if isinstance(confirmed, dict):
             data = confirmed
+    # 兜底：任何路径（含统一确认对话框内就地修正）最终都再切一次期外票（幂等）。
+    split_deferred(data, period)
     return commit_ledger_import(data, period, path)
 
 
@@ -591,7 +629,13 @@ def commit_ledger_import(data: Dict, period: str, path: str) -> Dict:
 
     覆盖式导入：清同账期 active 批次 → raw_ledger 镜像双写 → invoice / charge_detail /
     prepayment upsert → import_batch。写前再做一次 validate_ledger_before_write 兜底。
+
+    sheet3 期外票（开票月份 < 账期月份）：**只写 raw_ledger 镜像**，不建 invoice
+    / charge_detail / collection —— 它们是历史应收，原票并未随文档入库，须由
+    「补录原票」逐张确认后写入（见 app/engine/raw_ledger.deferred_sheet3_invoices）。
+    入口处先切分一次（幂等），保证复核页直连 commit 的路径也走同一口径。
     """
+    split_deferred(data, period)
     _auto_snapshot()
     conn = get_conn()
     try:
@@ -611,6 +655,12 @@ def commit_ledger_import(data: Dict, period: str, path: str) -> Dict:
         _drop_active_batch(conn, "ledger", period)
         archive = _archive_file(path, "ledger", period)
         batch_id = _new_batch(conn, "ledger", period, Path(path).name, archive, "")
+
+        # ---- sheet3 期外票：只写镜表，不落 invoice/charge_detail/collection ----
+        # 镜表仍 1:1 保留原始行（含账期），既供「发票台账」页查看，也是
+        # 「待补录（源 B）」的派生依据。
+        for inv in data.get("deferred", []) or []:
+            _insert_raw_ledger(conn, inv, batch_id, "invoice")
 
         for inv in data["invoices"]:
             no = inv["invoice_no"]
@@ -682,6 +732,7 @@ def commit_ledger_import(data: Dict, period: str, path: str) -> Dict:
         "batch_id": batch_id,
         "invoice_count": len(data["invoices"]),
         "prepayment_count": len(data["prepayments"]),
+        "deferred_count": len(data.get("deferred") or []),
         "sheet12_total": data["sheet12_total"],
     }
 

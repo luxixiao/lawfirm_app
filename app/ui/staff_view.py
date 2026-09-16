@@ -1,7 +1,9 @@
-"""员工管理页：员工名单（增删改/停用/导入）+ 员工类型（自定义增删改查）
+"""员工管理页：员工名单（增删改/导入）+ 员工类型（自定义增删改查）
 
-- Tab1「员工名单」：花名册，导入 / 手动添加 / 修改 / 删除 / 停用启用。
-  删除前检查业务数据引用：有引用禁止删除并提示改用停用（避免结算口径丢失）。
+- Tab1「员工名单」：花名册，导入 / 手动添加 / 修改 / 删除。
+  删除前检查业务数据引用：有引用禁止删除（避免结算口径丢失）。
+  ⚠「停用」功能已取消（2026-09）：离职人员仍会发生业务，用全局开关表达"不再参与"
+  会把其所有年份的结算身份误判为「其他」→ 业务收入 0；分账/校验口径也随之分裂。
 - Tab2「员工类型」：类型可自定义。合伙/聘用/兼职为内置结算类型，
   禁止删除与改名（改名会断结算口径），说明可改；自定义类型可自由增删改名。
 - 口径：只有 合伙 / 聘用 / 兼职 参与业务收入计算，其余类型仅作身份标签。
@@ -66,16 +68,17 @@ class StaffView(QWidget):
         self.btn_edit.clicked.connect(self.edit_selected)
         self.btn_delete = QPushButton("删除")
         self.btn_delete.clicked.connect(self.delete_selected)
-        self.btn_toggle = QPushButton("停用 / 启用")
-        self.btn_toggle.clicked.connect(self.toggle_active)
+        self.btn_export = QPushButton("导出")
+        self.btn_export.setObjectName("accent")
+        self.btn_export.clicked.connect(self.export_staff)
         for b in (self.btn_import, self.btn_add, self.btn_edit,
-                  self.btn_delete, self.btn_toggle):
+                  self.btn_delete, self.btn_export):
             btns.addWidget(b)
         btns.addStretch()
         lay.addLayout(btns)
 
-        self.table = QTableWidget(0, 5)
-        self.table.setHorizontalHeaderLabels(["姓名", "类型", "状态", "入职月份", "备注"])
+        self.table = QTableWidget(0, 4)
+        self.table.setHorizontalHeaderLabels(["姓名", "类型", "入职月份", "备注"])
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.cellDoubleClicked.connect(lambda *_: self.edit_selected())
@@ -145,20 +148,16 @@ class StaffView(QWidget):
         conn = get_conn()
         try:
             rows = conn.execute(
-                "SELECT name, staff_type, is_active, hire_month, note FROM staff "
-                "ORDER BY is_active DESC, name").fetchall()
+                "SELECT name, staff_type, hire_month, note FROM staff "
+                "ORDER BY name").fetchall()
         finally:
             conn.close()
         self.table.setRowCount(len(rows))
         for r, row in enumerate(rows):
             self.table.setItem(r, 0, QTableWidgetItem(row["name"]))
             self.table.setItem(r, 1, QTableWidgetItem(row["staff_type"] or ""))
-            item = QTableWidgetItem("在职" if row["is_active"] else "停用")
-            item.setForeground(Qt.GlobalColor.gray if not row["is_active"]
-                               else Qt.GlobalColor.black)
-            self.table.setItem(r, 2, item)
-            self.table.setItem(r, 3, QTableWidgetItem(row["hire_month"] or ""))
-            self.table.setItem(r, 4, QTableWidgetItem(row["note"] or ""))
+            self.table.setItem(r, 2, QTableWidgetItem(row["hire_month"] or ""))
+            self.table.setItem(r, 3, QTableWidgetItem(row["note"] or ""))
         self._col.apply()
 
     # ---- 员工类型 ----
@@ -419,7 +418,7 @@ class StaffView(QWidget):
         self.refresh()
 
     def delete_selected(self) -> None:
-        """删除员工：有业务数据引用时拒绝，提示改用停用。"""
+        """删除员工：有业务数据引用时拒绝（避免结算口径丢失）。"""
         row = self.table.currentRow()
         if row < 0:
             QMessageBox.information(self, "提示", "请先选择一名职工")
@@ -439,16 +438,39 @@ class StaffView(QWidget):
             return
         self.refresh()
 
-    def toggle_active(self) -> None:
-        row = self.table.currentRow()
-        if row < 0:
-            QMessageBox.information(self, "提示", "请先选择一名职工")
-            return
-        name = self.table.item(row, 0).text()
+    # ================================================================== #
+    # 导出
+    # ================================================================== #
+    def export_staff(self) -> None:
+        """导出当前员工名单为 Excel（姓名/类型/入职月份/备注）。"""
         conn = get_conn()
         try:
-            conn.execute("UPDATE staff SET is_active = 1 - is_active WHERE name=?", (name,))
-            conn.commit()
+            rows = conn.execute(
+                "SELECT name, staff_type, hire_month, note FROM staff "
+                "ORDER BY name").fetchall()
         finally:
             conn.close()
-        self.refresh()
+        if not rows:
+            QMessageBox.information(self, "提示", "当前没有可导出的员工数据")
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "导出员工名单", "员工名单.xlsx", "Excel 文件 (*.xlsx)")
+        if not path:
+            return
+        if not path.lower().endswith(".xlsx"):
+            path += ".xlsx"
+        try:
+            from openpyxl import Workbook
+            wb = Workbook()
+            ws = wb.active
+            ws.title = "员工名单"
+            ws.append(["姓名", "类型", "入职月份", "备注"])
+            for r in rows:
+                ws.append([r["name"], r["staff_type"] or "",
+                           r["hire_month"] or "", r["note"] or ""])
+            wb.save(path)
+        except Exception as e:  # noqa: BLE001
+            QMessageBox.critical(self, "导出失败", str(e))
+            return
+        QMessageBox.information(self, "导出完成",
+                                f"已导出 {len(rows)} 名员工到：\n{path}")

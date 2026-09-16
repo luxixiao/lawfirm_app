@@ -370,7 +370,26 @@ def export_all(conn=None) -> Dict:
 
 
 def import_all(data: Dict, conn=None) -> None:
-    """整表替换费用类型配置（分类说明 + 类型归类 + 顺序）。"""
+    """整表替换费用类型配置（分类说明 + 类型归类 + 顺序）。
+
+    文件校验：同一费用类型在导入文件中出现多次时直接报错拦截，
+    提示用户修改 Excel 后再导入（不做静默跳过）。
+    """
+    # 先校验：文件中同一费用类型出现多次 → 拦截，提示先修改 Excel
+    seen: set = set()
+    dupes: List[str] = []
+    for t in data.get("types", []):
+        name = str(t.get("expense_type", "")).strip()
+        if not name:
+            continue
+        if name in seen and name not in dupes:
+            dupes.append(name)
+        seen.add(name)
+    if dupes:
+        raise ExpenseCatError(
+            "导入文件中的费用类型存在重复（同名只能出现一次），请修改 Excel 后重新导入：\n"
+            + "、".join(dupes))
+
     own, conn = _own_conn(conn)
     try:
         conn.execute("DELETE FROM expense_cat")

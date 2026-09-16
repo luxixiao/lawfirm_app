@@ -94,7 +94,8 @@ class CollectionFixDialog(QDialog):
         self.table = QTableWidget(self)
         self.table.setColumnCount(4)
         self.table.setHorizontalHeaderLabels(
-            ["收款日期 (YYYY-MM-DD)", "金额", "经办人", "操作"])
+            ["收款日期", "金额", "经办人", "操作"])
+        self.table.setToolTip("收款日期可直接输入：25.9 / 2025-09 / 25.9.1 / 2025.9.01 / 2025-09-01 等写法")
         # 方案 C：双击/选中即编辑，文本常驻展示；金额列挂 delegate
         self.table.setEditTriggers(
             QAbstractItemView.EditTrigger.DoubleClicked
@@ -151,8 +152,9 @@ class CollectionFixDialog(QDialog):
         self.table.setItem(r, 0, di)
         self.table.setItem(r, 1, ai)
         self.table.setItem(r, 2, pi)
-        # 删除按钮：矮控件不裁切，保留为 cellWidget
+        # 删除按钮：矮控件不裁切，保留为 cellWidget（rowBtn：紧凑内边距，不裁字）
         del_btn = QPushButton("删除")
+        del_btn.setObjectName("rowBtn")
         del_btn.clicked.connect(lambda _=False, b=del_btn: self._del_row_by_widget(b))
         self.table.setCellWidget(r, 3, del_btn)
 
@@ -201,15 +203,26 @@ class CollectionFixDialog(QDialog):
 
     def _on_ok(self) -> None:
         from PySide6.QtWidgets import QMessageBox
+        from app.ui.date_input import parse_flex_date
         target = self._collect()
         for t in target:
             if t["amount"] <= 0:
                 QMessageBox.warning(self, "校验失败", "每张收款行金额必须大于 0。")
                 return
-            if len(t["receipt_date"]) < 7:
+            # 收款日期兼容台账里的多种写法（25.9 / 25.9.1 / 2025.9.01 / 2025-09-01 …），
+            # 统一归一成 YYYY-MM 或 YYYY-MM-DD 后写库：用户填到哪一级就保留到哪一级，
+            # 不会把库里原有的日粒度日期悄悄截成月。
+            raw = t["receipt_date"]
+            if not raw:
+                QMessageBox.warning(self, "校验失败", "每张收款行都必须填收款日期。")
+                return
+            try:
+                t["receipt_date"] = parse_flex_date(raw)[0]
+            except Exception:  # noqa: BLE001
                 QMessageBox.warning(
                     self, "校验失败",
-                    f"收款日期格式应为 YYYY-MM-DD，当前为：{t['receipt_date']!r}")
+                    f"收款日期无法识别：{raw}\n"
+                    "可输入 25.9 / 2025-09 / 25.9.1 / 2025.9.01 / 2025-09-01 等写法。")
                 return
         actual = sum(t["amount"] for t in target)
         if abs(actual - self.expected_total) > 0.01:

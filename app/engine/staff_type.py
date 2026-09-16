@@ -9,7 +9,9 @@
   新增时在界面上给出提示。
 
 员工删除：有业务数据引用（charge_detail/collection/expense_ledger/raw_salary）时
-禁止删除，提示改用"停用"——硬删会让结算表查不到身份，业务收入被判为 0。
+禁止删除——硬删会让结算表查不到身份，业务收入被判为 0。
+（「停用」功能已于 2026-09 取消：离职人员仍会发生业务，直接保留在花名册中即可，
+ 不再需要"停用"这种全局开关；见 db.py 的 is_active 迁移。）
 """
 from __future__ import annotations
 
@@ -238,7 +240,7 @@ def staff_reference_count(name: str, conn=None) -> Dict[str, int]:
 
 
 def delete_staff(name: str, conn=None) -> None:
-    """删除员工；有业务数据引用则抛 StaffInUseError（建议改用停用）。"""
+    """删除员工；有业务数据引用则抛 StaffInUseError（应保留在花名册中）。"""
     own, conn = _own_conn(conn)
     try:
         refs = staff_reference_count(name, conn)
@@ -248,7 +250,7 @@ def delete_staff(name: str, conn=None) -> None:
             raise StaffInUseError(
                 f"「{name}」在业务数据中有引用（{detail}）。\n"
                 f"直接删除会让结算表查不到其身份、业务收入按 0 计。\n"
-                f"如该员工已离职，请改用「停用 / 启用」。")
+                f"请保留该员工在花名册中（离职人员仍会发生历史业务，无需删除）。")
         cur = conn.execute("DELETE FROM staff WHERE name=?", (name,))
         if cur.rowcount == 0:
             raise StaffTypeError(f"员工不存在：{name}")

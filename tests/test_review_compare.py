@@ -3,7 +3,7 @@
 运行：python tests/test_review_compare.py
 覆盖：镜表↔业务表 逐维度比对口径（金额/经办人分摊/已收认定）、
 仅源有/仅库有、纯人名均分豁免、快照优先/账期窗口回退、anomaly_note
-dim='merged' 优先 + 旧维度聚合回退。
+dim='merged' 优先 + 旧维度聚合回退、补录（source='manual'）纳入比对口径。
 """
 import json
 import sqlite3
@@ -165,6 +165,8 @@ def main() -> int:
     add_cd("B1", {"张三": 100.0})
     b, rows = rc.build_review_rows(P)
     check("库中缺失 → 仅源有", row_of(rows, "A9")["status"] == "仅源有")
+    check("非 sheet3 的库中缺失不算需补录（needs_backfill=False）",
+          row_of(rows, "A9")["needs_backfill"] is False)
     check("镜表缺失 → 仅库有", row_of(rows, "B1")["status"] == "仅库有")
     check("仅库有行排在源侧之后",
           rows.index(row_of(rows, "B1")) > rows.index(row_of(rows, "A1")))
@@ -201,6 +203,30 @@ def main() -> int:
     r = row_of(rc.build_review_rows(P)[1], "A10")
     check("红字无收款不报已收不符", r["status"] == "一致",
           f"{r['status']}/{r['detail']}")
+
+    # ---------- 13) 补录（source='manual'）纳入比对口径 ----------
+    # 期外票补录进库的是 manual 行；若比对只读 import，该行会永远停在「库中缺失」，
+    # 与「补录原票」页（票号对齐即移出）互相矛盾 —— 故库侧口径为
+    # source IN ('import','manual')。
+    add_raw("A11", 300.0, "张三300", remark="25.1.10", rid=21)
+    r = row_of(rc.build_review_rows(P)[1], "A11")
+    check("补录前：库中缺失（仅源有，非需补录）",
+          r["status"] == "仅源有" and r["needs_backfill"] is False,
+          f"{r['status']}/{r['needs_backfill']}")
+    conn.execute("INSERT INTO invoice (invoice_no, invoice_date, buyer, total_amount, source) "
+                 "VALUES ('A11','2024-03-01','丙公司',300.0,'manual')")
+    conn.execute("INSERT INTO charge_detail (invoice_no, person_name, billing_amount, source) "
+                 "VALUES ('A11','张三',300.0,'manual')")
+    conn.execute("INSERT INTO collection (invoice_no, receipt_date, amount, person_name, source) "
+                 "VALUES ('A11','2025-01-10',300.0,'张三','manual')")
+    conn.commit()
+    r = row_of(rc.build_review_rows(P)[1], "A11")
+    check("补录后：库侧读到 manual 发票（金额/对方）",
+          r["amount_db"] == 300.0 and r["buyer_db"] == "丙公司",
+          f"{r['amount_db']}/{r['buyer_db']}")
+    check("补录后：库侧读到 manual 分摊", "张三" in r["handlers_db"], r["handlers_db"])
+    check("补录后：已收认定读 manual 收款", "300.00" in r["recv_db"], r["recv_db"])
+    check("补录后：转为一致", r["status"] == "一致", f"{r['status']}/{r['detail']}")
 
     conn.close()
     print(f"\n{OK} passed, {len(FAILS)} failed")

@@ -79,6 +79,10 @@ class UnifiedImportDialog(QWidget):
         super().__init__(parent)
         # 数据相关的状态在 load_data 中初始化；这里给占位默认值以便无数据时也能构造
         self._data: Dict = {}
+        # 载入时的原始快照（深拷贝）：accept() 会把 _data 原地替换为合并结果，
+        # 之后 collect_import_fixes 若再读 _data 取"旧值"就会拿到新值（差异全部消失、
+        # 留痕丢失）。故单独保留这份未被修改的原始数据供取旧值。
+        self._orig_data: Dict = {}
         self._period = period
         self._path = path
         self._validate = validator
@@ -182,6 +186,8 @@ class UnifiedImportDialog(QWidget):
         self._data 直接引用传入的 data（同一对象），便于 accept() 原地合并回写。
         """
         self._data = data
+        # 原始快照：供 collect_import_fixes 取「旧值」（accept 会覆盖 _data，必须另存）
+        self._orig_data = copy.deepcopy(data)
         self._period = period
         self._path = path
         self._validate = validator
@@ -196,14 +202,16 @@ class UnifiedImportDialog(QWidget):
         self._confirmed = set()
         self._rows = []
         self.setWindowTitle(f"发票台账导入确认 — {period}")
-        self._title.setText(f"发票台账导入确认 — {period}")
         self._rebuild_fix_panel()
         self._rebuild()
 
     def _rebuild_fix_panel(self) -> None:
         """按当前 staff_set 重建右侧修正表单（staff 变化时需重建下拉）。"""
         if self.fix_panel is not None:
-            self.fix_panel.setParent(None)
+            # 先隐藏 + 仅从布局移除，保持父子关系：切勿用 setParent(None)——那会把面板
+            # 脱离成独立顶层窗口，导入时每重建一次就冒出一个游离弹窗（曾导致批量导入弹窗）。
+            self.fix_panel.hide()
+            self._fix_host_ly.removeWidget(self.fix_panel)
             self.fix_panel.deleteLater()
         self.fix_panel = ProblemFixPanel(sorted(self._staff_set), self._period, self)
         self._fix_host_ly.addWidget(self.fix_panel, 1)
@@ -212,13 +220,13 @@ class UnifiedImportDialog(QWidget):
     # 右侧面板
     # ------------------------------------------------------------------ #
     def _build_right_panel(self) -> None:
-        self.right = QWidget()
+        self.right = QWidget(self)
         self.right.setMinimumWidth(400)
         rv = QVBoxLayout(self.right)
         rv.setContentsMargins(0, 0, 0, 0)
         rv.setSpacing(10)
 
-        card = QWidget()
+        card = QWidget(self.right)
         card.setObjectName("infoCard")
         cg = QGridLayout(card)
         cg.setContentsMargins(0, 0, 0, 0)
@@ -247,7 +255,7 @@ class UnifiedImportDialog(QWidget):
         sep.setFrameShape(QFrame.Shape.HLine); sep.setFixedHeight(1)
         rv.addWidget(sep)
 
-        self._fix_host = QWidget()
+        self._fix_host = QWidget(self.right)
         self._fix_host_ly = QVBoxLayout(self._fix_host)
         self._fix_host_ly.setContentsMargins(0, 0, 0, 0)
         self._fix_host_ly.setSpacing(0)
@@ -286,6 +294,7 @@ class UnifiedImportDialog(QWidget):
             _apply_resolved(
                 self._work,
                 [{"index": i, "action": "fix", "data": d} for i, d in sorted(self._fix.items())],
+                self._period,
             )
         # 已存在发票的右侧表单就地编辑（_inv_edits）原地覆盖，不追加
         for inv_idx, ed in self._inv_edits.items():
@@ -459,9 +468,12 @@ class UnifiedImportDialog(QWidget):
         inv_total = sum(r["ev"]["total_amount"] for r in self._rows if r["kind"] == "invoice")
         pp = self._work.get("prepayments", [])
         pp_total = sum(x.get("amount", 0.0) for x in pp)
+        # sheet3 期外票：本次不落库，转入「补录原票」逐张确认（方案 A）
+        n_def = len(self._work.get("deferred", []) or [])
         self.lbl_summary.setText(
             f"发票 {n_high + n_pending} 张，合计 ¥{inv_total:,.2f}　"
             f"预收款 {len(pp)} 条，合计 ¥{pp_total:,.2f}"
+            + (f"　·　应收账款期外 {n_def} 张已转入补录原票" if n_def else "")
         )
 
         sel_row = -1
@@ -722,7 +734,7 @@ class UnifiedImportDialog(QWidget):
                 if i in self._fix else {"index": i, "action": "skip", "data": None}
                 for i in range(len(problems))
             ]
-            _apply_resolved(merged, resolved)
+            _apply_resolved(merged, resolved, self._period)
         merged["problems"] = []
 
         # 已存在发票的右侧就地编辑：原地覆盖
@@ -778,23 +790,36 @@ class UnifiedImportDialog(QWidget):
         """把本次导入确认页的人工干预规范化为留痕条目（供 log_import_fixes）。
 
         每项 {"kind": "fix"|"edit", "invoice_no": str, "old": dict, "new": dict}
-        - fix：修正的问题行（解析失败凭空填，old 为空）
-        - edit：右栏就地编辑的已解析行（old = 原解析值，取自未被修改的 _data）
-        真实 _data 全程不被修改，故 old 值可靠。
+        - fix：修正的问题行（解析失败凭空填；old = 该行原始台账可读原文）
+        - edit：右栏就地编辑的已解析行（old = 原解析值）
+
+        旧值一律取自 `self._orig_data`（load_data 时的深拷贝）：accept() 已把
+        `self._data` 原地替换为合并结果，若再读 _data 会拿到新值 → 逐字段差异被判
+        「无变化」而不留痕（旧值缺失、新值只剩摘要）。故必须用未被修改的原始快照。
         """
         items = []
-        orig = self._data.get("invoices", [])
+        oinv = (self._orig_data or {}).get("invoices", [])
+        oprob = (self._orig_data or {}).get("problems", [])
         for p_idx, data in sorted(self._fix.items()):
+            p = oprob[p_idx] if 0 <= p_idx < len(oprob) else {}
             items.append({
                 "kind": "fix",
-                "invoice_no": str(data.get("invoice_no") or "").strip(),
-                "old": {},
+                "invoice_no": str(data.get("invoice_no")
+                                  or p.get("invoice_no") or "").strip(),
+                # 问题行原始台账原文（供修改记录页展示「旧值」）
+                "old": {
+                    "invoice_date": str(p.get("date_text") or "").strip(),
+                    "total_amount": str(p.get("total_amount") or "").strip(),
+                    "handler_text": str(p.get("handler_text") or "").strip(),
+                    "buyer": str(p.get("buyer") or "").strip(),
+                    "remark_raw": str(p.get("remark_raw") or "").strip(),
+                },
                 "new": data,
             })
         for inv_idx, data in sorted(self._inv_edits.items()):
-            if not (0 <= inv_idx < len(orig)):
+            if not (0 <= inv_idx < len(oinv)):
                 continue
-            old = dict(orig[inv_idx])
+            old = dict(oinv[inv_idx])
             no = str(data.get("invoice_no") or old.get("invoice_no") or "").strip()
             items.append({"kind": "edit", "invoice_no": no, "old": old, "new": data})
         return items

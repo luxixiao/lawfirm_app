@@ -4,6 +4,15 @@
 解析成功后通过 ledger_pending 信号交给「导入复核」页（ImportReviewView）
 的导入前模式就地确认/修正，「确认入库」后才写库。本页只负责选文件、
 执行导入与日志；不再内嵌确认面板（原 QTabWidget 的「导入确认」tab 已移除）。
+
+批量（2026-09-15 起，B 方案待确认队列）：
+- 台账类文件按**解析出的账期**排序（不再按文件名——否则 2025.10 会排在
+  2025.2 之前），保证复核队列里的月份顺序正确。
+- **同类型同账期出现多份文件 → 整批导入直接中止**（不写库、不入队），并列出
+  冲突文件要求改正后重导：覆盖式导入会让同账期文件互相覆盖，属数据风险。
+- 每个台账文件解析后照旧 emit ledger_pending（复核页按账期追加进待确认
+  队列，不覆盖）；全部处理完后 emit 一次 ledger_queue_ready 才切页，
+  避免批量时逐文件反复切走当前页。
 """
 from __future__ import annotations
 
@@ -24,6 +33,7 @@ from app.importer.importer import (
 )
 from app.importer.staff_import import parse_staff_file
 from app.db import get_conn
+from app.diag import get_logger
 
 
 def guess_period(filename: str) -> str | None:
@@ -60,9 +70,18 @@ def guess_type(filename: str) -> str:
     return "ledger"
 
 
+# 类型的中文名（用于「同账期多文件」拦截提示）
+_TYPE_LABEL = {
+    "ledger": "发票台账", "invoice": "销项文档", "expense": "费用台账",
+    "salary": "工资表", "staff": "职工清单",
+}
+
+
 class ImportView(QWidget):
     # 发票台账解析完成 → 交导入复核页确认（data, period, staff_names, path）
     ledger_pending = Signal(object, str, object, str)
+    # 本批次台账已全部交给复核页 → 由主窗口切到「导入复核」页（批量只切一次）
+    ledger_queue_ready = Signal()
 
     def __init__(self) -> None:
         super().__init__()
@@ -146,35 +165,104 @@ class ImportView(QWidget):
         path, _ = QFileDialog.getOpenFileName(
             self, "选择台账文件", "", "Excel 文件 (*.xls *.xlsx *.xlsm)"
         )
-        if path:
-            self._do_import(path)
+        if not path:
+            return
+        if self._do_import(path) == "ledger":
+            self.ledger_queue_ready.emit()
 
     # ---- 文件夹批量 ----
     def import_folder(self) -> None:
         folder = QFileDialog.getExistingDirectory(self, "选择台账文件夹")
         if not folder:
             return
-        files = sorted(glob.glob(os.path.join(folder, "*.xls*")))
+        # 按「解析出的账期」排序：按文件名排序会把 2025.10 排在 2025.2 之前，
+        # 导致复核队列里的月份顺序错乱。
+        def _key(p: str):
+            name = os.path.basename(p)
+            return (guess_period(name) or "9999-99", name)
+
+        files = sorted(glob.glob(os.path.join(folder, "*.xls*")), key=_key)
         if not files:
             QMessageBox.information(self, "提示", "该文件夹没有 Excel 文件")
             return
-        ok, fail = 0, 0
+        # 同类型同账期多份文件 → 直接中止整批导入（在写库/入队之前拦下，避免留下
+        # 「一半已导入」的半成品）：覆盖式导入会让同账期文件互相覆盖，属数据风险。
+        # 职工清单无账期语义（批次账期固定 0000，按姓名 upsert），不参与判定。
+        groups: dict = {}
         for f in files:
+            n = os.path.basename(f)
+            ftype = guess_type(n)
+            period = guess_period(n)
+            if ftype == "staff" or not period:
+                continue
+            groups.setdefault((ftype, period), []).append(n)
+        conflicts = {k: v for k, v in groups.items() if len(v) > 1}
+        if conflicts:
+            lines = [
+                f"　· {period}（{_TYPE_LABEL.get(ftype, ftype)}）："
+                f"{'、'.join(sorted(ns))}"
+                for (ftype, period), ns in sorted(
+                    conflicts.items(), key=lambda kv: (kv[0][1], kv[0][0]))
+            ]
+            msg = ("同一账期存在多份同类型文件，导入时会互相覆盖，"
+                   "已中止本次批量导入（未写入任何数据）。\n\n"
+                   "请把重复的文件改名以区分账期、或移出该文件夹后重新导入：\n"
+                   + "\n".join(lines))
+            self._log("✗ 批量导入已中止：同账期多份同类型文件\n" + msg,
+                      ok=False, batch_type="batch")
+            QMessageBox.critical(self, "批量导入已中止", msg)
+            return
+
+        ok_files, fail_files = [], []
+        n_ledger = 0
+        for f in files:
+            name = os.path.basename(f)
             try:
-                self._do_import(f, quiet=True)
-                ok += 1
+                handed = self._do_import(f, quiet=True)
+                # ledger 类型在 _do_import 内转入「导入复核」待确认队列，需用户
+                # 逐账期确认后才真正入库；其余类型已在本轮直接写库。
+                if handed == "ledger":
+                    n_ledger += 1
+                    ok_files.append((name, "已转入复核，待确认入库"))
+                else:
+                    ok_files.append((name, "导入成功"))
             except Exception as e:  # noqa: BLE001
-                self._log(f"✗ {os.path.basename(f)}: {e}", ok=False,
-                          file_name=os.path.basename(f))
-                fail += 1
-        self._log(f"批量导入完成: 成功 {ok}，失败 {fail}", batch_type="batch")
-        QMessageBox.information(self, "批量导入", f"成功 {ok} 个，失败 {fail} 个（详见日志）")
+                self._log(f"✗ {name}: {e}", ok=False, file_name=name)
+                fail_files.append((name, str(e)))
+        # 逐文件记录结果（成功也列出文件名，便于回看）
+        for name, result in ok_files:
+            self._log(f"✓ {name}: {result}", ok=True, file_name=name,
+                      batch_type="batch")
+        # 台账全部解析完成 → 一次性切到「导入复核」页（在汇总弹窗之前，切换
+        # 在弹窗之下完成，关掉弹窗后即停在复核页待确认）
+        if n_ledger:
+            self.ledger_queue_ready.emit()
+        # 汇总：枚举成功与失败的具体文件
+        if ok_files or fail_files:
+            lines = [f"批量导入完成：成功 {len(ok_files)} 个，"
+                     f"失败 {len(fail_files)} 个"]
+            if ok_files:
+                lines.append("成功文件：")
+                lines.extend(f"  · {n}（{r}）" for n, r in ok_files)
+            if fail_files:
+                lines.append("失败文件：")
+                lines.extend(f"  · {n}：{e}" for n, e in fail_files)
+            summary = "\n".join(lines)
+            self._log(summary, batch_type="batch")
+            QMessageBox.information(self, "批量导入", summary)
+        else:
+            self._log("批量导入完成：未处理任何文件", batch_type="batch")
+            QMessageBox.information(self, "批量导入", "未处理任何文件（导入均被跳过）。")
 
     # ---- 执行 ----
-    def _do_import(self, path: str, quiet: bool = False) -> None:
+    def _do_import(self, path: str, quiet: bool = False) -> str | None:
+        """导入单个文件。台账类不写库，返回 "ledger" 交给「导入复核」待确认队列；
+        其余类型直接写库，返回 None。"""
         fname = path.replace("\\", "/").split("/")[-1]
         ftype = guess_type(fname)
         period = guess_period(fname)
+        get_logger().info("IMPORT _do_import fname=%s ftype=%s period=%s",
+                          fname, ftype, period)
         try:
             if ftype == "staff":
                 staff, _ = parse_staff_file(path)
@@ -209,8 +297,17 @@ class ImportView(QWidget):
                     r = import_invoice_file(path, period)
                     msg = f"✓ 销项文档 {period}: {r['count']} 张发票"
                 elif ftype == "ledger":
-                    # 解析 → 交「导入复核」页导入前模式就地确认（确认入库后才写库）
+                    # 解析 → 交由「导入复核」页的待确认队列（确认入库后才写库）
+                    get_logger().info("IMPORT ledger branch → parse_ledger_file + emit ledger_pending")
                     data = parse_ledger_file(path, period)
+                    # deferred（应收账款期外票）也算「识别到内容」：它们不落 invoice，
+                    # 会转入「补录原票」，不能因此判成空文件。
+                    if (not data.get("invoices") and not data.get("prepayments")
+                            and not data.get("deferred")):
+                        raise Exception(
+                            "解析完成但未识别到任何发票或预收款行。\n"
+                            "请检查台账文件的 sheet 名称与列名是否符合模板"
+                            "（如「开票明细」「预收款」等）。")
                     conn = get_conn()
                     try:
                         staff_names = [rr["name"] for rr in
@@ -218,7 +315,7 @@ class ImportView(QWidget):
                     finally:
                         conn.close()
                     self.ledger_pending.emit(data, period, staff_names, path)
-                    return
+                    return "ledger"
                 elif ftype == "salary":
                     r = import_salary_file(path, period)
                     msg = (f"✓ 工资表 {period}: {r['count']} 行"
@@ -245,6 +342,7 @@ class ImportView(QWidget):
 
     def _resolve_problems(self, problems: list, period: str):
         """旧路径：仅修正问题行的回调（保留备用，当前走嵌入确认 tab）。"""
+        get_logger().warning("DEAD-PATH HIT: _resolve_problems (old ProblemDialog flow)")
         from PySide6.QtWidgets import QDialog
         from app.ui.problem_dialog import ProblemDialog
         conn = get_conn()
@@ -259,6 +357,7 @@ class ImportView(QWidget):
 
     def _preview_ledger(self, data: dict, period: str, path: str):
         """写前预览回调：弹对照确认框；确认返回 data，取消返回 None（中止导入）"""
+        get_logger().warning("DEAD-PATH HIT: _preview_ledger (old PreviewDialog flow)")
         from PySide6.QtWidgets import QDialog
         from app.ui.preview_dialog import PreviewDialog
         dlg = PreviewDialog(data, period, self, path=path)

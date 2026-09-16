@@ -134,13 +134,12 @@ def list_years() -> List[str]:
         conn.close()
 
 
-def list_staff() -> List[tuple]:
-    """[(姓名, 在职)] 按姓名排序；离职人员仍可选（按数据年月取数）。"""
+def list_staff() -> List[str]:
+    """花名册全部姓名，按姓名排序。（「停用」已取消，一律可选，按数据年月取数。）"""
     conn = get_conn()
     try:
-        rows = conn.execute(
-            "SELECT name, is_active FROM staff ORDER BY name").fetchall()
-        return [(r["name"], bool(r["is_active"])) for r in rows]
+        rows = conn.execute("SELECT name FROM staff ORDER BY name").fetchall()
+        return [r["name"] for r in rows]
     finally:
         conn.close()
 
@@ -173,8 +172,8 @@ class DataRefDialog(QDialog):
 
         self.f_person = QComboBox()
         self.f_person.setEditable(True)
-        for name, active in list_staff():
-            self.f_person.addItem(f"{name}（离职）" if not active else name, name)
+        for name in list_staff():
+            self.f_person.addItem(name, name)
         form.addRow("职工：", self.f_person)
 
         self.f_indicator = QComboBox()

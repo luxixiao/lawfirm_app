@@ -96,7 +96,10 @@ dlg.f_year.setCurrentText("2025")
 dlg.f_month.setCurrentIndex(3)  # 3 月
 check("选择器生成公式", dlg._current_formula(),
       '=DATA("周立生","业务收入",2025,3)')
-check("离职人员带标记", "离职" in dlg.f_person.itemText(dlg.f_person.findData("老李")))
+check("花名册成员一律可选（停用已取消，无离职标记）",
+      dlg.f_person.findData("老李") >= 0
+      and "离职" not in dlg.f_person.itemText(dlg.f_person.findData("老李")),
+      f"text={dlg.f_person.itemText(dlg.f_person.findData('老李'))!r}")
 dlg.deleteLater()
 
 # ===== ParamDialog =====

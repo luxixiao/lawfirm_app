@@ -49,7 +49,8 @@ def _staff_type(conn, name: str, override: str | None = None) -> str:
 
 
 def _staff_type_orig(conn, name: str) -> str:
-    r = conn.execute("SELECT staff_type FROM staff WHERE name=? AND is_active=1", (name,)).fetchone()
+    # 不过滤 is_active：离职人员的历史年份业务仍须按真实身份计（否则「其他」→ 收入 0）
+    r = conn.execute("SELECT staff_type FROM staff WHERE name=?", (name,)).fetchone()
     if not r:
         return "其他"
     t = (r["staff_type"] or "").strip()

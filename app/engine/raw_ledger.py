@@ -98,6 +98,144 @@ def list_raw(sheet_key: str = "", keyword: str = "", status: str = "",
     return out
 
 
+def deferred_sheet3_invoices(period: Optional[str] = None,
+                             batch_id: Optional[int] = None,
+                             conn=None) -> List[Dict]:
+    """应收账款(sheet3) 中「期外且 invoice 表缺号」的行 → 待补录（源 B）。
+
+    期外口径 a（见 app.engine.backfill.is_period_before）：开票月份 < 所属批次账期月份。
+    这些行按方案 A 只写 raw_ledger 镜像、**不落 invoice** —— 它们是历史应收，
+    原票并未随任何一期销项/台账文档入库，必须由「补录原票」逐张确认后写入。
+
+    period / batch_id：限定账期或导入批次（复核页打「需补录」标记用）；均不传则全库扫描。
+    conn：传入则复用外部连接（单事务/测试注入用），不传自开自关。
+    返回（按账期、行号排序；同票号取末行）每项含补录弹窗可直接使用的预填：
+    invoice_no / invoice_date / buyer / total_amount / handlers
+    + receipt_items（备注推导的收款批次，供列表展示「收款金额」）。
+    """
+    from app.engine.backfill import is_period_before
+
+    own = conn is None
+    if own:
+        conn = get_conn()
+    try:
+        sql = (
+            "SELECT l.id, l.import_batch_id, l.sheet_name, l.row_no, l.invoice_no, l.buyer, "
+            "l.invoice_date_raw, l.amount_num, l.handler_text, l.remark, l.case_no, "
+            "b.period AS period "
+            "FROM raw_ledger l JOIN import_batch b ON b.id = l.import_batch_id "
+            "WHERE l.kind='invoice' AND l.sheet_key='sheet3' AND b.status='active'"
+        )
+        params: List = []
+        if period:
+            sql += " AND b.period = ?"
+            params.append(period)
+        if batch_id is not None:
+            sql += " AND l.import_batch_id = ?"
+            params.append(batch_id)
+        sql += " ORDER BY b.period, l.id"
+        rows = conn.execute(sql, params).fetchall()
+        out: Dict[str, Dict] = {}
+        order: List[str] = []
+        for r in rows:
+            no = (r["invoice_no"] or "").strip()
+            if not no:
+                continue
+            year = _period_year(r["period"])
+            date_str = _norm_date_text(r["invoice_date_raw"], year)
+            if not is_period_before(date_str[:7], r["period"]):
+                continue
+            if conn.execute("SELECT 1 FROM invoice WHERE invoice_no=?", (no,)).fetchone():
+                continue  # 已入库（销项已建 / 已补录）→ 不再待补录
+            if no not in out:
+                order.append(no)
+            out[no] = _derive_deferred(r, date_str, year)
+        return [out[no] for no in order]
+    finally:
+        if own:
+            conn.close()
+
+
+def deferred_sheet3_nos(period: str, batch_id: Optional[int] = None,
+                        conn=None) -> set:
+    """本账期（可选限定批次）待补录的 sheet3 期外票号集合。
+
+    供复核页给镜表行打 `needs_backfill` 标记用（行仍保留在差异表里，只是以
+    「需补录」待办呈现、不计入差异统计）。
+    """
+    return {d["invoice_no"] for d in deferred_sheet3_invoices(period, batch_id, conn)}
+
+
+def _period_year(period: Optional[str]):
+    try:
+        return int(str(period)[:4])
+    except (ValueError, TypeError):
+        return None
+
+
+def _norm_date_text(raw: str, year) -> str:
+    """台账原始日期文本 → YYYY-MM-DD；解析失败回空串。"""
+    from app.importer.date_utils import normalize_date
+    try:
+        return normalize_date(raw, default_year=year) or ""
+    except Exception:  # noqa: BLE001 解析失败按「无法判定期外」处理
+        return ""
+
+
+def _derive_deferred(r, date_str: str, year) -> Dict:
+    """raw_ledger 行 → 待补录条目（含补录弹窗预填）。"""
+    from app.importer.parse_handler import parse_handler_column
+    from app.importer.parse_remark import parse_remark
+
+    total = r["amount_num"] or 0.0
+    no = (r["invoice_no"] or "").strip()
+    try:
+        hs = parse_handler_column(r["handler_text"] or "", total, no)
+    except Exception:  # noqa: BLE001 与导入期口径一致：解析失败按空分摊
+        hs = []
+    try:
+        rem = parse_remark(r["remark"], default_year=year)
+    except Exception:  # noqa: BLE001
+        rem = {}
+    # 收款批次：红字无收款；应收账款纯日期备注=该笔应收的收款日期（全额）；
+    # 逐期备注按各期金额（0 表示全额）。
+    items: List = []
+    if total >= 0:
+        if rem.get("pure_date"):
+            items = [((rem["pure_date"] or "")[:7], total)]
+        elif rem.get("receipts"):
+            items = [((ym or "")[:7], (amt if amt > 0 else total))
+                     for ym, amt in rem["receipts"]]
+    # 明细行只有「一个收款日期+一个金额」两格，多期收款无法无损承载 → 仅单期时预填，
+    # 且按开票份额比例分摊到各经办人（与结算层兜底口径一致，用户可再改）。
+    single = items[0] if len(items) == 1 else None
+    handlers = []
+    for name, billing in hs:
+        recv, rdate = 0.0, ""
+        if single:
+            recv = round(single[1] * (billing / total), 2) if total else 0.0
+            rdate = single[0] if recv > 0.001 else ""
+        handlers.append({"name": name, "billing": billing,
+                         "received": recv, "date": rdate})
+    return {
+        "invoice_no": no,
+        "source": "应收账款",
+        "raw_id": r["id"],
+        "period": r["period"] or "",
+        "sheet_name": r["sheet_name"] or "",
+        "row_no": r["row_no"] or 0,
+        "invoice_date": date_str,
+        "buyer": r["buyer"] or "",
+        # 价税合计原样带出（含红字负数）：不替用户改符号，由其在补录弹窗中确认。
+        "total_amount": total,
+        "handler_text": r["handler_text"] or "",
+        "remark": r["remark"] or "",
+        "handlers": handlers,
+        "receipt_items": [{"ym": ym, "amount": amt} for ym, amt in items],
+        "collected": round(sum(a for _, a in items), 2),
+    }
+
+
 def get_row(rid: int, conn=None) -> Optional[Dict]:
     """读一行 raw_ledger。conn 缺省自开自关；传入则复用外部连接（单事务用）。"""
     owns = conn is None

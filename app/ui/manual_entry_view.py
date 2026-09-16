@@ -1,28 +1,36 @@
 """补录（期初/历史应收）发票：待补录发票 / 已补录发票 两页
 
-- 待补录 = 所有「被引用但 invoice 表中没有」的发票号（红字 orig_invoice_no / refund.orig_invoice_no），
-  1.1（红字原票缺失）与 1.2（应收对应缺失）合并为同一检测逻辑，列表不区分。
+- 待补录 = 两个来源合并（按票号去重，「来源」列区分）：
+  · 红字引用 —— 被 invoice/refund 的 orig_invoice_no 引用但原票缺失；
+  · 应收账款 —— 发票台账 sheet3 中「开票月份 < 账期月份」且未入库的历史应收
+    （方案 A：导入时不再自动建票，只写镜表）。
 - 统一补录弹窗：原始发票信息 8 项，其中 2.5~2.8（经办人/开票金额/已收金额/收款日期）
-  做成可增删的明细表；台账中已有的信息（红字发票的购方/金额/经办人）自动预填。
+  做成可增删的明细表；两个来源都按已有信息自动预填（应收账款可预填开票日期/对方/
+  价税合计/经办人开票额/已收金额与收款日期；红字引用只能预填购方/金额/经办人）。
 - 写入 invoice(source='manual') + charge_detail + collection，与现有手工补录完全一致，
   不影响其他页面（收款表/结算/退款判定）。
+- 保存前校验：至少一名经办人 + 须在花名册（与导入写前校验同一口径，
+  见 app/engine/backfill.missing_handlers）。
 """
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, QDate
 from PySide6.QtWidgets import (
     QAbstractItemView, QAbstractSpinBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFormLayout,
-    QHBoxLayout, QLabel, QLineEdit, QDateEdit, QHeaderView, QMessageBox, QPushButton,
+    QHBoxLayout, QLabel, QLineEdit, QHeaderView, QMessageBox, QPushButton,
     QTabWidget, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
 from app.db import get_conn
 from app.ui import scale
-from app.ui.widgets import SubtitleLabel, CaptionLabel, PrimaryPushButton, PushButton, tab_help_corner
+from app.ui.date_input import DateInput, normalize_flex
+from app.ui.widgets import (
+    DialogTitleLabel, CaptionLabel, PrimaryPushButton, PushButton, tab_help_corner,
+)
 from app.ui.column_layout import install_column_layout
 from app.engine.backfill_module import (
     list_pending_backfill, list_backfilled, load_invoice_detail,
-    save_backfill, delete_backfill,
+    prefill_red_original, save_backfill, delete_backfill,
 )
 
 
@@ -36,18 +44,23 @@ class ManualEntryView(QWidget):
         self.tabs = QTabWidget()
         self.tabs.tabBar().setObjectName("pageTitleBar")
         self.tab_pending = self._make_table(
-            ["开票日期", "发票号码", "对方", "价税合计", "状态", "收款金额", "对应红字发票", "操作"], "pending")
+            ["来源", "开票日期", "发票号码", "对方", "价税合计", "状态",
+             "收款金额", "对应红字发票", "操作"], "pending")
         self.tab_done = self._make_table(
             ["开票日期", "发票号码", "对方", "价税合计", "状态", "收款金额", "补录时间", "操作"], "done")
         self.tabs.addTab(self.tab_pending, "待补录发票")
         self.tabs.addTab(self.tab_done, "已补录发票")
         self.tabs.setCornerWidget(tab_help_corner(
-            "补录期初/历史应收的原始发票信息（红字原票缺失或应收对应发票缺失）。"
-            "补录数据与导入数据同模型计算，不影响其他页面。"
+            "补录期初/历史应收的原始发票。待补录来自两处：①被红字发票引用但原票缺失；"
+            "②发票台账「应收账款」中开票月份早于导入账期的历史票（导入时不自动建票）。"
+            "两个来源都会按已有信息预填，请核对后再保存。"
         ), Qt.Corner.TopRightCorner)
+        self.tabs.currentChanged.connect(self._sync_tab_actions)
         lay.addWidget(self.tabs, 1)
 
-        # 已补录页操作按钮
+        # 已补录页操作按钮：①新增补录发票（全页通用）；②编辑所选 / 删除所选
+        # 只对「已补录发票」列表生效，切到「待补录发票」时隐藏（待补录每行有各自的
+        # 「补录」按钮，不存在"所选一行"的概念）。
         done_btns = QHBoxLayout()
         self.btn_new = PrimaryPushButton("新增补录发票")
         self.btn_new.clicked.connect(lambda: self.open_backfill())
@@ -64,8 +77,15 @@ class ManualEntryView(QWidget):
         self._pending_meta: dict = {}
         self._done_meta: dict = {}
         self.refresh()
+        self._sync_tab_actions()
 
     # ------------------------------------------------------------------ #
+    def _sync_tab_actions(self, *_args) -> None:
+        """「编辑所选 / 删除所选」仅对已补录（第 2 个 tab）有效，其余 tab 隐藏。"""
+        on_done = self.tabs.currentWidget() is self.tab_done
+        self.btn_edit.setVisible(on_done)
+        self.btn_del.setVisible(on_done)
+
     def showEvent(self, event) -> None:  # noqa: N802
         super().showEvent(event)
         self.refresh()
@@ -76,6 +96,9 @@ class ManualEntryView(QWidget):
         t.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         t.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         t.verticalHeader().setVisible(False)
+        # 行高随字号档位缩放（Qt 默认行高固定 30px，不随字号变），并把内嵌的
+        # 「补录/编辑」按钮安全容纳在内，任何档位下都不被裁。
+        t.verticalHeader().setDefaultSectionSize(scale.px(34))
         t.horizontalHeader().setStretchLastSection(False)
         t.setHorizontalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
         t.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
@@ -97,14 +120,25 @@ class ManualEntryView(QWidget):
         self._pending_meta = {}
         for r, row in enumerate(rows):
             red_text = "、".join(row["red_invoices"]) if row["red_invoices"] else "—"
-            vals = ["—", row["invoice_no"], "—", "—", row["status"],
-                    f"{row['collected']:,.2f}", red_text, ""]
+            amount = row.get("total_amount")
+            vals = [
+                row.get("source") or "—",
+                row.get("invoice_date") or "—",
+                row["invoice_no"],
+                row.get("buyer") or "—",
+                f"{amount:,.2f}" if isinstance(amount, (int, float)) else "—",
+                row["status"],
+                f"{row['collected']:,.2f}",
+                red_text,
+                "",
+            ]
             for c, v in enumerate(vals):
                 tbl.setItem(r, c, QTableWidgetItem(str(v)))
             btn = PushButton("补录")
-            btn.clicked.connect(lambda _checked=False, no=row["invoice_no"]: self.open_backfill(no))
-            tbl.setCellWidget(r, 7, btn)
-            self._pending_meta[r] = row["invoice_no"]
+            btn.setObjectName("rowBtn")          # 行内按钮统一紧凑样式（不裁字）
+            btn.clicked.connect(lambda _checked=False, rw=row: self.open_backfill_pending(rw))
+            tbl.setCellWidget(r, 8, btn)
+            self._pending_meta[r] = row
         tbl._col.apply()
 
     # ---- 已补录 ----
@@ -120,6 +154,7 @@ class ManualEntryView(QWidget):
             for c, v in enumerate(vals):
                 tbl.setItem(r, c, QTableWidgetItem(str(v)))
             btn = PushButton("编辑")
+            btn.setObjectName("rowBtn")          # 行内按钮统一紧凑样式（不裁字）
             btn.clicked.connect(lambda _checked=False, no=row["invoice_no"]: self.open_backfill(no, edit=True))
             tbl.setCellWidget(r, 7, btn)
             self._done_meta[r] = row["invoice_no"]
@@ -128,50 +163,42 @@ class ManualEntryView(QWidget):
     # ------------------------------------------------------------------ #
     # 打开补录弹窗（待补录点击 → 预填红字发票信息；已补录编辑 → 预填已存数据）
     # ------------------------------------------------------------------ #
-    def open_backfill(self, invoice_no: str | None = None, edit: bool = False) -> None:
-        prefill = None
-        if invoice_no:
-            conn = get_conn()
-            try:
-                inv = conn.execute("SELECT 1 FROM invoice WHERE invoice_no=?", (invoice_no,)).fetchone()
-            finally:
-                conn.close()
-            if inv is None:
-                prefill = self._prefill_from_red(invoice_no)
-            else:
-                prefill = load_invoice_detail(invoice_no)
-        self._open_dialog(prefill, edit=edit, locked_no=bool(invoice_no and edit))
+    def open_backfill_pending(self, row: dict) -> None:
+        """待补录点击「补录」：按来源预填。
 
-    def _prefill_from_red(self, orig_no: str) -> dict:
-        """待补录（原票缺失）：用引用它的红字发票（来自台账）信息预填。"""
+        · 应收账款：开票日期/对方/价税合计/经办人开票额/已收金额与收款日期全预填；
+        · 红字引用：只能预填购方/金额/经办人（原票日期不可知，留空手填）；
+        · 若该票已入库（例如刚被补录过）→ 直接载入已存明细进入编辑。
+        """
+        no = row["invoice_no"]
+        source = row.get("source") or ""
+        prefill = None
         conn = get_conn()
         try:
-            red = conn.execute(
-                "SELECT * FROM invoice WHERE orig_invoice_no=? AND total_amount < 0 ORDER BY invoice_date LIMIT 1",
-                (orig_no,),
-            ).fetchone()
-            if red is None:
-                return {"invoice_no": orig_no, "handlers": []}
-            cds = conn.execute(
-                "SELECT person_name, billing_amount FROM charge_detail WHERE invoice_no=? ORDER BY id",
-                (red["invoice_no"],),
-            ).fetchall()
+            exists = conn.execute("SELECT 1 FROM invoice WHERE invoice_no=?", (no,)).fetchone()
+            if not exists:
+                if source == "应收账款":
+                    prefill = {
+                        "invoice_no": no,
+                        "invoice_date": row.get("invoice_date") or "",
+                        "buyer": row.get("buyer") or "",
+                        "total_amount": row.get("total_amount") or 0.0,
+                        "handlers": row.get("handlers") or [],
+                    }
+                else:
+                    prefill = prefill_red_original(conn, no)
         finally:
             conn.close()
-        handlers = [
-            {"name": cd["person_name"], "billing": abs(cd["billing_amount"]),
-             "received": 0.0, "date": ""}
-            for cd in cds
-        ]
-        return {
-            "invoice_no": orig_no,
-            # 原票尚未入库（正因缺失才补录），拿不到原票开票日期 → 留空让用户手填，
-            # 绝不能用红字发票的开票日期顶替。
-            "invoice_date": "",
-            "buyer": red["buyer"] or "",
-            "total_amount": abs(red["total_amount"]),
-            "handlers": handlers,
-        }
+        if prefill is None:
+            prefill = load_invoice_detail(no)
+        self._open_dialog(prefill, edit=False, locked_no=False)
+
+    # ------------------------------------------------------------------ #
+    # 打开补录弹窗（已补录编辑 → 预填已存数据；新增 → 空白）
+    # ------------------------------------------------------------------ #
+    def open_backfill(self, invoice_no: str | None = None, edit: bool = False) -> None:
+        prefill = load_invoice_detail(invoice_no) if invoice_no else None
+        self._open_dialog(prefill, edit=edit, locked_no=bool(invoice_no and edit))
 
     def _open_dialog(self, prefill: dict | None, edit: bool, locked_no: bool) -> None:
         prefill = prefill or {"invoice_no": "", "invoice_date": "", "buyer": "",
@@ -184,8 +211,12 @@ class ManualEntryView(QWidget):
         form = QFormLayout()
         no_edit = QLineEdit(prefill.get("invoice_no") or "")
         no_edit.setReadOnly(locked_no)
+        # 开票日期：自由文本 + 保存时归一（兼容 25.9.1 / 2025.9.01 / 2025-09-01 …）
         date_edit = QLineEdit(prefill.get("invoice_date") or "")
-        date_edit.setPlaceholderText("YYYY-MM-DD")
+        date_edit.setPlaceholderText("如 25.9.1 / 2025-09-01")
+        date_edit.setToolTip(
+            "可输入：25.9.1 / 2025.9.1 / 2025.9.01 / 2025.09.01 / 25.09.1 / "
+            "25.09.01 / 25.9.01 / 2025-09-01 / 2025年9月1日")
         buyer_edit = QLineEdit(prefill.get("buyer") or "")
         amt = QDoubleSpinBox()
         amt.setRange(-99999999, 99999999)
@@ -193,12 +224,12 @@ class ManualEntryView(QWidget):
         amt.setValue(float(prefill.get("total_amount") or 0))
         amt.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)  # 去上下箭头
         form.addRow("发票号码", no_edit)
-        form.addRow("开票日期(YYYY-MM-DD)", date_edit)
+        form.addRow("开票日期", date_edit)
         form.addRow("对方", buyer_edit)
         form.addRow("价税合计（开票总额）", amt)
         lay.addLayout(form)
 
-        sub = SubtitleLabel("经办人明细（可增删：经办人 / 开票金额 / 已收金额 / 收款日期）")
+        sub = DialogTitleLabel("经办人明细（可增删：经办人 / 开票金额 / 已收金额 / 收款日期）")
         lay.addWidget(sub)
         hint = CaptionLabel("台账已有的经办人与开票金额会自动预填；已收金额与收款日期按实际情况填写，留空表示尚未收款。")
         hint.setWordWrap(True)
@@ -250,10 +281,28 @@ class ManualEntryView(QWidget):
         if not no:
             QMessageBox.warning(dlg, "提示", "发票号码不能为空")
             return
-        if not date_edit.text().strip():
-            QMessageBox.warning(dlg, "提示", "开票日期(YYYY-MM-DD)为必填项")
+        # 开票日期：必填 + 兼容多种写法，统一归一成 YYYY-MM-DD 再入库
+        raw_date = date_edit.text().strip()
+        if not raw_date:
+            QMessageBox.warning(dlg, "提示", "开票日期为必填项")
+            return
+        try:
+            invoice_date = normalize_flex(raw_date, "day")
+        except Exception:  # noqa: BLE001 - 解析失败只是提示，不落库
+            QMessageBox.warning(
+                dlg, "提示",
+                f"开票日期无法识别：{raw_date}\n"
+                "可输入 25.9.1 / 2025.9.1 / 2025.09.01 / 2025-09-01 / 2025年9月1日 等写法。")
             return
         handlers = self._read_detail(detail)
+        # 收款日期填了但解析不出来 → 拦下（否则会被静默丢成"未收款"）
+        for h in handlers:
+            if h.get("date_raw") and not h.get("date"):
+                QMessageBox.warning(
+                    dlg, "提示",
+                    f"「{h['name']}」的收款日期无法识别：{h['date_raw']}\n"
+                    "可输入 25.9 / 2025.9 / 2025-09 / 25.9.1 / 2025-09-01 等写法，留空表示尚未收款。")
+                return
         total = amt.value()
         sum_rec = sum(h["received"] for h in handlers)
         if total > 0 and sum_rec > total + 0.01:
@@ -262,7 +311,7 @@ class ManualEntryView(QWidget):
             return
         data = {
             "invoice_no": no,
-            "invoice_date": date_edit.text().strip(),
+            "invoice_date": invoice_date,
             "buyer": buyer_edit.text().strip(),
             "total_amount": total,
             "handlers": handlers,
@@ -290,15 +339,12 @@ class ManualEntryView(QWidget):
         re_.setDecimals(2)
         re_.setValue(received)
         re_.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)  # 去上下箭头
-        # 日期：有值才放 QDateEdit；无值（或已收为 0）放空白 QLabel，
+        # 日期：有值才放日期框；无值（或已收为 0）放空白 QLabel，
         # 绝不显示哨兵日期（旧版曾把 2000-01 当真实日期写入库）。
         has_date = bool(date) and received > 0.001
         if has_date:
-            de = QDateEdit()
-            de.setCalendarPopup(True)
-            de.setDisplayFormat("yyyy-MM")
-            d = QDate.fromString(date, "yyyy-MM")
-            de.setDate(d if d.isValid() else QDate.currentDate())
+            de = DateInput("month")
+            de.set_text(date)
             de.setFixedHeight(scale.px(34))
             date_cell = de
         else:
@@ -318,12 +364,10 @@ class ManualEntryView(QWidget):
         if received <= 0.001:
             return
         cell = table.cellWidget(row, 3)
-        if isinstance(cell, QDateEdit):
+        if isinstance(cell, DateInput):
             return
-        de = QDateEdit()
-        de.setCalendarPopup(True)
-        de.setDisplayFormat("yyyy-MM")
-        de.setDate(QDate.currentDate())
+        de = DateInput("month")
+        de.set_text(QDate.currentDate().toString("yyyy-MM"))
         de.setFixedHeight(scale.px(34))
         table.setCellWidget(row, 3, de)
 
@@ -348,8 +392,9 @@ class ManualEntryView(QWidget):
                 "name": name,
                 "billing": be.value() if be else 0.0,
                 "received": re_.value() if re_ else 0.0,
-                # 仅 QDateEdit 且日期合法才视为有收款日期，空白占位 → 回空
-                "date": de.date().toString("yyyy-MM") if isinstance(de, QDateEdit) and de.date().isValid() else "",
+                # 仅日期框且能解析出月份才视为有收款日期，空白占位 → 回空
+                "date": de.text() if isinstance(de, DateInput) else "",
+                "date_raw": de.raw() if isinstance(de, DateInput) else "",
             })
         return handlers
 

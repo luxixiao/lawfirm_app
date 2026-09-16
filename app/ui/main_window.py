@@ -225,12 +225,14 @@ class MainWindow(FramelessWindow):
         self._ensure_page("import")
         self._ensure_page("review")
 
-        # 导入复核流程接线：导入页解析台账 → 复核页导入前模式就地确认；
-        # 确认/取消后回导入页，导入结果回传写导入日志（弹窗由复核页负责）
+        # 导入复核流程接线：导入页解析台账 → 复核页待确认队列（B 方案：按账期顺序
+        # 逐个确认）；确认/取消后回导入页，导入结果回传写导入日志（弹窗由复核页负责）
         self.page_import.ledger_pending.connect(self.page_review.open_pending)
-        # 解析完成后自动跳到「导入复核」页（用户需求：导入台账后自动进入复核）
-        self.page_import.ledger_pending.connect(lambda *a: self.select("review"))
+        # 台账全部解析完成后才切到「导入复核」页（批量时只切一次，不再逐文件切走）
+        self.page_import.ledger_queue_ready.connect(lambda: self.select("review"))
         self.page_review.navigate_back.connect(lambda: self.select("import"))
+        # 确认入库后仍有待补录发票 → 复核页发 navigate_to("manual") 直达补录原票页
+        self.page_review.navigate_to.connect(self.select)
         self.page_review.import_finished.connect(self.page_import.log_result)
 
     def _ensure_page(self, key: str):
@@ -244,6 +246,9 @@ class MainWindow(FramelessWindow):
         attr, cls = spec
         page = cls()
         page.setObjectName(key)
+        # 确保页面一创建就挂到主窗口下，避免在加入 stack 前短暂成为独立顶层窗口
+        # （某些 QWidget 在构造时若 parent 为空会被系统识别为弹窗）
+        page.setParent(self)
         if getattr(self, "stack", None) is not None:
             self.stack.addWidget(page)
         setattr(self, attr, page)
@@ -401,6 +406,11 @@ class MainWindow(FramelessWindow):
         if page is None:
             return
         self.stack.setCurrentWidget(page)
+        try:
+            from app.diag import get_logger
+            get_logger().info("NAV select(key=%s)", key)
+        except Exception:  # noqa: BLE001
+            pass
         grp = self._key_to_group.get(key)
         if grp is not None:
             self.sidebar.activate(key, grp)

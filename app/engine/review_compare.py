@@ -8,6 +8,13 @@ invoice / charge_detail / collection（received_snapshot 优先，缺快照批�
 与导入"后者覆盖前者"一致），一次比对全部维度：金额 / 经办人分摊 / 已收认定。
 状态列取值：一致 / 不符 / 仅源有 / 仅库有 / 已确认异常（spec §4）。
 
+期外票（sheet3 期外、本批次未建票）不另立状态，而是行上带 `needs_backfill`
+标记：语义是「待补录待办」而非数据异常，由复核页决定呈现与计数。
+
+库侧读取口径：invoice / charge_detail / collection 均取 `source IN ('import',
+'manual')` —— 补录（manual）是期外票唯一的销账动作，若不纳入，补录完成后该行
+会永远停在「库中缺失」，与「补录原票」页互相矛盾（那边票号对齐即移出）。
+
 纯逻辑模块，不依赖 Qt；测试用内存库注入 get_conn。
 """
 from __future__ import annotations
@@ -17,6 +24,7 @@ import sqlite3
 from typing import Dict, List, Optional, Tuple
 
 from app.db import get_conn
+from app.engine import raw_ledger as rl
 from app.importer.importer import compute_expected_receipts
 from app.importer.parse_handler import parse_handler_column
 from app.importer.parse_remark import parse_remark
@@ -88,7 +96,14 @@ def _derive_raw(r: sqlite3.Row, period: str) -> Dict:
 
 
 def _raw_side(batch_id: int, period: str) -> List[Dict]:
-    """镜表行 → 结构化源侧（保持镜表行序；同号取末行）。"""
+    """镜表行 → 结构化源侧（保持镜表行序；同号取末行）。
+
+    sheet3 期外票（开票月份 < 账期月份）本批次只写镜表、不建票（方案 A），
+    但它们仍必须出现在复核表里 —— 它们是「待补录」**待办**，不是数据异常。
+    故照常返回，只在行上打 `needs_backfill` 标记（票号 ∈ 库中缺号的期外票集，
+    见 raw_ledger.deferred_sheet3_nos），由 build_review_rows 转成 needs_backfill
+    行，供复核页以中性色单列、不计入「差异」统计（见 ReviewPostView._render）。
+    """
     conn = get_conn()
     try:
         rows = conn.execute(
@@ -97,6 +112,7 @@ def _raw_side(batch_id: int, period: str) -> List[Dict]:
             "WHERE import_batch_id=? AND kind='invoice' ORDER BY id",
             (batch_id,),
         ).fetchall()
+        deferred = rl.deferred_sheet3_nos(period, batch_id, conn=conn)
     finally:
         conn.close()
     out: Dict[str, Dict] = {}
@@ -105,7 +121,9 @@ def _raw_side(batch_id: int, period: str) -> List[Dict]:
         no = r["invoice_no"] or ""
         if no not in out:
             order.append(no)
-        out[no] = _derive_raw(r, period)  # 同号后者覆盖（与导入语义一致）
+        src = _derive_raw(r, period)
+        src["needs_backfill"] = no in deferred
+        out[no] = src  # 同号后者覆盖（与导入语义一致）
     return [out[no] for no in order]
 
 
@@ -133,16 +151,19 @@ def build_review_rows(period: str) -> Tuple[Optional[Dict], List[Dict]]:
             params += inv_nos
         for r in conn.execute(
             f"SELECT invoice_no, buyer, total_amount FROM invoice "
-            f"WHERE source='import' AND ({cond})",
+            f"WHERE source IN ('import','manual') AND ({cond})",
             params,
         ):
             db_inv[r["invoice_no"]] = {
                 "buyer": r["buyer"] or "",
                 "total_amount": r["total_amount"] or 0.0,
             }
+        # 经办人分摊：import 与 manual 都读。charge_detail 上有
+        # UNIQUE(invoice_no, person_name) 约束 → 同一票同一人不可能有两套行，
+        # 不存在「谁覆盖谁」的歧义（同名票号已被待补录机制排除）。
         for r in conn.execute(
             f"SELECT invoice_no, person_name, billing_amount FROM charge_detail "
-            f"WHERE source='import' AND ({cond})",
+            f"WHERE source IN ('import','manual') AND ({cond})",
             params,
         ):
             db_cd.setdefault(r["invoice_no"], {})[r["person_name"]] = r["billing_amount"]
@@ -162,7 +183,7 @@ def build_review_rows(period: str) -> Tuple[Optional[Dict], List[Dict]]:
         live_act: Dict[str, List[Tuple[str, float, str]]] = {}
         for r in conn.execute(
             "SELECT invoice_no, receipt_date, amount, person_name FROM collection "
-            "WHERE source='import' AND substr(receipt_date,1,7) <= ?",
+            "WHERE source IN ('import','manual') AND substr(receipt_date,1,7) <= ?",
             (period,),
         ):
             live_act.setdefault(r["invoice_no"], []).append(
@@ -177,6 +198,9 @@ def build_review_rows(period: str) -> Tuple[Optional[Dict], List[Dict]]:
         s = src_map.get(no)
         d_inv = db_inv.get(no)
         d_handlers = db_cd.get(no, {})
+        # 待补录待办：镜表有、库中无、且属「库中缺号的 sheet3 期外票」。
+        # 与普通「仅源有」区分开，复核页不计入差异统计。
+        needs = bool(s and s.get("needs_backfill")) and d_inv is None
 
         # ---- 源侧已收（声称）----
         exp_total, exp_items = 0.0, []
@@ -209,6 +233,8 @@ def build_review_rows(period: str) -> Tuple[Optional[Dict], List[Dict]]:
         elif d_inv is None:
             status = "仅源有"
             flags = ["库中缺失"]
+            if needs:
+                flags = ["应收账款期外票，库中暂无此票，需到「补录原票」补录"]
         else:
             if abs((s["total_amount"] or 0.0) - (d_inv["total_amount"] or 0.0)) > _AMT_EPS:
                 flags.append("金额不一致")
@@ -242,7 +268,8 @@ def build_review_rows(period: str) -> Tuple[Optional[Dict], List[Dict]]:
             status = "不符" if flags else "一致"
 
         note = notes.get(no, "")
-        if status in ("不符", "仅源有", "仅库有") and note:
+        # 待补录待办不套用「已确认异常」：它是未完成的动作，标记确认会把待办埋掉
+        if status in ("不符", "仅源有", "仅库有") and note and not needs:
             status = "已确认异常"
 
         rows.append({
@@ -257,6 +284,7 @@ def build_review_rows(period: str) -> Tuple[Optional[Dict], List[Dict]]:
             "recv_src": recv_src,
             "recv_db": recv_db,
             "status": status,
+            "needs_backfill": needs,
             "flags": flags,
             "detail": "；".join(flags),
             "confirmed_note": note,

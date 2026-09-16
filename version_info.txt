@@ -21,7 +21,7 @@ VSVersionInfo(
                     [
                         StringStruct(u'CompanyName', u'浙江震天律师事务所'),
                         StringStruct(u'FileDescription', u'律所开票收款统计'),
-                        StringStruct(u'FileVersion', u'1.3.0-feat'),
+                        StringStruct(u'FileVersion', u'1.3.1-feat'),
                         StringStruct(u'InternalName', u'lawfirm_app'),
                         StringStruct(u'LegalCopyright', u'Copyright © 2026'),
                         StringStruct(u'OriginalFilename', u'lawfirm_app.exe'),

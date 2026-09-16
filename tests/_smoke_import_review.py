@@ -6,9 +6,12 @@
 - confirmed → commit_ledger_import 一次 + navigate_back + 回导入后（下拉重新启用）
 - cancelled → 不写库 + navigate_back
 - 写库失败路径 → 不崩溃 + import_finished(ok=False)
-- ReviewPostView：筛选胶囊/统计文案/空账期安全
+- 确认入库后「存在需补录的发票」提示：点「去补录」→ navigate_to('manual')、
+  点「稍后」/无待补录 → 照旧 navigate_back
+- ReviewPostView：筛选胶囊（全部/差异/需补录/一致/已确认异常）/统计文案/空账期安全
 
-commit_ledger_import / validate_ledger_before_write / get_conn 均打桩，QMessageBox 换空桩。
+commit_ledger_import / validate_ledger_before_write / get_conn /
+list_pending_backfill 均打桩，QMessageBox 换空桩。
 """
 import os
 import sys
@@ -30,13 +33,111 @@ from app.importer import importer as _imp  # noqa: E402
 
 
 # ---- 打桩 ----
+class _MBtn:
+    """QMessageBox 里的一个按钮（真实 Qt 同款最小 API）。"""
+
+    def __init__(self, text, role=None):
+        self._text = text
+        self.role = role
+
+    def text(self):
+        return self._text
+
+    def setText(self, t):
+        self._text = t
+
+    def __repr__(self):
+        return f"_MBtn({self._text!r}, role={self.role})"
+
+
 class _MB:
+    """QMessageBox 桩。
+
+    静态方法（warning/information/critical）只记录调用；实例 API 供
+    「存在需补录的发票」这类自定义按钮对话框使用：
+    - setDetailedText 会像真实 Qt 一样挂一个 ActionRole 的「显示详情...」按钮
+      （app 会把它改名成「查看清单」，测试据此断言中文化）；
+    - click_ok=True 时 clickedButton() 返回 AcceptRole 那个按钮（「去补录」），
+      否则返回 None（等价「稍后」）。
+    """
+    calls = []
+    click_ok = False
+
+    class Icon:
+        Question = 4
+        Information = 1
+        Warning = 2
+
+    class ButtonRole:
+        AcceptRole = 0
+        RejectRole = 1
+        DestructiveRole = 2
+        ActionRole = 3
+
+    def __init__(self, *a, **k):
+        self._btns = []
+        self._title = ""
+        _MB.last = self
+
+    def setWindowTitle(self, t):
+        self._title = t
+
+    def setIcon(self, *a):
+        pass
+
+    def setText(self, t):
+        self._text = t
+
+    def setInformativeText(self, t):
+        self._info = t
+
+    def setDetailedText(self, t):
+        self._detail = t
+        self._btns.append(_MBtn("Show Details...", _MB.ButtonRole.ActionRole))
+
+    def addButton(self, label, role=None):
+        b = _MBtn(label, role)
+        self._btns.append(b)
+        return b
+
+    def buttons(self):
+        return list(self._btns)
+
+    def buttonRole(self, b):
+        return getattr(b, "role", None)
+
+    def setDefaultButton(self, *a):
+        pass
+
+    def exec(self):
+        _MB.calls.append(("dialog", self._title, getattr(self, "_text", ""),
+                          getattr(self, "_info", "")))
+        return 0
+
+    def clickedButton(self):
+        if not _MB.click_ok:
+            return None
+        for b in self._btns:
+            if b.role == _MB.ButtonRole.AcceptRole:
+                return b
+        return None
+
     @staticmethod
     def warning(*a, **k):
+        _MB.calls.append(("warning", a[1] if len(a) > 1 else "",
+                          a[2] if len(a) > 2 else ""))
         return None
 
     @staticmethod
     def information(*a, **k):
+        _MB.calls.append(("information", a[1] if len(a) > 1 else "",
+                          a[2] if len(a) > 2 else ""))
+        return None
+
+    @staticmethod
+    def critical(*a, **k):
+        _MB.calls.append(("critical", a[1] if len(a) > 1 else "",
+                          a[2] if len(a) > 2 else ""))
         return None
 
 
@@ -86,6 +187,10 @@ RV.commit_ledger_import = _fake_commit
 RV.validate_ledger_before_write = _fake_validate
 RV.get_conn = lambda: _FakeConn()
 RC.get_conn = lambda: _FakeConn()
+# 待补录名单打桩（否则 _prompt_backfill 会打到真实库）
+import app.engine.backfill_module as BM  # noqa: E402
+_pending_list = []
+BM.list_pending_backfill = lambda conn=None: list(_pending_list)
 
 results = []
 
@@ -110,7 +215,9 @@ check("导入前页 = UnifiedImportDialog", isinstance(v.page_pre, UnifiedImport
 check("默认导入后模式", v.stack.currentWidget() is v.page_post)
 check("徽章显示已导入", "已导入" in v.lbl_mode.text(), v.lbl_mode.text())
 check("导入后账期下拉启用", v.combo_period.isEnabled())
-check("ReviewPostView 有 4 个筛选胶囊", len(v.page_post.chips) == 4,
+check("ReviewPostView 有 5 个筛选胶囊", len(v.page_post.chips) == 5,
+      str(list(v.page_post.chips)))
+check("筛选胶囊含「需补录」", "需补录" in v.page_post.chips,
       str(list(v.page_post.chips)))
 check("ReviewPostView 默认「全部」", v.page_post._grp.checkedId() == 0)
 check("空账期安全（无批次统计）",
@@ -128,7 +235,9 @@ check("导入前账期下拉锁定", not v.combo_period.isEnabled())
 check("下拉显示锁定账期", v.combo_period.currentData() == "2025-01",
       str(v.combo_period.currentData()))
 check("面板已载入数据", v.page_pre._data.get("period") == "2025-01")
-check("pending 已记录", v._pending == ("2025-01", "2025.1台账.xlsx"), str(v._pending))
+check("待确认队列已入队 1 项并激活",
+      len(v._queue) == 1 and v._queue_active and v._idx == 0
+      and v._queue[0]["period"] == "2025-01", str(v._queue))
 check("尚未写库", len(_commit_calls) == 0)
 
 # ---------------------------------------------------------------- 3) 确认入库
@@ -145,7 +254,55 @@ check("发 import_finished 且 ok=True",
       fin and fin[0][:3] == ("2025.1台账.xlsx", "ledger", "2025-01") and fin[0][4] is True,
       str(fin[:1]))
 check("导入后下拉重新启用", v.combo_period.isEnabled())
-check("pending 已清空", v._pending is None)
+check("队列已清空", v._queue == [] and not v._queue_active, str(v._queue))
+
+# ---------------------------------------- 3b) 确认入库后「存在需补录的发票」提示
+togo = []
+v.navigate_to.connect(lambda k: togo.append(k))
+_pending_list.clear()
+_pending_list.extend([
+    {"invoice_no": "MISS1", "source": "红字引用", "invoice_date": ""},
+    {"invoice_no": "D100", "source": "应收账款", "invoice_date": "2024-05-06"},
+])
+
+# 3b-1) 点「稍后」→ 照旧 navigate_back
+_commit_calls.clear(); backs.clear(); _MB.calls.clear(); togo.clear()
+_MB.click_ok = False
+v.open_pending(dict(_data), "2025-04", [], "2025.4台账.xlsx")
+v.page_pre.accept()
+_dlg = [c for c in _MB.calls if c[0] == "dialog" and c[1] == "存在需补录的发票"]
+check("有待补录 → 弹提示一次", len(_dlg) == 1, str(_MB.calls))
+check("提示含张数", _dlg and "2 张" in _dlg[0][2], _dlg[0][2] if _dlg else "")
+check("提示分两类来源",
+      _dlg and "红字" in _dlg[0][3] and "应收账款" in _dlg[0][3],
+      _dlg[0][3] if _dlg else "")
+# 弹窗按钮全中文：Qt 自动挂的「显示详情...」被改名为「查看清单」，
+# 不允许出现英文按钮（历史缺陷：中间那个按钮是英文 "Show Details..."）
+_btn_texts = [b.text() for b in _MB.last.buttons()]
+check("弹窗按钮全中文（无英文详情按钮）",
+      _btn_texts == ["查看清单", "去补录", "稍后"], str(_btn_texts))
+check("点「稍后」→ 发 navigate_back、不发 navigate_to",
+      len(backs) == 1 and togo == [], f"backs={len(backs)} togo={togo}")
+
+# 3b-2) 点「去补录」→ navigate_to('manual')，不再 navigate_back
+_commit_calls.clear(); backs.clear(); _MB.calls.clear(); togo.clear()
+_MB.click_ok = True
+v.open_pending(dict(_data), "2025-05", [], "2025.5台账.xlsx")
+v.page_pre.accept()
+check("点「去补录」→ 发 navigate_to('manual')", togo == ["manual"], str(togo))
+check("点「去补录」→ 不再发 navigate_back", len(backs) == 0, f"got={len(backs)}")
+
+# 3b-3) 无待补录 → 不提示
+_commit_calls.clear(); backs.clear(); _MB.calls.clear(); togo.clear()
+_MB.click_ok = False
+_pending_list.clear()
+v.open_pending(dict(_data), "2025-06", [], "2025.6台账.xlsx")
+v.page_pre.accept()
+check("无待补录 → 不弹提示",
+      not [c for c in _MB.calls if c[0] == "dialog" and c[1] == "存在需补录的发票"],
+      str(_MB.calls))
+check("无待补录 → 照旧 navigate_back",
+      len(backs) == 1 and togo == [], f"backs={len(backs)} togo={togo}")
 
 # ---------------------------------------------------------------- 4) 取消
 _commit_calls.clear(); backs.clear(); fin.clear()
@@ -154,7 +311,7 @@ v.page_pre.reject()
 check("取消后不写库", len(_commit_calls) == 0, f"got={len(_commit_calls)}")
 check("取消后回导入后模式", v.stack.currentWidget() is v.page_post)
 check("取消后发 navigate_back", len(backs) == 1)
-check("取消后 pending 清空", v._pending is None)
+check("取消后队列清空", v._queue == [] and not v._queue_active, str(v._queue))
 
 # ---------------------------------------------------------------- 5) 写库失败路径
 _commit_calls.clear(); backs.clear(); fin.clear()
@@ -178,7 +335,7 @@ pv = v.page_post
 for name, chip in pv.chips.items():
     chip.setChecked(True)
     chip.clicked.emit()
-check("四个筛选切换不崩溃", True)
+check("五个筛选切换不崩溃", True)
 pv.chips["全部"].setChecked(True)
 pv.chips["全部"].clicked.emit()
 check("切回全部", pv.chips["全部"].isChecked() and pv._grp.checkedId() == 0)
@@ -238,9 +395,15 @@ pv._batch = None
 
 # ---------------------------------------------------------------- 8) 导入前留痕装配（阶段 4）
 check("collect_import_fixes 空态返回 []", v.page_pre.collect_import_fixes() == [])
-v.page_pre._data = {"invoices": [
+# 真实时序：accept() 已把 _data 原地替换为合并结果（新值）；旧值必须取自 _orig_data
+# （load_data 时的原始快照），否则 old == new → 逐字段差异被判「无变化」→ 留痕丢失
+# （页面表现：旧值没有、新值只剩摘要）。
+v.page_pre._orig_data = {"invoices": [
     {"invoice_no": "X1", "total_amount": 100.0, "handler_text": "张三100",
      "invoice_date": "2025-01-05", "buyer": "甲公司", "case_no": ""}]}
+v.page_pre._data = {"invoices": [
+    {"invoice_no": "X1", "total_amount": 200.0, "handler_text": "张三100",
+     "invoice_date": "2025-01-06", "buyer": "甲公司", "case_no": ""}]}
 v.page_pre._inv_edits = {0: {"invoice_no": "X1", "total_amount": 200.0,
                              "handler_text": "张三100", "buyer": "甲公司",
                              "case_no": "", "invoice_date": "2025-01-06"}}
@@ -248,6 +411,23 @@ items = v.page_pre.collect_import_fixes()
 check("collect_import_fixes 产生 edit 条目",
       len(items) == 1 and items[0]["kind"] == "edit" and items[0]["invoice_no"] == "X1"
       and items[0]["old"]["total_amount"] == 100.0 and items[0]["new"]["total_amount"] == 200.0,
+      str(items))
+
+# fix 行：旧值取问题行的原始台账原文（经办人列留空 → 旧值里不出现「经办人」）
+v.page_pre._orig_data = {"invoices": [], "problems": [
+    {"invoice_no": "X2", "date_text": "25.1.7", "total_amount": "300",
+     "handler_text": "", "buyer": "乙公司", "remark_raw": ""}]}
+v.page_pre._data = {"invoices": [], "problems": []}
+v.page_pre._inv_edits = {}
+v.page_pre._fix = {0: {"invoice_no": "X2", "invoice_date": "2025-01-07",
+                       "total_amount": 300.0, "handler_text": "李四300",
+                       "buyer": "乙公司", "split_receipts": []}}
+items = v.page_pre.collect_import_fixes()
+check("collect_import_fixes fix 行带原始台账原文",
+      len(items) == 1 and items[0]["kind"] == "fix"
+      and items[0]["old"]["invoice_date"] == "25.1.7"
+      and items[0]["old"]["total_amount"] == "300"
+      and items[0]["old"]["handler_text"] == "",
       str(items))
 
 # ---------------------------------------------------------------- 9) audit_view 补「字段」列（阶段 4）

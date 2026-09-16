@@ -6,6 +6,8 @@
 
 比对引擎：app/engine/review_compare.py（raw_ledger 镜表为基准）。
 已确认异常：anomaly_note 新写 dim='merged'，读取回退聚合旧维度（spec §6.1）。
+「需补录」：sheet3 期外票库中暂无该票的行（行标记 needs_backfill），以中性色单列、
+不计入差异统计，处理入口统一在「补录原票」页（方案 C：单一补录入口）。
 """
 from __future__ import annotations
 
@@ -32,8 +34,12 @@ GREEN = QColor("#1E8449")
 CONFIRMED_BG = QColor("#EAF2FB")
 CONFIRMED_FG = QColor("#1F6FB2")
 DIFF_BG = QColor("#FDF1F0")
+# 待补录（sheet3 期外票，库中暂无）：待办而非异常 → 中性灰蓝，与红色差异、
+# 蓝色「已确认异常」都分开。
+NEED_BG = QColor("#EDF1F5")
+NEED_FG = QColor("#4E6172")
 
-FILTERS = ["全部", "差异", "一致", "已确认异常"]
+FILTERS = ["全部", "差异", "需补录", "一致", "已确认异常"]
 HEADERS = ["发票号", "来源", "购方", "金额", "经办人分摊", "已收认定", "状态", "说明"]
 
 _DIFF_STATUS = ("不符", "仅源有", "仅库有")
@@ -81,6 +87,12 @@ class ReviewPostView(QWidget):
         bar.addWidget(self.btn_confirm)
         lay.addLayout(bar)
 
+        # 顶部提示：sheet3 期外票库中暂无该票 → 属「需补录」待办（在表内单列）
+        self.lbl_deferred = CaptionLabel("")
+        self.lbl_deferred.setWordWrap(True)
+        self.lbl_deferred.setVisible(False)
+        lay.addWidget(self.lbl_deferred)
+
         self.lbl_stat = CaptionLabel("")
         lay.addWidget(self.lbl_stat)
 
@@ -101,7 +113,8 @@ class ReviewPostView(QWidget):
         self.table._col = install_column_layout(self.table, "import_review", "main")
 
         lay.addWidget(CaptionLabel(
-            "双击任意行可查看该记录在原台账中的信息；「源 ⇄ 库」红字表示两侧不一致。"))
+            "双击任意行可查看该记录在原台账中的信息；「源 ⇄ 库」红字表示两侧不一致。"
+            "「需补录」为待办行（应收账款期外票库中暂无该票），需到「补录原票」页处理。"))
 
         self._rows: List[Dict] = []
         self._period = ""
@@ -130,26 +143,32 @@ class ReviewPostView(QWidget):
         mode = self._grp.checkedId()
         show = {
             0: lambda r: True,
-            1: lambda r: r["status"] in _DIFF_STATUS,
-            2: lambda r: r["status"] == "一致",
-            3: lambda r: bool(r["confirmed_note"]),
+            1: lambda r: r["status"] in _DIFF_STATUS and not r.get("needs_backfill"),
+            2: lambda r: bool(r.get("needs_backfill")),
+            3: lambda r: r["status"] == "一致",
+            4: lambda r: bool(r["confirmed_note"]) and not r.get("needs_backfill"),
         }.get(mode, lambda r: True)
 
         rows = [r for r in self._rows if show(r)]
         self.table.setRowCount(0)
         self.table.setRowCount(len(rows))
         for ri, row in enumerate(rows):
-            confirmed = bool(row["confirmed_note"])
+            needs = bool(row.get("needs_backfill"))
+            confirmed = bool(row["confirmed_note"]) and not needs
+            # 待补录行：库侧整票都不存在，「源 ⇄ —」逐格告警毫无信息量 →
+            # 只显源侧单值，由「状态/说明」两列表达状态。
             duals: List[Tuple[str, bool, str, str]] = [
                 self._dual(row["invoice_no"], row["invoice_no"]),
                 self._dual(row["source"], row["source"]),
-                self._dual(row["buyer_src"], row["buyer_db"], str),
-                self._dual(row["amount_src"], row["amount_db"], _money),
-                self._dual(row["handlers_src"], row["handlers_db"], str),
-                self._dual(row["recv_src"], row["recv_db"], str),
+                self._dual(row["buyer_src"], row["buyer_db"], str, single=needs),
+                self._dual(row["amount_src"], row["amount_db"], _money, single=needs),
+                self._dual(row["handlers_src"], row["handlers_db"], str, single=needs),
+                self._dual(row["recv_src"], row["recv_db"], str, single=needs),
             ]
-            diff_like = row["status"] in _DIFF_STATUS
-            if confirmed:
+            diff_like = row["status"] in _DIFF_STATUS and not needs
+            if needs:
+                status_text = "需补录"
+            elif confirmed:
                 note = row["confirmed_note"] or ""
                 status_text = "✓ 已确认异常：" + (note if len(note) <= 40 else note[:39] + "…")
             else:
@@ -172,13 +191,17 @@ class ReviewPostView(QWidget):
                     item.setForeground(RED)
                     item.setToolTip(f"源：{s_plain}\n库：{d_plain}")
                 if c == 6:
-                    if row["status"] == "一致":
+                    if needs:
+                        item.setForeground(NEED_FG)
+                    elif row["status"] == "一致":
                         item.setForeground(GREEN)
                     elif confirmed:
                         item.setForeground(CONFIRMED_FG)
                     else:
                         item.setForeground(RED)
-                if confirmed:
+                if needs:
+                    item.setBackground(NEED_BG)
+                elif confirmed:
                     item.setBackground(CONFIRMED_BG)
                 elif diff_like:
                     item.setBackground(DIFF_BG)
@@ -191,18 +214,33 @@ class ReviewPostView(QWidget):
         else:
             self.table._col.apply(remeasure=False)
 
-        diff_n = sum(1 for r in self._rows if r["status"] in _DIFF_STATUS)
-        confirmed_n = sum(1 for r in self._rows if r["confirmed_note"])
+        needs_n = sum(1 for r in self._rows if r.get("needs_backfill"))
+        diff_n = sum(1 for r in self._rows
+                     if r["status"] in _DIFF_STATUS and not r.get("needs_backfill"))
+        confirmed_n = sum(1 for r in self._rows
+                          if r["confirmed_note"] and not r.get("needs_backfill"))
         self.lbl_stat.setText(
             f"共 {len(self._rows)} 张发票，差异 {diff_n} 张，已确认异常 {confirmed_n} 张"
+            + (f"，需补录 {needs_n} 张" if needs_n else "")
             + ("" if self._batch else "　（该账期没有已导入的发票台账批次）"))
+        if needs_n:
+            self.lbl_deferred.setText(
+                f"注：{needs_n} 张「应收账款」期外票（开票月份早于账期）库中暂无该票，"
+                "已按「需补录」单列（不计入差异）——导入时不自动建票，"
+                "请到「补录原票」页补录；补录完成后本页即转为普通比对行。")
+            self.lbl_deferred.setVisible(True)
+        else:
+            self.lbl_deferred.setVisible(False)
 
     @staticmethod
-    def _dual(src, db, fmt=str) -> Tuple[str, bool, str, str]:
-        """同格双值：一致 → 单值；不符 → 「源 ⇄ 库」。返回 (文本, 是否不符, 源, 库)。"""
+    def _dual(src, db, fmt=str, single: bool = False) -> Tuple[str, bool, str, str]:
+        """同格双值：一致 → 单值；不符 → 「源 ⇄ 库」。返回 (文本, 是否不符, 源, 库)。
+
+        single=True 强制只显源侧（待补录行用：库侧整票缺失，逐格告警无意义）。
+        """
         s = fmt(src)
         d = fmt(db)
-        if s == d:
+        if single or s == d:
             return s, False, s, d
         return f"{s} ⇄ {d}", True, s, d
 
@@ -248,6 +286,13 @@ class ReviewPostView(QWidget):
         row = self._current_row()
         if row is None:
             QMessageBox.information(self, "提示", "请先在表格中选中要标记的行。")
+            return
+        if row.get("needs_backfill"):
+            QMessageBox.information(
+                self, "该行为待补录",
+                f"发票 {row['invoice_no']} 属「应收账款」期外票、库中暂无该票，"
+                "是待办而非数据异常，无需标记确认。\n\n请到「补录原票」页补录；"
+                "补录入库后本行会自动转为普通比对行。")
             return
         dlg = AnomalyConfirmDialog(self, row["invoice_no"], self._period,
                                    row["detail"], row["confirmed_note"])

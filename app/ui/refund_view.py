@@ -10,10 +10,11 @@ from app.ui.column_layout import install_column_layout
 from PySide6.QtCore import QDate, Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
-    QDateEdit, QDialog, QDialogButtonBox, QDoubleSpinBox, QFormLayout, QHBoxLayout,
+    QDialog, QDialogButtonBox, QDoubleSpinBox, QFormLayout, QHBoxLayout,
     QLabel, QMenu, QMessageBox, QPushButton, QTabWidget, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
+from app.ui.date_input import DateInput
 from app.ui.widgets import (CaptionLabel, PrimaryPushButton, PushButton, tab_help_corner)
 from app.db import get_conn
 from app.engine.refund import evaluate_red_invoices, confirmed_refunds
@@ -277,10 +278,8 @@ class RefundView(QWidget):
         amt.setValue(abs(item["red_amount"]))
         form.addRow("本次退款金额", amt)
 
-        date = QDateEdit()
-        date.setCalendarPopup(True)
-        date.setDisplayFormat("yyyy-MM")
-        date.setDate(date.date().currentDate())
+        date = DateInput("month")
+        date.set_text(QDate.currentDate().toString("yyyy-MM"))
         form.addRow("退款日期(月)", date)
 
         btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
@@ -291,7 +290,10 @@ class RefundView(QWidget):
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
         amount = amt.value()
-        ym = date.date().toString("yyyy-MM")
+        if not date.text():
+            QMessageBox.warning(self, "提示", date.error() or "退款日期不能为空")
+            return
+        ym = date.text()
 
         conn = get_conn()
         try:
@@ -358,14 +360,9 @@ class RefundView(QWidget):
         amt.setValue(float(item["refund_amount"] or 0))
         form.addRow("退款金额", amt)
 
-        date = QDateEdit()
-        date.setCalendarPopup(True)
-        date.setDisplayFormat("yyyy-MM")
+        date = DateInput("month")
         rd = (item["refund_date"] or "")[:7]
-        if rd:
-            date.setDate(QDate.fromString(rd, "yyyy-MM"))
-        else:
-            date.setDate(date.date().currentDate())
+        date.set_text(rd or QDate.currentDate().toString("yyyy-MM"))
         form.addRow("退款日期(月)", date)
 
         btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
@@ -376,7 +373,10 @@ class RefundView(QWidget):
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
         amount = round(amt.value(), 2)
-        ym = date.date().toString("yyyy-MM")
+        if not date.text():
+            QMessageBox.warning(self, "提示", date.error() or "退款日期不能为空")
+            return
+        ym = date.text()
 
         conn = get_conn()
         try:

@@ -76,8 +76,11 @@ def main() -> int:
     check("空 items 安全", r == {"logged": 0, "skipped": 0})
 
     # ---------------- fix：修正问题行 ----------------
+    # old = 该问题行在台账里的原始文本（解析失败当时的原文，经办人列留空）
     fix_item = {
-        "kind": "fix", "invoice_no": "A1", "old": {},
+        "kind": "fix", "invoice_no": "A1",
+        "old": {"invoice_date": "25.1.10", "total_amount": "200",
+                "handler_text": "", "buyer": "甲公司", "remark_raw": ""},
         "new": {"invoice_date": "2025-01-10", "total_amount": 200.0,
                 "handler_text": "张三200", "buyer": "甲公司",
                 "split_receipts": [("张三", 200.0, "2025-02")]},
@@ -103,7 +106,11 @@ def main() -> int:
              "FROM change_log WHERE record_id='1' ORDER BY id")
     check("fix 记 1 条 (导入修正)", len(rows) == 1 and rows[0]["field"] == "(导入修正)",
           str([dict(x) for x in rows]))
-    check("fix old 为空", rows[0]["old_value"] == "")
+    check("fix old = 原始台账原文摘要",
+          "开票日期 25.1.10" in rows[0]["old_value"]
+          and "金额 200" in rows[0]["old_value"]
+          and "经办人" not in rows[0]["old_value"],
+          rows[0]["old_value"])
     check("fix new 含金额与经办人",
           "金额 200" in rows[0]["new_value"] and "张三200" in rows[0]["new_value"],
           rows[0]["new_value"])

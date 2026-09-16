@@ -4,12 +4,17 @@
 - sheet 名跨月不统一，按关键词识别：已开票已入账 / 已开票未入账 / 应收账款 / 已入账未开票
 - sheet1/2/3 列：序号|开票日期|发票号码|对方|金额|经办人|备注|案号
 - sheet4 列：序号|收到日期|发票号码(空)|对方|金额|经办人|备注|案号
-- sheet3 含期外发票（开票日期早于导入月份，需创建新发票）
+- sheet3（应收账款）含期外发票（开票日期早于导入月份）：**不再自动建票**，
+  由 split_deferred 移入 data["deferred"]，只写镜表并入「补录原票」逐张确认
+  （方案 A 纯派生，见 app/engine/raw_ledger.deferred_sheet3_invoices）。
+- sheet3（应收账款）金额不允许为负：业务上应收账龄表只登记正数未收余额，
+  出现负数即为台账填错 → 硬报错（问题行），修正后才可确认入库。
 """
 from __future__ import annotations
 
 from typing import Dict, List
 
+from app.engine.backfill import is_period_before
 from app.importer.date_utils import normalize_date
 from app.importer.excel_reader import ImportError_, cell_text, col_index, find_header_row, read_sheet, sheet_names
 from app.importer.parse_handler import parse_handler_column
@@ -19,6 +24,39 @@ from app.importer.parse_remark import parse_remark
 def norm_full_date(text: str, default_year: int | None = None) -> str:
     """台账日期 → YYYY-MM-DD（委托通用 normalize_date，支持更多写法）。"""
     return normalize_date(text, default_year=default_year)
+
+
+def is_deferred_invoice(inv: Dict, period: str) -> bool:
+    """该发票是否应转入「补录原票」（sheet3 期外，口径 a：开票月份 < 账期月份）。
+
+    只有 sheet3（应收账款）适用：sheet1/2 属本月销项、sheet4 是预收款。
+    日期缺失/无法解析时**不转**（判定期外的前提是拿到开票月份），保持原行为。
+    """
+    if (inv.get("sheet") or "") != "sheet3":
+        return False
+    return is_period_before((inv.get("invoice_date") or "")[:7], period)
+
+
+def split_deferred(data: Dict, period: str) -> int:
+    """把 data["invoices"] 里应转补录的行移入 data["deferred"]，返回移出条数。
+
+    幂等：可重复调用（解析后、问题行修正合并后再各调一次），已在 deferred 的
+    条目不会被重复追加或丢失。sheet_totals 保持「含期外」的源口径不变。
+    """
+    kept: List[Dict] = []
+    moved: List[Dict] = []
+    for inv in data.get("invoices") or []:
+        (moved if is_deferred_invoice(inv, period) else kept).append(inv)
+    if not moved:
+        return 0
+    data["invoices"] = kept
+    deferred = data.setdefault("deferred", [])
+    seen = {d.get("invoice_no") for d in deferred}
+    for inv in moved:
+        if inv.get("invoice_no") not in seen:
+            deferred.append(inv)
+            seen.add(inv.get("invoice_no"))
+    return len(moved)
 
 
 def _pick_sheet(rows: List[List[str]], keyword: str) -> List[List[str]] | None:
@@ -84,6 +122,13 @@ def _parse_invoice_sheet(rows: List[List[str]], sheet_key: str, sheet_name: str,
             total = float(amt_txt.replace(",", "")) if amt_txt else 0.0
         except ValueError:
             problems.append(problem(f"金额无法解析「{amt_txt}」"))
+            continue
+
+        # sheet3（应收账款）业务上不可能出现负数：红冲/退款走 sheet1/2 与退款台账，
+        # 应收账龄表只登记正数未收余额。负数说明台账填错 → 硬报错（问题行），
+        # 在复核页修正金额为正数后才可确认入库；未修正则在确认时被跳过（不入库）。
+        if sheet_key == "sheet3" and total < 0:
+            problems.append(problem(f"应收账款金额不能为负数（{total:g}），请修正台账后重新导入"))
             continue
 
         handler_text = g(row, idx_handler)
@@ -195,21 +240,25 @@ def _parse_sheet4(rows: List[List[str]], sheet_name: str, period: str) -> "tuple
 def parse_ledger_file(path: str, period: str) -> Dict:
     """解析发票台账，返回结构化数据（未落库）
 
-    返回: {invoices, prepayments, sheet_totals, problems, sheet12_total}
+    返回: {invoices, deferred, prepayments, sheet_totals, problems, sheet12_total}
     problems 为无法解析的问题行（解析失败不中断，收集到此列表由上层处理）。
+    deferred 为 sheet3 期外票（开票月份 < 账期月份），不落 invoice，转入「补录原票」。
     """
     names = sheet_names(path)
     mapping = classify_sheets(names)
     if not mapping:
         raise ImportError_("未识别到发票台账 sheet（需含'已开票已入账/已开票未入账/应收账款/已入账未开票'）")
 
-    result: Dict = {"invoices": [], "prepayments": [], "sheet_totals": {}, "problems": []}
+    result: Dict = {"invoices": [], "deferred": [], "prepayments": [],
+                    "sheet_totals": {}, "problems": []}
     for key, name in mapping.items():
         rows = read_sheet(path, sheet_name=name)
         if key in ("sheet1", "sheet2", "sheet3"):
             items, problems = _parse_invoice_sheet(rows, key, name, period)
             result["invoices"].extend(items)
             result["problems"].extend(problems)
+            # sheet_totals 保持「源口径」：含期外行（即使它们随后被移入 deferred），
+            # 便于与 Excel 原表逐 sheet 勾稽。
             result["sheet_totals"][key] = sum(i["total_amount"] for i in items)
         elif key == "sheet4":
             items, problems = _parse_sheet4(rows, name, period)
@@ -217,4 +266,7 @@ def parse_ledger_file(path: str, period: str) -> Dict:
             result["problems"].extend(problems)
 
     result["sheet12_total"] = result["sheet_totals"].get("sheet1", 0.0) + result["sheet_totals"].get("sheet2", 0.0)
+    # sheet3 期外票转入「补录原票」：不落 invoice，由补录流程逐张确认。
+    # 放在最后统一切分，保证 validator / commit 看到的是切分后的集合。
+    split_deferred(result, period)
     return result
