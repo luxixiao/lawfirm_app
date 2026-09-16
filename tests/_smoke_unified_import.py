@@ -22,6 +22,14 @@ app = QApplication.instance() or QApplication(sys.argv)
 import app.ui.unified_import_dialog as U  # noqa: E402
 from app.ui.unified_import_dialog import UnifiedImportDialog  # noqa: E402
 
+# 阶段 1（C3）：`_apply_resolved` → `split_deferred` 需要「库中已有票号集合」。
+# 本冒烟不碰真实 DB（data/lawfirm.db）→ 把取号打桩成空库，判定只由测试数据决定。
+import app.engine.backfill as _bf  # noqa: E402
+import app.importer.importer as _imp0  # noqa: E402
+
+_bf.library_invoice_nos = lambda conn=None: set()
+_imp0.library_invoice_nos = lambda conn=None: set()
+
 
 class _MB:
     """offscreen 下 QMessageBox.exec() 会阻塞，用桩替换：只记录、不弹窗。"""
@@ -169,8 +177,13 @@ check("保存/跳过按钮对问题行可见", dlg.btn_save.isVisible() and dlg.
 n_inv_before = len(data["invoices"])
 fill_invoice_fix(dlg)
 dlg._save_fix()
-check("保存后工作副本发票数 +1", len(dlg._work["invoices"]) == n_inv_before + 1,
-      f"got={len(dlg._work['invoices'])}")
+check("保存后工作副本：sheet3 行移出 invoices、修正行入库（净 ±0）",
+      {i["invoice_no"] for i in dlg._work["invoices"]} == {"INV-1", "BAD-1"},
+      f"got={[i['invoice_no'] for i in dlg._work['invoices']]}")
+check("保存后工作副本：sheet3 行落入 deferred 且打 need_backfill 标记",
+      {d["invoice_no"]: d.get("need_backfill") for d in dlg._work.get("deferred", [])}
+      == {"INV-2": True},
+      f"got={dlg._work.get('deferred')}")
 check("保存后真实 data 未被修改", len(data["invoices"]) == n_inv_before,
       f"got={len(data['invoices'])}")
 check("修正行(原问题行)不再是待确认",
@@ -224,8 +237,12 @@ check("校验不过：发票数未增加", len(data["invoices"]) == n_inv_before
 dlg._validate = lambda d: None
 dlg.accept()
 check("校验通过：problems 清空", data.get("problems") == [], f"got={data.get('problems')}")
-check("校验通过：发票数 +1（修正行入库）", len(data["invoices"]) == n_inv_before + 1,
-      f"got={len(data['invoices'])}")
+check("校验通过：合并后 invoices = sheet1 原票 + 修正行（sheet3 行已移出）",
+      {i["invoice_no"] for i in data["invoices"]} == {"INV-1", "BAD-1"},
+      f"got={[i['invoice_no'] for i in data['invoices']]}")
+check("校验通过：sheet3 行合并进 deferred（未丢失）",
+      {d["invoice_no"] for d in data.get("deferred", [])} == {"INV-2"},
+      f"got={[d['invoice_no'] for d in data.get('deferred', [])]}")
 check("校验通过：右侧编辑的收款写入 split_receipts",
       data["invoices"][0].get("split_receipts") == [("周立生", 800.0, "2025-01")],
       f"got={data['invoices'][0].get('split_receipts')}")
@@ -261,7 +278,13 @@ dlg2._save_fix()
 check("预收款修正后 prepayments +1", len(dlg2._work.get("prepayments", [])) == 1,
       f"got={len(dlg2._work.get('prepayments', []))}")
 dlg2.accept()
-check("跳过的行不入库", len(data2["invoices"]) == 2, f"got={len(data2['invoices'])}")
+# 跳过的发票问题行不入库；sheet3 行（INV-2）按 C3 移入 deferred → invoices 只剩 INV-1
+check("跳过的行不入库（问题行未追加）",
+      [i["invoice_no"] for i in data2["invoices"]] == ["INV-1"],
+      f"got={[i['invoice_no'] for i in data2['invoices']]}")
+check("sheet3 行落入 deferred（未丢失）",
+      [d["invoice_no"] for d in data2.get("deferred", [])] == ["INV-2"],
+      f"got={[d['invoice_no'] for d in data2.get('deferred', [])]}")
 check("预收款修正行入库", len(data2["prepayments"]) == 1, f"got={len(data2['prepayments'])}")
 check("预收款金额正确", abs(data2["prepayments"][0]["amount"] - 2000.0) < 0.01)
 

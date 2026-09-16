@@ -13,18 +13,49 @@ HANDLER_WHITELIST = {"公共", "行政"}
 
 
 def is_period_before(ym: str, period: str) -> bool:
-    """开票月份(YYYY-MM) 是否早于导入账期月份 —— 期外口径 a（已确认）。
+    """开票月份(YYYY-MM) 是否早于导入账期月份 —— 期外口径 a（**已停用，2026-09-16**）。
+
+    ⚠️ 本函数**不再是**「需补录原票」的判定依据。现口径**只看票号**（sheet3 且票号不在库，
+    见 `library_invoice_nos` 与 `app.importer.ledger_import.is_deferred_invoice`）：
+    同一张历史应收会持续出现在各期 sheet3，按日期判「期外」会反复处理同一张票，
+    且开票日期解析失败的行会被静默漏出待补录清单。
+
+    本函数保留两处**历史/校验**用途（本期不删，避免连带）：
+    1. A4 数据质量校验：sheet3 行开票月份 ≥ 账期 → 报错中止导入
+       （见 `app.importer.ledger_import._parse_invoice_sheet`）；
+    2. 测试与历史数据核对。
 
     "早于"按 YYYY-MM 字符串字典序比较（同年同月格式下等价于时间序）。
-    仅用于 sheet3（应收账款）：期外票不再自动建 invoice，而是转入「补录原票」，
-    由用户逐张确认后写入（见 app.engine.raw_ledger.deferred_sheet3_invoices）。
-
-    本函数为唯一口径来源：导入期切分（app.importer.ledger_import.split_deferred）
-    与补录列表派生（app.engine.raw_ledger）共用，避免两处判定漂移。
     """
     ym = (ym or "").strip()
     period = (period or "").strip()
     return bool(ym) and bool(period) and ym < period
+
+
+def library_invoice_nos(conn=None) -> set:
+    """库中已有发票号码集合 —— 「票号是否在库」的**唯一口径来源**。
+
+    用途（两处必须同源，故收在此处，避免判定漂移）：
+    - sheet3（应收账款）行判定「**需补录原票**」（票号不在库）
+      还是「**已入库，请确认收款**」（票号在库，D1 甲），见
+      `app.importer.ledger_import.is_deferred_invoice` / `split_deferred`；
+    - 待补录派生（源 B）`app.engine.raw_ledger.deferred_sheet3_invoices`
+      以「invoice 表无该号」为准，与此同源。
+
+    数据量级数千行，全表取号成本可忽略；若将来变慢，再按年份/账期限定。
+    conn：传入则复用外部连接（单事务/测试注入用），不传自开自关。
+    """
+    own = conn is None
+    if own:
+        conn = get_conn()
+    try:
+        return {
+            (r[0] or "").strip()
+            for r in conn.execute("SELECT invoice_no FROM invoice WHERE invoice_no IS NOT NULL")
+        } - {""}
+    finally:
+        if own:
+            conn.close()
 
 
 def norm_type(staff_type) -> str:

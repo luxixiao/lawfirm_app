@@ -17,12 +17,15 @@ from typing import Dict, List, Tuple
 
 from app.db import get_conn
 from app.engine.backfill import (
-    HANDLER_WHITELIST, all_staff_names, missing_handlers, norm_type, staff_type_of,
+    HANDLER_WHITELIST, all_staff_names, library_invoice_nos, missing_handlers, norm_type,
+    staff_type_of,
 )
 from app.engine.raw_ledger import SHEET_LABELS
 from app.importer.expense_import import parse_expense_file
 from app.importer.invoice_import import parse_invoice_file, parse_invoice_workbook
-from app.importer.ledger_import import is_deferred_invoice, parse_ledger_file, split_deferred
+from app.importer.ledger_import import (
+    is_deferred_invoice, is_sheet3_row, parse_ledger_file, split_deferred,
+)
 from app.importer.salary_import import parse_salary_file
 from app.importer.excel_reader import ImportError_
 
@@ -476,11 +479,14 @@ def _validate_handler_names(conn, names: List[str], context: str) -> List[str]:
     return missing_handlers(conn, names)
 
 
-def _apply_resolved(data: Dict, resolved: List[Dict], period: str) -> None:
+def _apply_resolved(data: Dict, resolved: List[Dict], period: str,
+                    in_library: set | None = None) -> None:
     """把问题行修正结果合并回解析数据：fix 行转正常结构追加，skip 行忽略
 
-    修正行若落在 sheet3 且开票月份早于账期，则同样转入 deferred（补录原票），
+    修正行若落在 sheet3（应收账款），则同样转入 deferred（补录原票 / 已入库确认收款），
     与解析期口径一致——避免「修正后反而被自动建票」的不一致。
+    in_library：库中已有票号集合（决定 deferred 行的 need_backfill 标记）；
+    不传则现查 invoice 表。
     """
     for item in resolved:
         if item["action"] != "fix":
@@ -539,16 +545,18 @@ def _apply_resolved(data: Dict, resolved: List[Dict], period: str) -> None:
             + data["sheet_totals"].get("sheet2", 0.0)
         )
 
-    # 修正出来的 sheet3 期外行同样转补录（与解析期口径一致）
-    split_deferred(data, period)
+    # 修正出来的 sheet3 行同样转 deferred（与解析期口径一致；票号判定，见 split_deferred）
+    split_deferred(data, period, in_library)
 
 
-def validate_ledger_before_write(data: Dict, period: str) -> str | None:
+def validate_ledger_before_write(data: Dict, period: str,
+                                 in_library: set | None = None) -> str | None:
     """发票台账写库前校验：返回 None 通过，返回文案为失败原因（不抛异常）。
 
     与写库前的两道校验完全一致（合计勾稽 + 经办人花名册），抽成函数是为了让
     统一确认对话框能在「确认入库」时就地校验——校验不过留在对话框里继续改，
     而不是改完一堆才报错、修改全丢。
+    in_library：库中已有票号集合（转给 `is_deferred_invoice`）；不传则现查 invoice 表。
     """
     conn = get_conn()
     try:
@@ -568,11 +576,13 @@ def validate_ledger_before_write(data: Dict, period: str) -> str | None:
                 )
 
         # ---- 校验 2：经办人必须在花名册 ----
-        # sheet3 期外票本次不落库（转入补录原票），其经办人不在本次校验范围内；
-        # 补录保存时由 save_backfill 用同一份 missing_handlers 再校验一次。
+        # sheet3（应收账款）行本次一律不落库（见 split_deferred，D1 甲），其经办人不在
+        # 本次校验范围内：需补录的票由 save_backfill 用同一份 missing_handlers 再校验一次；
+        # 已在库的票压根不建票、不分摊。
+        # `is_sheet3_row` 短路后 `is_deferred_invoice` 不会触发查库（sheet3 已跳过）。
         all_handlers: List[str] = []
         for inv in data.get("invoices", []):
-            if is_deferred_invoice(inv, period):
+            if is_sheet3_row(inv) or is_deferred_invoice(inv, period, in_library):
                 continue
             all_handlers += [h[0] for h in (inv.get("handlers") or [])]
         missing = _validate_handler_names(conn, all_handlers, "发票台账")
@@ -599,10 +609,14 @@ def import_ledger_file(path: str, period: str,
     2) on_problems + on_preview（旧，逐步）：先修问题行，再校验，最后预览确认。
        on_problems: (problems) -> resolved: list | None；
        on_preview: (data) -> data | None。
+
+    「库中已有票号集合」在入口读一次并贯穿全程（解析切分 / 校验 / 提交），
+    保证同一次导入内 need_backfill 判定不漂移（写入发生在本函数末尾之后）。
     """
-    data = parse_ledger_file(path, period)
+    lib = library_invoice_nos()
+    data = parse_ledger_file(path, period, lib)
     if on_confirm is not None:
-        confirmed = on_confirm(data, lambda d: validate_ledger_before_write(d, period))
+        confirmed = on_confirm(data, lambda d: validate_ledger_before_write(d, period, lib))
         if confirmed is None:
             raise ImportError_("已取消导入")
         if isinstance(confirmed, dict):
@@ -611,7 +625,7 @@ def import_ledger_file(path: str, period: str,
         resolved = on_problems(data["problems"])
         if resolved is None:
             raise ImportError_("已取消导入")
-        _apply_resolved(data, resolved, period)
+        _apply_resolved(data, resolved, period, lib)
         data["problems"] = []
     if on_preview is not None and on_confirm is None:
         confirmed = on_preview(data)
@@ -619,28 +633,35 @@ def import_ledger_file(path: str, period: str,
             raise ImportError_("已取消导入")
         if isinstance(confirmed, dict):
             data = confirmed
-    # 兜底：任何路径（含统一确认对话框内就地修正）最终都再切一次期外票（幂等）。
-    split_deferred(data, period)
-    return commit_ledger_import(data, period, path)
+    # 兜底：任何路径（含统一确认对话框内就地修正）最终都再切一次 sheet3（幂等）。
+    split_deferred(data, period, lib)
+    return commit_ledger_import(data, period, path, in_library=lib)
 
 
-def commit_ledger_import(data: Dict, period: str, path: str) -> Dict:
+def commit_ledger_import(data: Dict, period: str, path: str,
+                         in_library: set | None = None) -> Dict:
     """把已确认（含修正结果与已收覆盖值）的发票台账数据写入数据库。
 
     覆盖式导入：清同账期 active 批次 → raw_ledger 镜像双写 → invoice / charge_detail /
     prepayment upsert → import_batch。写前再做一次 validate_ledger_before_write 兜底。
 
-    sheet3 期外票（开票月份 < 账期月份）：**只写 raw_ledger 镜像**，不建 invoice
-    / charge_detail / collection —— 它们是历史应收，原票并未随文档入库，须由
-    「补录原票」逐张确认后写入（见 app/engine/raw_ledger.deferred_sheet3_invoices）。
+    sheet3（应收账款）**全部行**：**只写 raw_ledger 镜像**，不建 invoice
+    / charge_detail / collection —— 其中「需补录原票」的行是历史应收，原票并未随文档
+    入库，须由「补录原票」逐张确认后写入；「已在库」的行只把台账收款带出供复核页确认
+    （D1 甲：绝不能走普通票路径，否则 _write_collection_for_invoice 的 DELETE 会抹掉
+    该票历史收款）。见 app/engine/raw_ledger.deferred_sheet3_invoices。
     入口处先切分一次（幂等），保证复核页直连 commit 的路径也走同一口径。
+
+    in_library：库中已有票号集合；不传则现查 invoice 表。
     """
-    split_deferred(data, period)
+    if in_library is None:
+        in_library = library_invoice_nos()
+    split_deferred(data, period, in_library)
     _auto_snapshot()
     conn = get_conn()
     try:
         # ---- 校验兜底（确认对话框已就地校验过，这里再拦一次）----
-        err = validate_ledger_before_write(data, period)
+        err = validate_ledger_before_write(data, period, in_library)
         if err:
             raise ImportError_(err)
 
@@ -656,14 +677,22 @@ def commit_ledger_import(data: Dict, period: str, path: str) -> Dict:
         archive = _archive_file(path, "ledger", period)
         batch_id = _new_batch(conn, "ledger", period, Path(path).name, archive, "")
 
-        # ---- sheet3 期外票：只写镜表，不落 invoice/charge_detail/collection ----
+        # ---- sheet3（应收账款）：只写镜表，不落 invoice/charge_detail/collection ----
         # 镜表仍 1:1 保留原始行（含账期），既供「发票台账」页查看，也是
-        # 「待补录（源 B）」的派生依据。
+        # 「待补录（源 B）」的派生依据。行上的 need_backfill 区分「需补录原票」/
+        # 「已入库，请确认收款」——后者只把台账收款带出，等复核页确认后才动 collection。
         for inv in data.get("deferred", []) or []:
             _insert_raw_ledger(conn, inv, batch_id, "invoice")
 
         for inv in data["invoices"]:
             no = inv["invoice_no"]
+            # D1 甲兜底：sheet3 行绝不走普通票路径（否则下面
+            # _write_collection_for_invoice 的 DELETE 会抹掉该票历史收款）。
+            # 正常路径下 split_deferred 已保证 invoices 不含 sheet3 行，此处再拦一层；
+            # 该行仍写镜表，保证 raw_ledger 与台账文件 1:1。
+            if is_sheet3_row(inv):
+                _insert_raw_ledger(conn, inv, batch_id, "invoice")
+                continue
             # 累计台账重复行未写金额时，沿用库内已有具体分摊（防「平均分配」）
             _inherit_existing_handlers(conn, inv)
             # 原始镜表双写：发票台账逐行 1:1 镜像（synced=1 表示与导入一致）

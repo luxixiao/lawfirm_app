@@ -98,9 +98,9 @@ def _derive_raw(r: sqlite3.Row, period: str) -> Dict:
 def _raw_side(batch_id: int, period: str) -> List[Dict]:
     """镜表行 → 结构化源侧（保持镜表行序；同号取末行）。
 
-    sheet3 期外票（开票月份 < 账期月份）本批次只写镜表、不建票（方案 A），
+    sheet3（应收账款）本批次只写镜表、不建票（方案 A，判据=票号不在库），
     但它们仍必须出现在复核表里 —— 它们是「待补录」**待办**，不是数据异常。
-    故照常返回，只在行上打 `needs_backfill` 标记（票号 ∈ 库中缺号的期外票集，
+    故照常返回，只在行上打 `needs_backfill` 标记（票号 ∈ 库中缺号的 sheet3 票集，
     见 raw_ledger.deferred_sheet3_nos），由 build_review_rows 转成 needs_backfill
     行，供复核页以中性色单列、不计入「差异」统计（见 ReviewPostView._render）。
     """

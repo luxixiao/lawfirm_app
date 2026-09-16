@@ -101,9 +101,14 @@ def list_raw(sheet_key: str = "", keyword: str = "", status: str = "",
 def deferred_sheet3_invoices(period: Optional[str] = None,
                              batch_id: Optional[int] = None,
                              conn=None) -> List[Dict]:
-    """应收账款(sheet3) 中「期外且 invoice 表缺号」的行 → 待补录（源 B）。
+    """应收账款(sheet3) 中「**invoice 表缺号**」的行 → 待补录（源 B）。
 
-    期外口径 a（见 app.engine.backfill.is_period_before）：开票月份 < 所属批次账期月份。
+    判据**只看票号**（2026-09-16 新口径，见 app.engine.backfill.library_invoice_nos）：
+    票号不在 invoice 表 → 需补录原票。**不再按开票月份判「期外」** —— 同一张历史应收会
+    持续出现在各期 sheet3，按日期判会反复处理同一张票；且开票日期解析失败的行会被
+    静默漏出清单（`_norm_date_text` 失败回 ""，而 `is_period_before("", period)` 恒为 False）。
+    与导入期切分（app.importer.ledger_import.is_deferred_invoice）**同源**，避免判定漂移。
+
     这些行按方案 A 只写 raw_ledger 镜像、**不落 invoice** —— 它们是历史应收，
     原票并未随任何一期销项/台账文档入库，必须由「补录原票」逐张确认后写入。
 
@@ -113,8 +118,6 @@ def deferred_sheet3_invoices(period: Optional[str] = None,
     invoice_no / invoice_date / buyer / total_amount / handlers
     + receipt_items（备注推导的收款批次，供列表展示「收款金额」）。
     """
-    from app.engine.backfill import is_period_before
-
     own = conn is None
     if own:
         conn = get_conn()
@@ -143,10 +146,8 @@ def deferred_sheet3_invoices(period: Optional[str] = None,
                 continue
             year = _period_year(r["period"])
             date_str = _norm_date_text(r["invoice_date_raw"], year)
-            if not is_period_before(date_str[:7], r["period"]):
-                continue
             if conn.execute("SELECT 1 FROM invoice WHERE invoice_no=?", (no,)).fetchone():
-                continue  # 已入库（销项已建 / 已补录）→ 不再待补录
+                continue  # 已入库（销项已建 / 已补录）→ 不再待补录（唯一判据，不看日期）
             if no not in out:
                 order.append(no)
             out[no] = _derive_deferred(r, date_str, year)
@@ -158,7 +159,7 @@ def deferred_sheet3_invoices(period: Optional[str] = None,
 
 def deferred_sheet3_nos(period: str, batch_id: Optional[int] = None,
                         conn=None) -> set:
-    """本账期（可选限定批次）待补录的 sheet3 期外票号集合。
+    """本账期（可选限定批次）待补录的 sheet3 缺号票号集合（见 deferred_sheet3_invoices）。
 
     供复核页给镜表行打 `needs_backfill` 标记用（行仍保留在差异表里，只是以
     「需补录」待办呈现、不计入差异统计）。

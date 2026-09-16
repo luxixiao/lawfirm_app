@@ -4,11 +4,17 @@
 - sheet 名跨月不统一，按关键词识别：已开票已入账 / 已开票未入账 / 应收账款 / 已入账未开票
 - sheet1/2/3 列：序号|开票日期|发票号码|对方|金额|经办人|备注|案号
 - sheet4 列：序号|收到日期|发票号码(空)|对方|金额|经办人|备注|案号
-- sheet3（应收账款）含期外发票（开票日期早于导入月份）：**不再自动建票**，
-  由 split_deferred 移入 data["deferred"]，只写镜表并入「补录原票」逐张确认
-  （方案 A 纯派生，见 app/engine/raw_ledger.deferred_sheet3_invoices）。
+- sheet3（应收账款）：**全部行**移入 data["deferred"]（不再只移「期外」），只写镜表，
+  由「补录原票」逐张确认；每行带 need_backfill 标记（票号不在库=需补录 /
+  已在库=已入库请确认收款）。**绝不走普通导入了路径** —— 否则
+  `importer._write_collection_for_invoice` 的 DELETE 会抹掉该票历史收款（D1 甲）。
+  （方案 A 纯派生，见 app/engine/raw_ledger.deferred_sheet3_invoices）
 - sheet3（应收账款）金额不允许为负：业务上应收账龄表只登记正数未收余额，
   出现负数即为台账填错 → 硬报错（问题行），修正后才可确认入库。
+- sheet3（应收账款）开票月份须早于账期：出现 ≥ 账期（含当月）→ **硬报错中止导入**
+  （A4 数据质量校验；见 is_period_before 的说明）。
+- 开票日期解析失败 → 问题行（可在复核页修正后入库），**不再让整份台账导入失败**；
+  空值放行（该行改由票号判定）。
 """
 from __future__ import annotations
 
@@ -26,36 +32,77 @@ def norm_full_date(text: str, default_year: int | None = None) -> str:
     return normalize_date(text, default_year=default_year)
 
 
-def is_deferred_invoice(inv: Dict, period: str) -> bool:
-    """该发票是否应转入「补录原票」（sheet3 期外，口径 a：开票月份 < 账期月份）。
+def _library_nos(in_library: set | None) -> set:
+    """取「库中已有票号集合」；调用方已算好则复用（避免一次导入重复查库）。"""
+    if in_library is not None:
+        return in_library
+    from app.engine.backfill import library_invoice_nos
+    return library_invoice_nos()
 
-    只有 sheet3（应收账款）适用：sheet1/2 属本月销项、sheet4 是预收款。
-    日期缺失/无法解析时**不转**（判定期外的前提是拿到开票月份），保持原行为。
+
+def is_sheet3_row(inv: Dict) -> bool:
+    """该行是否属于 sheet3（应收账款）—— sheet3 行一律不进普通导入路径。"""
+    return (inv.get("sheet") or "") == "sheet3"
+
+
+def is_deferred_invoice(inv: Dict, period: str, in_library: set | None = None) -> bool:
+    """该行是否需要「补录原票」（= 移入 deferred 且需人工补录）。
+
+    判据（2026-09-16 新口径）：`sheet3` 且 **票号不在库**。
+    - sheet1/2 属本月销项、sheet4 是预收款 → 永不适用；
+    - 票号已在库（销项已建票 / 已补录 / 历史自动建票）→ 不是「需补录」，而是
+      「已入库，请确认收款」（D1 甲，由复核页确认后更新 collection）；
+    - **不再看开票日期**：同一张历史应收会持续出现在各期 sheet3，按日期判「期外」
+      会反复处理同一张票，且日期解析失败的行会被静默漏出清单。开票日期改由
+      A4 数据质量校验（_parse_invoice_sheet）与复核页人工修正负责。
+
+    period 保留仅为签名兼容（历史调用点传账期），判定不依赖它。
+    in_library：库中已有票号集合；None 时现查 invoice 表。
     """
-    if (inv.get("sheet") or "") != "sheet3":
+    if not is_sheet3_row(inv):
         return False
-    return is_period_before((inv.get("invoice_date") or "")[:7], period)
+    no = (inv.get("invoice_no") or "").strip()
+    if not no:
+        return False
+    return no not in _library_nos(in_library)
 
 
-def split_deferred(data: Dict, period: str) -> int:
-    """把 data["invoices"] 里应转补录的行移入 data["deferred"]，返回移出条数。
+def split_deferred(data: Dict, period: str, in_library: set | None = None) -> int:
+    """把 data["invoices"] 里 **全部 sheet3 行**移入 data["deferred"]，返回移出条数。
+
+    为什么不再只移「期外」（2026-09-16 D1 甲）：应收账款里的老票（如 2024-11 开票、
+    未收完款）会持续出现在各月 sheet3。若按票号判定后让它走普通票路径，
+    `importer._write_collection_for_invoice` 会先
+    `DELETE FROM collection WHERE invoice_no=? AND source='import'`
+    → **抹掉该票历史收款**。故 sheet3 行一律移出：只写镜表，逐张确认后写入。
+
+    每行打标记 `need_backfill`：
+    - True  → 票号不在库 → 「需补录原票」
+    - False → 票号已在库 → 「已入库，请确认收款」（不建票 / 不写分摊 / 不碰 collection）
 
     幂等：可重复调用（解析后、问题行修正合并后再各调一次），已在 deferred 的
-    条目不会被重复追加或丢失。sheet_totals 保持「含期外」的源口径不变。
+    条目不会被重复追加或丢失。sheet_totals 保持「含 sheet3」的源口径不变。
+    返回条数按「本次从 invoices 移出」计。
     """
     kept: List[Dict] = []
     moved: List[Dict] = []
     for inv in data.get("invoices") or []:
-        (moved if is_deferred_invoice(inv, period) else kept).append(inv)
-    if not moved:
-        return 0
-    data["invoices"] = kept
-    deferred = data.setdefault("deferred", [])
-    seen = {d.get("invoice_no") for d in deferred}
-    for inv in moved:
-        if inv.get("invoice_no") not in seen:
-            deferred.append(inv)
-            seen.add(inv.get("invoice_no"))
+        (moved if is_sheet3_row(inv) else kept).append(inv)
+    if moved:
+        data["invoices"] = kept
+        deferred = data.setdefault("deferred", [])
+        seen = {d.get("invoice_no") for d in deferred}
+        for inv in moved:
+            if inv.get("invoice_no") not in seen:
+                deferred.append(inv)
+                seen.add(inv.get("invoice_no"))
+    # 标记 deferred 桶里每一行（桶本身即 sheet3：只在移入时写入）。
+    # 已有 deferred 时才算票号集合 —— 没有 sheet3 行就不必查库。
+    deferred = data.get("deferred") or []
+    if deferred:
+        lib = _library_nos(in_library)
+        for d in deferred:
+            d["need_backfill"] = (d.get("invoice_no") or "").strip() not in lib
     return len(moved)
 
 
@@ -137,9 +184,31 @@ def _parse_invoice_sheet(rows: List[List[str]], sheet_key: str, sheet_name: str,
             remark_raw = g(row, idx_remark)
             remark = parse_remark(remark_raw, default_year=year)
             rcv_date = norm_full_date(g(row, idx_rcvdate), year) if idx_rcvdate >= 0 and g(row, idx_rcvdate) else None
+            # C4：开票日期解析挪进 try —— 解析失败转「问题行」（复核页可修正后入库），
+            # 不再让整份台账导入失败；**空值放行**（该行改由票号判定是否需补录）。
+            date_text = g(row, idx_date)
+            try:
+                invoice_date = norm_full_date(date_text, year) if (idx_date >= 0 and date_text) else ""
+            except ImportError_:
+                raise ImportError_(
+                    f"开票日期「{date_text}」无法识别（支持 2025.9.1 / 25.09.01 等写法）"
+                ) from None
         except ImportError_ as e:
             problems.append(problem(str(e)))
             continue
+
+        # ---- A4 数据质量校验：sheet3 开票月份必须早于账期 ----
+        # 应收账款只登记**本账期之前**开票的发票。出现 ≥ 账期（含当月）的日期，必是台账
+        # 填错（如把本月票误填进应收账款表）—— 此时按票号判定会把它当「需补录」而
+        # 漏建本月票，故**中止导入**要求核对台账文件（D2：同账期 sheet3 与 sheet1/2 不会同号）。
+        if sheet_key == "sheet3" and invoice_date:
+            ym = invoice_date[:7]
+            if not is_period_before(ym, period):
+                raise ImportError_(
+                    f"【{sheet_name}】第 {row_idx} 行发票 {no} 的开票日期 {invoice_date}"
+                    f"（{ym}）不早于本账期 {period}。应收账款表只应登记本账期之前的发票，"
+                    f"请核对台账文件后重新导入。"
+                )
 
         # ---- 已收/未收按 sheet 归属修正（sheet 是权威，备注为辅）----
         # sheet2（已开票未入账）：纯日期备注不是收款证据（单日期是挂账/应收信息，如 25.3.4），
@@ -161,7 +230,7 @@ def _parse_invoice_sheet(rows: List[List[str]], sheet_key: str, sheet_name: str,
             "header": header,
             "raw_row": list(row),
             "invoice_no": no,
-            "invoice_date": norm_full_date(g(row, idx_date), year) if idx_date >= 0 else None,
+            "invoice_date": invoice_date,
             "buyer": g(row, idx_buyer),
             "total_amount": total,
             "handlers": handlers,
@@ -237,12 +306,14 @@ def _parse_sheet4(rows: List[List[str]], sheet_name: str, period: str) -> "tuple
     return items, problems
 
 
-def parse_ledger_file(path: str, period: str) -> Dict:
+def parse_ledger_file(path: str, period: str, in_library: set | None = None) -> Dict:
     """解析发票台账，返回结构化数据（未落库）
 
     返回: {invoices, deferred, prepayments, sheet_totals, problems, sheet12_total}
     problems 为无法解析的问题行（解析失败不中断，收集到此列表由上层处理）。
-    deferred 为 sheet3 期外票（开票月份 < 账期月份），不落 invoice，转入「补录原票」。
+    deferred 为 sheet3（应收账款）**全部行**，不落 invoice，转入「补录原票」/「已入库确认收款」。
+    in_library：库中已有票号集合（决定 deferred 行的 need_backfill 标记）；
+    不传则现查 invoice 表。
     """
     names = sheet_names(path)
     mapping = classify_sheets(names)
@@ -257,7 +328,7 @@ def parse_ledger_file(path: str, period: str) -> Dict:
             items, problems = _parse_invoice_sheet(rows, key, name, period)
             result["invoices"].extend(items)
             result["problems"].extend(problems)
-            # sheet_totals 保持「源口径」：含期外行（即使它们随后被移入 deferred），
+            # sheet_totals 保持「源口径」：含 sheet3 行（即使它们随后被移入 deferred），
             # 便于与 Excel 原表逐 sheet 勾稽。
             result["sheet_totals"][key] = sum(i["total_amount"] for i in items)
         elif key == "sheet4":
@@ -266,7 +337,7 @@ def parse_ledger_file(path: str, period: str) -> Dict:
             result["problems"].extend(problems)
 
     result["sheet12_total"] = result["sheet_totals"].get("sheet1", 0.0) + result["sheet_totals"].get("sheet2", 0.0)
-    # sheet3 期外票转入「补录原票」：不落 invoice，由补录流程逐张确认。
+    # sheet3 行统一转入「补录原票」/「已入库确认收款」：见 split_deferred。
     # 放在最后统一切分，保证 validator / commit 看到的是切分后的集合。
-    split_deferred(result, period)
+    split_deferred(result, period, in_library)
     return result
