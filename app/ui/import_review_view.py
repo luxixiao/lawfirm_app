@@ -19,12 +19,19 @@ commit_ledger_import 一次性写库；点「取消」零副作用。
 
 待确认队列跑完后，若库中仍有待补录发票（源 A 红字/退款引用原票 + 源 B 库中
 缺失的 sheet3 期外票），弹一次提示并可一跳直达「补录原票」页（唯一补录入口）。
+
+队列守卫三件套（阶段 2-3，A6/A7/A8）——队列是**内存态**，故须在离开路径上提醒：
+- `pending_count()` / `pending_periods()`：对外只读查询，主窗口据此渲染侧栏角标
+  与导入页提示条（A7）。
+- `blocking_message()`：台账导入前置守卫文案（A8），**只拦「发票台账」类**导入。
+- `confirm_leave()`：离开本页时弹一次确认（A6，不锁侧栏）。
+- 程序关闭确认（A9）由 main_window.closeEvent 消费 `pending_count()`。
 """
 from __future__ import annotations
 
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
-    QHBoxLayout, QMessageBox, QStackedWidget, QVBoxLayout, QWidget,
+    QCheckBox, QHBoxLayout, QMessageBox, QStackedWidget, QVBoxLayout, QWidget,
 )
 
 from app.db import get_conn
@@ -59,6 +66,8 @@ class ImportReviewView(QWidget):
     navigate_to = Signal(str)
     # file_name, batch_type, period, msg, ok
     import_finished = Signal(str, str, str, str, bool)
+    # 待确认队列状态变化（追加 / 前进一步 / 清空）→ 主窗口刷新侧栏角标 + 导入页提示条
+    queue_changed = Signal()
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -114,6 +123,7 @@ class ImportReviewView(QWidget):
         self._results: list = []        # [(period, file_name, ok, msg)] 本次队列结果
         self._fix_skipped = 0           # 累计未能定位镜表行的人工修改条数
         self._fix_log_failed = False    # 修改留痕写入是否失败过
+        self._leave_no_prompt = False   # A6：用户勾过「本次不再提示」
         self._set_mode("post")
 
     # ------------------------------------------------------------------ #
@@ -175,6 +185,67 @@ class ImportReviewView(QWidget):
         self.lbl_mode.setToolTip(tip)
         self.combo_period.setToolTip(tip)
 
+    # ------------------------------------------------------------------ #
+    # A6 / A7 / A8：队列状态的对外查询（主窗口接线：角标 / 提示条 / 守卫 / 离开确认）
+    # ------------------------------------------------------------------ #
+    def pending_count(self) -> int:
+        """未确认入库的账期数（含当前正在确认的那一个）；0 = 无待确认。"""
+        if not self._queue_active:
+            return 0
+        return max(0, len(self._queue) - self._idx)
+
+    def pending_periods(self) -> list:
+        """未确认入库的账期列表（去重，保持队列的账期顺序）。"""
+        if not self._queue_active:
+            return []
+        seen, out = set(), []
+        for q in self._queue[self._idx:]:
+            p = q.get("period") or ""
+            if p and p not in seen:
+                seen.add(p)
+                out.append(p)
+        return out
+
+    def blocking_message(self) -> str | None:
+        """A8 台账导入守卫文案：返回文案 = 拦截本次导入，返回 None = 放行。
+
+        **只用于「发票台账」类导入**。销项导出 / 收款 / 费用台账 / 员工清单
+        不调用本方法——否则会堵死项目既有的「必须先导销项、再导台账」顺序依赖
+        （`validate_ledger_before_write` 校验1 要求销项先入库）。
+        """
+        periods = self.pending_periods()
+        if not periods:
+            return None
+        return ("存在未确认入库的账期（{}），请先完成「确认入库」，"
+                "或点「取消 → 放弃全部待确认」清空后再导入新的发票台账。"
+                .format("、".join(periods)))
+
+    def confirm_leave(self) -> bool:
+        """A6 离开复核页确认框。返回 True = 允许离开，False = 留在本页。
+
+        「不锁侧栏」：不置灰任何导航入口，只在离开时问一次；队列未跑完才弹。
+        勾「本次不再提示」后本队列内不再打扰（新队列开始时重新武装，见
+        `open_pending`）。
+        """
+        n = self.pending_count()
+        if n <= 0 or self._leave_no_prompt:
+            return True
+        box = QMessageBox(self)
+        box.setWindowTitle("离开导入复核")
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setText(f"还有 {n} 个账期待确认入库，离开后可随时回到本页继续。确定离开？")
+        box.setInformativeText("这些账期尚未写入数据库；离开不会丢数据，"
+                               "回到本页即可继续确认。")
+        chk = QCheckBox("本次不再提示")
+        box.setCheckBox(chk)
+        b_go = box.addButton("确定离开", QMessageBox.ButtonRole.AcceptRole)
+        box.addButton("留在本页", QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(b_go)
+        box.exec()
+        if chk.isChecked():
+            self._leave_no_prompt = True
+        return box.clickedButton() is b_go
+
     def open_pending(self, data: dict, period: str, staff_names, path: str) -> None:
         """把一份解析结果追加进待确认队列。
 
@@ -191,6 +262,7 @@ class ImportReviewView(QWidget):
             get_logger().info("REVIEW 队列追加 period=%s path=%s（共 %d 个）",
                               period, path, len(self._queue))
             self._refresh_queue_label()
+            self.queue_changed.emit()
             return
         get_logger().info("REVIEW 队列起始 period=%s path=%s", period, path)
         self._queue_active = True
@@ -198,12 +270,15 @@ class ImportReviewView(QWidget):
         self._results = []
         self._fix_skipped = 0
         self._fix_log_failed = False
+        self._leave_no_prompt = False   # A6：新队列重新武装「离开确认」
         self._load_current()
+        self.queue_changed.emit()
 
     def _advance(self) -> None:
         """当前账期处理完毕（已确认 / 已跳过 / 载入失败）→ 处理队列下一个。"""
         self._idx += 1
         self._load_current()
+        self.queue_changed.emit()
 
     def _load_current(self) -> None:
         """载入队列当前账期；下标越界即视为队列处理完毕。"""
@@ -260,6 +335,7 @@ class ImportReviewView(QWidget):
             self.navigate_to.emit("manual")
         else:
             self.navigate_back.emit()
+        self.queue_changed.emit()
 
     def _prompt_backfill(self) -> bool:
         """确认入库后提示「存在需补录的发票」。返回 True = 用户选择「去补录」。
@@ -366,6 +442,7 @@ class ImportReviewView(QWidget):
             self._queue, self._idx, self._queue_active = [], 0, False
             self._set_mode("post")
             self.navigate_back.emit()
+            self.queue_changed.emit()
             return
         period = self._queue[self._idx]["period"]
         rest = len(self._queue) - self._idx - 1  # 当前账期之后还剩几个

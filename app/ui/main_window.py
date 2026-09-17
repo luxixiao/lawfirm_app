@@ -16,8 +16,8 @@ from __future__ import annotations
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
-    QApplication, QCheckBox, QComboBox, QHBoxLayout, QLabel, QPushButton,
-    QStackedWidget, QVBoxLayout, QWidget, QButtonGroup,
+    QApplication, QCheckBox, QComboBox, QHBoxLayout, QLabel, QMessageBox,
+    QPushButton, QStackedWidget, QVBoxLayout, QWidget, QButtonGroup,
 )
 from qfluentwidgets import InfoBar, InfoBarPosition
 from qframelesswindow import FramelessWindow
@@ -235,6 +235,16 @@ class MainWindow(FramelessWindow):
         self.page_review.navigate_to.connect(self.select)
         self.page_review.import_finished.connect(self.page_import.log_result)
 
+        # ---- 队列守卫接线（阶段 2-3，A6/A7/A8/A9）----
+        # 队列是内存态：判定/守卫的真实来源是复核页，导入页只做消费方
+        # （A7 提示条读计数、A8 台账导入前读拦截文案）。
+        self.page_import.pending_count_fn = self.page_review.pending_count
+        self.page_import.ledger_guard = self.page_review.blocking_message
+        # 队列状态一变（追加 / 前进一步 / 清空）→ 刷新侧栏角标 + 导入页提示条
+        self.page_review.queue_changed.connect(self._refresh_pending_ui)
+        # 点导入页提示条「去处理」→ 直达复核页（A7）
+        self.page_import.navigate_review.connect(lambda: self.select("review"))
+
     def _ensure_page(self, key: str):
         """惰性构造页面（首次访问才 new + 加入 stack），返回实例或 None。"""
         inst = self._pages.get(key)
@@ -392,6 +402,20 @@ class MainWindow(FramelessWindow):
         self.show_info(f"字号已切换为「{scale.LABELS[step]}」", success=True)
 
     # ------------------------------------------------------------------ #
+    # A7：待确认队列的对外呈现（侧栏角标 + 导入页提示条）
+    # ------------------------------------------------------------------ #
+    def _refresh_pending_ui(self) -> None:
+        """队列状态变化时刷新侧栏「导入复核」角标与导入页顶部提示条。"""
+        rev = getattr(self, "page_review", None)
+        n = rev.pending_count() if rev is not None else 0
+        sidebar = getattr(self, "sidebar", None)
+        if sidebar is not None:
+            sidebar.set_item_badge("review", str(n) if n else "")
+        imp = getattr(self, "page_import", None)
+        if imp is not None:
+            imp.set_pending_count(n)
+
+    # ------------------------------------------------------------------ #
     # 对外接口（保持与旧 FluentWindow 版兼容）
     # ------------------------------------------------------------------ #
     def select(self, key: str) -> None:
@@ -401,10 +425,18 @@ class MainWindow(FramelessWindow):
         showEvent（各视图 showEvent 内已调用 refresh），这里不再显式刷新，
         避免每次点开页面「select + showEvent」双重刷新导致卡顿。
         同时联动双栏侧栏：确保右侧显示对应大类并高亮子项。
+
+        A6：离开「导入复核」页且待确认队列未跑完时，先弹一次确认框；
+        **不锁侧栏**——不置灰任何导航入口，只在离开时询问一次。
         """
         page = self._ensure_page(key)
         if page is None:
             return
+        cur = self.stack.currentWidget() if getattr(self, "stack", None) else None
+        rev = getattr(self, "page_review", None)
+        if cur is not None and cur is rev and page is not rev and rev is not None:
+            if not rev.confirm_leave():
+                return
         self.stack.setCurrentWidget(page)
         try:
             from app.diag import get_logger
@@ -452,9 +484,38 @@ class MainWindow(FramelessWindow):
             self.select("staff")
 
     def closeEvent(self, event) -> None:  # noqa: N802
+        # A9：待确认队列是**内存态**，关程序即丢失已解析的账期 → 先确认再关。
+        if not self._confirm_close_with_pending():
+            event.ignore()
+            return
         from app.db import checkpoint
         checkpoint()
         super().closeEvent(event)
+
+    def _confirm_close_with_pending(self) -> bool:
+        """A9 关闭确认。队列未跑完时提示「关闭后需要重新导入」。True = 允许关闭。
+
+        已知局限（用户 2026-09-16 选甲）：队列只在内存里，本确认框是关闭路径上
+        唯一的提醒；若判定查询本身出错则**放行**——绝不能因为一个提醒功能让程序
+        关不掉。
+        """
+        rev = getattr(self, "page_review", None)
+        try:
+            n = rev.pending_count() if rev is not None else 0
+        except Exception:  # noqa: BLE001
+            n = 0
+        if n <= 0:
+            return True
+        box = QMessageBox(self)
+        box.setWindowTitle("退出程序")
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setText(f"还有 {n} 个账期待确认入库。关闭后将需要重新导入这些台账文件"
+                    "（不会写入任何数据）。确定关闭？")
+        b_close = box.addButton("确定关闭", QMessageBox.ButtonRole.DestructiveRole)
+        b_stay = box.addButton("取消", QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(b_stay)
+        box.exec()
+        return box.clickedButton() is b_close
 
 
 class _PlaceholderPage(QWidget):

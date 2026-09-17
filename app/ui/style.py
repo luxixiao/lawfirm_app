@@ -336,6 +336,17 @@ QPushButton#chipBtn:checked {{
     background: {p['accent_blue']}; border-color: {p['accent_blue']}; color: #FFFFFF;
 }}
 
+/* ===== 导入页顶部「待确认」提示条（A7：还有 N 个账期待确认入库 → 去处理）===== */
+QPushButton#pendingBanner {{
+    text-align: left; padding: {P(8)} {P(14)}; font-size: {P(12)};
+    font-weight: 600; border-radius: {P(8)};
+    background: {p['accent_blue_bg']}; border: 1px solid {p['accent_blue']};
+    color: {p['accent_blue']};
+}}
+QPushButton#pendingBanner:hover {{
+    background: {p['accent_blue']}; border-color: {p['accent_blue']}; color: #FFFFFF;
+}}
+
 /* ===== 台账溯源卡片 ===== */
 QWidget#sourceCard {{
     background: {p['bg_table']}; border: 1px solid {p['border']};

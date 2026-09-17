@@ -13,6 +13,13 @@
 - 每个台账文件解析后照旧 emit ledger_pending（复核页按账期追加进待确认
   队列，不覆盖）；全部处理完后 emit 一次 ledger_queue_ready 才切页，
   避免批量时逐文件反复切走当前页。
+
+队列守卫（阶段 2-3，A7/A8）——由主窗口注入两个 callable，本页只消费、不查库：
+- `pending_count_fn() -> int`：顶部提示条「还有 N 个账期待确认入库 → 去处理」；
+- `ledger_guard() -> str | None`：返回文案即**拒绝本次「发票台账」导入**。
+  边界写死：只拦台账类，销项 / 收款 / 费用 / 工资 / 职工清单照旧可导
+  （否则会堵死「必须先导销项、再导台账」的顺序依赖）。批量导入时若文件夹里
+  含台账文件 → **整批拒绝**（不处理任何文件，避免半成品批次）。
 """
 from __future__ import annotations
 
@@ -21,7 +28,7 @@ import os
 import re
 from datetime import datetime
 
-from PySide6.QtCore import Signal
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QFileDialog, QHBoxLayout, QLabel, QMessageBox, QPlainTextEdit,
     QPushButton, QVBoxLayout, QWidget,
@@ -82,9 +89,14 @@ class ImportView(QWidget):
     ledger_pending = Signal(object, str, object, str)
     # 本批次台账已全部交给复核页 → 由主窗口切到「导入复核」页（批量只切一次）
     ledger_queue_ready = Signal()
+    # 点顶部「待确认」提示条 → 主窗口切到「导入复核」页（A7）
+    navigate_review = Signal()
 
     def __init__(self) -> None:
         super().__init__()
+        # 由主窗口注入（A7/A8）；未接线（如单测直接构造）时降级为「无待确认、不拦」
+        self.pending_count_fn = None   # callable() -> int  未确认入库的账期数
+        self.ledger_guard = None       # callable() -> str | None  台账导入守卫文案
         self._build_import_tab(self)
         self._history_loaded = False
 
@@ -112,6 +124,15 @@ class ImportView(QWidget):
         btns.addStretch()
         lay.addLayout(btns)
 
+        # A7：待确认提示条。队列未跑完时显示「还有 N 个账期待确认入库 → 去处理」，
+        # 点击直达「导入复核」页；无待确认时整条隐藏（不占位）。
+        self.banner_pending = QPushButton("")
+        self.banner_pending.setObjectName("pendingBanner")
+        self.banner_pending.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.banner_pending.setVisible(False)
+        self.banner_pending.clicked.connect(lambda: self.navigate_review.emit())
+        lay.addWidget(self.banner_pending)
+
         self.log = QPlainTextEdit()
         self.log.setReadOnly(True)
         self.log.setPlaceholderText("导入日志…")
@@ -120,10 +141,47 @@ class ImportView(QWidget):
 
     def showEvent(self, event) -> None:  # noqa: N802
         super().showEvent(event)
+        # A7：每次回到本页都按最新队列状态刷新顶部提示条
+        self._refresh_pending_banner()
         # 首次显示时回读历史日志（持久化在 import_log 表），程序关闭后不会丢
         if not self._history_loaded:
             self._history_loaded = True
             self._load_history()
+
+    # ---- A7：待确认提示条 / A8：台账导入守卫（均由主窗口注入的 callable 驱动）----
+    def set_pending_count(self, n: int) -> None:
+        """A7：设置待确认账期数并刷新提示条（0 = 隐藏）。"""
+        n = max(0, int(n or 0))
+        if n > 0:
+            self.banner_pending.setText(f"还有 {n} 个账期待确认入库 → 去处理")
+            self.banner_pending.setToolTip(
+                "这些账期已解析但尚未写入数据库，请到「导入复核」页逐个确认入库")
+            self.banner_pending.setVisible(True)
+        else:
+            self.banner_pending.setText("")
+            self.banner_pending.setToolTip("")
+            self.banner_pending.setVisible(False)
+
+    def _refresh_pending_banner(self) -> None:
+        fn = self.pending_count_fn
+        try:
+            n = int(fn()) if fn is not None else 0
+        except Exception:  # noqa: BLE001 提示条刷新失败不应影响导入功能
+            n = 0
+        self.set_pending_count(n)
+
+    def _ledger_block_message(self) -> str | None:
+        """A8：返回拦截文案 = 拒绝本次台账导入；None = 放行。
+
+        守卫本身出错时**放行**（不因为一个提示功能把导入主流程堵死）。
+        """
+        fn = self.ledger_guard
+        if fn is None:
+            return None
+        try:
+            return fn()
+        except Exception:  # noqa: BLE001
+            return None
 
     def _load_history(self) -> None:
         try:
@@ -167,6 +225,17 @@ class ImportView(QWidget):
         )
         if not path:
             return
+        # A8：只拦「发票台账」——销项导出 / 收款 / 费用台账 / 工资表 / 职工清单
+        # 照旧可导，否则会堵死既有的「必须先导销项、再导台账」顺序依赖。
+        # 判定放在选文件之后（此处才能从文件名识别类型），但仍在**解析/入队之前**，
+        # 故不会留下任何半成品数据。
+        if guess_type(os.path.basename(path)) == "ledger":
+            block = self._ledger_block_message()
+            if block:
+                self._log("✗ 已中止导入：" + block, ok=False,
+                          file_name=os.path.basename(path), batch_type="ledger")
+                QMessageBox.warning(self, "存在未确认入库的账期", block)
+                return
         if self._do_import(path) == "ledger":
             self.ledger_queue_ready.emit()
 
@@ -185,6 +254,19 @@ class ImportView(QWidget):
         if not files:
             QMessageBox.information(self, "提示", "该文件夹没有 Excel 文件")
             return
+        # A8：台账导入前置守卫 —— 队列未跑完时**整批拒绝**。
+        # 必须在处理**任何**文件之前拦（否则会出现「销项已入库、台账被拦」的
+        # 半成品批次）；只在文件夹里确实含台账类文件时才拦，纯销项 / 费用 /
+        # 工资 / 职工清单的文件夹照旧可导（保住「先导销项、再导台账」顺序依赖）。
+        if any(guess_type(os.path.basename(f)) == "ledger" for f in files):
+            block = self._ledger_block_message()
+            if block:
+                msg = ("本次批量导入已中止（未写入任何数据）。\n\n" + block
+                       + "\n\n（本文件夹含「发票台账」文件。销项导出、费用台账、"
+                         "工资表、职工清单不受影响，可单独导入。）")
+                self._log("✗ 批量导入已中止：" + block, ok=False, batch_type="batch")
+                QMessageBox.warning(self, "存在未确认入库的账期", msg)
+                return
         # 同类型同账期多份文件 → 直接中止整批导入（在写库/入队之前拦下，避免留下
         # 「一半已导入」的半成品）：覆盖式导入会让同账期文件互相覆盖，属数据风险。
         # 职工清单无账期语义（批次账期固定 0000，按姓名 upsert），不参与判定。

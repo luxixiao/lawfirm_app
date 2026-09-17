@@ -10,6 +10,11 @@
 - 逐个确认 → 每确认一个自动载入下一个；队列清空才回导入后模式 + navigate_back
 - 批量只弹一次汇总（不再逐账期弹「导入成功」）
 - 取消：队列有余量时「跳过当前」/「放弃全部待确认」/「返回」三条路径
+- **阶段 2-3 队列守卫三件套**（A6/A7/A8/A9）：
+  · A6 离开复核页确认框（留在本页 / 确定离开 / 勾「本次不再提示」）
+  · A7 `pending_count()` / `pending_periods()` 与侧栏角标 + 导入页提示条
+  · A8 台账导入前置守卫（单文件拦台账、**销项照旧可导**、批量含台账则整批拒绝）
+  · A9 关程序确认框（取消 / 确定关闭 / 无待确认时不弹）
 
 commit_ledger_import / validate_ledger_before_write / load_data / get_conn 均打桩，
 QMessageBox 换记录桩。
@@ -31,21 +36,52 @@ from app.ui.import_review_view import ImportReviewView  # noqa: E402
 
 
 # ---- 打桩 ----
+class _Btn:
+    """QMessageBox 按钮桩：保留文案与角色，供 clickedButton() 做同一性比较。"""
+
+    def __init__(self, label, role=None):
+        self.label = label
+        self.role = role
+
+    def text(self):
+        return self.label
+
+    def setText(self, t):
+        self.label = t
+
+
 class _MB:
+    """QMessageBox 记录桩：exec() 不阻塞。
+
+    - `click_label`：指定下一次 exec() 后 clickedButton() 返回的按钮文案
+      （None = 返回 None，等价于「用户直接关掉」）。
+    - `auto_check`：exec() 时自动勾上 setCheckBox 传入的勾选框（模拟用户勾选）。
+    - `boxes`：按构造顺序记录每个框，供断言标题/正文。
+    """
     calls = []
+    boxes = []
+    click_label = None
+    auto_check = False
 
     class Icon:
         Question = 4
         Information = 1
+        Warning = 2
+        Critical = 3
 
     class ButtonRole:
         AcceptRole = 0
         RejectRole = 1
         DestructiveRole = 2
+        ActionRole = 3
 
     def __init__(self, *a, **k):
         self._btns = []
+        self._chk = None
         self._title = ""
+        self._text = ""
+        self._info = ""
+        type(self).boxes.append(self)
 
     def setWindowTitle(self, t=""):
         self._title = t
@@ -53,32 +89,44 @@ class _MB:
     def setIcon(self, *a):
         pass
 
-    def setText(self, *a):
-        pass
+    def setText(self, t=""):
+        self._text = t
 
-    def setInformativeText(self, *a):
-        pass
+    def setInformativeText(self, t=""):
+        self._info = t
 
     def setDetailedText(self, *a):
         pass
 
+    def setCheckBox(self, chk):
+        self._chk = chk
+
     def addButton(self, label, *a):
-        self._btns.append(label)
-        return label
+        b = _Btn(label, a[0] if a else None)
+        self._btns.append(b)
+        return b
 
     def buttons(self):
         return list(self._btns)
 
     def buttonRole(self, b):
-        return None
+        return getattr(b, "role", None)
 
     def setDefaultButton(self, *a):
         pass
 
     def exec(self):
+        if type(self).auto_check and self._chk is not None:
+            self._chk.setChecked(True)
         return 0
 
     def clickedButton(self):
+        lbl = type(self).click_label
+        if lbl is None:
+            return None
+        for b in self._btns:
+            if b.label == lbl:
+                return b
         return None
 
     @classmethod
@@ -307,6 +355,278 @@ v._on_confirmed()
 check("单账期确认弹「导入成功」",
       len([c for c in _MB.calls if c[1] == "导入成功"]) == 1, str(_MB.calls))
 check("单账期确认写库一次", len(_commit_calls) == 1)
+
+# ---------------------------------------------- 7) A6/A7/A8：队列状态查询接口
+v._queue, v._idx, v._queue_active, v._results = [], 0, False, []
+_commit_calls.clear(); _load_calls.clear(); backs.clear(); _MB.calls.clear()
+_MB.boxes.clear(); _MB.click_label = None; _MB.auto_check = False
+qc = []
+v.queue_changed.connect(lambda: qc.append(1))
+
+check("A7 无队列时 pending_count=0", v.pending_count() == 0, f"got={v.pending_count()}")
+check("A7 无队列时 pending_periods=[]", v.pending_periods() == [], str(v.pending_periods()))
+check("A8 无队列时不拦（None）", v.blocking_message() is None,
+      str(v.blocking_message()))
+check("A6 无队列时允许离开且不弹框", v.confirm_leave() is True and not _MB.boxes,
+      str([b._title for b in _MB.boxes]))
+
+for i in (1, 2, 3):
+    _pending(v, i)
+check("A7 入队 3 个 → pending_count=3", v.pending_count() == 3,
+      f"got={v.pending_count()}")
+check("A7 pending_periods 按队列顺序",
+      v.pending_periods() == ["2025-01", "2025-02", "2025-03"],
+      str(v.pending_periods()))
+check("A7 每次队列变化都发 queue_changed", len(qc) == 3, f"got={len(qc)}")
+_msg = v.blocking_message()
+check("A8 文案列出全部未确认账期",
+      _msg is not None and all(p in _msg for p in ("2025-01", "2025-02", "2025-03")),
+      str(_msg)[:80])
+check("A8 文案含处置指引（确认入库 / 放弃全部待确认）",
+      _msg is not None and "确认入库" in _msg and "放弃全部待确认" in _msg,
+      str(_msg)[:80])
+
+v._on_confirmed()
+check("A7 推进一个 → pending_count=2", v.pending_count() == 2,
+      f"got={v.pending_count()}")
+check("A7 推进后账期去掉 2025-01",
+      v.pending_periods() == ["2025-02", "2025-03"], str(v.pending_periods()))
+check("A7 推进也发 queue_changed", len(qc) == 4, f"got={len(qc)}")
+
+# A6 离开确认：三条路径
+_MB.boxes.clear()
+_MB.click_label = "留在本页"
+check("A6 选「留在本页」→ 不允许离开", v.confirm_leave() is False)
+check("A6 弹一次确认框", len(_MB.boxes) == 1, str([b._title for b in _MB.boxes]))
+check("A6 文案含未确认个数与「随时回到本页」",
+      _MB.boxes and "2 个账期待确认入库" in _MB.boxes[0]._text
+      and "随时回到本页" in _MB.boxes[0]._text,
+      _MB.boxes[0]._text if _MB.boxes else "")
+check("A6 提供「本次不再提示」勾选框",
+      _MB.boxes and _MB.boxes[0]._chk is not None)
+_MB.click_label = "确定离开"
+check("A6 选「确定离开」→ 允许离开", v.confirm_leave() is True)
+check("A6 未勾选时不会静默放行",
+      v._leave_no_prompt is False and v.confirm_leave() is True)
+check("A6 未勾选时每次离开都弹", len(_MB.boxes) == 3, f"got={len(_MB.boxes)}")
+
+# A6 勾「本次不再提示」→ 本队列内不再打扰；新队列重新武装
+_MB.boxes.clear()
+_MB.auto_check = True
+_MB.click_label = "确定离开"
+v.confirm_leave()
+check("A6 勾选后标记不再提示", v._leave_no_prompt is True)
+_MB.boxes.clear()
+check("A6 勾选后不再弹框且允许离开",
+      v.confirm_leave() is True and not _MB.boxes, str([b._title for b in _MB.boxes]))
+_MB.auto_check = False
+v._queue, v._idx, v._queue_active, v._results = [], 0, False, []
+_pending(v, 1)
+check("A6 新队列重新武装提示", v._leave_no_prompt is False)
+v._queue, v._idx, v._queue_active, v._results = [], 0, False, []
+_MB.click_label = None
+
+# ---------------------------------------------- 8) A8：台账导入前置守卫（ImportView 层）
+import tempfile  # noqa: E402
+import shutil  # noqa: E402
+import app.ui.import_view as _IV  # noqa: E402
+
+_IV.QMessageBox = _MB
+_IV.get_conn = lambda: _FakeConn()
+
+_GUARD = ("存在未确认入库的账期（2025-01、2025-02），请先完成「确认入库」，"
+          "或点「取消 → 放弃全部待确认」清空后再导入新的发票台账。")
+
+
+class _FD2:
+    """QFileDialog 桩：单文件 / 文件夹路径可分别指定。"""
+    path = "2025.1台账.xlsx"
+    folder = ""
+
+    @staticmethod
+    def getOpenFileName(*a, **k):
+        return (_FD2.path, "")
+
+    @staticmethod
+    def getExistingDirectory(*a, **k):
+        return _FD2.folder
+
+
+_IV.QFileDialog = _FD2
+
+
+def _mk_iv(guard, pending=0):
+    """造一个 ImportView，`_do_import` 换成记录桩（不碰真实文件/库）。"""
+    w = _IV.ImportView()
+    seen = []
+    w._do_import = lambda path, quiet=False: seen.append(path)
+    w.ledger_guard = (lambda: guard) if guard is not None else None
+    w.pending_count_fn = (lambda: pending) if pending is not None else None
+    return w, seen
+
+
+# 8a) 未接线（单测 / 旧路径）→ 不拦
+_FD2.path = "2025.1台账.xlsx"
+_vw, _seen = _mk_iv(None)
+_vw.import_file()
+check("A8 未接线时不拦台账", _seen == ["2025.1台账.xlsx"], str(_seen))
+
+# 8b) 队列未跑完 + 台账 → 拦在解析/入队之前
+_MB.calls.clear()
+_vw, _seen = _mk_iv(_GUARD)
+_vw.import_file()
+check("A8 队列未跑完 → 台账被拦（不解析、不入队）", _seen == [], str(_seen))
+_warn = [c for c in _MB.calls if c[1] == "存在未确认入库的账期"]
+check("A8 弹一次中文拦截提示", len(_warn) == 1, str(_MB.calls))
+check("A8 提示含未确认账期 + 处置指引",
+      _warn and all(k in _warn[0][2] for k in
+                    ("2025-01", "2025-02", "确认入库", "放弃全部待确认")),
+      _warn[0][2][:100] if _warn else "")
+check("A8 拦截写入导入日志", "已中止导入" in _vw.log.toPlainText(),
+      _vw.log.toPlainText()[-70:])
+
+# 8c) 队列未跑完 + 非台账 → 照旧可导（硬边界，必须写死）
+_MB.calls.clear()
+_vw, _seen = _mk_iv(_GUARD)
+_FD2.path = "2025.1销项.xlsx"
+_vw.import_file()
+check("A8 销项文档不受守卫影响（保住「先导销项」顺序依赖）",
+      _seen == ["2025.1销项.xlsx"], str(_seen))
+check("A8 销项未被拦（不弹拦截提示）",
+      not [c for c in _MB.calls if c[1] == "存在未确认入库的账期"], str(_MB.calls))
+_FD2.path = "2025.1费用.xlsx"
+_vw.import_file()
+check("A8 费用台账不受守卫影响", _seen[-1] == "2025.1费用.xlsx", str(_seen))
+_FD2.path = "职工清单.xlsx"
+_vw.import_file()
+check("A8 职工清单不受守卫影响", _seen[-1] == "职工清单.xlsx", str(_seen))
+_FD2.path = "2025.1台账.xlsx"
+
+# 8d) 守卫返回 None（队列已清空）→ 台账放行
+_vw, _seen = _mk_iv(None)
+_vw.import_file()
+check("A8 队列已清空 → 台账放行", _seen == ["2025.1台账.xlsx"], str(_seen))
+
+# 8e/8f) 批量：含台账 → 整批拒绝；纯非台账 → 照旧处理
+_t_led = tempfile.mkdtemp(prefix="lawfirm_q_guard_led_")
+_t_inv = tempfile.mkdtemp(prefix="lawfirm_q_guard_inv_")
+try:
+    for _n in ["2025.1销项.xlsx", "2025.1台账.xlsx", "2025.2费用.xlsx"]:
+        with open(os.path.join(_t_led, _n), "w"):
+            pass
+    for _n in ["2025.1销项.xlsx", "2025.2费用.xlsx", "25.1工资.xlsx"]:
+        with open(os.path.join(_t_inv, _n), "w"):
+            pass
+
+    _MB.calls.clear()
+    _FD2.folder = _t_led
+    _vw, _seen = _mk_iv(_GUARD)
+    _vw.import_folder()
+    check("A8 批量含台账 → 整批拒绝（不处理任何文件，避免半成品批次）",
+          _seen == [], str(_seen))
+    _warn = [c for c in _MB.calls if c[1] == "存在未确认入库的账期"]
+    check("A8 批量拒绝弹一次提示", len(_warn) == 1, str(_MB.calls))
+    check("A8 批量提示说明未写入任何数据",
+          _warn and "未写入任何数据" in _warn[0][2],
+          _warn[0][2][:120] if _warn else "")
+    check("A8 批量拒绝不弹成功汇总",
+          not [c for c in _MB.calls if c[1] == "批量导入"], str(_MB.calls))
+    check("A8 批量拒绝写入导入日志", "已中止" in _vw.log.toPlainText())
+
+    _MB.calls.clear()
+    _FD2.folder = _t_inv
+    _vw, _seen = _mk_iv(_GUARD)
+    _vw.import_folder()
+    check("A8 文件夹无台账 → 队列未跑完也照旧可导",
+          sorted(os.path.basename(p) for p in _seen)
+          == ["2025.1销项.xlsx", "2025.2费用.xlsx", "25.1工资.xlsx"], str(_seen))
+    check("A8 纯非台账批量照常弹成功汇总",
+          len([c for c in _MB.calls if c[1] == "批量导入"]) == 1, str(_MB.calls))
+finally:
+    shutil.rmtree(_t_led, ignore_errors=True)
+    shutil.rmtree(_t_inv, ignore_errors=True)
+
+# ---------------------------------------------- 9) A6/A7/A9：主窗口接线（端到端）
+import app.ui.main_window as _MW  # noqa: E402
+
+_MW.QMessageBox = _MB
+_mw = _MW.MainWindow()
+_badge = _mw.sidebar._item_buttons["review"]
+check("A7 角标落在「导入复核」子项上（key=review）",
+      _badge.objectName() == "navItem" and hasattr(_badge, "set_badge"))
+check("A7 初始无待确认 → 角标为空", _badge.badge() == "", repr(_badge.badge()))
+check("A7 初始 → 导入页提示条隐藏", _mw.page_import.banner_pending.isHidden())
+check("A8 守卫已接线到导入页",
+      _mw.page_import.ledger_guard is not None
+      and _mw.page_import.pending_count_fn is not None)
+
+_mw.page_import.ledger_pending.emit(_data("2025-01"), "2025-01", ["周立生"],
+                                    "2025.1台账.xlsx")
+check("A7 入队 → 侧栏角标 = 1", _badge.badge() == "1", repr(_badge.badge()))
+check("A7 入队 → 提示条可见", not _mw.page_import.banner_pending.isHidden())
+check("A7 提示条文案含个数与「去处理」",
+      "1" in _mw.page_import.banner_pending.text()
+      and "去处理" in _mw.page_import.banner_pending.text(),
+      _mw.page_import.banner_pending.text())
+
+_mw.page_import.ledger_pending.emit(_data("2025-02"), "2025-02", ["周立生"],
+                                    "2025.2台账.xlsx")
+check("A7 追加 → 角标 = 2", _badge.badge() == "2", repr(_badge.badge()))
+_guard_msg = _mw.page_import._ledger_block_message()
+check("A8 主窗口链路守卫文案已生效（含未确认账期）",
+      _guard_msg is not None and "2025-01" in _guard_msg, str(_guard_msg)[:70])
+
+# A6：离开复核页
+_mw.select("review")
+check("A6 切到复核页本身不弹确认", _mw.stack.currentWidget() is _mw.page_review)
+_MB.boxes.clear()
+_MB.click_label = "留在本页"
+_mw.select("import")
+check("A6 队列未跑完 + 选「留在本页」→ 停在复核页",
+      _mw.stack.currentWidget() is _mw.page_review)
+check("A6 弹一次离开确认框", len(_MB.boxes) == 1,
+      str([b._title for b in _MB.boxes]))
+check("A6 文案含个数与「随时回到本页」",
+      _MB.boxes and "2 个账期待确认入库" in _MB.boxes[0]._text
+      and "随时回到本页" in _MB.boxes[0]._text,
+      _MB.boxes[0]._text if _MB.boxes else "")
+_MB.click_label = "确定离开"
+_mw.select("import")
+check("A6 选「确定离开」→ 切到导入页",
+      _mw.stack.currentWidget() is _mw.page_import)
+check("A6 离开后队列仍在（不丢已解析数据）",
+      _mw.page_review.pending_count() == 2, f"got={_mw.page_review.pending_count()}")
+
+# A9：关程序确认
+_MB.boxes.clear()
+_MB.click_label = "取消"
+check("A9 队列未跑完 + 选「取消」→ 不允许关闭",
+      _mw._confirm_close_with_pending() is False)
+check("A9 文案含「重新导入」与「不会写入任何数据」",
+      _MB.boxes and "重新导入" in _MB.boxes[0]._text
+      and "不会写入任何数据" in _MB.boxes[0]._text,
+      _MB.boxes[0]._text if _MB.boxes else "")
+check("A9 文案含未确认个数",
+      _MB.boxes and "2 个账期待确认入库" in _MB.boxes[0]._text,
+      _MB.boxes[0]._text if _MB.boxes else "")
+_MB.click_label = "确定关闭"
+check("A9 选「确定关闭」→ 允许关闭", _mw._confirm_close_with_pending() is True)
+
+# 队列跑完 → 角标/提示条自动清空，A6/A9 不再打扰
+_mw.page_review._queue, _mw.page_review._idx = [], 0
+_mw.page_review._queue_active = False
+_mw._refresh_pending_ui()
+check("A7 队列清空 → 角标清空", _badge.badge() == "", repr(_badge.badge()))
+check("A7 队列清空 → 提示条隐藏", _mw.page_import.banner_pending.isHidden())
+_MB.boxes.clear()
+_MB.click_label = None
+_mw.select("review")
+_mw.select("import")
+check("A6 无待确认 → 不弹框", not _MB.boxes, str([b._title for b in _MB.boxes]))
+check("A9 无待确认 → 直接放行且不弹框",
+      _mw._confirm_close_with_pending() is True and not _MB.boxes,
+      str([b._title for b in _MB.boxes]))
+
 
 bad = [n for n, ok, _ in results if not ok]
 print(f"\n{len(results) - len(bad)}/{len(results)} passed")

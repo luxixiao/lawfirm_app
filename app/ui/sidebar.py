@@ -7,6 +7,9 @@
 - **默认自动折叠**；鼠标移入侧栏自动展开（防抖 80ms），移出自动收回（防抖 120ms）；
   展开后顶部「固定」按钮可固定为展开。
 - 各组折叠状态 + 固定状态用 QSettings 持久化（pinned / collapsed_groups）。
+- 子项按钮为 `NavItemButton`：在 `#navItem` QSS 之上自绘一枚右上角角标
+  （`set_item_badge(key, text)`，A7「还有 N 个账期待确认入库」），
+  不用子 QLabel + effect —— 理由见该类注释。
 - 动效：hover 120ms、按下 80ms、大类展开 220ms（子项错峰 18ms）、收起 160ms、
   侧栏展开 240ms / 收起 180ms、chevron 180ms；全部走 `style.motion_enabled()` 开关。
 
@@ -239,6 +242,66 @@ class NavHeaderButton(QPushButton):
 
 
 # --------------------------------------------------------------------------- #
+# 子项按钮（A7：右上角自绘角标）
+# --------------------------------------------------------------------------- #
+class NavItemButton(QPushButton):
+    """侧栏子项按钮：保住 `#navItem` QSS，另在右上角自绘一枚角标。
+
+    P0-3 探针结论（2026-09-16）：全仓**无**任何原生 badge API
+    （`NavigationInterface` / `QBadgeLabel` / `InfoBadge` 均不存在），且
+    **整条侧栏只允许 `GroupPanel` 那一层 `QGraphicsOpacityEffect`**（嵌套 effect
+    会让 Qt 对同一 widget 再开一个 painter → "A paint device can only be painted
+    by one painter at a time"，见下方 GroupPanel 注释）。
+    → 角标**不能**用「子 QLabel + 自己的 effect」实现，只能像本类这样在
+    `paintEvent` 里直接画；文案走 `set_badge()`，空串即隐藏。
+    """
+
+    def __init__(self, text: str = "", parent=None) -> None:
+        super().__init__(text, parent)
+        self._badge = ""
+
+    def set_badge(self, text: str) -> None:
+        """设置角标文案（空串 / None = 不显示）。"""
+        t = str(text or "").strip()
+        if t == self._badge:
+            return
+        self._badge = t
+        self.update()
+
+    def badge(self) -> str:
+        return self._badge
+
+    def paintEvent(self, event) -> None:  # noqa: N802
+        # 先走基类绘制，让 `#navItem` 的底色 / 选中态 / 文字全部由 QSS 决定
+        super().paintEvent(event)
+        if not self._badge:
+            return
+        p = QPainter(self)
+        if not p.isActive():
+            # 被 QGraphicsEffect / render() 离屏重绘占用时不再画，避免 Qt 告警
+            p.end()
+            return
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        pal = style.palette()
+        fm = self.fontMetrics()
+        h = float(max(_px(16), fm.height()))
+        pad = float(_px(6))
+        w = max(h, float(fm.horizontalAdvance(self._badge)) + pad * 2)
+        rect = QRectF(self.width() - w - _px(BASE_ICON_GAP),
+                      (self.height() - h) / 2.0, w, h)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor(pal["accent_red"]))
+        p.drawRoundedRect(rect, h / 2.0, h / 2.0)
+        f = p.font()
+        f.setPointSizeF(max(8.0, 9.0 * scale.ratio()))
+        f.setWeight(QFont.Weight.DemiBold)
+        p.setFont(f)
+        p.setPen(QColor("#FFFFFF"))
+        p.drawText(rect, Qt.AlignmentFlag.AlignCenter, self._badge)
+        p.end()
+
+
+# --------------------------------------------------------------------------- #
 # 子项容器（高度 + 透明度动画）
 #
 # 重要：**整条侧栏只允许容器这一层 QGraphicsOpacityEffect**。
@@ -336,7 +399,7 @@ class SidebarWidget(QWidget):
         self._folded = {t: (t in folded) for t in self._group_titles}
         self._header_buttons: dict[str, NavHeaderButton] = {}
         self._panels: dict[str, GroupPanel] = {}
-        self._item_buttons: dict[str, QPushButton] = {}
+        self._item_buttons: dict[str, NavItemButton] = {}
         self._item_group = QButtonGroup(self)
         self._item_group.setExclusive(True)
         self._bottom = bottom_widget
@@ -402,7 +465,8 @@ class SidebarWidget(QWidget):
 
         panel = GroupPanel()
         for key, label in items:
-            btn = QPushButton(label)
+            # A7：子项用 NavItemButton（多一层自绘角标能力），其余行为与 QPushButton 一致
+            btn = NavItemButton(label)
             btn.setObjectName("navItem")
             btn.setMinimumHeight(_px(BASE_ROW_ITEM))
             btn.setCheckable(True)
@@ -530,6 +594,16 @@ class SidebarWidget(QWidget):
         btn = self._item_buttons.get(key)
         if btn is not None:
             btn.setChecked(True)
+
+    def set_item_badge(self, key: str, text: str) -> None:
+        """设置某个子项右上角的角标（A7）。
+
+        文案为空即隐藏。收起态下子项本就整体隐藏，故无需额外处理；
+        已知局限：折叠（收起）状态下角标不可见，仅在侧栏展开时可见。
+        """
+        btn = self._item_buttons.get(key)
+        if isinstance(btn, NavItemButton):
+            btn.set_badge(text)
 
     def set_active_group(self, title: str) -> None:
         """无独立 Rail，接口保留（展开该组以便定位）。"""

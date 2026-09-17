@@ -1,5 +1,8 @@
 """sidebar 无头冒烟 — 自绘图标 + hover/press/chevron + 折叠/展开动效（offscreen）。
 
+含 A7 角标用例：`NavItemButton` 自绘右上角角标（`set_item_badge`），
+并钉住硬约束「整条侧栏只允许 GroupPanel 那一层 QGraphicsEffect」。
+
 运行：QT_QPA_PLATFORM=offscreen python tests/_smoke_sidebar.py
 """
 import os
@@ -29,7 +32,8 @@ from app.ui import sidebar as sb  # noqa: E402
 from app.ui.nav_icons import NAV_ICON_PATHS, draw_nav_icon  # noqa: E402
 
 GROUPS = [
-    ("数据导入", [("import", "导入台账"), ("batch", "导入记录")]),
+    ("数据导入", [("import", "导入台账"), ("batch", "导入记录"),
+                  ("review", "导入复核")]),
     ("台账查看", [("ledger", "销项发票")]),
     ("业务数据", [("invoice", "发票收款情况"), ("refund", "退款")]),
     ("工资个税", [("salary", "工资累计")]),
@@ -99,7 +103,7 @@ for n in names:
     btn = w._header_buttons[n]
     check(f"{n} 有 tooltip（收起态可读）", btn.toolTip() == n, f"got={btn.toolTip()}")
     check(f"{n} 行高 34", btn.height() == sb._px(sb.BASE_ROW_GROUP), f"got={btn.height()}")
-check("子项共 10 个", len(w._item_buttons) == 10, f"got={len(w._item_buttons)}")
+check("子项共 11 个", len(w._item_buttons) == 11, f"got={len(w._item_buttons)}")
 check("子项可勾选", all(b.isCheckable() for b in w._item_buttons.values()))
 
 # effect 只能有一层：嵌套 effect 会让 Qt 对同一 widget 再开 painter，
@@ -108,6 +112,26 @@ holders = [wd for wd in [w] + w.findChildren(QWidget) if wd.graphicsEffect() is 
 check("effect 仅 7 个 GroupPanel（无嵌套）", len(holders) == 7, f"got={len(holders)}")
 check("effect 不挂在大类按钮上",
       all(w._header_buttons[n].graphicsEffect() is None for n in names))
+
+# ===== 2b. A7 侧栏角标（自绘；不得引入任何 QGraphicsEffect）=====
+rev = w._item_buttons["review"]
+check("子项为 NavItemButton（具备自绘角标能力）",
+      isinstance(rev, sb.NavItemButton), type(rev).__name__)
+check("初始无角标", rev.badge() == "", repr(rev.badge()))
+w.set_item_badge("review", "3")
+check("设置角标文案", rev.badge() == "3", repr(rev.badge()))
+_eff_all = [wd for wd in [w] + w.findChildren(QWidget)
+            if wd.graphicsEffect() is not None]
+check("角标不引入 graphicsEffect（单层 effect 硬约束）",
+      rev.graphicsEffect() is None and len(_eff_all) == 7, f"got={len(_eff_all)}")
+_img_badged = w.grab()      # 带角标渲染：自绘路径不得触发 Qt 双 painter 告警
+check("带角标渲染成功", not _img_badged.isNull())
+check("带角标渲染尺寸正常",
+      _img_badged.width() == w.width(), f"got={_img_badged.width()}")
+w.set_item_badge("review", "")
+check("清空角标", rev.badge() == "", repr(rev.badge()))
+w.set_item_badge("不存在的key", "9")   # 未知 key 不应崩
+check("未知 key 安全忽略", True)
 
 # ===== 3. 收起 / 展开（无动画路径） =====
 w.set_collapsed(True, animate=False)
