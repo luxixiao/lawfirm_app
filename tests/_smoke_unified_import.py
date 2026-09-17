@@ -11,10 +11,13 @@
 - 阶段 2-2（第 10 节）：A1 应收账款(sheet3)行进表 / A2 原因三态 / A3 就地编辑回写
   （需补录行不出收款；已在库行「确认」后置 receipt_confirmed 交 A10 追加收款；
    A11 多期收款展开为同名多行，合计仍等于开票总额）
-- 阶段 3（第 11 节）：B2g 行内「补录原票 / 查看原票」按钮（需补录行、普通发票行、
+- 阶段 3（第 11 节）：B2g 行内「补录原票 / 查看原票 / 修改补录」按钮（需补录行、普通发票行、
   已在库行、红字行取原票号四态）／B2c **不立即写库**（确定只收集进 `_backfills`、
-  取消一行不写）／B2h 补录后按钮翻转 + 原因「已补录，待随台账入库」+ 底部计数同步／
+  取消一行不写）／B2h 补录后按钮翻转 + 原因「已补录，请确认收款」+ 底部计数同步／
   B2d/B2e 写前校验与「本次已填过同票号」拦截。
+- 阶段 4-2（散落各节，标签含「4-2」「A 甲」）：状态四态 + 默认筛选「待补录」+ 待补录排在
+  待确认之前；补录完**不再直接高置信**而是落到「待确认」并**回显**补录里填的收款；
+  待补录行不显示「确认」（点了给可读提示、不写数据）。
 """
 import os
 import sys
@@ -136,6 +139,28 @@ def statuses(dlg):
     return [r["status"] for r in dlg._rows]
 
 
+def _show_all(dlg):
+    """切到「全部」筛选。
+
+    阶段 4-2 起默认筛选 = 待补录；凡是要按 `_rows` 下标选行、或断言「已处理完的行」
+    的用例，都必须先切「全部」，否则默认视图里根本没有该行。
+    """
+    dlg._grp.button(5).setChecked(True)
+    dlg._render()
+
+
+def _select(dlg, r):
+    """选中某一行并刷新右侧。
+
+    必须用 `setCurrentCell`（同时设「当前项」与选择）：`selectRow` 只改选择、不保证改
+    当前项，而 `_current_row()` 读的是当前项 → 只 selectRow 会让右侧读到旧行。
+    """
+    i = dlg._rows.index(r)
+    dlg.table.setCurrentCell(i, 0)
+    dlg.table.selectRow(i)
+    dlg._load_right()
+
+
 def fill_invoice_fix(dlg):
     """把右侧修正面板填成合法数据（总额 5000 = 周立生 3000 + 陈娟 2000）。"""
     p = dlg.fix_panel
@@ -169,10 +194,12 @@ check("A1：应收账款行带 d_index 与 need_backfill 语义",
       _drow0["d_index"] == 0 and _drow0["deferred"].get("need_backfill") is True,
       f"d_index={_drow0['d_index']} nb={_drow0['deferred'].get('need_backfill')}")
 st = statuses(dlg)
-check("状态含 1 高置信 / 3 待确认（应收账款行按待确认计）",
-      st.count("待确认") == 3 and st.count("高置信") == 1,
+check("阶段4-2：状态含 1 高置信 / 2 待确认 / 1 待补录（应收账款行按待补录计）",
+      st.count("待补录") == 1 and st.count("待确认") == 2 and st.count("高置信") == 1,
       f"got={st}")
-check("待确认行排在最前", st.index("待确认") == 0, f"got={st}")
+check("阶段4-2：待补录排最前（最紧急、最前）", st.index("待补录") == 0, f"got={st}")
+check("阶段4-2：筛选栏首位 = 待补录、第二位 = 待确认（C 甲）",
+      U.FILTERS[0] == "待补录" and U.FILTERS[1] == "待确认", str(U.FILTERS))
 
 # ---- A2：右栏「原因 / 疑问」三态 ----
 check("A2：票号不在库 → 需补录原票",
@@ -189,23 +216,26 @@ check("A2：系统无疑问 → 系统判定无疑问",
       dlg._row_field(_hi0, "reason") == "✓ 系统判定无疑问",
       dlg._row_field(_hi0, "reason"))
 
-# 默认筛选「待确认」：解析失败 2 + 低置信 1 = 3 行
-check("默认筛选=待确认，3 行", dlg.table.rowCount() == 3, f"got={dlg.table.rowCount()}")
-dlg._grp.button(4).setChecked(True)  # 全部
+# 默认筛选「待补录」（阶段 4-2 B 甲）：只剩应收账款那一行
+check("阶段4-2：默认筛选=待补录，1 行", dlg.table.rowCount() == 1,
+      f"got={dlg.table.rowCount()}")
+check("阶段4-2：默认勾选的是首位（待补录）", dlg._grp.checkedId() == 0,
+      f"got={dlg._grp.checkedId()}")
+dlg._grp.button(5).setChecked(True)  # 全部
 dlg._render()
 check("切「全部」= 4 行", dlg.table.rowCount() == 4, f"got={dlg.table.rowCount()}")
-dlg._grp.button(0).setChecked(True)  # 待确认
+dlg._grp.button(1).setChecked(True)  # 待确认
 dlg._render()
-check("切「待确认」= 3 行", dlg.table.rowCount() == 3, f"got={dlg.table.rowCount()}")
-dlg._grp.button(1).setChecked(True)  # 已确认
+check("切「待确认」= 2 行", dlg.table.rowCount() == 2, f"got={dlg.table.rowCount()}")
+dlg._grp.button(2).setChecked(True)  # 已确认
 dlg._render()
 check("切「已确认」= 0 行（尚未修正/确认）", dlg.table.rowCount() == 0, f"got={dlg.table.rowCount()}")
-dlg._grp.button(2).setChecked(True)  # 高置信
+dlg._grp.button(3).setChecked(True)  # 高置信
 dlg._render()
 check("切「高置信」= 1 行", dlg.table.rowCount() == 1, f"got={dlg.table.rowCount()}")
 
 # 问题行也带原始台账行（底座改动）
-dlg._grp.button(0).setChecked(True)  # 待确认（含解析失败问题行）
+dlg._grp.button(1).setChecked(True)  # 待确认（含解析失败问题行）
 dlg._render()
 dlg.table.selectRow(0)
 row0 = dlg._current_row()
@@ -243,7 +273,7 @@ check("sheet12_total 同步重算", abs(dlg._work["sheet12_total"] - 6000.0) < 0
       f"got={dlg._work['sheet12_total']}")
 
 # ---------------------------------------------------------------- 3) 右侧就地编辑已存在发票 → 各经办人已收 / 收款认定 同步
-dlg._grp.button(4).setChecked(True)  # 全部
+dlg._grp.button(5).setChecked(True)  # 全部
 dlg._render()
 target = next(r for r in dlg._rows if r["kind"] == "invoice" and r["inv_idx"] == 0)
 dlg.table.selectRow(dlg._rows.index(target))   # 触发 _load_right → set_invoice
@@ -298,20 +328,27 @@ data2 = mk_data()
 dlg2 = UnifiedImportDialog(data2, "2025-01", STAFF)
 dlg2.show()
 dlg2._validate = lambda d: None
-# 跳过发票问题行
-dlg2.table.selectRow(0)
+# 跳过发票问题行（4-2 后默认筛选 = 待补录，第 0 行已不是问题行 → 先切「全部」按类型定位）
+dlg2._grp.button(5).setChecked(True)  # 全部
+dlg2._render()
+inv_prob = next(r for r in dlg2._rows
+                if r["kind"] == "problem" and r["problem"]["kind"] == "invoice")
+_i = dlg2._rows.index(inv_prob)
+dlg2.table.setCurrentCell(_i, 0)
+dlg2.table.selectRow(_i)
+dlg2._load_right()
 r = dlg2._current_row()
-check("首行是发票问题行", r["problem"]["kind"] == "invoice", str(r["problem"]["kind"]))
+check("定位到发票问题行", r["kind"] == "problem" and r["problem"]["kind"] == "invoice",
+      str(r.get("problem")))
 dlg2._skip_row()
 check("跳过后状态=已跳过", statuses(dlg2).count("已跳过") == 1, f"got={statuses(dlg2)}")
 # 修正预收款问题行
-dlg2._grp.button(4).setChecked(True)  # 全部
-dlg2._render()
-for i in range(dlg2.table.rowCount()):
-    dlg2.table.selectRow(i)
-    cur = dlg2._current_row()
-    if cur["kind"] == "problem" and cur["problem"]["kind"] == "prepayment":
-        break
+pp_prob = next(r for r in dlg2._rows
+               if r["kind"] == "problem" and r["problem"]["kind"] == "prepayment")
+_j = dlg2._rows.index(pp_prob)
+dlg2.table.setCurrentCell(_j, 0)
+dlg2.table.selectRow(_j)
+dlg2._load_right()
 check("预收款行显示预收款表单", dlg2.fix_panel.pp_box.isVisible())
 dlg2.fix_panel.pp_date.setText("2025-01-08")
 dlg2.fix_panel.pp_amount.setText("2000")
@@ -339,7 +376,9 @@ check("窗口可渲染（grab 非空）", not dlg3.grab().isNull())
 check("底部汇总含发票数与合计",
       "发票" in dlg3.lbl_summary.text() and "预收款" in dlg3.lbl_summary.text(),
       dlg3.lbl_summary.text())
-check("统计胶囊有计数", "待确认 3" in dlg3.lbl_stat.text() and "高置信 1" in dlg3.lbl_stat.text(),
+check("统计胶囊有计数",
+      "待补录 1" in dlg3.lbl_stat.text() and "待确认 2" in dlg3.lbl_stat.text()
+      and "高置信 1" in dlg3.lbl_stat.text(),
       dlg3.lbl_stat.text())
 
 # ------------------------------------------- 8) 写库前校验（临时库，不碰真实 DB）
@@ -437,7 +476,8 @@ d2 = mk_simple()
 d2dlg = UnifiedImportDialog(d2, "2025-01", STAFF)
 d2dlg.show()
 low = next(r for r in d2dlg._rows if r["kind"] == "invoice" and r["inv_idx"] == 0)
-d2dlg.table.selectRow(d2dlg._rows.index(low))
+_show_all(d2dlg)          # 4-2：默认筛选=待补录，本用例无待补录行 → 先切「全部」
+_select(d2dlg, low)
 check("点2：待确认行显示「确认」按钮", d2dlg.btn_confirm_row.isVisible())
 check("点2：待确认行不显示「编辑」按钮", not d2dlg.btn_edit.isVisible())
 d2dlg._confirm_row()
@@ -452,7 +492,8 @@ d3 = mk_simple()
 d3dlg = UnifiedImportDialog(d3, "2025-01", STAFF)
 d3dlg.show()
 low3 = next(r for r in d3dlg._rows if r["kind"] == "invoice" and r["inv_idx"] == 0)
-d3dlg.table.selectRow(d3dlg._rows.index(low3))
+_show_all(d3dlg)          # 4-2：同上，先切「全部」才能选到该行
+_select(d3dlg, low3)
 pp3 = d3dlg.fix_panel
 pp3.htable.item(0, 2).setText("4000.00")   # 未全额收款
 pp3.htable.item(0, 3).setText("2025-01")
@@ -462,14 +503,13 @@ low3b = next(r for r in d3dlg._rows if r["kind"] == "invoice" and r["inv_idx"] =
 check("点3：填收款并保存 → 不再是待确认", low3b["ev"]["conf"] == "high", f"reasons={low3b['ev']['reasons']}")
 check("点3：未全额收款也离开待确认", low3b["status"] == "高置信", f"status={low3b['status']}")
 
-# 点1：高置信默认只读，点「编辑」才解锁（高置信不在「待确认」筛选，先切「全部」）
+# 点1：高置信默认只读，点「编辑」才解锁（高置信不在默认「待补录」筛选，先切「全部」）
 d1 = mk_simple()
 d1dlg = UnifiedImportDialog(d1, "2025-01", STAFF)
 d1dlg.show()
-d1dlg._grp.button(4).setChecked(True)   # 全部
-d1dlg._render()
 hi = next(r for r in d1dlg._rows if r["kind"] == "invoice" and r["inv_idx"] == 1)
-d1dlg.table.selectRow(d1dlg._rows.index(hi))
+_show_all(d1dlg)
+_select(d1dlg, hi)
 check("点1：高置信默认只读（开票日期）", d1dlg.fix_panel.inv_date.isReadOnly())
 check("点1：高置信默认只读（经办人下拉禁用）", not d1dlg.fix_panel.htable.cellWidget(0, 0).isEnabled())
 check("点1：高置信默认只读（保存按钮隐藏）", not d1dlg.btn_save.isVisible())
@@ -546,8 +586,8 @@ check("A3：应收账款行预填单期一行（含收款金额与日期）",
       str(_htable_rows(a.fix_panel)))
 check("A3：右键面板为发票表单且可编辑（非只读）",
       a.fix_panel.inv_box.isVisible() and not a.fix_panel.inv_date.isReadOnly())
-check("A3：应收账款行显示「保存修改」与「确认」",
-      a.btn_save.isVisible() and a.btn_confirm_row.isVisible())
+check("A3：应收账款行显示「保存修改」；待补录行暂不显示「确认」（阶段 4-2）",
+      a.btn_save.isVisible() and not a.btn_confirm_row.isVisible())
 check("A1：汇总行显示「需补录原票 N 张」",
       "应收账款需补录原票 1 张" in a.lbl_summary.text(), a.lbl_summary.text())
 
@@ -563,8 +603,8 @@ check("A3：真实 data 未被修改（deferred 仍为空 / 行仍在 invoices�
       and [x["invoice_no"] for x in d10["invoices"]] == ["AR-1", "INV-HI"],
       f"deferred={d10['deferred']} invoices={[x['invoice_no'] for x in d10['invoices']]}")
 ra2 = _deferred_row(a)
-check("A3：编辑后仍在「待确认」（需用户显式确认收款）", ra2["status"] == "待确认",
-      f"status={ra2['status']}")
+check("A3：就地编辑后仍留在「待补录」（要补录原票才转「待确认」，阶段 4-2）",
+      ra2["status"] == "待补录", f"status={ra2['status']}")
 m10 = a._merged_data()
 check("A3：需补录原票行**不**置 receipt_confirmed（本页不出收款）",
       not m10["deferred"][0].get("receipt_confirmed"),
@@ -583,6 +623,8 @@ d10c = mk_ar_data(ar2)
 c = UnifiedImportDialog(d10c, "2025-01", STAFF)
 c.show()
 rc = _deferred_row(c)
+_show_all(c)              # 4-2：已入库行落「待确认」，默认「待补录」视图里看不到 → 切「全部」
+_select(c, rc)            # 并显式选中，否则右栏读的是旧行、`_confirm_row` 也作用于旧行
 check("A2：票号已在库 → 已入库，请确认收款",
       rc["deferred"].get("need_backfill") is False
       and c._row_field(rc, "reason") == "已入库，请确认收款",
@@ -618,6 +660,9 @@ _LIB.discard("AR-2")
 d10d = mk_ar_data(mk_ar("AR-3", 5000.0, [("周立生", 5000.0)], PURE))
 e = UnifiedImportDialog(d10d, "2025-01", STAFF)
 e.show()
+re_d = _deferred_row(e)
+_show_all(e)
+_select(e, re_d)
 _MB.calls.clear()
 e._confirm_row()
 _tips = [t for _k, t in _MB.calls]
@@ -772,29 +817,6 @@ class _FakeBF:
 U.BackfillDialog = _FakeBF
 
 
-def _show_all(dlg):
-    """切到「全部」筛选。
-
-    补录后该行会离开「待确认」（归入已确认/高置信），默认筛选下会**从表里消失**——
-    这是既有语义（处理完的行不再占待确认视图），不是 bug。故断言按钮翻转 / 只读查看前
-    先切「全部」，否则 rowCount=0、右侧按钮无从更新。
-    """
-    dlg._grp.button(4).setChecked(True)
-    dlg._render()
-
-
-def _select(dlg, r):
-    """选中某一行并刷新右侧。
-
-    必须用 `setCurrentCell`（同时设「当前项」与选择）：`selectRow` 只改选择、不保证改
-    当前项，而 `_current_row()` 读的是当前项 → 只 selectRow 会让右侧读到旧行。
-    """
-    i = dlg._rows.index(r)
-    dlg.table.setCurrentCell(i, 0)
-    dlg.table.selectRow(i)
-    dlg._load_right()
-
-
 def _red_row(dlg):
     return next(r for r in dlg._rows
                 if r["kind"] == "invoice" and r["ev"]["is_red"])
@@ -864,19 +886,23 @@ check("B2g：预填取自应收账款行（票号 / 金额）",
 rb = _deferred_row(b1)
 _show_all(b1)
 _select(b1, rb)
-check("B2c：补录后该行离开「待确认」筛选（处理完即不占待确认视图）",
-      not b1._match(rb, "待确认"), rb["status"])
-check("B2h：补录后按钮翻转为「查看原票」",
-      b1.btn_backfill.isVisible() and b1.btn_backfill.text() == "查看原票",
+check("阶段4-2：补录后该行离开「待补录」、落到「待确认」（不再直接高置信）",
+      rb["status"] == "待确认" and not b1._match(rb, "待补录")
+      and b1._match(rb, "待确认"), rb["status"])
+check("阶段4-2：补录后按钮翻转为「修改补录」（D 甲）",
+      b1.btn_backfill.isVisible() and b1.btn_backfill.text() == "修改补录",
       f"vis={b1.btn_backfill.isVisible()} text={b1.btn_backfill.text()}")
-check("B2h：补录后原因列 = 已补录，待随台账入库",
-      b1._row_field(rb, "reason") == U.REASON_BACKFILL_DONE,
+check("阶段4-2：补录后原因列 = 已补录，请确认收款",
+      b1._row_field(rb, "reason") == U.REASON_BACKFILLED,
       b1._row_field(rb, "reason"))
 check("B2h：补录后不再计入「需补录原票」计数",
       "应收账款需补录原票" not in b1.lbl_summary.text(), b1.lbl_summary.text())
-check("B2h：底部出现「已填补录待随台账入库 1 张」",
-      "已填补录待随台账入库 1 张" in b1.lbl_summary.text(), b1.lbl_summary.text())
-check("B2c：补录行归入已确认（移出待确认）", rb.get("is_confirmed") is True)
+check("阶段4-2：底部出现「已补录待确认收款 1 张」",
+      "已补录待确认收款 1 张" in b1.lbl_summary.text(), b1.lbl_summary.text())
+check("阶段4-2：底部出现「本次已填补录 1 张」",
+      "本次已填补录 1 张" in b1.lbl_summary.text(), b1.lbl_summary.text())
+check("阶段4-2：补录后该行**尚未**确认（要等「确认」才离开待确认）",
+      rb.get("is_confirmed") is False)
 m11 = b1._merged_data()
 check("B2c：merged['backfills'] 携带行内补录条目",
       [x.get("invoice_no") for x in (m11.get("backfills") or [])] == ["AR-B1"],
@@ -888,6 +914,42 @@ check("B2c：需补录行不置 receipt_confirmed（本页绝不出收款）",
 check("B2c：补录不动调用方的真实 data（deferred 仍空 / 无 backfills）",
       b1_src["deferred"] == [] and not b1_src.get("backfills"),
       f"deferred={b1_src['deferred']} bf={b1_src.get('backfills')}")
+
+# ---- 11b-2) A 甲：在「待补录」里填的收款 → 落到「待确认」并**回显** ----
+# 红冲导致的补录尤其要收款信息；此处填了收款后再回显，用户才好在待确认里直接点确认。
+_LIB.clear(); _LIB_DB.clear()
+b7 = UnifiedImportDialog(
+    mk_ar_data(mk_ar("AR-B1", 5000.0, [("周立生", 5000.0)], PURE)),
+    "2025-01", STAFF)
+b7.show()
+_show_all(b7)
+_select(b7, _deferred_row(b7))
+_FakeBF.payload = {
+    "invoice_no": "AR-B1", "invoice_date": "2024-11-05", "buyer": "应收公司",
+    "total_amount": 5000.0,
+    "handlers": [{"name": "周立生", "billing": 5000.0,
+                  "received": 5000.0, "date": "2025-01", "date_raw": "2025-01"}],
+}
+b7._open_backfill()
+r7 = _deferred_row(b7)
+_show_all(b7)
+_select(b7, r7)
+check("A 甲：待补录中填的收款 → 该行转「待确认」并回显到右栏预填",
+      r7["status"] == "待确认"
+      and _htable_rows(b7.fix_panel) == [("周立生", "5000.0", "5,000.00", "2025-01")],
+      f"status={r7['status']} rows={_htable_rows(b7.fix_panel)}")
+check("A 甲：回显到「各经办人已收」列",
+      "5,000.00" in b7._recv_text(r7), b7._recv_text(r7))
+_m7 = b7._merged_data()
+_bf7 = next((x for x in (_m7.get("backfills") or [])
+             if x.get("invoice_no") == "AR-B1"), {})
+check("A 甲：回显的收款随 backfills 落库（handlers.received / date）",
+      [(h.get("name"), h.get("received"), h.get("date"))
+       for h in (_bf7.get("handlers") or [])] == [("周立生", 5000.0, "2025-01")],
+      str(_bf7))
+check("A 甲：回显后仍不置 receipt_confirmed（要显式点「确认」）",
+      not _m7["deferred"][0].get("receipt_confirmed"),
+      str(_m7["deferred"][0].get("receipt_confirmed")))
 
 # ---- 11c) 取消 → 面板不收集（一行不写） ----
 _FakeBF.payload = None

@@ -140,6 +140,10 @@ data = {
 }
 scale.set_step(2)
 dlg = UnifiedImportDialog(data, "2025-01", ["周立生"])
+# 阶段 4-2 起默认筛选 = 待补录，而本用例只有普通发票行（待确认）→ 不切「全部」表格为空、
+# rowHeight(0) 会返回 0。切「全部」后行高才可测。
+dlg._grp.button(5).setChecked(True)
+dlg._render()
 check("标准档表格行高 34", dlg.table.rowHeight(0) == 34, f"got={dlg.table.rowHeight(0)}")
 scale.set_step(4)
 dlg._render()
