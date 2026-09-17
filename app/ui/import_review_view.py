@@ -18,7 +18,9 @@
 commit_ledger_import 一次性写库；点「取消」零副作用。
 
 待确认队列跑完后，若库中仍有待补录发票（源 A 红字/退款引用原票 + 源 B 库中
-缺失的 sheet3 期外票），弹一次提示并可一跳直达「补录原票」页（唯一补录入口）。
+缺失的 sheet3 期外票），弹一次提示并可一跳直达「补录原票」页。补录有两个入口：
+本页行内「补录原票」按钮（阶段 3 B2g，随本次台账同一事务入库）与该独立页面
+（立即写库）。
 
 队列守卫三件套（阶段 2-3，A6/A7/A8）——队列是**内存态**，故须在离开路径上提醒：
 - `pending_count()` / `pending_periods()`：对外只读查询，主窗口据此渲染侧栏角标
@@ -36,6 +38,7 @@ from PySide6.QtWidgets import (
 
 from app.db import get_conn
 from app.engine.backfill import library_invoice_nos
+from app.importer.excel_reader import ImportError_
 from app.importer.importer import commit_ledger_import, validate_ledger_before_write
 from app.importer.ledger_import import split_deferred
 from app.ui.review_post_view import ReviewPostView
@@ -83,7 +86,11 @@ class ImportReviewView(QWidget):
             "双击任意行可对照原始台账行。应收账款(sheet3)的每一行也直接列在本表中："
             "票号不在库的标「需补录原票」（原票须在「补录原票」页补录），已在库的标"
             "「已入库，请确认收款」——确认后只会「追加」该票本次的台账收款，"
-            "既有历史收款不受影响。批量导入时按账期顺序逐个确认（可「跳过当前」"
+            "既有历史收款不受影响。需要补录原票时，右侧「查看原始台账行」旁边会有"
+            "「补录原票」按钮：点开即按台账已有信息预填，填好**不立即写库**，"
+            "而是随本次台账**同一事务**入库（点「取消」则一行都不写）；"
+            "补录完成后该行按钮变「查看原票」，票已在库的行也显示「查看原票」（只读）。"
+            "批量导入时按账期顺序逐个确认（可「跳过当前」"
             "或「放弃全部待确认」），确认入库后自动载入下一个账期。每个账期载入前都会"
             "按最新库状态重判一次，所以前一账期已补录/已入库的票，后续账期不会再要求"
             "重复处理。确认入库后若仍有待补录发票（红字/退款引用的原票缺失、应收账款"
@@ -312,6 +319,23 @@ class ImportReviewView(QWidget):
         self._set_mode("pre", period)
         self._refresh_queue_label()
 
+    def _reload_current_for_fix(self, item: dict) -> None:
+        """把「已合并的确认结果」重载回面板，**留在本账期继续改**（B2d 返回修改）。
+
+        `UnifiedImportDialog.accept()` 已把合并结果原地写进 `page_pre._data`
+        （含已填的 `backfills`），故直接用它重载即可 —— 用户上次的修正、就地编辑与
+        行内补录都还在，不需要整批重来。队列位置 `_idx` 不动。
+        """
+        period = item["period"]
+        validator = lambda d, _p=period: validate_ledger_before_write(d, _p)  # noqa: E731
+        try:
+            self.page_pre.load_data(item["data"], period, item["staff_names"],
+                                    item["path"], validator)
+        except Exception as e:  # noqa: BLE001 重载失败不阻断，用户可「取消」退出该账期
+            get_logger().warning("REVIEW 返回修改重载失败 period=%s: %s", period, e)
+        self._set_mode("pre", period)
+        self._refresh_queue_label()
+
     def _finish_queue(self) -> None:
         """队列处理完毕：汇总结果 → 回到导入后模式 → 返回导入页。"""
         self._queue = []
@@ -361,7 +385,8 @@ class ImportReviewView(QWidget):
             "需补录的发票有两类：\n"
             f"　· 红字 / 退款引用的原票（库中缺失）：{n_red} 张\n"
             f"　· 应收账款期外票（台账里有、库中没有）：{n_recv} 张\n\n"
-            "「补录原票」是唯一入口；两类来源都已按台账已有信息预填，"
+            "「补录原票」有两个入口：本页每行右侧的「补录原票」按钮（填好后随本次台账"
+            "一起入库），或独立的「补录原票」页；两类来源都已按台账已有信息预填，"
             "逐张核对后保存即可。补录完成后回本页，该行会转为普通比对行。")
         box.setDetailedText("\n".join(
             f"{p['invoice_no']}　{p.get('source') or ''}　"
@@ -411,6 +436,14 @@ class ImportReviewView(QWidget):
         fname = _fname(path)
         try:
             r = commit_ledger_import(self.page_pre._data, period, path)
+        except ImportError_ as e:
+            # B2d：**写前校验未通过 → 返回修改**。不跳过、不整批重来：留在本账期，
+            # 把已合并的确认结果（含已填的 backfills）重载回面板让用户就地改。
+            # 弹窗点「确认入库」时已校验过一次（validator），这里是写库前的兜底。
+            QMessageBox.warning(self, "校验未通过", str(e))
+            get_logger().warning("REVIEW 写前校验未通过（留在本账期）period=%s: %s", period, e)
+            self._reload_current_for_fix(item)
+            return
         except Exception as e:  # noqa: BLE001
             QMessageBox.warning(self, "导入失败", str(e))
             msg = f"✗ {fname}: {e}"
@@ -430,6 +463,8 @@ class ImportReviewView(QWidget):
             self._fix_log_failed = True
         extra = (f", {r['deferred_count']} 张应收账款期外票转入补录原票"
                  if r.get("deferred_count") else "")
+        if r.get("backfill_count"):
+            extra += f", {r['backfill_count']} 张补录原票随本次入库"
         msg = (f"✓ 发票台账 {period}: {r['invoice_count']} 张发票, "
                f"{r['prepayment_count']} 条预收款{extra}")
         self.import_finished.emit(fname, "ledger", period, msg, True)

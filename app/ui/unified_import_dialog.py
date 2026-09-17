@@ -23,6 +23,16 @@
     **追加**该票收款（仅本批，绝不删历史）；
   · 需补录行 → 只记录修正结果（原票入库属补录流程），不入库任何收款。
 - 确认入库：未处理的问题行自动跳过；已收覆盖值按发票下标回写真实数据
+- **行内「补录原票」按钮**（阶段 3 B2g/B2h）：右侧按钮行在「查看原始台账行」之后
+  多一枚按钮，按当前行给出补录入口：
+  · 应收账款行「需补录原票」/ 红字发票行引用不到原票 → **「补录原票」**，弹
+    `BackfillDialog`（与「发票补录」页同一个类）；
+  · 票已在库 → **「查看原票」**（只读查看，原票无需补录）；
+  · 已填过补录 → 按钮同样显示「查看原票」，可再改。
+  补录结果**不立即写库**，收集进 `data["backfills"]`（B2c），随台账**同一事务**入库
+  （`commit_ledger_import`）；点「取消」一行都不写。
+  红字行的原票号用 `SELECT orig_invoice_no FROM invoice WHERE invoice_no=?` 反查
+  （查 `invoice` 表 —— `raw_invoice` 无此列），取不到则按钮不出现。
 
 数据流：真实 data 全程不被修改，修正只作用于工作副本；点「确认入库」时才一次性
 把 resolved 合并进真实 data。点「取消」真实 data 保持原样。
@@ -41,10 +51,13 @@ from PySide6.QtWidgets import (
     QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
+from app.db import get_conn
+from app.engine.backfill_module import load_invoice_detail, prefill_red_original
 from app.engine.import_confidence import SHEET_LABEL, evaluate, receipt_summary
 from app.engine.raw_ledger import expand_receipts
 from app.importer.excel_reader import ImportError_
 from app.ui import scale
+from app.ui.backfill_dialog import BackfillDialog, backfill_validator
 from app.ui.ledger_source import show_ledger_source
 from app.ui.preview_dialog import _fmt_money
 from app.ui.problem_fix_panel import ProblemFixPanel
@@ -62,6 +75,8 @@ DIFF_BG = QColor("#FDF1F0")
 REASON_BACKFILL = "需补录原票"
 REASON_IN_LIBRARY = "已入库，请确认收款"
 REASON_NO_DOUBT = "✓ 系统判定无疑问"
+# B2h：本次已填过补录（尚未入库）——第四态
+REASON_BACKFILL_DONE = "已补录，待随台账入库"
 
 HEADERS = [
     "状态", "类型", "来源", "发票号", "购方", "金额",
@@ -113,6 +128,9 @@ class UnifiedImportDialog(QWidget):
         # 以及用户「确认」过的 deferred 下标（已入库行据此置 receipt_confirmed → A10 写收款）
         self._deferred_edits: Dict[int, dict] = {}
         self._deferred_confirmed: set = set()
+        # 阶段 3（B2c）：行内「补录原票」收集到的补录条目 —— 票号 → 条目
+        # （不写库；随台账同一事务入库，点「取消」一行都不写）
+        self._backfills: Dict[str, dict] = {}
         self._idx_to_p: Dict[int, int] = {}      # work invoices 下标 -> problem index
         self._confirmed: set = set()             # 已点「确认」的 work invoice 下标集合
         self._rows: List[Dict] = []
@@ -220,6 +238,13 @@ class UnifiedImportDialog(QWidget):
         self._inv_edits = {}
         self._deferred_edits = {}
         self._deferred_confirmed = set()
+        # B2c：以 data 里已有的 backfills 为起点（「入库不过 → 返回修改」会重载同一份
+        # data，已填的补录不能丢；按钮态与「原因」列也据此还原）
+        self._backfills = {
+            (b.get("invoice_no") or "").strip(): b
+            for b in (data.get("backfills") or [])
+            if (b.get("invoice_no") or "").strip()
+        }
         self._idx_to_p = {}
         self._confirmed = set()
         self._rows = []
@@ -270,6 +295,11 @@ class UnifiedImportDialog(QWidget):
         self.btn_source = PushButton("查看原始台账行")
         self.btn_source.clicked.connect(self._show_source)
         row_btn.addWidget(self.btn_source)
+        # 阶段 3（B2g）：行内补录入口 —— 文案随当前行在「补录原票 / 查看原票」间切换
+        self.btn_backfill = PushButton("补录原票")
+        self.btn_backfill.clicked.connect(self._open_backfill)
+        self.btn_backfill.setVisible(False)
+        row_btn.addWidget(self.btn_backfill)
         row_btn.addStretch()
         rv.addLayout(row_btn)
 
@@ -518,7 +548,10 @@ class UnifiedImportDialog(QWidget):
                 src = (d.get("handler_text") or "").replace("\n", " ").strip()
                 return f"{parsed}　〔源填写〕{src}" if src else parsed
             if key == "reason":
-                # A2：三种状态 —— 需补录原票 / 已入库，请确认收款 / 系统判定无疑问
+                # A2：三态 + B2h 第四态 —— 需补录原票 / 已补录待入库 /
+                # 已入库请确认收款 / 系统判定无疑问
+                if (d.get("invoice_no") or "").strip() in self._backfills:
+                    return REASON_BACKFILL_DONE
                 return REASON_BACKFILL if d.get("need_backfill") else REASON_IN_LIBRARY
             if key == "kind":
                 return "应收账款"
@@ -573,9 +606,13 @@ class UnifiedImportDialog(QWidget):
                 if c == COL_REASON and r["kind"] == "invoice":
                     item.setForeground(GREEN if not r["ev"]["reasons"] else AMBER)
                 if c == COL_REASON and r["kind"] == "deferred":
-                    # 需补录原票（要去补录页）用琥珀，已入库待确认收款（在本页处理）用蓝
-                    item.setForeground(
-                        AMBER if (r["deferred"] or {}).get("need_backfill") else BLUE)
+                    # 需补录原票（要去补录）用琥珀；已补录待入库用绿；已入库待确认收款用蓝
+                    _dno = ((r["deferred"] or {}).get("invoice_no") or "").strip()
+                    if _dno in self._backfills:
+                        item.setForeground(GREEN)
+                    else:
+                        item.setForeground(
+                            AMBER if (r["deferred"] or {}).get("need_backfill") else BLUE)
                 if r["status"] == "待确认":
                     item.setBackground(DIFF_BG)
                 if r["status"] == "已跳过":
@@ -607,13 +644,17 @@ class UnifiedImportDialog(QWidget):
         # 应收账款(sheet3)行：本次不落 invoice/分摊；「已入库」行确认后只追加收款（A10），
         # 「需补录」行由「补录原票」逐张确认（方案 A）。此处把两类计数摊到汇总可见。
         n_need = sum(1 for r in self._rows if r["kind"] == "deferred"
-                     and (r["deferred"] or {}).get("need_backfill"))
+                     and (r["deferred"] or {}).get("need_backfill")
+                     and ((r["deferred"] or {}).get("invoice_no") or "").strip()
+                     not in self._backfills)
         n_inlib = sum(1 for r in self._rows if r["kind"] == "deferred"
                       and not (r["deferred"] or {}).get("need_backfill"))
+        n_bf = len(self._backfills)   # B2h：底部计数随行内补录同步
         self.lbl_summary.setText(
             f"发票 {n_high + n_pending} 张，合计 ¥{inv_total:,.2f}　"
             f"预收款 {len(pp)} 条，合计 ¥{pp_total:,.2f}"
             + (f"　·　应收账款需补录原票 {n_need} 张" if n_need else "")
+            + (f"　·　已填补录待随台账入库 {n_bf} 张" if n_bf else "")
             + (f"　·　应收账款已入库待确认收款 {n_inlib} 张" if n_inlib else "")
         )
 
@@ -742,6 +783,7 @@ class UnifiedImportDialog(QWidget):
             self.fix_panel.set_problem(None)
             self.fix_panel.setVisible(False)
             self._set_actions()
+            self._set_backfill_button(None)
             return
         for key in ("src", "no", "buyer", "amt", "receipt", "remark", "reason"):
             self._info[key].setText(self._row_field(r, key))
@@ -774,6 +816,8 @@ class UnifiedImportDialog(QWidget):
             self.fix_panel.setVisible(True)
             self.fix_panel.set_problem(r["problem"])
             self._set_actions(save=True, skip=(r["status"] == "待确认"))
+        # 阶段 3（B2g/B2h）：行内补录按钮的可见性与文案（随行类型/票号是否在库切换）
+        self._set_backfill_button(r)
 
     def _set_actions(self, *, save: bool = False, skip: bool = False,
                      refix: bool = False, confirm: bool = False,
@@ -783,6 +827,157 @@ class UnifiedImportDialog(QWidget):
         self.btn_refix.setVisible(refix)
         self.btn_confirm_row.setVisible(confirm)
         self.btn_edit.setVisible(edit)
+
+    # ------------------------------------------------------------------ #
+    # 行内「补录原票」（阶段 3 B2g/B2h）
+    # ------------------------------------------------------------------ #
+    def _red_orig_no(self, red_invoice_no: str) -> str:
+        """红字发票号 → 其引用的原票号（查 `invoice` 表，销项导入时已写入该列）。
+
+        `raw_invoice` 镜像表**没有** `orig_invoice_no` 列（它是从 remark 现算的），
+        故必须查 `invoice`。查不到（该红字票不在销项）返回空串。
+        """
+        no = (red_invoice_no or "").strip()
+        if not no:
+            return ""
+        conn = get_conn()
+        try:
+            row = conn.execute(
+                "SELECT orig_invoice_no FROM invoice WHERE invoice_no=?", (no,)).fetchone()
+        except Exception:  # noqa: BLE001 反查失败只影响按钮是否出现，不影响导入
+            return ""
+        finally:
+            conn.close()
+        return ((row["orig_invoice_no"] if row else "") or "").strip()
+
+    def _invoice_in_library(self, invoice_no: str) -> bool:
+        no = (invoice_no or "").strip()
+        if not no:
+            return False
+        conn = get_conn()
+        try:
+            return conn.execute("SELECT 1 FROM invoice WHERE invoice_no=?", (no,)).fetchone() is not None
+        except Exception:  # noqa: BLE001
+            return False
+        finally:
+            conn.close()
+
+    def _row_backfill_target(self, r: Dict) -> tuple | None:
+        """当前行是否有补录入口 → (要补/要看的票号, 该票是否已在库)；不适用返回 None。
+
+        语义差异（§8 第 3 点）：
+        - 应收账款(deferred)行：补**它自己**（行上票号即待补原票；
+          已在库 = `need_backfill` 为假）；
+        - 红字发票(invoice)行：补**它引用的原票**（票号经 `_red_orig_no` 反查），
+          取不到原票号 → 无入口（可接受）。
+        """
+        if r["kind"] == "deferred":
+            d = r["deferred"] or {}
+            no = (d.get("invoice_no") or "").strip()
+            if not no:
+                return None
+            return (no, not d.get("need_backfill"))
+        if r["kind"] == "invoice":
+            ev = r.get("ev") or {}
+            if not ev.get("is_red"):
+                return None
+            orig = self._red_orig_no(ev.get("invoice_no") or "")
+            if not orig:
+                return None
+            return (orig, self._invoice_in_library(orig))
+        return None
+
+    def _set_backfill_button(self, r: Dict | None) -> None:
+        """按当前行切换「补录原票 / 查看原票」（B2g 文案 + B2h 刷新）。"""
+        tgt = self._row_backfill_target(r) if r is not None else None
+        if tgt is None:
+            self.btn_backfill.setVisible(False)
+            return
+        no, in_lib = tgt
+        self.btn_backfill.setText("查看原票" if (in_lib or no in self._backfills)
+                                  else "补录原票")
+        self.btn_backfill.setVisible(True)
+
+    def _backfill_prefill(self, r: Dict, no: str) -> dict:
+        """按行来源预填补录弹窗（与「发票补录」页 `open_backfill_pending` 同口径）。"""
+        if r["kind"] == "deferred":
+            d = r["deferred"] or {}
+            return {
+                "invoice_no": no,
+                "invoice_date": d.get("invoice_date") or "",
+                "buyer": d.get("buyer") or "",
+                "total_amount": d.get("total_amount") or 0.0,
+                "handlers": [
+                    {"name": n, "billing": float(b or 0.0), "received": 0.0, "date": ""}
+                    for n, b in (d.get("handlers") or [])
+                ],
+            }
+        # 红字行：补的是它引用的原票 —— 原票开票日期不可知（留空手填），
+        # 购方/金额/经办人取红字发票做参考（与补录页 prefill_red_original 同一函数）
+        conn = get_conn()
+        try:
+            return prefill_red_original(conn, no)
+        except Exception:  # noqa: BLE001
+            return {"invoice_no": no, "invoice_date": "", "buyer": "",
+                    "total_amount": None, "handlers": []}
+        finally:
+            conn.close()
+
+    def _validate_backfill(self, data: dict, editing_no: str = "") -> str | None:
+        """弹窗内的写前校验（B2d 第一次）：与写库同源 + 先拦「本次已填过同票号」。"""
+        err = backfill_validator(data)
+        if err:
+            return err
+        no = (data.get("invoice_no") or "").strip()
+        if no and no != editing_no and no in self._backfills:
+            return (f"票号 {no} 本次已填过补录，请只保留一份"
+                    "（如需修改，请点该行的「查看原票」）。")
+        return None
+
+    def _open_backfill(self) -> None:
+        """行内按钮：补录 / 查看原票。
+
+        **不立即写库**（B2c）：确定后只把结果收集进 `self._backfills`；
+        点「确认入库」时随台账同一事务入库，点「取消」一行都不写。
+        """
+        r = self._current_row()
+        if r is None:
+            return
+        tgt = self._row_backfill_target(r)
+        if tgt is None:
+            return
+        no, in_lib = tgt
+        existing = self._backfills.get(no)
+        # ① 票已在库且本次没填过 → 只读查看（原票无需补录）
+        if in_lib and existing is None:
+            dlg = BackfillDialog(load_invoice_detail(no), title="查看原票",
+                                 readonly=True, parent=self)
+            dlg.exec()
+            return
+        # ② 已填过 → 预填已填内容可继续改；③ 未填过 → 按行信息预填
+        if existing is not None:
+            prefill = existing
+        else:
+            prefill = self._backfill_prefill(r, no)
+        dlg = BackfillDialog(
+            prefill, title="补录原票",
+            validator=lambda d, _k=no: self._validate_backfill(d, _k),
+            parent=self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        item = dict(dlg.data() or {})
+        if not item:
+            return
+        # 复核页当前只产出 create=True（已在库票走 ① 只读查看）。
+        # create=False（票已在库、只追加收款）是引擎侧与 A10 共用的统一通道。
+        item["create"] = True
+        self._backfills[(item.get("invoice_no") or "").strip()] = item
+        if r["kind"] == "deferred" and r.get("d_index") is not None:
+            # 该行已处理（原票将随台账入库）→ 移出「待确认」；need_backfill 行在
+            # _merged_data 里明确不出收款，故这里只是显示态与计数同步。
+            self._deferred_confirmed.add(r["d_index"])
+        # B2h：刷新当前行（按钮切「查看原票」、原因/底部计数同步）
+        self._rebuild()
 
     def _show_source(self) -> None:
         r = self._current_row()
@@ -887,7 +1082,8 @@ class UnifiedImportDialog(QWidget):
                 QMessageBox.information(
                     self, "需补录原票",
                     f"发票 {d.get('invoice_no') or '—'} 的原票不在库中，本页只记录核对结果，"
-                    "不会写入任何数据。\n\n请在「补录原票」页补录该原票；补录入库后本行会"
+                    "不会写入任何数据。\n\n请在「补录原票」页补录该原票，或直接用右侧"
+                    "「补录原票」按钮就地填写（随本次台账一起入库）；补录入库后本行会"
                     "自动转为「已入库，请确认收款」。")
             return
         if r["kind"] != "invoice" or r["work_idx"] is None:
@@ -961,6 +1157,18 @@ class UnifiedImportDialog(QWidget):
             ]
             # 用户在复核页确认过收款 → commit_ledger_import（A10）据此**追加** collection
             d["receipt_confirmed"] = True
+
+        # 阶段 3（B2c）：行内「补录原票」收集到的条目随 data 一起流转
+        # （天然按账期隔离）→ 由 commit_ledger_import 在同一事务写库。
+        # data 里已有的（如「入库不过 → 返回修改」重载同一份 data）先保留，
+        # 面板内的（可能改过）覆盖之。
+        bf_map = {
+            (b.get("invoice_no") or "").strip(): b
+            for b in (merged.get("backfills") or [])
+            if (b.get("invoice_no") or "").strip()
+        }
+        bf_map.update(self._backfills)
+        merged["backfills"] = list(bf_map.values())
 
         # 已收覆盖值按「原始解析下标」回写（历史弹窗路径，现已停用，保留兼容）
         invoices = merged.get("invoices", [])

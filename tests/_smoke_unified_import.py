@@ -11,6 +11,10 @@
 - 阶段 2-2（第 10 节）：A1 应收账款(sheet3)行进表 / A2 原因三态 / A3 就地编辑回写
   （需补录行不出收款；已在库行「确认」后置 receipt_confirmed 交 A10 追加收款；
    A11 多期收款展开为同名多行，合计仍等于开票总额）
+- 阶段 3（第 11 节）：B2g 行内「补录原票 / 查看原票」按钮（需补录行、普通发票行、
+  已在库行、红字行取原票号四态）／B2c **不立即写库**（确定只收集进 `_backfills`、
+  取消一行不写）／B2h 补录后按钮翻转 + 原因「已补录，待随台账入库」+ 底部计数同步／
+  B2d/B2e 写前校验与「本次已填过同票号」拦截。
 """
 import os
 import sys
@@ -686,6 +690,301 @@ check("A1：未确认收款的已入库行不置 receipt_confirmed（不误写�
       not (d10f.get("deferred") or [{}])[0].get("receipt_confirmed"),
       str((d10f.get("deferred") or [{}])[0].get("receipt_confirmed")))
 _LIB.discard("AR-4")
+
+
+# ------------------------------------------- 11) 阶段 3：行内「补录原票」（B2g/B2h/B2c/B2d）
+# 本冒烟不碰真实 DB：get_conn / prefill_red_original / load_invoice_detail 全打桩，
+# BackfillDialog 换桩（记录构造参数 + 可指定返回值），只验证**复核页自身**的行为。
+_RED: dict = {}        # 红字票号 → 其引用原票号（_red_orig_no 直查）
+_LIB_DB: set = set()   # _invoice_in_library 直查的「已在库」票号
+
+
+def _set_in_lib(no, flag):
+    """同时改两处「已在库」口径：`_LIB`（驱动 need_backfill 的 library_invoice_nos）
+    与 `_LIB_DB`（面板按钮直查的 invoice 表）。真实运行时两者同源（同一个库）。"""
+    (_LIB.add if flag else _LIB.discard)(no)
+    (_LIB_DB.add if flag else _LIB_DB.discard)(no)
+
+
+class _Cur11:
+    def __init__(self, one=None):
+        self._one = one
+
+    def fetchone(self):
+        return self._one
+
+    def fetchall(self):
+        return []
+
+    def __iter__(self):
+        return iter(())
+
+
+class _Conn11:
+    """极简连接桩：只为 `_red_orig_no` / `_invoice_in_library` 两条查询服务。"""
+
+    def execute(self, sql, params=()):
+        s = " ".join(str(sql).lower().split())
+        p = tuple(params or ())
+        if "orig_invoice_no from invoice" in s:
+            red = p[0] if p else ""
+            return _Cur11({"orig_invoice_no": _RED[red]} if red in _RED else None)
+        if s.startswith("select 1 from invoice"):
+            return _Cur11({"1": 1} if (p[0] if p else "") in _LIB_DB else None)
+        return _Cur11(None)
+
+    def close(self):
+        pass
+
+
+U.get_conn = lambda: _Conn11()
+U.load_invoice_detail = lambda no: {
+    "invoice_no": no, "invoice_date": "2024-01-01", "buyer": "库中购方",
+    "total_amount": 900.0, "handlers": [{"name": "周立生", "billing": 900.0}]}
+U.prefill_red_original = lambda conn, no: {
+    "invoice_no": no, "invoice_date": "", "buyer": "红字参考购方",
+    "total_amount": 3000.0,
+    "handlers": [{"name": "周立生", "billing": 3000.0, "received": 0.0, "date": ""}]}
+
+
+class _FakeBF:
+    """`BackfillDialog` 桩：`payload` = 确定返回的数据；None = 用户取消。
+
+    `seen` 逐次记录构造参数（title / readonly / prefill），供断言「弹的是补录还是查看」。
+    """
+    payload = None
+    seen: list = []
+
+    def __init__(self, prefill=None, *, title="", locked_no=False,
+                 readonly=False, validator=None, parent=None):
+        type(self).seen.append({"title": title, "readonly": readonly,
+                                "prefill": dict(prefill or {}), "validator": validator})
+
+    def exec(self):
+        return (U.QDialog.DialogCode.Accepted
+                if type(self).payload is not None
+                else U.QDialog.DialogCode.Rejected)
+
+    def data(self):
+        return dict(type(self).payload or {})
+
+
+U.BackfillDialog = _FakeBF
+
+
+def _show_all(dlg):
+    """切到「全部」筛选。
+
+    补录后该行会离开「待确认」（归入已确认/高置信），默认筛选下会**从表里消失**——
+    这是既有语义（处理完的行不再占待确认视图），不是 bug。故断言按钮翻转 / 只读查看前
+    先切「全部」，否则 rowCount=0、右侧按钮无从更新。
+    """
+    dlg._grp.button(4).setChecked(True)
+    dlg._render()
+
+
+def _select(dlg, r):
+    """选中某一行并刷新右侧。
+
+    必须用 `setCurrentCell`（同时设「当前项」与选择）：`selectRow` 只改选择、不保证改
+    当前项，而 `_current_row()` 读的是当前项 → 只 selectRow 会让右侧读到旧行。
+    """
+    i = dlg._rows.index(r)
+    dlg.table.setCurrentCell(i, 0)
+    dlg.table.selectRow(i)
+    dlg._load_right()
+
+
+def _red_row(dlg):
+    return next(r for r in dlg._rows
+                if r["kind"] == "invoice" and r["ev"]["is_red"])
+
+
+def _plain_row(dlg):
+    return next(r for r in dlg._rows
+                if r["kind"] == "invoice" and not r["ev"]["is_red"])
+
+
+def mk_red_data():
+    """含一张红字发票（引用 ORIG-9）与一张普通高置信发票。"""
+    red = mk_inv("RED-1", -3000.0, sheet="sheet1",
+                 remark={"receipts": [], "remaining": None, "pure_date": None})
+    red["is_red"] = True
+    return {
+        "period": "2025-01",
+        "invoices": [red, mk_inv("INV-HI", 1000.0,
+                                 remark={"receipts": [("2025-01", 0)],
+                                         "remaining": None, "pure_date": None})],
+        "prepayments": [], "problems": [], "deferred": [],
+        "sheet_totals": {"sheet1": -2000.0}, "sheet12_total": -2000.0,
+    }
+
+
+BF_PAYLOAD = {
+    "invoice_no": "AR-B1", "invoice_date": "2024-11-05", "buyer": "应收公司",
+    "total_amount": 5000.0,
+    "handlers": [{"name": "周立生", "billing": 5000.0,
+                  "received": 0.0, "date": "", "date_raw": ""}],
+}
+
+# ---- 11a) 按钮可见性：需补录行有、普通发票行无 ----
+_RED.clear(); _LIB_DB.clear(); _LIB.clear()
+_FakeBF.payload = None; _FakeBF.seen.clear()
+b1_src = mk_ar_data(mk_ar("AR-B1", 5000.0, [("周立生", 5000.0)], PURE))
+b1 = UnifiedImportDialog(b1_src, "2025-01", STAFF)
+b1.show()
+_show_all(b1)
+_select(b1, _deferred_row(b1))
+check("B2g：需补录行显示「补录原票」按钮",
+      b1.btn_backfill.isVisible() and b1.btn_backfill.text() == "补录原票",
+      f"vis={b1.btn_backfill.isVisible()} text={b1.btn_backfill.text()}")
+_select(b1, _plain_row(b1))
+check("B2g：普通发票行不显示补录按钮", not b1.btn_backfill.isVisible())
+
+# ---- 11b) 确定 → 收集（不写库）+ 按钮翻转 + 原因四态 + 计数同步 ----
+_select(b1, _deferred_row(b1))
+_FakeBF.seen.clear()
+_FakeBF.payload = dict(BF_PAYLOAD)
+b1._open_backfill()
+check("B2c：确定后收集进面板（不立即写库）", "AR-B1" in b1._backfills,
+      str(b1._backfills))
+check("B2c：条目 create=True（复核页只产出新增口径）",
+      (b1._backfills.get("AR-B1") or {}).get("create") is True,
+      str(b1._backfills.get("AR-B1")))
+check("B2g：弹出的是「补录原票」且非只读",
+      _FakeBF.seen and _FakeBF.seen[-1]["title"] == "补录原票"
+      and _FakeBF.seen[-1]["readonly"] is False, str(_FakeBF.seen[-1:]))
+check("B2g：补录弹窗挂了写前校验（validator 非空）",
+      _FakeBF.seen and _FakeBF.seen[-1]["validator"] is not None)
+check("B2g：预填取自应收账款行（票号 / 金额）",
+      _FakeBF.seen
+      and _FakeBF.seen[-1]["prefill"].get("invoice_no") == "AR-B1"
+      and abs((_FakeBF.seen[-1]["prefill"].get("total_amount") or 0) - 5000.0) < 0.01,
+      str(_FakeBF.seen[-1]["prefill"]))
+rb = _deferred_row(b1)
+_show_all(b1)
+_select(b1, rb)
+check("B2c：补录后该行离开「待确认」筛选（处理完即不占待确认视图）",
+      not b1._match(rb, "待确认"), rb["status"])
+check("B2h：补录后按钮翻转为「查看原票」",
+      b1.btn_backfill.isVisible() and b1.btn_backfill.text() == "查看原票",
+      f"vis={b1.btn_backfill.isVisible()} text={b1.btn_backfill.text()}")
+check("B2h：补录后原因列 = 已补录，待随台账入库",
+      b1._row_field(rb, "reason") == U.REASON_BACKFILL_DONE,
+      b1._row_field(rb, "reason"))
+check("B2h：补录后不再计入「需补录原票」计数",
+      "应收账款需补录原票" not in b1.lbl_summary.text(), b1.lbl_summary.text())
+check("B2h：底部出现「已填补录待随台账入库 1 张」",
+      "已填补录待随台账入库 1 张" in b1.lbl_summary.text(), b1.lbl_summary.text())
+check("B2c：补录行归入已确认（移出待确认）", rb.get("is_confirmed") is True)
+m11 = b1._merged_data()
+check("B2c：merged['backfills'] 携带行内补录条目",
+      [x.get("invoice_no") for x in (m11.get("backfills") or [])] == ["AR-B1"],
+      str(m11.get("backfills")))
+check("B2c：merged 中该行仍 need_backfill=True（送补录页口径不变）",
+      m11["deferred"][0].get("need_backfill") is True)
+check("B2c：需补录行不置 receipt_confirmed（本页绝不出收款）",
+      not m11["deferred"][0].get("receipt_confirmed"))
+check("B2c：补录不动调用方的真实 data（deferred 仍空 / 无 backfills）",
+      b1_src["deferred"] == [] and not b1_src.get("backfills"),
+      f"deferred={b1_src['deferred']} bf={b1_src.get('backfills')}")
+
+# ---- 11c) 取消 → 面板不收集（一行不写） ----
+_FakeBF.payload = None
+b2 = UnifiedImportDialog(
+    mk_ar_data(mk_ar("AR-B2", 5000.0, [("周立生", 5000.0)], PURE)),
+    "2025-01", STAFF)
+b2.show()
+_show_all(b2)
+_select(b2, _deferred_row(b2))
+b2._open_backfill()
+check("B2c：取消 → 面板不收集（一行不写）", b2._backfills == {}, str(b2._backfills))
+check("B2c：取消后按钮仍为「补录原票」", b2.btn_backfill.text() == "补录原票",
+      b2.btn_backfill.text())
+check("B2c：取消后底部无「已填补录」计数",
+      "已填补录" not in b2.lbl_summary.text(), b2.lbl_summary.text())
+check("B2c：取消后仍计入「需补录原票 1 张」",
+      "应收账款需补录原票 1 张" in b2.lbl_summary.text(), b2.lbl_summary.text())
+check("B2c：取消 → merged 无 backfills", not (b2._merged_data().get("backfills")))
+
+# ---- 11d) 票已在库且未填过 → 只读「查看原票」（不收集） ----
+_set_in_lib("AR-B3", True)
+_FakeBF.seen.clear()
+b3 = UnifiedImportDialog(
+    mk_ar_data(mk_ar("AR-B3", 5000.0, [("周立生", 5000.0)], PURE)),
+    "2025-01", STAFF)
+b3.show()
+_show_all(b3)
+_select(b3, _deferred_row(b3))
+check("B2g：已在库行按钮文案 = 查看原票", b3.btn_backfill.text() == "查看原票",
+      b3.btn_backfill.text())
+check("B2g：已在库行原因 = 已入库，请确认收款",
+      b3._row_field(_deferred_row(b3), "reason") == "已入库，请确认收款",
+      b3._row_field(_deferred_row(b3), "reason"))
+b3._open_backfill()
+check("B2g：已在库且未填过 → 弹只读「查看原票」",
+      _FakeBF.seen and _FakeBF.seen[-1]["readonly"] is True
+      and _FakeBF.seen[-1]["title"] == "查看原票", str(_FakeBF.seen[-1:]))
+check("B2g：只读查看不收集补录", b3._backfills == {})
+_set_in_lib("AR-B3", False)
+
+# ---- 11e) 红字行：补的是「其引用原票」，票号经 _red_orig_no 反查 ----
+_RED["RED-1"] = "ORIG-9"
+b4 = UnifiedImportDialog(mk_red_data(), "2025-01", STAFF)
+b4.show()
+_show_all(b4)
+_select(b4, _red_row(b4))
+check("B2g：红字行按钮指向其引用原票（补录原票）",
+      b4.btn_backfill.isVisible() and b4.btn_backfill.text() == "补录原票",
+      f"vis={b4.btn_backfill.isVisible()} text={b4.btn_backfill.text()}")
+_FakeBF.seen.clear()
+_FakeBF.payload = {
+    "invoice_no": "ORIG-9", "invoice_date": "2024-06-01", "buyer": "红字参考购方",
+    "total_amount": 3000.0,
+    "handlers": [{"name": "周立生", "billing": 3000.0,
+                  "received": 0.0, "date": "", "date_raw": ""}],
+}
+b4._open_backfill()
+check("B2c：红字行补录收集的是「引用原票」号（不是红字票号）",
+      "ORIG-9" in b4._backfills and "RED-1" not in b4._backfills,
+      str(list(b4._backfills)))
+check("B2g：红字行预填走 prefill_red_original（票号=原票）",
+      _FakeBF.seen and _FakeBF.seen[-1]["prefill"].get("invoice_no") == "ORIG-9",
+      str(_FakeBF.seen[-1:]))
+# 原票已在库 → 红字行只读查看
+_set_in_lib("ORIG-9", True)
+b5 = UnifiedImportDialog(mk_red_data(), "2025-01", STAFF)
+b5.show()
+_show_all(b5)
+_select(b5, _red_row(b5))
+check("B2g：原票已在库 → 红字行按钮变「查看原票」", b5.btn_backfill.text() == "查看原票",
+      b5.btn_backfill.text())
+_set_in_lib("ORIG-9", False)
+# 反查不到原票号 → 无入口（按钮隐藏）
+_RED.clear()
+b6 = UnifiedImportDialog(mk_red_data(), "2025-01", STAFF)
+b6.show()
+_show_all(b6)
+_select(b6, _red_row(b6))
+check("B2g：红字行取不到原票号 → 无补录入口（按钮隐藏）",
+      not b6.btn_backfill.isVisible())
+
+# ---- 11f) 写前校验（B2d）与「本次已填过同票号」（B2e） ----
+_orig_validator = U.backfill_validator
+U.backfill_validator = lambda d: (None if (d.get("total_amount") or 0) > 0
+                                  else "价税合计必须大于 0")
+check("B2d：票号未填过 + 校验通过 → 放行",
+      b1._validate_backfill({"invoice_no": "NEW-1", "total_amount": 1000.0}) is None)
+_err_dup = b1._validate_backfill({"invoice_no": "AR-B1", "total_amount": 1000.0})
+check("B2e：本次已填过同票号 → 拦下并给出可读提示",
+      bool(_err_dup) and "AR-B1" in _err_dup, str(_err_dup))
+check("B2e：编辑同一票号（editing_no 相同）→ 放行",
+      b1._validate_backfill({"invoice_no": "AR-B1", "total_amount": 1000.0},
+                            editing_no="AR-B1") is None)
+check("B2d：写前校验不过 → 原样返回错误文案",
+      b1._validate_backfill({"invoice_no": "NEW-2", "total_amount": 0.0})
+      == "价税合计必须大于 0")
+U.backfill_validator = _orig_validator
 
 
 # ------------------------------------------- 汇总

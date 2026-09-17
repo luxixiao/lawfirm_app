@@ -1,7 +1,7 @@
 # 补录改造 · 阶段执行计划（Stage Plan）
 
 日期：2026-09-16　分支：`feat/expense-staff-tweaks`
-状态：**阶段 0 / 1 / 2 已完成并推送；阶段 3（pending 补录随批入库）未开工**
+状态：**阶段 0 / 1 / 2 / 3 全部完成并推送**（阶段 3 = 3-1 `e25022d` / 3-2 `f85da3f` / 3-3 本次提交）
 
 | 阶段 | 提交 | 落地项 |
 |---|---|---|
@@ -9,8 +9,10 @@
 | 1 引擎口径 | `02ddfa6` | 判定只看票号 + A4 校验 + 在库票不抹历史收款 |
 | 2-1 引擎/落库 | `18622ef` | A5 判定刷新 + A10 确认收款写库 + A11 多期预填展开 |
 | 2-2 复核页 | `da4fde2` | A1 应收账款行进队列 + A2 右栏三态 + A3 就地编辑回写 |
-| **2-3 守卫/提示** | 本次提交 | **A6 离开确认 + A7 侧栏角标/提示条 + A8 台账守卫 + A9 关闭确认** |
-| 3 补录入库 | — | B2a–B2k（pending 同事务入库 + 行内「补录原票」按钮） |
+| 2-3 守卫/提示 | `dc0c3ba` | A6 离开确认 + A7 侧栏角标/提示条 + A8 台账守卫 + A9 关闭确认 |
+| 3-1 引擎层 | `e25022d` | B2a build/apply 拆分 + B2b 补录随台账**同事务**入库 + B2d 校验两次 |
+| 3-2 弹窗抽取 | `f85da3f` | B2f `BackfillDialog`（复核页与补录页共用） |
+| 3-3 行内按钮 | 本次提交 | B2c 收集进 `data["backfills"]` + B2g/B2h 行内「补录原票」按钮 + B2e 重复票号拦截 |
 
 依据文档：`docs/backfill-decision-plan-2026-09-16.md`（口径与决策；本次复查结论见其第十二节）
 
@@ -26,9 +28,12 @@
 阶段 2  复核期    A1–A11：期外票进队列 + 就地修改 + 判定刷新 + 提示/守卫 + deferred 写库
                  ├─ 2-1 引擎/落库  A5 · A10 · A11                    ✅ 18622ef
                  ├─ 2-2 复核页    A1 · A2 · A3                      ✅ da4fde2
-                 └─ 2-3 守卫/提示  A6 · A7 · A8 · A9                 ✅ 本次提交
+                 └─ 2-3 守卫/提示  A6 · A7 · A8 · A9                 ✅ dc0c3ba
    ↓
-阶段 3  补录入库  B2a–B2k：pending 模式（同事务）+ 行内「补录原票」按钮 + BackfillDialog 抽取   ← 未开工
+阶段 3  补录入库  B2a–B2k：pending 模式（同事务）+ 行内「补录原票」按钮 + BackfillDialog 抽取
+                 ├─ 3-1 引擎层    B2a · B2b · B2d                    ✅ e25022d
+                 ├─ 3-2 弹窗抽取  B2f                              ✅ f85da3f
+                 └─ 3-3 行内按钮  B2c · B2e · B2g · B2h · B2i/B2k   ✅ 本次提交
 ```
 
 **每阶段独立可交付、独立验收、独立回滚点**；上一阶段验收通过前不进入下一阶段（confirm-per-batch）。
@@ -172,12 +177,57 @@
 | B2h | 同上 | 补录完成后**刷新当前行**（按钮切「查看原票」、状态更新、底部计数同步） |
 | B2i | `app/ui/manual_entry_view.py` | 「发票补录」页保持**立即写库**不变（独立页面、不属任何批次） |
 
+### 【3-1/3-2/3-3 实现说明】（2026-09-17 落地，与上文表格的差异以此为准）
+
+- **B2a 落地形态**：`save_backfill()` 拆成 `build_backfill(conn, data)`（纯计算 + 校验，
+  返回 `{invoice_no, invoice_date, buyer, total_amount, charge, collections}`）与
+  `apply_backfill(conn, payload)`（用**传入的** conn 写入、**不 commit / 不 close**）。
+  `save_backfill()` = 两者 + 自开连接 commit，**仅「发票补录」页**（独立、立即写库）使用。
+- **B2b 落点**：`commit_ledger_import(data, period, path, in_library=None, backfills=None)`
+  内部调 `_write_backfills(conn, backfills, batch_id)`；`backfills` 缺省取 `data["backfills"]`，
+  故「一致性写入」由 data 通道天然保证（同一事务、同一 batch_id、台账与补录同进同出）。
+  新增 `_append_receipts_to_existing(conn, invoice_no, receipts, batch_id, sheet, row)`
+  作为 **A10（复录确认收款）与补录 `create=False`（票已在库、只追加收款）共用的唯一通道**。
+- **B2f 落地形态**：`app/ui/backfill_dialog.py` 的 `BackfillDialog` + 模块级
+  `backfill_validator(data)`（= `build_backfill(get_conn(), data)`）。三种模式：新增 /
+  编辑（`locked_no=True`）/ 查看（`readonly=True`，全禁用 + 仅「关闭」）。字段级校验全部
+  在弹窗内完成（校验不过**留在弹窗**、不丢输入）；`validator` 再挂一层写前校验，与写库**同源**。
+- **B2c 落地形态（复核页只产出 `create=True`）**：`_open_backfill()` 成功后把条目塞进
+  `self._backfills`（键 = 票号）并置 `item["create"] = True`；**不立即写库**。已在库的票
+  走 ① **只读「查看原票」**（不收集）。`create=False`（只追加收款）通道在引擎侧与 A10 共用、
+  已由 `test_backfill_pending.py` G 段覆盖，UI 侧当前不产出（设计如此）。
+- **B2g 落点差异**：按钮插在 `btn_source`（「查看原始台账行」）之后；文案随行切换
+  `补录原票` / `查看原票`。**红字行补的是它引用的原票**——票号经
+  `SELECT orig_invoice_no FROM invoice WHERE invoice_no=?` 反查（**`raw_invoice` 镜表没有
+  该列**，它是从 remark 现算的）；反查不到 → 无入口（按钮隐藏，可接受）。
+- **B2h 已知交互（非缺陷）**：行内补录成功后该行**归入已确认**（`_deferred_confirmed`）→
+  **离开「待确认」筛选**，默认筛选下会从表里消失，按钮的「查看原票」态需切「全部」才看得到。
+  这是既有语义（处理完的行不再占待确认视图），底部汇总同时给出
+  「已填补录待随台账入库 N 张」计数。
+- **B2d 兜底**：`import_review_view._on_confirmed` 单独 `except ImportError_` →
+  弹「校验未通过」+ `_reload_current_for_fix(item)`（重载本账期、**不推进队列、不整批重来、
+  零写入**）；其余异常仍走原「写库失败 → 跳过该账期并记账」路径。
+- **B2e 拦截点**：写前 `_validate_backfills` 报「重复票号（含位置）」+ 弹窗内
+  `_validate_backfill` 先拦「**本次已填过同票号**」；A5 之后只剩同账期场景。
+- **B2i/B2k**：「发票补录」页保持**立即写库**不变（不属任何批次）。
+
 ### 测试
 
-- `tests/_smoke_manual_entry.py`（`BackfillDialog` 抽取后的两处调用）
-- `tests/_smoke_import_queue.py`（pending：取消零写入）
-- 新增：同事务原子性断言（模拟写库中途抛错 → 台账与补录**都回滚**）
-- 全量回归
+- `tests/test_backfill_pending.py`（**新增 39 项**）：build 校验 / apply 不 commit + 非 manual
+  拒绝覆盖 / save_backfill 立即写库 + 不写 `received_snapshot` / commit 同事务写入 /
+  **原子性（注入故障 → 台账与补录都回滚）** / 写前校验（重复、已在库、同批冲突、空经办人）/
+  `create=False` 追加收款 + 超额拦截。
+- `tests/_smoke_unified_import.py`（**新增第 11 节 34 项**）：行内按钮四态（需补录行 / 普通
+  发票行 / 已在库行 / 红字行取原票号）、确定即收集、取消零收集、原因第四态、按钮翻转、
+  底部计数同步、`merged["backfills"]`、写前校验与同票号拦截。
+- `tests/_smoke_import_queue.py`（**新增第 10 节 9 项**）：确认入库携带 `backfills` 且只 commit
+  一次；取消 / 放弃全部 → **一行未写**。
+- `tests/_smoke_import_review.py`（**新增 5b 节 9 项**）：`ImportError_` → 弹提示 + 留在本账期
+  重载 + 不推进队列 + 零写入；改好后再次确认即写库并推进。
+- `tests/_smoke_manual_entry.py`（`BackfillDialog` 抽取后的两处调用 + 弹窗自身 11 项）。
+- 全量回归：`tests/*.py` **29/29 全绿、0 Traceback**（基线由 28 升至 29 = 新增
+  `test_backfill_pending.py`）。
+
 
 ### 本机验收点
 
@@ -185,7 +235,9 @@
 2. 补录 + 确认入库 → **原子写入**（台账与补录同进同出）；
 3. 同一票号补两次 → 入库时给出可诊断报错；
 4. 补录后再导同账期 → manual 票**不重复计收款**；
-5. 补录后该行按钮变「查看原票」，底部计数同步。
+5. 补录后该行按钮变「查看原票」（需把筛选切到「全部」——该行已离开「待确认」），
+   底部计数同步出现「已填补录待随台账入库 N 张」；
+6. 同一票号补两次 → 弹窗内即被拦下（提示「本次已填过…」），不必等到写库。
 
 ---
 
@@ -266,6 +318,10 @@
 | **A7** 侧栏 / 导入页提示 | `还有 {n} 个账期待确认入库 → 去处理` |
 | **B2e** 重复票号 | `本批补录存在重复发票号码 {no}（{哪两行 / 由红字票 X 与 Y 各引用一次}）。同一张原票只能补录一次，请返回修改。` |
 | **阶段2 右栏原因** | `需补录原票` / `已入库，请确认收款` / `系统判定无疑问` |
+| **阶段3 右栏原因（第 4 态）** | `已补录，待随台账入库`（`unified_import_dialog.REASON_BACKFILL_DONE`；填过补录后显示，**绿色**） |
+| **阶段3 底部汇总** | `·　已填补录待随台账入库 {n} 张` |
+| **B2e 弹窗内拦截** | `票号 {no} 本次已填过补录，请只保留一份（如需修改，请点该行的「查看原票」）。` |
+| **B2d 写前校验未通过** | 弹窗标题「校验未通过」，正文 = `ImportError_` 原文（如 `本批补录存在重复发票号码 …`） |
 | **B2i** 补录按钮 | `补录原票` / 原票已在库时 → `查看原票` |
 
 ---
@@ -278,9 +334,11 @@
 | `tests/test_review_compare.py` | ✅ | ✅ | — | `needs_backfill`、`source IN ('import','manual')` |
 | `tests/test_raw_ledger_mirror.py` | ✅ | — | — | 镜表原文契约 |
 | `tests/test_import_fix_log.py` | ✅ | ✅ | — | 修改留痕 |
-| `tests/_smoke_import_queue.py` | — | 补 | ✅ | 队列 / 守卫 / 取消零写入 |
-| `tests/_smoke_unified_import.py` | — | 补 | ✅ | 右栏 3 状态 / 就地编辑 / 弹窗 |
-| `tests/_smoke_import_review.py` | — | 补 | — | A5 判定刷新 / A10 写库 |
+| `tests/_smoke_import_queue.py` | — | 补 | ✅ | 队列 / 守卫 / 取消零写入 / **backfills 随同一 commit** |
+| `tests/_smoke_unified_import.py` | — | 补 | ✅ | 右栏 3+1 状态 / 就地编辑 / 弹窗 / **行内补录四态** |
+| `tests/_smoke_import_review.py` | — | 补 | ✅ | A5 判定刷新 / A10 写库 / **B2d 写前校验返回修改** |
+| `tests/test_backfill_pending.py` | — | — | 新增 | **build/apply 拆分 · 同事务 · 原子性 · 校验 · create=False** |
+| `tests/_smoke_manual_entry.py` | — | — | ✅ | `BackfillDialog` 三模式（新增 / 编辑 / 查看） |
 | `tests/_smoke_manual_entry.py` | — | — | 补 | `BackfillDialog` 抽取 |
 | 全量 `tests/*.py` | ✅ | ✅ | ✅ | 基线与阶段对照 |
 

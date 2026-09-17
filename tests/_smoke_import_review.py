@@ -6,6 +6,8 @@
 - confirmed → commit_ledger_import 一次 + navigate_back + 回导入后（下拉重新启用）
 - cancelled → 不写库 + navigate_back
 - 写库失败路径 → 不崩溃 + import_finished(ok=False)
+- 写前校验未通过（ImportError_，阶段 3 B2d）→ 弹提示 + 留在本账期重载 + 零写入 +
+  不推进队列；改好后再次确认即写库并推进
 - 确认入库后「存在需补录的发票」提示：点「去补录」→ navigate_to('manual')、
   点「稍后」/无待补录 → 照旧 navigate_back
 - ReviewPostView：筛选胶囊（全部/差异/需补录/一致/已确认异常）/统计文案/空账期安全
@@ -332,6 +334,50 @@ check("写库失败回导入后模式", v.stack.currentWidget() is v.page_post)
 check("写库失败发 navigate_back", len(backs) == 1)
 check("写库失败 import_finished ok=False",
       fin and fin[0][4] is False and "模拟写库失败" in fin[0][3], str(fin[:1]))
+
+# ---------------------------------------- 5b) 写前校验未通过 → 留在本账期返回修改（B2d）
+# 弹窗点「确认入库」时已校验过一次（validator），本路径覆盖**写库前兜底**：
+# commit_ledger_import 抛 ImportError_ → 弹提示 + 重载本账期 + 不推进队列 + 零写入。
+from app.importer.excel_reader import ImportError_  # noqa: E402
+
+_commit_calls.clear(); backs.clear(); fin.clear(); _MB.calls.clear()
+
+
+def _reject_validate(data, period, path):
+    raise ImportError_("模拟写前校验未通过：台账合计与销项不符")
+
+
+RV.commit_ledger_import = _reject_validate
+v.open_pending(dict(_data), "2025-07", [], "2025.7台账.xlsx")
+_idx_before, _len_before = v._idx, len(v._queue)
+v.page_pre.accept()
+check("B2d：写前校验未通过 → 不崩溃", True)
+check("B2d：弹「校验未通过」提示一次",
+      len([c for c in _MB.calls if c[0] == "warning" and c[1] == "校验未通过"]) == 1,
+      str(_MB.calls))
+check("B2d：提示带原始错误文案",
+      any("模拟写前校验未通过" in (c[2] or "")
+          for c in _MB.calls if c[0] == "warning"),
+      str(_MB.calls))
+check("B2d：留在本账期（不推进队列、不整批重来）",
+      v._idx == _idx_before and len(v._queue) == _len_before and v._queue_active,
+      f"idx={v._idx} queue={len(v._queue)}")
+check("B2d：仍在导入前模式（可继续就地改）",
+      v.stack.currentWidget() is v.page_pre)
+check("B2d：零写入 + 不发 import_finished / navigate_back",
+      len(_commit_calls) == 0 and fin == [] and len(backs) == 0,
+      f"fin={fin} backs={len(backs)}")
+check("B2d：重载的仍是本账期",
+      v.page_pre._period == "2025-07", str(v.page_pre._period))
+
+# 改好后再确认 → 这一次写库并推进队列
+RV.commit_ledger_import = _fake_commit
+v.page_pre.accept()
+check("B2d：修正后再次确认 → 写库一次", len(_commit_calls) == 1,
+      f"got={len(_commit_calls)}")
+check("B2d：修正后确认 → 队列清空回导入后模式",
+      v._queue == [] and not v._queue_active
+      and v.stack.currentWidget() is v.page_post)
 
 # ---------------------------------------------------------------- 6) ReviewPostView 筛选渲染（空数据安全）
 pv = v.page_post

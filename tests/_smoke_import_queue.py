@@ -15,6 +15,8 @@
   · A7 `pending_count()` / `pending_periods()` 与侧栏角标 + 导入页提示条
   · A8 台账导入前置守卫（单文件拦台账、**销项照旧可导**、批量含台账则整批拒绝）
   · A9 关程序确认框（取消 / 确定关闭 / 无待确认时不弹）
+- **阶段 3 B2c**：行内「补录原票」收集进 `data["backfills"]`，确认入库时随**同一次**
+  commit 提交（`_commit_backfills` 断言）；「取消」/「放弃全部待确认」→ 一行不写。
 
 commit_ledger_import / validate_ledger_before_write / load_data / get_conn 均打桩，
 QMessageBox 换记录桩。
@@ -175,11 +177,15 @@ class _FakeConn:
 
 
 _commit_calls = []
+_commit_backfills = []
 _load_calls = []
 
 
 def _fake_commit(data, period, path):
     _commit_calls.append((period, path))
+    # 阶段 3 B2c：复核页把行内「补录原票」收集进 data["backfills"]，
+    # 确认入库时随同一份 data 交给 commit_ledger_import → 这里记下来供断言。
+    _commit_backfills.append(list(data.get("backfills") or []))
     return {"invoice_count": 2, "prepayment_count": 1}
 
 
@@ -626,6 +632,66 @@ check("A6 无待确认 → 不弹框", not _MB.boxes, str([b._title for b in _MB
 check("A9 无待确认 → 直接放行且不弹框",
       _mw._confirm_close_with_pending() is True and not _MB.boxes,
       str([b._title for b in _MB.boxes]))
+
+
+# ---------------------------------------------- 10) 阶段3 B2c：行内补录随台账入库 / 取消零写库
+v._queue, v._idx, v._queue_active, v._results = [], 0, False, []
+_commit_calls.clear(); _commit_backfills.clear(); _load_calls.clear()
+backs.clear(); _MB.calls.clear(); _MB.click_label = None
+
+BF = [{"invoice_no": "BF-1", "invoice_date": "2024-01-01", "buyer": "某某公司",
+       "total_amount": 1000.0,
+       "handlers": [{"name": "周立生", "billing": 1000.0,
+                     "received": 0.0, "date": ""}],
+       "create": True}]
+
+# 10a) 确认入库：data 携带的行内补录随**同一次** commit 提交
+_d_bf = _data("2025-01")
+_d_bf["backfills"] = [dict(BF[0])]
+v.open_pending(_d_bf, "2025-01", ["周立生"], "2025.1台账.xlsx")
+check("B2c：队列项被载入且携带 backfills（面板可读）",
+      (v.page_pre._data.get("backfills") or []) == BF,
+      str(v.page_pre._data.get("backfills")))
+v._on_confirmed()
+check("B2c：确认入库 → 写库数据携带行内补录",
+      _commit_backfills and _commit_backfills[-1] == BF,
+      str(_commit_backfills[-1:]))
+check("B2c：补录与台账是同一次写库（只 commit 一次）",
+      len(_commit_calls) == 1, f"got={len(_commit_calls)}")
+check("B2c：确认后回导入后模式",
+      v._queue == [] and not v._queue_active
+      and v.stack.currentWidget() is v.page_post)
+
+# 10b) 取消当前账期（队尾）→ 一行不写
+_commit_calls.clear(); _commit_backfills.clear()
+_d_bf2 = _data("2025-02")
+_d_bf2["backfills"] = [dict(BF[0])]
+v.open_pending(_d_bf2, "2025-02", ["周立生"], "2025.2台账.xlsx")
+v._ask_cancel = lambda period, rest: (_ for _ in ()).throw(
+    AssertionError("队尾取消不应追问"))
+v._on_cancelled()
+check("B2c：取消当前账期 → 一行未写（含行内补录）",
+      len(_commit_calls) == 0 and len(_commit_backfills) == 0,
+      f"commit={_commit_calls} bf={_commit_backfills}")
+check("B2c：取消后回导入后模式且队列清空",
+      v._queue == [] and not v._queue_active
+      and v.stack.currentWidget() is v.page_post)
+
+# 10c) 放弃全部待确认 → 每份带补录的账期都不写库
+_commit_calls.clear(); _commit_backfills.clear()
+for i in (3, 4):
+    _dd = _data(f"2025-{i:02d}")
+    _dd["backfills"] = [dict(BF[0])]
+    v.open_pending(_dd, f"2025-{i:02d}", ["周立生"], f"2025.{i}台账.xlsx")
+check("B2c：两份带补录的账期都已入队", len(v._queue) == 2, f"got={len(v._queue)}")
+v._ask_cancel = lambda period, rest: "all"
+v._on_cancelled()
+check("B2c：放弃全部待确认 → 两份账期都不写库（补录一并不写）",
+      len(_commit_calls) == 0 and len(_commit_backfills) == 0,
+      f"commit={_commit_calls} bf={_commit_backfills}")
+check("B2c：放弃全部后回导入后模式",
+      v._queue == [] and not v._queue_active
+      and v.stack.currentWidget() is v.page_post)
 
 
 bad = [n for n, ok, _ in results if not ok]
