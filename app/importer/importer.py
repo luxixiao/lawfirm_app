@@ -783,6 +783,11 @@ def commit_ledger_import(data: Dict, period: str, path: str,
     （台账与补录同进同出）。不传时回落到 `data["backfills"]`。
     补录票**不写 received_snapshot**、`import_batch_id` **留空** —— 它不属任何导入批次，
     撤销该批台账不应连带删除补录（见 `apply_backfill`）。
+
+    写入顺序（阶段 4-1）：sheet3 镜表 → 普通票 → **补录票** → **A10 确认收款**。
+    A10 必须排在补录**之后**（补录票此刻才在 invoice 表，否则会被「不在库就跳过」误伤），
+    且**跳过本批补录覆盖的票号**（补录是显式指令，与 A10 同时命中的话同一笔收款会
+    按 manual + import 各记一份 → 重复计 → 被超额校验判成台账错误）。
     """
     if in_library is None:
         in_library = library_invoice_nos()
@@ -816,34 +821,7 @@ def commit_ledger_import(data: Dict, period: str, path: str,
         for inv in data.get("deferred", []) or []:
             _insert_raw_ledger(conn, inv, batch_id, "invoice")
 
-        # ---- A10：复核页**已确认收款**的「已在库」sheet3 票 → 追加该票收款 ----
-        # 口径（2026-09-17 用户拍板）：
-        #   ① 台账收款一律**追加**，绝不删该票已有收款 —— 历史批与补录(manual)都不受影响；
-        #   ② 追加后累计收款（**全来源** import+manual）> 开票总额 → 视为**台账信息错误**：
-        #      该行不写并记入 over_collected（"剩余应收 0 元，已收款完成"），
-        #      不中止整批（该行作为问题行由复核页提示用户修正台账）；
-        #   ③ 未确认（receipt_confirmed 非真）→ 完全不动。
-        # 幂等：本批上次写的行由本批 import_batch_id 标记 —— 覆盖式导入时已被
-        # rollback_batch 按 import_batch_id 清掉（rollback_batch:78），此处再按批删一次兜底。
         over_collected: List[Dict] = []
-        for rel in data.get("deferred", []) or []:
-            if not rel.get("receipt_confirmed"):
-                continue
-            no = (rel.get("invoice_no") or "").strip()
-            receipts = [
-                ((_n or "").strip(), float(_a or 0.0), (_d or "")[:10])
-                for _n, _a, _d in (rel.get("split_receipts") or [])
-                if (_n or "").strip() and float(_a or 0.0) > 0.001
-            ]
-            if not no or not receipts:
-                continue
-            if conn.execute("SELECT 1 FROM invoice WHERE invoice_no=?", (no,)).fetchone() is None:
-                continue  # 需补录票（原票不在库）→ 由补录页写入，不在此处理
-            msg = _append_receipts_to_existing(
-                conn, no, receipts, batch_id,
-                rel.get("sheet_name") or "", rel.get("row_no") or 0)
-            if msg:
-                over_collected.append({"invoice_no": no, "period": period, "message": msg})
 
         for inv in data["invoices"]:
             no = inv["invoice_no"]
@@ -905,6 +883,48 @@ def commit_ledger_import(data: Dict, period: str, path: str,
         for p in bf_problems:
             over_collected.append({"invoice_no": p["invoice_no"], "period": period,
                                    "message": p["reason"]})
+
+        # ---- A10：复核页**已确认收款**的「已在库」sheet3 票 → 追加该票收款 ----
+        # 口径（2026-09-17 用户拍板）：
+        #   ① 台账收款一律**追加**，绝不删该票已有收款 —— 历史批与补录(manual)都不受影响；
+        #   ② 追加后累计收款（**全来源** import+manual）> 开票总额 → 视为**台账信息错误**：
+        #      该行不写并记入 over_collected（"剩余应收 0 元，已收款完成"），
+        #      不中止整批（该行作为问题行由复核页提示用户修正台账）；
+        #   ③ 未确认（receipt_confirmed 非真）→ 完全不动。
+        # 幂等：本批上次写的行由本批 import_batch_id 标记 —— 覆盖式导入时已被
+        # rollback_batch 按 import_batch_id 清掉（rollback_batch:78），此处再按批删一次兜底。
+        #
+        # ⚠️ 位置（阶段 4-1）：必须放在 `_write_backfills` **之后**。
+        #   阶段 3 时它在补录之前，下面「不在库就跳过」会把**本批刚补录出来的票**一起跳过
+        #   （A10 跑时补录票尚未建）→ 该票的「确认收款」永远写不进去。
+        #   挪到补录之后，补录票此刻已在 invoice 表，判定恢复正常。
+        # ⚠️ 去重（阶段 4-1）：`backfills` 覆盖的票号一律跳过 —— 补录是**显式指令**
+        #   （create=True 建票并写 manual 收款 / create=False 直接追加收款）；若同一票又被
+        #   A10 按「台账确认收款」写一遍（source='import'），同一笔收款会 import+manual
+        #   各记一份 → 全来源合计翻倍 → 被 ② 判成超额而整行拒写（假报错）。
+        bf_nos = {
+            (b.get("invoice_no") or "").strip() for b in (backfills or [])
+        } - {""}
+        for rel in data.get("deferred", []) or []:
+            if not rel.get("receipt_confirmed"):
+                continue
+            no = (rel.get("invoice_no") or "").strip()
+            receipts = [
+                ((_n or "").strip(), float(_a or 0.0), (_d or "")[:10])
+                for _n, _a, _d in (rel.get("split_receipts") or [])
+                if (_n or "").strip() and float(_a or 0.0) > 0.001
+            ]
+            if not no or not receipts:
+                continue
+            if no in bf_nos:
+                continue  # 本批补录已写该票收款（显式优先）→ 绝不重复追加
+            if conn.execute("SELECT 1 FROM invoice WHERE invoice_no=?", (no,)).fetchone() is None:
+                continue  # 票不在库（本批也没补录它）→ 无票可挂，跳过
+            msg = _append_receipts_to_existing(
+                conn, no, receipts, batch_id,
+                rel.get("sheet_name") or "", rel.get("row_no") or 0)
+            if msg:
+                over_collected.append({"invoice_no": no, "period": period, "message": msg})
 
         # 预收款（sheet4）
         for pp in data["prepayments"]:

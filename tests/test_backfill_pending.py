@@ -14,6 +14,7 @@
 - **原子性**：注入写库故障 → 台账与补录**都回滚**（同进同出）
 - B2d/B2e `validate_ledger_before_write`：补录重复票号 / 已在库 / 与本批 sheet1-2 撞号
 - B2c `create=False`：已入库票只追加收款（与 A10 同一通道）；超额 → 记 over_collected 且不写
+- 阶段 4-1：补录 ↔ A10 **去重**（同票号只写一套，不因翻倍被判超额）+ A10 排在补录之后
 """
 import sqlite3
 import sys
@@ -336,6 +337,68 @@ def main() -> int:
           str(_coll("EX1")))
     check("G6 超额文案可读（剩余应收 0 元，已收款完成）",
           bool(over) and "已收款完成" in over[0]["message"], str(over[:1]))
+
+    # ============================================================ H) 阶段 4-1：补录 ↔ A10 去重
+    # 背景：补录写 source='manual'（apply_backfill），A10「确认收款」写 source='import'
+    # （_append_receipts_to_existing）。若同一票号两边都写 → 同一笔收款两套并存 →
+    # 全来源合计翻倍 → 被超额校验判成「台账信息错误」（假报错，整行拒写）。
+    # 口径（阶段 4-1）：本批 backfills 覆盖的票号，A10 一律跳过（补录是显式指令，优先）。
+    # 另：A10 必须排在 _write_backfills 之后，否则「不在库就跳过」会把刚补录出来的票误伤。
+    conn.execute("INSERT INTO invoice (invoice_no, invoice_date, buyer, total_amount, source) "
+                 "VALUES ('S7', '2025-07-10', '销项戊', 100.0, 'import')")
+    conn.execute("INSERT INTO invoice (invoice_no, invoice_date, buyer, total_amount, source) "
+                 "VALUES ('EX2', '2024-02-05', '已入库票', 1000.0, 'import')")
+    conn.commit()
+    P5 = "2025-07"
+    d_dedup = _vdata(
+        sheet_totals={"sheet1": 100.0}, sheet12_total=100.0,
+        deferred=[
+            # ① 与补录同票号：receipt_confirmed 也置了 → 只应保留补录那一套（manual）
+            {"invoice_no": "BF-DUP", "receipt_confirmed": True,
+             "split_receipts": [("陈娟", 2000.0, "2024-06-02")],
+             "sheet": "sheet3", "sheet_name": "应收账款", "row_no": 2},
+            # ② 真·已在库票：A10 必须照常追加（证明 A10 仍在跑、去重只限补录票号）
+            {"invoice_no": "EX2", "receipt_confirmed": True,
+             "split_receipts": [("周立生", 400.0, "2025-07-08")],
+             "sheet": "sheet3", "sheet_name": "应收账款", "row_no": 3},
+        ],
+        backfills=[bf_form(no="BF-DUP", date="2024-07-01")],
+    )
+    r5 = imp.commit_ledger_import(d_dedup, P5, "2025.7台账.xlsx")
+    dup_cols = _coll("BF-DUP")
+    check("H1 去重：补录票收款只写**一套**（manual，不叠加 A10 的 import）",
+          len(dup_cols) == 1 and dup_cols[0]["source"] == "manual"
+          and dup_cols[0]["amount"] == 3000.0, str(dup_cols))
+    check("H2 去重：该票无 import 来源的重复收款",
+          not any(c["source"] == "import" for c in dup_cols), str(dup_cols))
+    check("H3 去重：补录票不被计入 over_collected",
+          not any(o["invoice_no"] == "BF-DUP" for o in (r5.get("over_collected") or [])),
+          str(r5.get("over_collected")))
+    ex2_cols = _coll("EX2")
+    check("H4 A10 仍在补录之后照常追加（真·已在库票，source='import' + 本批 batch_id）",
+          len(ex2_cols) == 1 and ex2_cols[0]["source"] == "import"
+          and ex2_cols[0]["amount"] == 400.0
+          and ex2_cols[0]["import_batch_id"] == r5["batch_id"], str(ex2_cols))
+
+    # 极端：两套收款相加会超额（3000 manual + 8000 A10 > 10000）→ 有守卫则无假报错
+    conn.execute("INSERT INTO invoice (invoice_no, invoice_date, buyer, total_amount, source) "
+                 "VALUES ('S8', '2025-08-10', '销项己', 100.0, 'import')")
+    conn.commit()
+    P6 = "2025-08"
+    d_dedup2 = _vdata(
+        sheet_totals={"sheet1": 100.0}, sheet12_total=100.0,
+        deferred=[{"invoice_no": "BF-DUP2", "receipt_confirmed": True,
+                   "split_receipts": [("陈娟", 8000.0, "2024-06-03")],
+                   "sheet": "sheet3", "sheet_name": "应收账款", "row_no": 4}],
+        backfills=[bf_form(no="BF-DUP2", date="2024-07-02")],
+    )
+    r6 = imp.commit_ledger_import(d_dedup2, P6, "2025.8台账.xlsx")
+    dup2 = _coll("BF-DUP2")
+    check("H5 去重：两套相加本会超额 → 仍不产生假报错（over_collected 为空）",
+          not (r6.get("over_collected") or []), str(r6.get("over_collected")))
+    check("H6 去重：该票仍只有补录那一套收款",
+          len(dup2) == 1 and dup2[0]["source"] == "manual" and dup2[0]["amount"] == 3000.0,
+          str(dup2))
 
     # ============================================================ 汇总
     print(f"\n{OK}/{OK + len(FAILS)} passed")
