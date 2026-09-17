@@ -9,6 +9,7 @@
 """
 from __future__ import annotations
 
+from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
     QHBoxLayout, QLineEdit, QMessageBox, QPlainTextEdit, QVBoxLayout, QWidget,
 )
@@ -70,6 +71,11 @@ def _label(tbl: str, mapping: dict) -> str:
 
 
 class DataClearView(QWidget):
+    # 清空成功后发出。本页看不到复核页的**内存待确认队列**（它不在库里，
+    # DELETE 清不掉），必须由主窗口据此重置，否则清空后复核页仍留着已失效的
+    # 待确认数据（2026-09-17 用户报障）。
+    data_cleared = Signal()
+
     def __init__(self) -> None:
         super().__init__()
         lay = QVBoxLayout(self)
@@ -158,3 +164,6 @@ class DataClearView(QWidget):
                               "\n\n保留（未清空）：员工管理 / 费用类型 / 快照。\n"
                               "建议重新从「导入」页导入台账。")
         QMessageBox.information(self, "完成", "业务数据已清空。")
+        # 库已空 → 通知主窗口重置复核页的内存待确认队列 + 刷新侧栏角标/导入页提示条。
+        # 放在提示框之后：先让用户看到清空结果，再收拾其它页面的残留状态。
+        self.data_cleared.emit()

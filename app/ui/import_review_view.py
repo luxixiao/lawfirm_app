@@ -171,6 +171,49 @@ class ImportReviewView(QWidget):
             self.page_post.set_period(self.combo_period.currentData() or "")
 
     # ------------------------------------------------------------------ #
+    # 回到本页时的重渲染（清空数据 / 外部改库后必须重读，否则残留旧内容）
+    # ------------------------------------------------------------------ #
+    def showEvent(self, event) -> None:  # noqa: N802
+        """每次显示都按最新库状态重渲染。
+
+        主窗口 `select()` 的刷新契约是「由页面 showEvent 负责」（见其 docstring：
+        各视图 showEvent 内已调用 refresh）—— 本页此前**没有** showEvent/refresh，
+        于是「数据情况」页清空数据后回到本页，仍显示清空前渲染的旧表格
+        （用户 2026-09-17 报障：「清空数据后，导入复核页面还存在数据」）。
+        """
+        super().showEvent(event)
+        self.refresh()
+
+    def refresh(self) -> None:
+        """重读库状态并重渲染（与其它页面同名钩子，主窗口/测试可直接调用）。
+
+        - 有待确认队列在跑（队列是**内存态**）：**不动队列**，只刷新进度徽章 ——
+          队列被设计为「离开本页可随时回来继续」，不能因为一次显示就被清掉。
+        - 否则：回导入后模式并重拉账期列表，同时**保留当前选中的账期**（若它还在）；
+          库已清空 → 账期列表为空 → `ReviewPostView.set_period("")` 自动清空表格。
+        """
+        if self._queue_active:
+            self._refresh_queue_label()
+            return
+        self._set_mode("post", self.combo_period.currentData() or "")
+
+    def reset_pending(self) -> None:
+        """丢弃内存待确认队列，回导入后模式（供「数据情况」清空后调用）。
+
+        库被清空后队列里的数据已无意义：若仍留在导入前模式，用户点「确认入库」会
+        撞上写前校验（销项已不在库）而卡在「校验未通过 → 返回修改」，且侧栏角标会
+        一直显示非零待确认数。故清空数据必须连带清掉队列。
+        """
+        self._queue = []
+        self._idx = 0
+        self._queue_active = False
+        self._results = []
+        self._fix_skipped = 0
+        self._fix_log_failed = False
+        self._leave_no_prompt = False
+        self._set_mode("post")
+
+    # ------------------------------------------------------------------ #
     # 待确认队列（导入前模式）
     # ------------------------------------------------------------------ #
     def _refresh_queue_label(self) -> None:

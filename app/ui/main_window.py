@@ -263,6 +263,10 @@ class MainWindow(FramelessWindow):
             self.stack.addWidget(page)
         setattr(self, attr, page)
         self._pages[key] = page
+        # 惰性页的额外接线（页面创建后才能连信号）
+        if key == "data_clear":
+            # 清空数据 → 重置复核页内存待确认队列 + 刷新角标/提示条
+            page.data_cleared.connect(self._on_data_cleared)
         return page
 
     def _build_layout(self) -> None:
@@ -414,6 +418,24 @@ class MainWindow(FramelessWindow):
         imp = getattr(self, "page_import", None)
         if imp is not None:
             imp.set_pending_count(n)
+
+    def _on_data_cleared(self) -> None:
+        """「数据情况」页清空成功后：收拾复核页的内存残留状态。
+
+        待确认队列是**内存态**（不在库里，DELETE 清不掉）：清空数据后它既无意义
+        （确认入库会撞上写前校验而卡死），又会让侧栏角标一直显示非零待确认数。
+        故这里重置队列 + 刷新角标/提示条。其余页面的残留由各自的 showEvent→refresh
+        在下次显示时自愈（本页亦是如此）。
+        """
+        rev = self._pages.get("review")
+        if rev is not None:
+            rev.reset_pending()
+            try:
+                from app.diag import get_logger
+                get_logger().info("DATA_CLEAR 已重置复核页待确认队列")
+            except Exception:  # noqa: BLE001
+                pass
+        self._refresh_pending_ui()
 
     # ------------------------------------------------------------------ #
     # 对外接口（保持与旧 FluentWindow 版兼容）
