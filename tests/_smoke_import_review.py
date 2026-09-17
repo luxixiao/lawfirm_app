@@ -9,9 +9,12 @@
 - 确认入库后「存在需补录的发票」提示：点「去补录」→ navigate_to('manual')、
   点「稍后」/无待补录 → 照旧 navigate_back
 - ReviewPostView：筛选胶囊（全部/差异/需补录/一致/已确认异常）/统计文案/空账期安全
+- A5（阶段 2-1）：每个账期载入**前**重跑一次 split_deferred（判定刷新到最新库状态），
+  队列追加时不刷、失败不阻断导入
 
 commit_ledger_import / validate_ledger_before_write / get_conn /
-list_pending_backfill 均打桩，QMessageBox 换空桩。
+list_pending_backfill 均打桩，QMessageBox 换空桩；A5 的
+split_deferred / library_invoice_nos 在第 10 节内单独打桩。
 """
 import os
 import sys
@@ -439,6 +442,56 @@ check("修改记录页新增「字段」列", aud.table.columnCount() == 10,
       f"got={aud.table.columnCount()}")
 check("字段列位于修改表名之后",
       aud.table.horizontalHeaderItem(2).text() == "字段")
+
+# ---------------------------------------------------------------- 10) A5 判定刷新
+# A5（必做）：每载入一个账期**之前**重跑一次 split_deferred（用当前库票号集合）→
+# 复核页显示的待补录状态始终对应当前库状态；「批量导入 ≡ 单账期导入」由它保证。
+_lib_calls, _sd_calls = [], []
+
+
+def _stub_lib():
+    _lib_calls.append(1)
+    return {"INLIB"}
+
+
+def _stub_sd(data, period, lib=None):
+    _sd_calls.append((period, tuple(sorted(lib or ()))))
+    return 0
+
+
+RV.library_invoice_nos = _stub_lib
+RV.split_deferred = _stub_sd
+_lib_calls.clear(); _sd_calls.clear(); backs.clear()
+v.open_pending(dict(_data), "2025-07", [], "2025.7台账.xlsx")
+check("A5：载入账期前重跑 split_deferred", len(_sd_calls) == 1, str(_sd_calls))
+check("A5：刷新用的是当前库票号集合",
+      _sd_calls == [("2025-07", ("INLIB",))] and _lib_calls == [1],
+      f"sd={_sd_calls} lib={_lib_calls}")
+v.open_pending(dict(_data), "2025-08", [], "2025.8台账.xlsx")
+check("A5：队列追加时不刷新（只在真正载入时刷）", len(_sd_calls) == 1, str(_sd_calls))
+v.page_pre.accept()
+check("A5：进到下一账期时再刷新一次",
+      [c[0] for c in _sd_calls] == ["2025-07", "2025-08"], str(_sd_calls))
+
+# 判定刷新失败不得阻断导入（仅记录告警，展示可能滞后）
+# 先把上面那 2 项队列跑完（拒绝第 2 项 → 下标越界 → 队列表清空），再单独开一个队列。
+v.page_pre.reject()
+check("A5：队列跑完后清空（下一个队列才从队首开始）",
+      v._queue == [] and not v._queue_active, str(v._queue))
+_sd_calls.clear()
+
+
+def _boom_lib():
+    raise RuntimeError("模拟库查询失败")
+
+
+RV.library_invoice_nos = _boom_lib
+v.open_pending(dict(_data), "2025-09", [], "2025.9台账.xlsx")
+check("A5：判定刷新失败不阻断导入（仍切到导入前模式并载入该账期）",
+      v.stack.currentWidget() is v.page_pre and v.page_pre._period == "2025-09",
+      f"pre={v.stack.currentWidget() is v.page_pre} period={v.page_pre._period!r}")
+v.page_pre.reject()
+RV.library_invoice_nos = _stub_lib
 
 bad = [n for n, ok, _ in results if not ok]
 print(f"\n{len(results) - len(bad)}/{len(results)} passed")

@@ -35,6 +35,43 @@ def _refunded_by_invoice(conn) -> Dict[str, float]:
     }
 
 
+def over_collection_message(conn, invoice_no: str, incoming: float,
+                            exclude_batch_id: Optional[int] = None) -> Optional[str]:
+    """新增收款后「累计收款 > 开票总额」→ 返回可读报错；未超额返回 None。
+
+    口径（2026-09-17 用户拍板）：一张发票**全额收款后不会再收款**，也不应再出现在
+    后续账期的应收账款表（sheet3）。若台账又登记一笔、使累计收款超过票面，即为
+    **台账信息错误** —— 应报错提示（改台账），而不是静默改写已有收款。
+
+    - 累计口径取**全来源合计**（import + manual）：只算 import 会漏掉跨来源重复计
+      （补录留下的 manual 收款与台账新写的 import 收款并存）。
+    - exclude_batch_id：覆盖式导入时本批次会"先删后插"，排除它可避免拿自己比自己。
+    - 票面 ≤ 0（红字/异常）不作判定。
+    """
+    inv = conn.execute("SELECT total_amount FROM invoice WHERE invoice_no=?",
+                       (invoice_no,)).fetchone()
+    if inv is None:
+        return None
+    total = float(inv["total_amount"] or 0.0)
+    if total <= 0:
+        return None
+    sql = "SELECT receipt_date, amount FROM collection WHERE invoice_no=?"
+    params: List = [invoice_no]
+    if exclude_batch_id is not None:
+        sql += " AND (import_batch_id IS NULL OR import_batch_id<>?)"
+        params.append(exclude_batch_id)
+    rows = conn.execute(sql + " ORDER BY receipt_date", params).fetchall()
+    got = round(sum(float(r["amount"] or 0.0) for r in rows), 2)
+    incoming = float(incoming or 0.0)
+    if got + incoming <= total + 0.01:
+        return None
+    dates = [str(r["receipt_date"]) for r in rows if r["receipt_date"]]
+    when = "、".join(dates) if dates else "此前"
+    return (f"该发票金额 {total:,.2f} 元，已于 {when} 收款 {got:,.2f} 元，"
+            f"本次台账再登记 {incoming:,.2f} 元后将累计 {got + incoming:,.2f} 元，"
+            f"剩余应收 0 元，已收款完成。")
+
+
 def _red_info(conn):
     """返回 (red_map, refund_by_red)
 

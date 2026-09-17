@@ -28,7 +28,9 @@ from PySide6.QtWidgets import (
 )
 
 from app.db import get_conn
+from app.engine.backfill import library_invoice_nos
 from app.importer.importer import commit_ledger_import, validate_ledger_before_write
+from app.importer.ledger_import import split_deferred
 from app.ui.review_post_view import ReviewPostView
 from app.ui.unified_import_dialog import UnifiedImportDialog
 from app.ui.widgets import CaptionLabel, ComboBox, PageHeader
@@ -208,6 +210,15 @@ class ImportReviewView(QWidget):
         period, path = item["period"], item["path"]
         get_logger().info("REVIEW load queue=%d/%d period=%s path=%s",
                           self._idx + 1, len(self._queue), period, path)
+        # A5（必做）：每载入一个账期**之前**重跑一次判定（幂等）→ 复核页显示的
+        # 待补录状态始终对应当前库状态。"批量导入 ≡ 单账期导入"由这一行保证：
+        # 前一账期已补录 / 已确认入库的票，后续账期会被重判为「已在库」→ 不再标
+        # 「需补录」，于是从设计上消掉「跨账期重复补录」整类问题（同一原票只剩
+        # 同账期内的重复票号场景）。放在 load_data 之前，故 validator 与展示同源。
+        try:
+            split_deferred(item["data"], period, library_invoice_nos())
+        except Exception as e:  # noqa: BLE001 判定刷新失败不阻断导入，仅记录（展示可能滞后）
+            get_logger().warning("REVIEW 判定刷新失败 period=%s: %s", period, e)
         validator = lambda d, _p=period: validate_ledger_before_write(d, _p)  # noqa: E731
         try:
             self.page_pre.load_data(item["data"], period, item["staff_names"],

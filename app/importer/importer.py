@@ -20,6 +20,7 @@ from app.engine.backfill import (
     HANDLER_WHITELIST, all_staff_names, library_invoice_nos, missing_handlers, norm_type,
     staff_type_of,
 )
+from app.engine.collection import over_collection_message
 from app.engine.raw_ledger import SHEET_LABELS
 from app.importer.expense_import import parse_expense_file
 from app.importer.invoice_import import parse_invoice_file, parse_invoice_workbook
@@ -684,6 +685,46 @@ def commit_ledger_import(data: Dict, period: str, path: str,
         for inv in data.get("deferred", []) or []:
             _insert_raw_ledger(conn, inv, batch_id, "invoice")
 
+        # ---- A10：复核页**已确认收款**的「已在库」sheet3 票 → 追加该票收款 ----
+        # 口径（2026-09-17 用户拍板）：
+        #   ① 台账收款一律**追加**，绝不删该票已有收款 —— 历史批与补录(manual)都不受影响；
+        #   ② 追加后累计收款（**全来源** import+manual）> 开票总额 → 视为**台账信息错误**：
+        #      该行不写并记入 over_collected（"剩余应收 0 元，已收款完成"），
+        #      不中止整批（该行作为问题行由复核页提示用户修正台账）；
+        #   ③ 未确认（receipt_confirmed 非真）→ 完全不动。
+        # 幂等：本批上次写的行由本批 import_batch_id 标记 —— 覆盖式导入时已被
+        # rollback_batch 按 import_batch_id 清掉（rollback_batch:78），此处再按批删一次兜底。
+        over_collected: List[Dict] = []
+        for rel in data.get("deferred", []) or []:
+            if not rel.get("receipt_confirmed"):
+                continue
+            no = (rel.get("invoice_no") or "").strip()
+            receipts = [
+                ((_n or "").strip(), float(_a or 0.0), (_d or "")[:10])
+                for _n, _a, _d in (rel.get("split_receipts") or [])
+                if (_n or "").strip() and float(_a or 0.0) > 0.001
+            ]
+            if not no or not receipts:
+                continue
+            if conn.execute("SELECT 1 FROM invoice WHERE invoice_no=?", (no,)).fetchone() is None:
+                continue  # 需补录票（原票不在库）→ 由补录页写入，不在此处理
+            incoming = sum(a for _n, a, _d in receipts)
+            msg = over_collection_message(conn, no, incoming, exclude_batch_id=batch_id)
+            if msg:
+                over_collected.append({"invoice_no": no, "period": period, "message": msg})
+                continue
+            conn.execute(
+                "DELETE FROM collection WHERE invoice_no=? AND source='import' AND import_batch_id=?",
+                (no, batch_id),
+            )
+            for name, amt, date in receipts:
+                conn.execute(
+                    "INSERT INTO collection (invoice_no, amount, receipt_date, person_name, "
+                    "source, import_batch_id, src_sheet, src_row) VALUES (?,?,?,?,?,?,?,?)",
+                    (no, amt, date, name, "import", batch_id,
+                     rel.get("sheet_name") or "", rel.get("row_no") or 0),
+                )
+
         for inv in data["invoices"]:
             no = inv["invoice_no"]
             # D1 甲兜底：sheet3 行绝不走普通票路径（否则下面
@@ -762,6 +803,9 @@ def commit_ledger_import(data: Dict, period: str, path: str,
         "invoice_count": len(data["invoices"]),
         "prepayment_count": len(data["prepayments"]),
         "deferred_count": len(data.get("deferred") or []),
+        # A10：确认收款时会「超额收款」的已在库票（台账信息错误，未写入收款）。
+        # 供调用方提示用户核对台账（复核页在阶段 2-2 把它标成问题行）。
+        "over_collected": over_collected,
         "sheet12_total": data["sheet12_total"],
     }
 

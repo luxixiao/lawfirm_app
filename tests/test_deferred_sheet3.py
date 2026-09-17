@@ -16,6 +16,12 @@
 - 【A4 报错】sheet3 开票月份 ≥ 账期 → 中止导入；sheet1/2 不误伤
 - 【D1 在库跳过】票号在库的 sheet3 行：不建票 / 无分摊 / **历史 collection 不被删**
 
+阶段 2-1（A5 / A10 / A11）新增组：
+- 【K · A11 多期收款预填展开】按「期 × 经办人」展开（每人第一行填开票分摊、其余 0）、
+  同月多笔先合并、`split_receipts` 与 handlers 对齐、单期形态不回归
+- 【L · A10 deferred 写库】确认收款 → **追加**（历史行原样保留）；超额 → 不写并回报
+  「剩余应收 0 元，已收款完成」；未确认 → 完全不动；重导同账期幂等
+
 沿用（未受阶段 1 影响的既有覆盖）：
 - deferred_sheet3_invoices：invoice 缺号才算；预填开票信息与收款
 - list_pending_backfill：双源合并（红字引用 / 应收账款）与按票号去重（源 A 优先）
@@ -510,6 +516,118 @@ def main() -> int:
     check("C8：日期失败行不报错、日期回空串",
           next(d for d in rl.deferred_sheet3_invoices("2025-09", 90, conn=proxy)
                if d["invoice_no"] == "BADDATE1")["invoice_date"] == "")
+
+    # -------------------------------------------------- K) A11 多期收款预填展开
+    # D3 甲：多期收款不再"预填全空"，改为按「期 × 经办人」展开 —— 每人第一行填开票
+    # 分摊额、其余行填 0（开票额合计仍等于开票总额），收款逐行保留。
+    conn.execute("INSERT INTO import_batch (id, batch_type, period, file_name, status, imported_at) "
+                 "VALUES (95, 'ledger', '2025-11', '2025.11台账.xlsx', 'active', "
+                 "datetime('now','localtime'))")
+    # 跨月两期（8 月 / 10 月），两名经办人各占一半
+    add_raw(95, "sheet3", "24.3.1", "MP1", "甲公司", 60000.0,
+            "周立生30000、陈娟30000", "25.8.28收30000，25.10.31收30000", batch=95)
+    # 同月两笔（10.24 / 10.31）→ 必须先合并成一行（明细粒度只到月）
+    add_raw(96, "sheet3", "24.4.1", "MP2", "乙公司", 10000.0,
+            "周立生10000", "25.10.24收3000,10.31收2000", batch=95)
+    conn.commit()
+    mp = {d["invoice_no"]: d for d in rl.deferred_sheet3_invoices("2025-11", 95, conn=proxy)}
+    h1 = mp["MP1"]["handlers"]
+    check("A11：跨月多期按「期 × 经办人」展开为 4 行（2 人 × 2 期）", len(h1) == 4,
+          str([(h["name"], h["billing"], h["received"], h["date"]) for h in h1]))
+    check("A11：每人第一行填开票分摊、其余行填 0（合计仍=开票总额）",
+          [h["billing"] for h in h1] == [30000.0, 0.0, 30000.0, 0.0]
+          and abs(sum(h["billing"] for h in h1) - 60000.0) < 0.01,
+          str([h["billing"] for h in h1]))
+    check("A11：每行收款=该期金额×份额、日期=该期 YYYY-MM",
+          all(abs(h["received"] - 15000.0) < 0.01 for h in h1)
+          and [h["date"] for h in h1] == ["2025-08", "2025-10", "2025-08", "2025-10"],
+          str([(h["received"], h["date"]) for h in h1]))
+    check("A11：split_receipts 与 handlers 中 received>0 的行一一对应（4 条 / 合计 60000）",
+          len(mp["MP1"]["split_receipts"]) == 4
+          and abs(sum(a for _n, a, _d in mp["MP1"]["split_receipts"]) - 60000.0) < 0.01,
+          str(mp["MP1"]["split_receipts"]))
+    check("A11：同月多笔先合并（3,000+2,000 → 一行 5,000 / 2025-10）",
+          len(mp["MP2"]["handlers"]) == 1
+          and abs(mp["MP2"]["handlers"][0]["received"] - 5000.0) < 0.01
+          and mp["MP2"]["handlers"][0]["date"] == "2025-10",
+          str(mp["MP2"]["handlers"]))
+    check("A11：单期照旧不产生多余行（回归既有形态）",
+          len(by["D100"]["handlers"]) == 1, str(by["D100"]["handlers"]))
+
+    # -------------------------------------------------- L) A10 deferred 行写库
+    # 口径（2026-09-17 用户拍板）：确认收款 → **追加**（绝不删已有）；
+    # 追加后累计（全来源）> 票面 → 台账信息错误，**不写**并回报；未确认 → 完全不动。
+    PA = "2025-11"
+    conn.execute("INSERT INTO invoice (invoice_no, invoice_date, buyer, total_amount, source) "
+                 "VALUES ('ACK1', '2024-01-20', '甲公司', 1000.0, 'import')")
+    conn.execute("INSERT INTO collection (invoice_no, amount, receipt_date, person_name, source) "
+                 "VALUES ('ACK1', 400.0, '2025-09-10', '周立生', 'import')")
+    conn.execute("INSERT INTO invoice (invoice_no, invoice_date, buyer, total_amount, source) "
+                 "VALUES ('OVER1', '2024-02-20', '乙公司', 500.0, 'import')")
+    conn.execute("INSERT INTO collection (invoice_no, amount, receipt_date, person_name, source) "
+                 "VALUES ('OVER1', 500.0, '2025-09-01', '周立生', 'import')")
+    conn.execute("INSERT INTO invoice (invoice_no, invoice_date, buyer, total_amount, source) "
+                 "VALUES ('NC1', '2024-03-20', '丙公司', 300.0, 'import')")
+    conn.commit()
+
+    def _coll(no):
+        return [dict(x) for x in conn.execute(
+            "SELECT id, amount, receipt_date, source FROM collection "
+            "WHERE invoice_no=? ORDER BY id", (no,))]
+
+    ack_before, over_before = _coll("ACK1"), _coll("OVER1")
+
+    def _ack(no, name, amt, date, confirmed=True):
+        d = _row(no, "2024-01-20", "甲公司", 1000.0, "周立生",
+                 sheet="sheet3", sheet_name="应收账款")
+        d["split_receipts"] = [(name, amt, date)]
+        d["receipt_confirmed"] = confirmed
+        return d
+
+    dataA = {
+        "invoices": [],
+        "deferred": [_ack("ACK1", "周立生", 600.0, "2025-11-05"),
+                     _ack("OVER1", "周立生", 100.0, "2025-11-08"),
+                     _ack("NC1", "周立生", 300.0, "2025-11-09", confirmed=False)],
+        "prepayments": [], "problems": [], "sheet_totals": {}, "sheet12_total": 0.0,
+    }
+    rA = imp.commit_ledger_import(dataA, PA, "2025.11台账.xlsx",
+                                  in_library={"ACK1", "OVER1", "NC1"})
+    ack_after = _coll("ACK1")
+    check("A10：确认后在库票**追加**收款，历史行原样保留",
+          len(ack_after) == 2 and ack_after[0] == ack_before[0],
+          f"{ack_before} → {ack_after}")
+    check("A10：追加行金额/日期正确（400 + 600 = 1000 = 票面）",
+          abs(sum(x["amount"] for x in ack_after) - 1000.0) < 0.01
+          and ack_after[1]["receipt_date"] == "2025-11-05",
+          str(ack_after))
+    check("A10：超额收款 → **不写**该行（台账信息错误）",
+          _coll("OVER1") == over_before, f"{over_before} → {_coll('OVER1')}")
+    check("A10：超额回报可读且含「剩余应收 0 元，已收款完成」",
+          len(rA["over_collected"]) == 1
+          and "剩余应收 0 元" in rA["over_collected"][0]["message"]
+          and "已收款完成" in rA["over_collected"][0]["message"],
+          str(rA["over_collected"]))
+    check("A10：超额项带票号/账期供诊断",
+          rA["over_collected"][0]["invoice_no"] == "OVER1"
+          and rA["over_collected"][0]["period"] == PA,
+          str(rA["over_collected"]))
+    check("A10：未确认（receipt_confirmed 非真）→ 完全不动",
+          conn.execute("SELECT 1 FROM collection WHERE invoice_no='NC1'").fetchone() is None)
+    check("A10：确认收款**不建票**（在库票仍不落 invoice 主表）",
+          dict(conn.execute("SELECT source, total_amount FROM invoice WHERE invoice_no='ACK1'").fetchone())
+          == {"source": "import", "total_amount": 1000.0},
+          str(dict(conn.execute("SELECT source, total_amount FROM invoice WHERE invoice_no='ACK1'").fetchone())))
+
+    # 覆盖式重导同账期：旧批写的收款由 rollback_batch 按 import_batch_id 清掉后重写 → 不重复
+    dataA2 = {"invoices": [], "deferred": [_ack("ACK1", "周立生", 600.0, "2025-11-05")],
+              "prepayments": [], "problems": [], "sheet_totals": {}, "sheet12_total": 0.0}
+    imp.commit_ledger_import(dataA2, PA, "2025.11台账.xlsx",
+                             in_library={"ACK1", "OVER1", "NC1"})
+    ack_re = _coll("ACK1")
+    check("A10：重导同账期幂等（不重复追加，仍 400 + 600 = 1000）",
+          len(ack_re) == 2 and abs(sum(x["amount"] for x in ack_re) - 1000.0) < 0.01,
+          str(ack_re))
 
     print(f"\n{OK}/{OK + len(FAILS)} passed")
     if FAILS:
