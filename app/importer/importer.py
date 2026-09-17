@@ -550,6 +550,126 @@ def _apply_resolved(data: Dict, resolved: List[Dict], period: str,
     split_deferred(data, period, in_library)
 
 
+def _append_receipts_to_existing(conn, invoice_no: str, receipts: List[Tuple[str, float, str]],
+                                 batch_id: int, sheet: str = "", row: int = 0) -> str | None:
+    """**已入库票追加本次收款** —— A10（复核页确认收款）与补录 create=False 共用同一通道。
+
+    口径（2026-09-17 用户拍板）：
+    - 台账收款一律**追加**，绝不删该票已有收款（历史 import 批与 manual 补录都不受影响）；
+    - 幂等：先按 import_batch_id 清本批自己的行，再逐笔 INSERT；
+    - 累计收款（**全来源** import + manual）> 开票总额 → 视为**台账信息错误**：
+      **不写入**并返回可读报错文案（调用方记入 over_collected，不中止整批）。
+
+    receipts：[("经办人", 金额, "YYYY-MM-DD"), ...]
+    返回 None = 已写入；返回文案 = 未写入 + 原因。
+    """
+    incoming = sum(a for _n, a, _d in receipts)
+    msg = over_collection_message(conn, invoice_no, incoming, exclude_batch_id=batch_id)
+    if msg:
+        return msg
+    conn.execute(
+        "DELETE FROM collection WHERE invoice_no=? AND source='import' AND import_batch_id=?",
+        (invoice_no, batch_id),
+    )
+    for name, amt, date in receipts:
+        conn.execute(
+            "INSERT INTO collection (invoice_no, amount, receipt_date, person_name, "
+            "source, import_batch_id, src_sheet, src_row) VALUES (?,?,?,?,?,?,?,?)",
+            (invoice_no, amt, date, name, "import", batch_id, sheet, row),
+        )
+    return None
+
+
+def _write_backfills(conn, backfills: List[Dict], batch_id: int) -> List[Dict]:
+    """把复核页收集的补录条目写进**当前事务**（B2b）。
+
+    返回「未能写入」条目（可诊断）；调用方据此决定是否中止整批。
+    统一结构（B2c）：每项含 `invoice_no` + `create: bool`；`create=True` = 新票补录
+    （invoice(source='manual') + charge_detail + collection），`create=False` = 票已在库、
+    只追加收款（走 `_append_receipts_to_existing`，与 A10 同一实现）。
+
+    ⚠️ 必须放在普通发票循环**之后**：同账期 sheet1/2 已按 import 建票时，
+    `apply_backfill` 的非 manual 守卫会拦下（否则会把销项票静默改成 manual）。
+    """
+    from app.engine.backfill_module import apply_backfill, build_backfill
+    problems: List[Dict] = []
+    for bf in backfills or []:
+        no = (bf.get("invoice_no") or "").strip()
+        if not bf.get("create", True):
+            receipts = [
+                ((n or "").strip(), float(a or 0.0), (d or "")[:10])
+                for n, a, d in (bf.get("collections") or [])
+                if (n or "").strip() and float(a or 0.0) > 0.001
+            ]
+            if not no or not receipts:
+                continue
+            if conn.execute("SELECT 1 FROM invoice WHERE invoice_no=?", (no,)).fetchone() is None:
+                problems.append({"invoice_no": no, "reason": "票不在库，无法只更新收款"})
+                continue
+            msg = _append_receipts_to_existing(conn, no, receipts, batch_id)
+            if msg:
+                problems.append({"invoice_no": no, "reason": msg})
+            continue
+        # create=True：校验 → 写入（build 在 accept() 与 validate 已跑过，这里兜第三次）
+        payload = build_backfill(conn, bf)
+        apply_backfill(conn, payload)
+    return problems
+
+
+def _validate_backfills(conn, data: Dict, in_library: set | None = None) -> str | None:
+    """补录条目写前校验（B2d 第二次校验 / B2e 重复票号）。通过返回 None。
+
+    与 `build_backfill` **同源**（票号/日期必填、至少一名经办人、须在花名册、已收不超合计），
+    另加三类「同批冲突」诊断 —— 一律中止写库并指出具体票号，绝不静默去重：
+    ① 同批两个补录同票号（§11 B2e 的真实现场：同账期 sheet3 两行同号、
+       同账期两张红字引用同一原票）；
+    ② 补录票号**已在库**（A5 刷新后应已转「已入库」，走到这里说明状态滞后）；
+    ③ 补录票号与**本批 sheet1/2** 同号（该票本次随台账入库，无需补录）。
+    """
+    from app.engine.backfill_module import build_backfill
+    backfills = data.get("backfills") or []
+    if not backfills:
+        return None
+    seen: Dict[str, int] = {}
+    created: Dict[str, int] = {}   # 只含 create=True 的（要建票的）
+    for k, bf in enumerate(backfills, 1):
+        no = (bf.get("invoice_no") or "").strip()
+        if bf.get("create", True):
+            try:
+                build_backfill(conn, bf)
+            except ValueError as e:
+                return f"补录发票 {no or '（未填号码）'}：{e}"
+            created[no] = k
+        else:
+            # create=False：票已在库、只追加收款（无 handlers，不跑 build_backfill）
+            if not no:
+                return f"补录条目（第 {k} 处）未填写发票号码。"
+            receipts = [
+                (n or "").strip() for n, a, _d in (bf.get("collections") or [])
+                if (n or "").strip() and float(a or 0.0) > 0.001
+            ]
+            if not receipts:
+                return f"补录发票 {no}（第 {k} 处）没有可写入的收款，请核对后重试。"
+        if no in seen:
+            return (f"补录票号 {no} 在本次导入中出现 {seen[no] + 1} 次"
+                    f"（第 {seen[no]} 处、第 {k} 处），请只保留一处补录后重试。")
+        seen[no] = k
+    if in_library is None:
+        in_library = library_invoice_nos(conn)
+    for no in created:
+        if no in in_library:
+            return f"补录票号 {no} 已在库中，无需补录。请刷新复核页后重试。"
+    batch_nos = {
+        (inv.get("invoice_no") or "").strip()
+        for inv in (data.get("invoices") or []) if not is_sheet3_row(inv)
+    } - {""}
+    for no in created:
+        if no in batch_nos:
+            return (f"补录票号 {no} 与本次台账 sheet1/2 中的发票同号，"
+                    "该票本次会随台账入库，无需补录。请从补录中移除该票后重试。")
+    return None
+
+
 def validate_ledger_before_write(data: Dict, period: str,
                                  in_library: set | None = None) -> str | None:
     """发票台账写库前校验：返回 None 通过，返回文案为失败原因（不抛异常）。
@@ -592,7 +712,9 @@ def validate_ledger_before_write(data: Dict, period: str,
                 "经办人不在职工花名册中（请先在员工管理中添加）: "
                 + ", ".join(sorted(set(missing)))
             )
-        return None
+
+        # ---- 校验 3：复核页收集的补录票（data["backfills"]，阶段 3 B2d/B2e）----
+        return _validate_backfills(conn, data, in_library)
     finally:
         conn.close()
 
@@ -640,7 +762,8 @@ def import_ledger_file(path: str, period: str,
 
 
 def commit_ledger_import(data: Dict, period: str, path: str,
-                         in_library: set | None = None) -> Dict:
+                         in_library: set | None = None,
+                         backfills: List[Dict] | None = None) -> Dict:
     """把已确认（含修正结果与已收覆盖值）的发票台账数据写入数据库。
 
     覆盖式导入：清同账期 active 批次 → raw_ledger 镜像双写 → invoice / charge_detail /
@@ -654,9 +777,17 @@ def commit_ledger_import(data: Dict, period: str, path: str,
     入口处先切分一次（幂等），保证复核页直连 commit 的路径也走同一口径。
 
     in_library：库中已有票号集合；不传则现查 invoice 表。
+
+    backfills（阶段 3 B2b）：复核页收集的补录票，**在同一事务内**写入
+    `invoice(source='manual') + charge_detail + collection`；任一步失败 → 整批回滚
+    （台账与补录同进同出）。不传时回落到 `data["backfills"]`。
+    补录票**不写 received_snapshot**、`import_batch_id` **留空** —— 它不属任何导入批次，
+    撤销该批台账不应连带删除补录（见 `apply_backfill`）。
     """
     if in_library is None:
         in_library = library_invoice_nos()
+    if backfills is None:
+        backfills = data.get("backfills") or []
     split_deferred(data, period, in_library)
     _auto_snapshot()
     conn = get_conn()
@@ -708,22 +839,11 @@ def commit_ledger_import(data: Dict, period: str, path: str,
                 continue
             if conn.execute("SELECT 1 FROM invoice WHERE invoice_no=?", (no,)).fetchone() is None:
                 continue  # 需补录票（原票不在库）→ 由补录页写入，不在此处理
-            incoming = sum(a for _n, a, _d in receipts)
-            msg = over_collection_message(conn, no, incoming, exclude_batch_id=batch_id)
+            msg = _append_receipts_to_existing(
+                conn, no, receipts, batch_id,
+                rel.get("sheet_name") or "", rel.get("row_no") or 0)
             if msg:
                 over_collected.append({"invoice_no": no, "period": period, "message": msg})
-                continue
-            conn.execute(
-                "DELETE FROM collection WHERE invoice_no=? AND source='import' AND import_batch_id=?",
-                (no, batch_id),
-            )
-            for name, amt, date in receipts:
-                conn.execute(
-                    "INSERT INTO collection (invoice_no, amount, receipt_date, person_name, "
-                    "source, import_batch_id, src_sheet, src_row) VALUES (?,?,?,?,?,?,?,?)",
-                    (no, amt, date, name, "import", batch_id,
-                     rel.get("sheet_name") or "", rel.get("row_no") or 0),
-                )
 
         for inv in data["invoices"]:
             no = inv["invoice_no"]
@@ -777,6 +897,15 @@ def commit_ledger_import(data: Dict, period: str, path: str,
             # 收款明细：先删该发票 import 旧记录（以最新台账为准），再插入
             _write_collection_for_invoice(conn, inv, batch_id)
 
+        # ---- B2b：补录票随台账**同一事务**入库（阶段 3）----
+        # 放在普通发票循环**之后**：本批 sheet1/2 若已按 import 建同号票，
+        # apply_backfill 的非 manual 守卫会拦下（绝不把销项票静默改成 manual）。
+        # 任一条目写失败 → 异常冒泡 → 整个事务回滚（台账与补录同进同出，B2d）。
+        bf_problems = _write_backfills(conn, backfills, batch_id)
+        for p in bf_problems:
+            over_collected.append({"invoice_no": p["invoice_no"], "period": period,
+                                   "message": p["reason"]})
+
         # 预收款（sheet4）
         for pp in data["prepayments"]:
             conn.execute(
@@ -803,6 +932,8 @@ def commit_ledger_import(data: Dict, period: str, path: str,
         "invoice_count": len(data["invoices"]),
         "prepayment_count": len(data["prepayments"]),
         "deferred_count": len(data.get("deferred") or []),
+        # 阶段 3 B2b：随本批同一事务写入的补录票数（供复核页汇总提示）
+        "backfill_count": len(backfills or []),
         # A10：确认收款时会「超额收款」的已在库票（台账信息错误，未写入收款）。
         # 供调用方提示用户核对台账（复核页在阶段 2-2 把它标成问题行）。
         "over_collected": over_collected,

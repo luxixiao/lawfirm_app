@@ -8,6 +8,13 @@
 补录写入 invoice(source='manual') + charge_detail(经办人/开票金额) + collection(已收/日期)，
 与现有手工补录完全一致，不影响其他页面（收款表/结算/退款判定）。
 保存前校验经办人（至少一名 + 须在花名册），与导入写前校验共用 backfill.missing_handlers。
+
+写入拆两层（阶段 3 B2a，参照 `raw_ledger.update_row(conn=None)` 既有模式）：
+- `build_backfill(conn, data)`  纯计算 + 校验 → 规范化 payload（不写库）；
+- `apply_backfill(conn, payload)` 用传入 conn 写入，**不 commit**（事务归调用方）。
+`save_backfill()` = 这两者 + 自开连接 commit，仅「发票补录」页（独立、立即写库）使用。
+导入复核页的补录改为收集进 `data["backfills"]`，随发票台账**同一事务**入库
+（见 `app.importer.importer.commit_ledger_import`）。
 """
 from __future__ import annotations
 
@@ -195,87 +202,148 @@ def load_invoice_detail(invoice_no: str) -> Dict:
         conn.close()
 
 
-def save_backfill(data: Dict, editing: bool = False) -> None:
-    """保存补录（新增/编辑通用）。
+def build_backfill(conn, data: Dict) -> Dict:
+    """补录表单 → 规范化 payload（**纯计算 + 校验，绝不写库**）。
 
-    data: {invoice_no, invoice_date, buyer, total_amount,
-           handlers:[{name, billing, received, date}]}
-    写入 invoice(source='manual') + 按经办人聚合的 charge_detail
-    + 明细表每行（已收金额>0 且有收款日期）一笔 collection。
-    被红字引用时，只要发票号对齐即可自动消除「待补录」。
+    返回：
+      {invoice_no, invoice_date, buyer, total_amount,
+       charge: [(name, billing, person_type), ...],   # 按姓名聚合后的开票分摊
+       collections: [(name, amount, receipt_date), ...]}  # 已收>0 且有日期
 
-    校验（不通过抛 ValueError，由 UI 以「保存失败」提示）：
+    校验（不通过抛 ValueError，由 UI 就地提示；与导入写前校验同一口径）：
     - 发票号码 / 开票日期必填；
     - 至少一名经办人（否则该票不进分账）；
-    - 经办人须在花名册（或白名单），口径与导入写前校验完全一致。
+    - 经办人须在花名册（或白名单）—— 与 `missing_handlers` 完全同源；
+    - 已收金额合计不得超过价税合计（超过 = 台账信息错误，不静默写入）。
+
+    拆出本函数的目的（阶段 3 B2a）：让「补录随台账同一事务入库」可以把
+    **校验**与**写入**分开跑 —— 校验在弹窗确定时与入库前各跑一次（B2d），
+    写入由 `apply_backfill` 用导入自己的连接完成。
     """
     no = (data.get("invoice_no") or "").strip()
     if not no:
         raise ValueError("发票号码不能为空")
-    if not (data.get("invoice_date") or "").strip():
+    date = (data.get("invoice_date") or "").strip()
+    if not date:
         raise ValueError("开票日期不能为空")
     total = float(data.get("total_amount") or 0)
+    handlers = list(data.get("handlers") or [])
+    # ① 至少一名经办人：否则该票不写 charge_detail → 不计入任何人的开票额 → 分账少整张票。
+    # ② 经办人须在花名册（或白名单）：历史票经办人可能已离职，故花名册口径不过滤
+    #    is_active；但名字写错/未登记必须拦下，否则会静默落成 person_type='其他'
+    #    → 该人在结算里业务收入按 0 计、按身份筛选也看不到。
+    names = [(h.get("name") or "").strip() for h in handlers]
+    names = [n for n in names if n]
+    if not names:
+        raise ValueError(
+            "至少要填写一名经办人（用于分账）。\n"
+            "如该发票确实需要新增经办人，请先在「员工管理」中登记后再补录。"
+        )
+    miss = missing_handlers(conn, names)
+    if miss:
+        raise ValueError(
+            "经办人不在职工花名册中（请先在员工管理中添加）: " + "、".join(miss)
+        )
+    # 已收合计 > 价税合计 → 拒绝（与弹窗内的即时提示同一口径，写库前再兜一次）
+    sum_rec = sum(float(h.get("received") or 0) for h in handlers)
+    if total > 0 and sum_rec > total + 0.01:
+        raise ValueError(f"已收金额合计({sum_rec:,.2f})超过价税合计({total:,.2f})")
+    # 按经办人聚合开票金额（双人名容错）
+    agg: Dict[str, float] = {}
+    for h in handlers:
+        nm = (h.get("name") or "").strip()
+        if not nm:
+            continue
+        agg[nm] = agg.get(nm, 0.0) + float(h.get("billing") or 0)
+    charge = [
+        (nm, billing, norm_type(staff_type_of(conn, nm)))
+        for nm, billing in agg.items()
+    ]
+    # collection：明细表每行（已收金额>0 且有收款日期）一笔
+    collections = []
+    for h in handlers:
+        nm = (h.get("name") or "").strip()
+        amt = float(h.get("received") or 0)
+        rdate = (h.get("date") or "").strip()
+        if nm and amt > 0.001 and rdate:
+            collections.append((nm, amt, rdate[:10]))
+    return {
+        "invoice_no": no,
+        "invoice_date": date,
+        "buyer": (data.get("buyer") or "").strip(),
+        "total_amount": total,
+        "charge": charge,
+        "collections": collections,
+    }
+
+
+def apply_backfill(conn, payload: Dict) -> None:
+    """用**传入的 conn** 写入一张补录（**不 commit、不 close**，事务归调用方）。
+
+    payload = `build_backfill()` 的返回值。写入顺序与旧 `save_backfill` 一致：
+    清该票 manual 旧数据 → upsert invoice(source='manual') → charge_detail → collection。
+
+    两条硬边界：
+    1. **只清 `source='manual'`** —— 该票的 import 收款（台账写的）绝不动
+       （D1 甲：`_write_collection_for_invoice` 的整票 DELETE 是地雷，本项目不用它）。
+    2. **不覆盖非 manual 票**：若该票已在库且来源不是 manual（如销项导入），抛
+       ValueError —— 绝不把销项票静默改成 manual（B2e 的可诊断报错由此产生）。
+    3. **不写 `received_snapshot`**、`invoice.import_batch_id` **留空**（B2f）：
+       补录票不属任何导入批次，撤销该批台账不应连带删掉补录。
+    """
+    no = payload["invoice_no"]
+    # 清旧 manual 数据（允许重复保存 / 编辑；import 数据一律不动）
+    conn.execute("DELETE FROM charge_detail WHERE invoice_no=? AND source='manual'", (no,))
+    conn.execute("DELETE FROM collection WHERE invoice_no=? AND source='manual'", (no,))
+    exist = conn.execute("SELECT source FROM invoice WHERE invoice_no=?", (no,)).fetchone()
+    if exist:
+        if (exist["source"] or "") != "manual":
+            raise ValueError(
+                f"发票 {no} 已在库中（来源：{exist['source'] or '未知'}），不能以补录方式覆盖。\n"
+                "该票无需补录；请刷新复核页后重试，或核对是否重复登记了同一票号。"
+            )
+        conn.execute(
+            "UPDATE invoice SET invoice_date=?, buyer=?, total_amount=?, source='manual' "
+            "WHERE invoice_no=?",
+            (payload["invoice_date"], payload["buyer"], payload["total_amount"], no),
+        )
+    else:
+        conn.execute(
+            "INSERT INTO invoice "
+            "(invoice_no, invoice_date, buyer, total_amount, kind, source, created_at) "
+            "VALUES (?,?,?,?,?,?, datetime('now','localtime'))",
+            (no, payload["invoice_date"], payload["buyer"], payload["total_amount"], "", "manual"),
+        )
+    for nm, billing, ptype in payload["charge"]:
+        conn.execute(
+            "INSERT INTO charge_detail (invoice_no, person_name, billing_amount, source, person_type) "
+            "VALUES (?,?,?,?,?)",
+            (no, nm, billing, "manual", ptype),
+        )
+    for nm, amt, rdate in payload["collections"]:
+        conn.execute(
+            "INSERT INTO collection (invoice_no, amount, receipt_date, person_name, source, note) "
+            "VALUES (?,?,?,?,?,?)",
+            (no, amt, rdate, nm, "manual", "补录"),
+        )
+
+
+def save_backfill(data: Dict, editing: bool = False) -> None:
+    """保存补录（新增/编辑通用）—— **独立页面的立即写库路径**。
+
+    data: {invoice_no, invoice_date, buyer, total_amount,
+           handlers:[{name, billing, received, date}]}
+
+    「发票补录」页专用：自己开连接、自己 commit（B2i/B2k：该页不属任何批次，
+    保持立即写库不变）。导入复核页的补录**不走这里** —— 它收集进 data["backfills"]，
+    由 `app.importer.importer.commit_ledger_import` 在同一事务里调 `apply_backfill`。
+
+    editing 仅为兼容旧调用保留（初版即未使用）。
+    """
     conn = get_conn()
     try:
-        # ---- 保存前校验（与导入写前校验同一口径）----
-        # ① 至少一名经办人：否则该票不写 charge_detail → 不计入任何人的开票额 → 分账少整张票。
-        # ② 经办人须在花名册（或白名单）：历史票经办人可能已离职，故花名册口径不过滤
-        #    is_active；但名字写错/未登记必须拦下，否则会静默落成 person_type='其他'
-        #    → 该人在结算里业务收入按 0 计、按身份筛选也看不到。
-        names = [(h.get("name") or "").strip() for h in (data.get("handlers") or [])]
-        names = [n for n in names if n]
-        if not names:
-            raise ValueError(
-                "至少要填写一名经办人（用于分账）。\n"
-                "如该发票确实需要新增经办人，请先在「员工管理」中登记后再补录。"
-            )
-        miss = missing_handlers(conn, names)
-        if miss:
-            raise ValueError(
-                "经办人不在职工花名册中（请先在员工管理中添加）: " + "、".join(miss)
-            )
-        # 清旧 manual 数据（允许重复保存/编辑）
-        conn.execute("DELETE FROM charge_detail WHERE invoice_no=? AND source='manual'", (no,))
-        conn.execute("DELETE FROM collection WHERE invoice_no=? AND source='manual'", (no,))
-        exist = conn.execute("SELECT 1 FROM invoice WHERE invoice_no=?", (no,)).fetchone()
-        if exist:
-            conn.execute(
-                "UPDATE invoice SET invoice_date=?, buyer=?, total_amount=?, source='manual' "
-                "WHERE invoice_no=?",
-                (data["invoice_date"].strip(), (data.get("buyer") or "").strip(), total, no),
-            )
-        else:
-            conn.execute(
-                "INSERT INTO invoice "
-                "(invoice_no, invoice_date, buyer, total_amount, kind, source, created_at) "
-                "VALUES (?,?,?,?,?,?, datetime('now','localtime'))",
-                (no, data["invoice_date"].strip(), (data.get("buyer") or "").strip(), total, "", "manual"),
-            )
-        # charge_detail：按经办人聚合开票金额
-        agg: Dict[str, float] = {}
-        for h in data.get("handlers", []):
-            nm = (h.get("name") or "").strip()
-            if not nm:
-                continue
-            agg[nm] = agg.get(nm, 0.0) + float(h.get("billing") or 0)
-        for nm, billing in agg.items():
-            ptype = norm_type(staff_type_of(conn, nm))
-            conn.execute(
-                "INSERT INTO charge_detail (invoice_no, person_name, billing_amount, source, person_type) "
-                "VALUES (?,?,?,?,?)",
-                (no, nm, billing, "manual", ptype),
-            )
-        # collection：明细表每行（已收金额>0 且有收款日期）写一笔
-        for h in data.get("handlers", []):
-            nm = (h.get("name") or "").strip()
-            amt = float(h.get("received") or 0)
-            rdate = (h.get("date") or "").strip()
-            if nm and amt > 0.001 and rdate:
-                conn.execute(
-                    "INSERT INTO collection (invoice_no, amount, receipt_date, person_name, source, note) "
-                    "VALUES (?,?,?,?,?,?)",
-                    (no, amt, rdate, nm, "manual", "补录"),
-                )
+        payload = build_backfill(conn, data)
+        apply_backfill(conn, payload)
         conn.commit()
     except Exception:
         conn.rollback()
