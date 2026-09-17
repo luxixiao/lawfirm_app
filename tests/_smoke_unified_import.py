@@ -8,6 +8,9 @@
 - 跳过行
 - 「确认入库」就地校验：校验不过留在对话框内、真实 data 不变
 - 校验通过才合并：problems 清空、sheet 合计含修正行
+- 阶段 2-2（第 10 节）：A1 应收账款(sheet3)行进表 / A2 原因三态 / A3 就地编辑回写
+  （需补录行不出收款；已在库行「确认」后置 receipt_confirmed 交 A10 追加收款；
+   A11 多期收款展开为同名多行，合计仍等于开票总额）
 """
 import os
 import sys
@@ -24,11 +27,13 @@ from app.ui.unified_import_dialog import UnifiedImportDialog  # noqa: E402
 
 # 阶段 1（C3）：`_apply_resolved` → `split_deferred` 需要「库中已有票号集合」。
 # 本冒烟不碰真实 DB（data/lawfirm.db）→ 把取号打桩成空库，判定只由测试数据决定。
+# `_LIB` 可变：第 10 节用它把某些票号「变成已在库」以覆盖「已入库，请确认收款」态。
 import app.engine.backfill as _bf  # noqa: E402
 import app.importer.importer as _imp0  # noqa: E402
 
-_bf.library_invoice_nos = lambda conn=None: set()
-_imp0.library_invoice_nos = lambda conn=None: set()
+_LIB: set = set()
+_bf.library_invoice_nos = lambda conn=None: set(_LIB)
+_imp0.library_invoice_nos = lambda conn=None: set(_LIB)
 
 
 class _MB:
@@ -53,6 +58,11 @@ class _MB:
 
 
 U.QMessageBox = _MB
+# 第 10 节会用同名多行（= 多期收款）触发 ProblemFixPanel._confirm_merge，
+# 它用的是 problem_fix_panel 自己 import 的 QMessageBox → 一并换成桩，否则 offscreen 下阻塞。
+import app.ui.problem_fix_panel as _pfp  # noqa: E402
+
+_pfp.QMessageBox = _MB
 
 results = []
 
@@ -140,12 +150,40 @@ data = mk_data()
 dlg = UnifiedImportDialog(data, "2025-01", STAFF, path="2025.1台账.xlsx")
 dlg.show()  # offscreen 下子控件 isVisible() 依赖父窗口已 show
 check("构造成功", dlg is not None)
-check("行模型 = 2 解析行 + 2 问题行", len(dlg._rows) == 4, f"got={len(dlg._rows)}")
+# 阶段 2（A1）：sheet3 行（INV-2）已移出 invoices → 不再是 invoice 行，
+# 而是以 kind="deferred" 的「应收账款行」出现；总数仍是 4（1 发票 + 2 问题 + 1 应收）。
+check("行模型 = 1 解析行 + 2 问题行 + 1 应收账款行",
+      len(dlg._rows) == 4, f"got={len(dlg._rows)}")
+_kinds0 = [r["kind"] for r in dlg._rows]
+check("A1：应收账款(sheet3)行进表（kind=deferred）", _kinds0.count("deferred") == 1,
+      f"got={_kinds0}")
+check("A1：INV-2 不再作为 invoice 行出现",
+      all(r["ev"]["invoice_no"] != "INV-2" for r in dlg._rows if r["kind"] == "invoice"),
+      str([r["ev"]["invoice_no"] for r in dlg._rows if r["kind"] == "invoice"]))
+_drow0 = next(r for r in dlg._rows if r["kind"] == "deferred")
+check("A1：应收账款行带 d_index 与 need_backfill 语义",
+      _drow0["d_index"] == 0 and _drow0["deferred"].get("need_backfill") is True,
+      f"d_index={_drow0['d_index']} nb={_drow0['deferred'].get('need_backfill')}")
 st = statuses(dlg)
-check("状态含 1 高置信 / 3 待确认（待修正并入待确认）",
+check("状态含 1 高置信 / 3 待确认（应收账款行按待确认计）",
       st.count("待确认") == 3 and st.count("高置信") == 1,
       f"got={st}")
 check("待确认行排在最前", st.index("待确认") == 0, f"got={st}")
+
+# ---- A2：右栏「原因 / 疑问」三态 ----
+check("A2：票号不在库 → 需补录原票",
+      dlg._row_field(_drow0, "reason") == "需补录原票",
+      dlg._row_field(_drow0, "reason"))
+check("A2：应收账款行「类型」列 = 应收账款",
+      dlg._row_field(_drow0, "kind") == "应收账款", dlg._row_field(_drow0, "kind"))
+check("A2：应收账款行「收款认定」列按备注推导（纯日期 → 全额）",
+      "2025-01" in dlg._row_field(_drow0, "receipt")
+      and "全额" in dlg._row_field(_drow0, "receipt"),
+      dlg._row_field(_drow0, "receipt"))
+_hi0 = next(r for r in dlg._rows if r["kind"] == "invoice" and r["status"] == "高置信")
+check("A2：系统无疑问 → 系统判定无疑问",
+      dlg._row_field(_hi0, "reason") == "✓ 系统判定无疑问",
+      dlg._row_field(_hi0, "reason"))
 
 # 默认筛选「待确认」：解析失败 2 + 低置信 1 = 3 行
 check("默认筛选=待确认，3 行", dlg.table.rowCount() == 3, f"got={dlg.table.rowCount()}")
@@ -444,6 +482,211 @@ d1dlg._rebuild()
 hi_b = next(r for r in d1dlg._rows if r["kind"] == "invoice" and r["inv_idx"] == 1)
 check("点1：编辑并保存后高置信发票归入已确认", hi_b["is_confirmed"] is True and hi_b["status"] == "高置信",
       f"status={hi_b['status']} confirmed={hi_b['is_confirmed']}")
+
+# ------------------------------------------- 10) 阶段 2-2：A3 应收账款行就地编辑
+from app.importer.ledger_import import split_deferred as _split_def  # noqa: E402
+
+
+def mk_ar(no, total, handlers, remark, row_no=20, date="2024-11-05"):
+    """构造一条 sheet3（应收账款）解析行（与 _parse_invoice_sheet 同结构）。"""
+    txt = "、".join(f"{n}{a:g}" for n, a in handlers)
+    return {
+        "sheet": "sheet3", "sheet_name": "应收账款", "row_no": row_no,
+        "header": HEADER, "raw_row": [no, "应收公司", str(total), txt, ""],
+        "invoice_no": no, "invoice_date": date, "buyer": "应收公司",
+        "total_amount": total, "handlers": handlers, "handler_text": txt,
+        "remark_raw": "", "remark": remark, "case_no": "", "is_red": False,
+        "split_receipts": [],
+    }
+
+
+def mk_ar_data(ar):
+    """把应收账款行放进 invoices（由 split_deferred 移入 deferred，模拟解析期切分）。"""
+    return {
+        "period": "2025-01",
+        "invoices": [ar, mk_inv("INV-HI", 1000.0,
+                                remark={"receipts": [("2025-01", 0)],
+                                        "remaining": None, "pure_date": None})],
+        "prepayments": [], "problems": [], "deferred": [],
+        "sheet_totals": {"sheet3": ar["total_amount"], "sheet1": 1000.0},
+        "sheet12_total": 1000.0,
+    }
+
+
+def _deferred_row(dlg):
+    return next(r for r in dlg._rows if r["kind"] == "deferred")
+
+
+def _htable_rows(panel):
+    t = panel.htable
+    out = []
+    for i in range(t.rowCount()):
+        name = t.cellWidget(i, 0).currentText()
+        bill = t.item(i, 1).text() if t.item(i, 1) else ""
+        recv = t.item(i, 2).text() if t.item(i, 2) else ""
+        date = t.item(i, 3).text() if t.item(i, 3) else ""
+        out.append((name, bill, recv, date))
+    return out
+
+
+# ---- 10a) 预填：单期（纯日期备注 = 收款日 / 全额）----
+_LIB.clear()
+PURE = {"receipts": [], "remaining": None, "pure_date": "2025-01-20"}
+ar1 = mk_ar("AR-1", 5000.0, [("周立生", 5000.0)], PURE)
+d10 = mk_ar_data(ar1)
+a = UnifiedImportDialog(d10, "2025-01", STAFF)
+a.show()
+ra = _deferred_row(a)
+check("A3：应收账款行预填单期一行（含收款金额与日期）",
+      _htable_rows(a.fix_panel) == [("周立生", "5000.0", "5,000.00", "2025-01")],
+      str(_htable_rows(a.fix_panel)))
+check("A3：右键面板为发票表单且可编辑（非只读）",
+      a.fix_panel.inv_box.isVisible() and not a.fix_panel.inv_date.isReadOnly())
+check("A3：应收账款行显示「保存修改」与「确认」",
+      a.btn_save.isVisible() and a.btn_confirm_row.isVisible())
+check("A1：汇总行显示「需补录原票 N 张」",
+      "应收账款需补录原票 1 张" in a.lbl_summary.text(), a.lbl_summary.text())
+
+# ---- 10b) 就地修改 → 回写 data["deferred"]；需补录行不置 receipt_confirmed ----
+a.fix_panel.htable.item(0, 2).setText("3,000.00")
+a.fix_panel.htable.item(0, 3).setText("2025-02")
+a._save_fix()
+check("A3：编辑回写工作副本 deferred（金额/日期已改）",
+      a._work["deferred"][0]["split_receipts"] == [("周立生", 3000.0, "2025-02")],
+      str(a._work["deferred"][0]["split_receipts"]))
+check("A3：真实 data 未被修改（deferred 仍为空 / 行仍在 invoices）",
+      d10["deferred"] == []
+      and [x["invoice_no"] for x in d10["invoices"]] == ["AR-1", "INV-HI"],
+      f"deferred={d10['deferred']} invoices={[x['invoice_no'] for x in d10['invoices']]}")
+ra2 = _deferred_row(a)
+check("A3：编辑后仍在「待确认」（需用户显式确认收款）", ra2["status"] == "待确认",
+      f"status={ra2['status']}")
+m10 = a._merged_data()
+check("A3：需补录原票行**不**置 receipt_confirmed（本页不出收款）",
+      not m10["deferred"][0].get("receipt_confirmed"),
+      str(m10["deferred"][0].get("receipt_confirmed")))
+check("A3：需补录原票行仍写 need_backfill=True（送补录页用）",
+      m10["deferred"][0].get("need_backfill") is True)
+items10 = a.collect_import_fixes()
+check("A3：应收账款行编辑计入导入留痕（kind=edit / 票号正确）",
+      any(it["kind"] == "edit" and it["invoice_no"] == "AR-1" for it in items10),
+      str([(it["kind"], it["invoice_no"]) for it in items10]))
+
+# ---- 10c) 已在库行：「确认」→ 采纳台账收款口径 + receipt_confirmed=True ----
+_LIB.add("AR-2")
+ar2 = mk_ar("AR-2", 5000.0, [("周立生", 5000.0)], PURE)
+d10c = mk_ar_data(ar2)
+c = UnifiedImportDialog(d10c, "2025-01", STAFF)
+c.show()
+rc = _deferred_row(c)
+check("A2：票号已在库 → 已入库，请确认收款",
+      rc["deferred"].get("need_backfill") is False
+      and c._row_field(rc, "reason") == "已入库，请确认收款",
+      c._row_field(rc, "reason"))
+check("A3：已入库行预填同一口径（全额 / 2025-01）",
+      _htable_rows(c.fix_panel) == [("周立生", "5000.0", "5,000.00", "2025-01")],
+      str(_htable_rows(c.fix_panel)))
+check("A1：汇总行显示「已入库待确认收款 N 张」",
+      "应收账款已入库待确认收款 1 张" in c.lbl_summary.text(), c.lbl_summary.text())
+c._confirm_row()
+rc2 = _deferred_row(c)
+check("A3：已入库行确认后离开待确认且归入已确认",
+      rc2["status"] == "高置信" and rc2.get("is_confirmed") is True,
+      f"status={rc2['status']} confirmed={rc2.get('is_confirmed')}")
+_mb_before = len(_MB.calls)
+c._confirm_row()   # 再点一次不应弹「需补录」提示（已在库行静默）
+check("A3：已入库行确认不弹「需补录原票」提示", len(_MB.calls) == _mb_before,
+      str(_MB.calls[_mb_before:]))
+m10c = c._merged_data()
+check("A3/A10：已入库行确认后置 receipt_confirmed（入库时追加收款）",
+      m10c["deferred"][0].get("receipt_confirmed") is True,
+      str(m10c["deferred"][0].get("receipt_confirmed")))
+check("A3/A10：确认采纳台账预填收款明细（全额 2025-01）",
+      m10c["deferred"][0]["split_receipts"] == [("周立生", 5000.0, "2025-01")],
+      str(m10c["deferred"][0]["split_receipts"]))
+check("A3：确认不动真实 data（deferred 仍为空 / invoices 未变）",
+      d10c["deferred"] == []
+      and [x["invoice_no"] for x in d10c["invoices"]] == ["AR-2", "INV-HI"],
+      f"deferred={d10c['deferred']}")
+
+# ---- 10d) 需补录行点「确认」→ 有可读提示，且不出收款 ----
+_LIB.discard("AR-2")
+d10d = mk_ar_data(mk_ar("AR-3", 5000.0, [("周立生", 5000.0)], PURE))
+e = UnifiedImportDialog(d10d, "2025-01", STAFF)
+e.show()
+_MB.calls.clear()
+e._confirm_row()
+_tips = [t for _k, t in _MB.calls]
+check("A3：需补录行确认弹出可读提示（不写任何数据）",
+      any("补录原票" in t and "不会写入任何数据" in t for t in _tips), str(_tips))
+m10d = e._merged_data()
+check("A3：需补录行确认后仍不置 receipt_confirmed",
+      not m10d["deferred"][0].get("receipt_confirmed"))
+check("A3：需补录行确认后 split_receipts 不被写入",
+      not m10d["deferred"][0].get("split_receipts"),
+      str(m10d["deferred"][0].get("split_receipts")))
+
+# ---- 10e) A11 同源：多期收款展开为「同名多行」，合计仍等于开票总额 ----
+MP = {"receipts": [("2025-08", 30000.0), ("2025-10", 30000.0)],
+      "remaining": None, "pure_date": None}
+mp = mk_ar("MP-1", 60000.0, [("周立生", 30000.0), ("陈娟", 30000.0)], MP, date="2024-03-01")
+d10e = mk_ar_data(mp)
+_split_def(d10e, "2025-01", _LIB)   # 模拟解析期已切分（_orig_data 自带 deferred）
+f = UnifiedImportDialog(d10e, "2025-01", STAFF)
+f.show()
+rf = _deferred_row(f)
+_rows_mp = _htable_rows(f.fix_panel)
+check("A11：多期收款展开为 4 行（2 人 × 2 期）", len(_rows_mp) == 4, str(_rows_mp))
+check("A11：每人首行填开票分摊、其余行 0（合计=开票总额）",
+      [r[1] for r in _rows_mp] == ["30000.0", "0.0", "30000.0", "0.0"],
+      str([r[1] for r in _rows_mp]))
+check("A11：每行收款=该期金额×份额、日期=该期 YYYY-MM",
+      [r[2] for r in _rows_mp] == ["15,000.00"] * 4
+      and [r[3] for r in _rows_mp] == ["2025-08", "2025-10", "2025-08", "2025-10"],
+      str(_rows_mp))
+check("A11：收款认定按年月归集（两期各 30000）",
+      f._row_field(rf, "receipt") == "2025-08 30,000.00、2025-10 30,000.00",
+      f._row_field(rf, "receipt"))
+check("A11：「各经办人已收」按人合计",
+      f._deferred_recv_text(rf["deferred"]) == "周立生 30,000.00、陈娟 30,000.00",
+      f._deferred_recv_text(rf["deferred"]))
+f._save_fix()   # 直接确认台账预填（不改）→ 读回后应无损
+split_mp = f._work["deferred"][0]["split_receipts"]
+check("A11：保存后多期收款无损保留（4 条 / 合计 60000）",
+      len(split_mp) == 4 and abs(sum(x[1] for x in split_mp) - 60000.0) < 0.01,
+      str(split_mp))
+check("A11：保存后开票分摊合并回 2 人（合计 60000）",
+      f._work["deferred"][0]["handlers"] == [("周立生", 30000.0), ("陈娟", 30000.0)],
+      str(f._work["deferred"][0]["handlers"]))
+_items_mp = [it for it in f.collect_import_fixes()
+             if it["kind"] == "edit" and it["invoice_no"] == "MP-1"]
+check("A3：留痕旧值取原始 deferred 行（开票日期未被误判为变化）",
+      _items_mp and _items_mp[0]["old"].get("invoice_date") == "2024-03-01"
+      and _items_mp[0]["new"].get("invoice_date") == "2024-03-01",
+      str(_items_mp[:1]))
+check("A3：留痕 new 侧带 4 条多期收款",
+      _items_mp and len(_items_mp[0]["new"].get("split_receipts") or []) == 4,
+      str(_items_mp and _items_mp[0]["new"].get("split_receipts")))
+
+# ---- 10f) 未处理应收账款行：确认入库前给出可读预警（不静默）----
+_MB.calls.clear()
+_LIB.add("AR-4")
+d10f = mk_ar_data(mk_ar("AR-4", 8000.0, [("周立生", 8000.0)], PURE))
+g = UnifiedImportDialog(d10f, "2025-01", STAFF)
+g.show()
+check("A2：已在库行 reason = 已入库，请确认收款",
+      g._row_field(_deferred_row(g), "reason") == "已入库，请确认收款")
+g.accept()
+_warns = [t for _k, t in _MB.calls if "未处理" in t]
+check("A1：存在未处理的应收账款行时 accept 给出预警",
+      bool(_warns), str(_MB.calls[-3:]))
+check("A1：预警说明已入库行本次不会写入收款",
+      bool(_warns) and "不会写入这些收款" in _warns[0], str(_warns[:1]))
+check("A1：未确认收款的已入库行不置 receipt_confirmed（不误写）",
+      not (d10f.get("deferred") or [{}])[0].get("receipt_confirmed"),
+      str((d10f.get("deferred") or [{}])[0].get("receipt_confirmed")))
+_LIB.discard("AR-4")
+
 
 # ------------------------------------------- 汇总
 bad = [n for n, ok, _ in results if not ok]

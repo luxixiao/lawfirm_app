@@ -14,6 +14,14 @@
 - 待确认行：右侧可编辑「各经办人已收」，也可直接点「确认」认可系统默认收款口径
   （压制 sheet1/2/3 的三类兜底判定疑问，移出「需处理」）；若另有硬疑问仍需先修正数据
 - 高置信行：默认只读（防随手改坏），点「编辑」才解锁表单
+- **应收账款(sheet3)行**（阶段 2 A1/A2/A3）：`data["deferred"]` 的每一行也进本表，
+  与发票行并列。状态/原因三态（A2）：`需补录原票`（票号不在库）/`已入库，请确认收款`
+  （票号已在库）/`✓ 系统判定无疑问`（普通发票行无疑问时）。应收账款行复用同一
+  `ProblemFixPanel` 就地修改（A3，支持同名多行 = 多期收款；预填展开与补录页同源，见
+  `app.engine.raw_ledger.expand_receipts`），保存结果回写 `data["deferred"]`：
+  · 已入库行 → 同时置 `receipt_confirmed`，入库时由 `commit_ledger_import`（A10）
+    **追加**该票收款（仅本批，绝不删历史）；
+  · 需补录行 → 只记录修正结果（原票入库属补录流程），不入库任何收款。
 - 确认入库：未处理的问题行自动跳过；已收覆盖值按发票下标回写真实数据
 
 数据流：真实 data 全程不被修改，修正只作用于工作副本；点「确认入库」时才一次性
@@ -22,6 +30,7 @@
 from __future__ import annotations
 
 import copy
+from collections import defaultdict
 from typing import Dict, List
 
 from PySide6.QtCore import Qt, QPoint, QTimer, Signal
@@ -32,7 +41,8 @@ from PySide6.QtWidgets import (
     QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
-from app.engine.import_confidence import SHEET_LABEL, evaluate
+from app.engine.import_confidence import SHEET_LABEL, evaluate, receipt_summary
+from app.engine.raw_ledger import expand_receipts
 from app.importer.excel_reader import ImportError_
 from app.ui import scale
 from app.ui.ledger_source import show_ledger_source
@@ -44,8 +54,14 @@ from app.ui.widgets import CaptionLabel, PrimaryPushButton, PushButton, TableWid
 RED = QColor("#C0392B")
 AMBER = QColor("#B7791F")
 GREEN = QColor("#1E8449")
+BLUE = QColor("#2C6FBB")
 GRAY = QColor("#8A8A85")
 DIFF_BG = QColor("#FDF1F0")
+
+# A2：应收账款(sheet3)行的「原因 / 疑问」三态文案
+REASON_BACKFILL = "需补录原票"
+REASON_IN_LIBRARY = "已入库，请确认收款"
+REASON_NO_DOUBT = "✓ 系统判定无疑问"
 
 HEADERS = [
     "状态", "类型", "来源", "发票号", "购方", "金额",
@@ -93,6 +109,10 @@ class UnifiedImportDialog(QWidget):
         self._skip: set = set()                  # problem index -> 跳过
         self._ov: Dict[int, Dict[str, float]] = {}  # invoice 下标 -> {经办人: 已收}
         self._inv_edits: Dict[int, dict] = {}    # work invoice 下标 -> 表单编辑结果（原地更新）
+        # 应收账款(sheet3)行（阶段 2 A3）：deferred 下标 -> 表单编辑结果；
+        # 以及用户「确认」过的 deferred 下标（已入库行据此置 receipt_confirmed → A10 写收款）
+        self._deferred_edits: Dict[int, dict] = {}
+        self._deferred_confirmed: set = set()
         self._idx_to_p: Dict[int, int] = {}      # work invoices 下标 -> problem index
         self._confirmed: set = set()             # 已点「确认」的 work invoice 下标集合
         self._rows: List[Dict] = []
@@ -198,6 +218,8 @@ class UnifiedImportDialog(QWidget):
         self._skip = set()
         self._ov = {}
         self._inv_edits = {}
+        self._deferred_edits = {}
+        self._deferred_confirmed = set()
         self._idx_to_p = {}
         self._confirmed = set()
         self._rows = []
@@ -286,21 +308,42 @@ class UnifiedImportDialog(QWidget):
     # ------------------------------------------------------------------ #
     # 行模型
     # ------------------------------------------------------------------ #
+    def _split_work(self, d: Dict) -> None:
+        """保证 d["deferred"] 已就绪（幂等切分；与复核页 A5 载入刷新同源）。
+
+        sheet3 行一律不进普通发票路径。正常流程里解析期与复核页载入时都已切过，
+        这里兜底「直连构造」的调用方（测试 / 其它入口），使 A1 的行装配与 A3 的下标
+        映射在两条路径上一致。切分失败不阻断界面（commit 前还会再切一次）。
+        """
+        from app.importer.ledger_import import split_deferred
+        try:
+            split_deferred(d, self._period)
+        except Exception:  # noqa: BLE001
+            pass
+
     def _rebuild_work(self) -> None:
         """按当前修正结果重建工作副本（真实 data 始终不被修改）。"""
         self._work = copy.deepcopy(self._data)
+        from app.importer.importer import _apply_resolved
         if self._fix:
-            from app.importer.importer import _apply_resolved
             _apply_resolved(
                 self._work,
                 [{"index": i, "action": "fix", "data": d} for i, d in sorted(self._fix.items())],
                 self._period,
             )
+        else:
+            self._split_work(self._work)
         # 已存在发票的右侧表单就地编辑（_inv_edits）原地覆盖，不追加
         for inv_idx, ed in self._inv_edits.items():
             invs = self._work.get("invoices", [])
             if 0 <= inv_idx < len(invs):
                 self._apply_invoice_edit(invs[inv_idx], ed)
+        # 应收账款(sheet3)行的就地编辑（A3）：下标对应 data["deferred"] 顺序。
+        # split_deferred 只「追加未见过的新行」、不重排既有行，故下标稳定。
+        defs = self._work.get("deferred") or []
+        for d_idx, ed in self._deferred_edits.items():
+            if 0 <= d_idx < len(defs):
+                self._apply_invoice_edit(defs[d_idx], ed)
         self._idx_to_p = {
             self._orig_inv_len + k: p_idx
             for k, p_idx in enumerate(sorted(self._fix))
@@ -308,7 +351,13 @@ class UnifiedImportDialog(QWidget):
 
     @staticmethod
     def _apply_invoice_edit(inv: dict, ed: dict) -> None:
-        """把右侧表单的编辑结果原地写回一条已存在的发票。"""
+        """把右侧表单的编辑结果原地写回一条已存在的发票。
+
+        应收账款(deferred)行结构与发票行同构（invoice_date / total_amount /
+        handlers / handler_text / split_receipts / buyer / case_no / remark），
+        故两者共用本函数；deferred 行独有的字段（sheet / row_no / header / raw_row /
+        need_backfill …）不被触碰。
+        """
         inv["invoice_date"] = ed.get("invoice_date") or ""
         inv["total_amount"] = ed.get("total_amount") or 0.0
         inv["handlers"] = list(ed.get("handlers") or [])
@@ -324,6 +373,46 @@ class UnifiedImportDialog(QWidget):
         rem.pop("pure_date", None)
         inv["remark"] = rem
         inv.pop("received_overrides", None)
+
+    # ------------------------------------------------------------------ #
+    # 应收账款(sheet3)行（deferred）：预填展开 / 收款明细
+    # ------------------------------------------------------------------ #
+    @staticmethod
+    def _deferred_expand(d: dict):
+        """应收账款行 → (面板预填行, 收款明细)。
+
+        与补录页**同源**（`app.engine.raw_ledger.expand_receipts`）：支持多期收款
+        展开成「同名多行」，开票额合计仍等于开票总额（D3 甲 / A11）。
+        """
+        hs = [tuple(h) for h in (d.get("handlers") or [])]
+        dicts, split = expand_receipts(hs, d.get("remark") or {}, d.get("total_amount") or 0.0)
+        rows = [
+            {"name": h["name"], "bill": h["billing"],
+             "recv_amt": ("" if not h["received"] else _fmt_money(h["received"])),
+             "recv_date": h["date"]}
+            for h in dicts
+        ]
+        return rows, split
+
+    def _deferred_payload(self, d: dict):
+        """应收账款行 → (面板预填行, 收款明细)。
+
+        已显式编辑过的行（有 `split_receipts`）以显式值为准（remark 已被清空，
+        再走备注推导会丢收款）；否则按台账备注展开。
+        """
+        split = list(d.get("split_receipts") or [])
+        if split:
+            from app.ui.problem_fix_panel import rows_from_handlers
+            return rows_from_handlers(list(d.get("handlers") or []), split), split
+        return self._deferred_expand(d)
+
+    def _deferred_recv_text(self, d: dict) -> str:
+        """应收账款行的「各经办人已收」列（按姓名合计多期收款）。"""
+        _rows, split = self._deferred_payload(d)
+        agg: Dict[str, float] = defaultdict(float)
+        for name, amt, _ym in split:
+            agg[name] += amt or 0.0
+        return "、".join(f"{n} {_fmt_money(a)}" for n, a in agg.items()) or "—"
 
     def _rebuild(self) -> None:
         anchor = self._current_anchor()
@@ -354,6 +443,16 @@ class UnifiedImportDialog(QWidget):
                 "p_index": i, "inv_idx": None, "work_idx": None,
                 "ev": None, "problem": p,
             })
+        # A1：应收账款(sheet3)行进同一张表（data["deferred"] 每一行）。
+        # 判据取**工作副本**（_rebuild_work 已用最新库票号集合重判 need_backfill），
+        # 故显示的「需补录 / 已入库」始终对应当前库状态。
+        for i, d in enumerate(self._work.get("deferred") or []):
+            rows.append({
+                "kind": "deferred",
+                "status": "高置信" if i in self._deferred_confirmed else "待确认",
+                "p_index": None, "inv_idx": None, "work_idx": None,
+                "ev": None, "problem": None, "deferred": d, "d_index": i,
+            })
         # 标记「已确认」类别：已修正 / 点「确认」/ 编辑过的发票（均属高置信）
         for r in rows:
             confirmed = False
@@ -362,8 +461,18 @@ class UnifiedImportDialog(QWidget):
             elif r["kind"] == "invoice" and r["inv_idx"] is not None and (
                     r["inv_idx"] in self._confirmed or r["inv_idx"] in self._inv_edits):
                 confirmed = True
+            elif r["kind"] == "deferred" and r["d_index"] in self._deferred_confirmed:
+                confirmed = True
             r["is_confirmed"] = confirmed
-        rows.sort(key=lambda r: (_PRIO.get(r["status"], 9), r["p_index"] if r["p_index"] is not None else 1 << 30))
+        # 同状态内排序：问题行 → 发票行 → 应收账款行（各自按原顺序），
+        # 与旧行为一致（问题行仍排最前，故表首行仍是待处理的问题行）。
+        _kind_order = {"problem": 0, "invoice": 1, "deferred": 2}
+        rows.sort(key=lambda r: (
+            _PRIO.get(r["status"], 9),
+            _kind_order.get(r["kind"], 9),
+            r["d_index"] if r["kind"] == "deferred"
+            else (r["p_index"] if r["p_index"] is not None else 1 << 30),
+        ))
         self._rows = rows
         self._render(anchor)
 
@@ -390,6 +499,29 @@ class UnifiedImportDialog(QWidget):
                 return "、".join(ev["reasons"]) if ev["reasons"] else "✓ 系统判定无疑问"
             if key == "kind":
                 return "红字发票" if ev["is_red"] else "发票"
+        if r["kind"] == "deferred":
+            d = r["deferred"] or {}
+            if key == "src":
+                return f"{SHEET_LABEL.get(d.get('sheet'), d.get('sheet') or '—')} · 第{d.get('row_no', '')}行"
+            if key == "no":
+                return d.get("invoice_no") or "—"
+            if key == "buyer":
+                return d.get("buyer") or "—"
+            if key == "amt":
+                return _fmt_money(d.get("total_amount") or 0.0)
+            if key == "receipt":
+                return receipt_summary(d)
+            if key == "remark":
+                return (d.get("remark_raw") or "").replace("\n", " ").strip() or "—"
+            if key == "handler":
+                parsed = "、".join(f"{n} {_fmt_money(b)}" for n, b in (d.get("handlers") or [])) or "—"
+                src = (d.get("handler_text") or "").replace("\n", " ").strip()
+                return f"{parsed}　〔源填写〕{src}" if src else parsed
+            if key == "reason":
+                # A2：三种状态 —— 需补录原票 / 已入库，请确认收款 / 系统判定无疑问
+                return REASON_BACKFILL if d.get("need_backfill") else REASON_IN_LIBRARY
+            if key == "kind":
+                return "应收账款"
         p = r["problem"] or {}
         if key == "src":
             return f"{SHEET_LABEL.get(p.get('sheet'), p.get('sheet') or '—')} · 第{p.get('row_no', '')}行"
@@ -440,6 +572,10 @@ class UnifiedImportDialog(QWidget):
                     item.setForeground(fg)
                 if c == COL_REASON and r["kind"] == "invoice":
                     item.setForeground(GREEN if not r["ev"]["reasons"] else AMBER)
+                if c == COL_REASON and r["kind"] == "deferred":
+                    # 需补录原票（要去补录页）用琥珀，已入库待确认收款（在本页处理）用蓝
+                    item.setForeground(
+                        AMBER if (r["deferred"] or {}).get("need_backfill") else BLUE)
                 if r["status"] == "待确认":
                     item.setBackground(DIFF_BG)
                 if r["status"] == "已跳过":
@@ -468,12 +604,17 @@ class UnifiedImportDialog(QWidget):
         inv_total = sum(r["ev"]["total_amount"] for r in self._rows if r["kind"] == "invoice")
         pp = self._work.get("prepayments", [])
         pp_total = sum(x.get("amount", 0.0) for x in pp)
-        # sheet3 期外票：本次不落库，转入「补录原票」逐张确认（方案 A）
-        n_def = len(self._work.get("deferred", []) or [])
+        # 应收账款(sheet3)行：本次不落 invoice/分摊；「已入库」行确认后只追加收款（A10），
+        # 「需补录」行由「补录原票」逐张确认（方案 A）。此处把两类计数摊到汇总可见。
+        n_need = sum(1 for r in self._rows if r["kind"] == "deferred"
+                     and (r["deferred"] or {}).get("need_backfill"))
+        n_inlib = sum(1 for r in self._rows if r["kind"] == "deferred"
+                      and not (r["deferred"] or {}).get("need_backfill"))
         self.lbl_summary.setText(
             f"发票 {n_high + n_pending} 张，合计 ¥{inv_total:,.2f}　"
             f"预收款 {len(pp)} 条，合计 ¥{pp_total:,.2f}"
-            + (f"　·　应收账款期外 {n_def} 张已转入补录原票" if n_def else "")
+            + (f"　·　应收账款需补录原票 {n_need} 张" if n_need else "")
+            + (f"　·　应收账款已入库待确认收款 {n_inlib} 张" if n_inlib else "")
         )
 
         sel_row = -1
@@ -483,6 +624,9 @@ class UnifiedImportDialog(QWidget):
                     sel_row = i
                     break
                 if r["kind"] == "problem" and anchor[0] == "prob" and r["p_index"] == anchor[1]:
+                    sel_row = i
+                    break
+                if r["kind"] == "deferred" and anchor[0] == "def" and r["d_index"] == anchor[1]:
                     sel_row = i
                     break
         self.table.blockSignals(True)
@@ -513,9 +657,13 @@ class UnifiedImportDialog(QWidget):
             return None
         if r["kind"] == "invoice":
             return ("inv", r.get("work_idx"))
+        if r["kind"] == "deferred":
+            return ("def", r["d_index"])
         return ("prob", r["p_index"])
 
     def _recv_text(self, r: Dict) -> str:
+        if r["kind"] == "deferred":
+            return self._deferred_recv_text(r["deferred"] or {})
         if r["kind"] != "invoice":
             return "—（修正后生成）"
         ev = r["ev"]
@@ -610,6 +758,17 @@ class UnifiedImportDialog(QWidget):
                 # 低置信（待确认）：可保存修改，也可点「确认」认可系统默认口径
                 self.fix_panel.set_readonly(False)
                 self._set_actions(save=True, confirm=True)
+        elif r["kind"] == "deferred":
+            # A3：应收账款(sheet3)行复用同一就地编辑面板。预填由
+            # raw_ledger.expand_receipts 展开（同名多行 = 多期收款，与补录页同源）。
+            d = r["deferred"] or {}
+            rows, _split = self._deferred_payload(d)
+            self.fix_panel.setVisible(True)
+            self.fix_panel.set_invoice(d, prefill_rows=rows)
+            self.fix_panel.set_readonly(False)
+            # 两种状态都可「保存修改」；「确认」= 采纳台账收款口径
+            #（已入库行确认后会在入库时追加 collection；需补录行仅记录，不写收款）
+            self._set_actions(save=True, confirm=True)
         else:
             # 待修正 / 已跳过 问题行仍走 set_problem 修正路径（始终可编辑）
             self.fix_panel.setVisible(True)
@@ -635,6 +794,12 @@ class UnifiedImportDialog(QWidget):
             raw_row = inv.get("raw_row") or []
             sheet_name = inv.get("sheet_name") or "—"
             row_no = inv.get("row_no") or 0
+        elif r["kind"] == "deferred":
+            d = r["deferred"] or {}
+            header = d.get("header") or []
+            raw_row = d.get("raw_row") or []
+            sheet_name = SHEET_LABEL.get(d.get("sheet"), d.get("sheet") or "—")
+            row_no = d.get("row_no") or 0
         else:
             p = r["problem"] or {}
             header = p.get("header") or []
@@ -668,6 +833,14 @@ class UnifiedImportDialog(QWidget):
             # 已存在发票：右侧表单原地更新（方案 A），不追加、不覆盖整表
             self._inv_edits[r["inv_idx"]] = data
             self._rebuild()
+        elif r["kind"] == "deferred" and r["d_index"] is not None:
+            # A3：应收账款行 → 回写 data["deferred"] 的对应条目。
+            # 「已入库」行还表示用户已对这些收款做出判断 → 置 receipt_confirmed，
+            # 由 commit_ledger_import（A10）在入库时**追加**该票收款（需补录行不出收款）。
+            self._deferred_edits[r["d_index"]] = data
+            if not (r["deferred"] or {}).get("need_backfill"):
+                self._deferred_confirmed.add(r["d_index"])
+            self._rebuild()
         elif r["p_index"] is not None:
             # 待修正问题行 / 已修正行（源自问题修正）：走追加 / 覆盖修正路径
             self._fix[r["p_index"]] = data
@@ -697,9 +870,27 @@ class UnifiedImportDialog(QWidget):
 
         仅压制 sheet1/2/3 的三类「兜底判定」提示；若该行另有无法确认的硬疑问
         （如经办人不在花名册、分摊不平），确认无法消除，需先「保存修改」修正数据。
+
+        应收账款(sheet3)行：
+        - 「已入库，请确认收款」→ 采纳台账收款口径，入库时由 A10 **追加**该票收款；
+        - 「需补录原票」→ 仅表示已核对过（本页不写任何收款），原票仍须在「补录原票」页
+          补录；汇总行始终显示「需补录原票 N 张」提醒，补录该票后自动转「已入库」。
         """
         r = self._current_row()
-        if r is None or r["kind"] != "invoice" or r["work_idx"] is None:
+        if r is None:
+            return
+        if r["kind"] == "deferred":
+            d = r["deferred"] or {}
+            self._deferred_confirmed.add(r["d_index"])
+            self._rebuild()
+            if d.get("need_backfill"):
+                QMessageBox.information(
+                    self, "需补录原票",
+                    f"发票 {d.get('invoice_no') or '—'} 的原票不在库中，本页只记录核对结果，"
+                    "不会写入任何数据。\n\n请在「补录原票」页补录该原票；补录入库后本行会"
+                    "自动转为「已入库，请确认收款」。")
+            return
+        if r["kind"] != "invoice" or r["work_idx"] is None:
             return
         self._confirmed.add(r["work_idx"])
         self._rebuild()
@@ -735,6 +926,10 @@ class UnifiedImportDialog(QWidget):
                 for i in range(len(problems))
             ]
             _apply_resolved(merged, resolved, self._period)
+        else:
+            # 与 _rebuild_work 同一步骤：保证 deferred 桶结构与工作副本一致，
+            # A3 的 deferred 下标才不会错位（直连构造时数据尚未切分）。
+            self._split_work(merged)
         merged["problems"] = []
 
         # 已存在发票的右侧就地编辑：原地覆盖
@@ -742,6 +937,30 @@ class UnifiedImportDialog(QWidget):
             invs = merged.get("invoices", [])
             if 0 <= inv_idx < len(invs):
                 self._apply_invoice_edit(invs[inv_idx], ed)
+
+        # A3 + A10：应收账款(sheet3)行的就地编辑与「确认收款」结果回写 data["deferred"]。
+        # 下标对应 data["deferred"] 顺序（split_deferred 只追加、不重排）。
+        deferred = merged.get("deferred") or []
+        for d_idx, ed in sorted(self._deferred_edits.items()):
+            if 0 <= d_idx < len(deferred):
+                self._apply_invoice_edit(deferred[d_idx], ed)
+        for d_idx in sorted(self._deferred_confirmed):
+            if not (0 <= d_idx < len(deferred)):
+                continue
+            d = deferred[d_idx]
+            if d.get("need_backfill"):
+                continue  # 需补录原票 → 由补录流程写入，此处绝不出收款
+            if not d.get("split_receipts"):
+                # 只点了「确认」未编辑 → 采纳台账预填口径（无收款信息时为空，即不写）
+                _rows, split = self._deferred_expand(d)
+                d["split_receipts"] = split
+            d["split_receipts"] = [
+                ((n or "").strip(), float(a or 0.0), (ym or "")[:10])
+                for n, a, ym in (d.get("split_receipts") or [])
+                if (n or "").strip() and float(a or 0.0) > 0.001
+            ]
+            # 用户在复核页确认过收款 → commit_ledger_import（A10）据此**追加** collection
+            d["receipt_confirmed"] = True
 
         # 已收覆盖值按「原始解析下标」回写（历史弹窗路径，现已停用，保留兼容）
         invoices = merged.get("invoices", [])
@@ -761,8 +980,13 @@ class UnifiedImportDialog(QWidget):
     def accept(self) -> None:
         todo = [r for r in self._rows if r["status"] == "待确认"]
         if todo:
-            msg = (f"还有 {len(todo)} 行未处理，确认入库时这些行将被跳过（不入库）。\n\n"
-                   "是否继续？")
+            n_inlib = sum(1 for r in todo if r["kind"] == "deferred"
+                          and not (r["deferred"] or {}).get("need_backfill"))
+            msg = (f"还有 {len(todo)} 行未处理，确认入库时这些行将被跳过（不入库）。\n"
+                   + (f"\n其中应收账款「已入库，请确认收款」{n_inlib} 行：本次不会写入这些收款"
+                      "（该票已有收款不受影响；重新导入同一账期可再确认）。\n"
+                      if n_inlib else "")
+                   + "\n是否继续？")
             if QMessageBox.question(
                 self, "存在未处理的问题行", msg,
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
@@ -822,4 +1046,14 @@ class UnifiedImportDialog(QWidget):
             old = dict(oinv[inv_idx])
             no = str(data.get("invoice_no") or old.get("invoice_no") or "").strip()
             items.append({"kind": "edit", "invoice_no": no, "old": old, "new": data})
+        # 应收账款(sheet3)行的就地编辑（A3）：旧值取原始 deferred 行；
+        # 若载入时 data 尚未切分（无 deferred 桶），按票号回退到 invoices 里找 sheet3 行。
+        odef = (self._orig_data or {}).get("deferred") or []
+        for d_idx, data in sorted(self._deferred_edits.items()):
+            d = odef[d_idx] if 0 <= d_idx < len(odef) else {}
+            no = str(data.get("invoice_no") or d.get("invoice_no") or "").strip()
+            if not d and no:
+                d = next((x for x in list(odef) + list(oinv)
+                          if str(x.get("invoice_no") or "").strip() == no), {})
+            items.append({"kind": "edit", "invoice_no": no, "old": dict(d), "new": data})
         return items

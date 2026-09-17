@@ -183,6 +183,72 @@ def _norm_date_text(raw: str, year) -> str:
         return ""
 
 
+def expand_receipts(handlers, remark, total) -> "tuple[List[Dict], List[tuple]]":
+    """(经办人分摊, 备注, 价税合计) → 预填的「期 × 经办人」行 + 收款明细。
+
+    返回 (rows, split_receipts)：
+    - rows: [{"name", "billing", "received", "date"}] —— 每人**第一行**填开票分摊额、
+      其余行填 0（保证「开票额合计 = 开票总额」校验通过，且
+      `problem_fix_panel._aggregate_handlers` 合并后各人分摊正确）；
+    - split_receipts: [(name, received, ym)]，只含 received>0，与 rows 中「有收款」的行
+      一一对应（两条通道口径一致）。
+
+    口径（D3 甲 / A11）：
+    - 备注纯日期 → 该笔应收的收款日期、全额；备注逐期收款 → 各期金额（0 表示全额）；
+    - **同月多笔先按 `ym` 合并**（明细粒度只到月，合并无损），避免同一人同一月
+      展开出两行同日期的收款；
+    - 无收款信息（备注既无纯日期也无逐期明细）→ 每人一行、收款留空
+      （台账没表态就不预填，而不是臆造收款）。
+
+    与复核页应收账款行的预填**同源**：`_derive_deferred` 与
+    `unified_import_dialog` 都走这里，避免「补录页」与「复核页」两处口径漂移。
+    """
+    items = _receipt_periods(remark, total)
+    rows: List[Dict] = []
+    for name, billing in (handlers or []):
+        share = (billing / total) if total else 0.0
+        if not items:
+            rows.append({"name": name, "billing": billing,
+                         "received": 0.0, "date": ""})
+            continue
+        for k, (ym, amt) in enumerate(items):
+            recv = round(amt * share, 2)
+            has = recv > 0.001
+            rows.append({
+                "name": name,
+                "billing": (billing if k == 0 else 0.0),
+                "received": recv if has else 0.0,
+                "date": (ym or "") if has else "",
+            })
+    split = [(h["name"], h["received"], h["date"]) for h in rows if h["received"] > 0.001]
+    return rows, split
+
+
+def _receipt_periods(remark, total) -> List[tuple]:
+    """备注 → [(ym, amount)]（同月已合并）；无收款信息返回 []。
+
+    - 纯日期备注 → [(该日期所在月, 全额)]（应收账款纯日期 = 该笔应收的收款日期）；
+    - 逐期备注 → 各期金额（0 表示全额）；
+    - 同月多笔合并（粒度只到月，无损）。
+    金额一律是**绝对金额**；`expand_receipts`（预填行）与 `_derive_deferred` 的
+    `receipt_items`（列表页「收款金额」）共用这一份取值口径。
+    """
+    items: List = []
+    if total >= 0:
+        if remark.get("pure_date"):
+            items = [((remark["pure_date"] or "")[:7], total)]
+        elif remark.get("receipts"):
+            items = [((ym or "")[:7], (amt if amt > 0 else total))
+                     for ym, amt in remark["receipts"]]
+    merged: List = []
+    for ym, amt in items:
+        if merged and merged[-1][0] == ym:
+            merged[-1] = (ym, merged[-1][1] + amt)
+        else:
+            merged.append((ym, amt))
+    return merged
+
+
 def _derive_deferred(r, date_str: str, year) -> Dict:
     """raw_ledger 行 → 待补录条目（含补录弹窗预填）。"""
     from app.importer.parse_handler import parse_handler_column
@@ -198,44 +264,8 @@ def _derive_deferred(r, date_str: str, year) -> Dict:
         rem = parse_remark(r["remark"], default_year=year)
     except Exception:  # noqa: BLE001
         rem = {}
-    # 收款批次：红字无收款；应收账款纯日期备注=该笔应收的收款日期（全额）；
-    # 逐期备注按各期金额（0 表示全额）。
-    items: List = []
-    if total >= 0:
-        if rem.get("pure_date"):
-            items = [((rem["pure_date"] or "")[:7], total)]
-        elif rem.get("receipts"):
-            items = [((ym or "")[:7], (amt if amt > 0 else total))
-                     for ym, amt in rem["receipts"]]
-    # A11（D3 甲）：同月多笔先按 `ym` 合并 —— 明细粒度只到月，合并无损，
-    # 避免同一人同一月展开出两行相同日期的收款。
-    merged: List = []
-    for ym, amt in items:
-        if merged and merged[-1][0] == ym:
-            merged[-1] = (ym, merged[-1][1] + amt)
-        else:
-            merged.append((ym, amt))
-    items = merged
-    # 预填展开（A11）：按「期 × 经办人」逐行 —— 每人**第一行**填开票分摊额、其余行填 0。
-    # 开票额合计仍等于开票总额（同名多行由 problem_fix_panel._aggregate_handlers 合并回
-    # 各人的开票分摊），而收款逐行保留 → 多期收款得以无损表达（原实现在多期时预填全空，
-    # 用户须手工加行）。无收款信息时仍每人一行、收款留空（台账没表态就不预填）。
-    handlers = []
-    for name, billing in hs:
-        share = (billing / total) if total else 0.0
-        if not items:
-            handlers.append({"name": name, "billing": billing,
-                             "received": 0.0, "date": ""})
-            continue
-        for k, (ym, amt) in enumerate(items):
-            recv = round(amt * share, 2)
-            has = recv > 0.001
-            handlers.append({
-                "name": name,
-                "billing": (billing if k == 0 else 0.0),
-                "received": recv if has else 0.0,
-                "date": (ym or "") if has else "",
-            })
+    handlers, split_receipts = expand_receipts(hs, rem, total)
+    items = _receipt_periods(rem, total)
     return {
         "invoice_no": no,
         "source": "应收账款",
@@ -252,8 +282,7 @@ def _derive_deferred(r, date_str: str, year) -> Dict:
         "handlers": handlers,
         # 预填收款（经办人 × 期）——复核页「确认（不改）」即采纳此集合；
         # 与 handlers 中 received>0 的行一一对应，保证两条通道口径一致。
-        "split_receipts": [(h["name"], h["received"], h["date"])
-                           for h in handlers if h["received"] > 0.001],
+        "split_receipts": split_receipts,
         "receipt_items": [{"ym": ym, "amount": amt} for ym, amt in items],
         "collected": round(sum(a for _, a in items), 2),
     }

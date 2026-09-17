@@ -162,6 +162,15 @@ def evaluate(data: Dict, staff_set: set, confirmed: set = None, period: str = No
     return results
 
 
+def receipt_summary(inv: Dict) -> str:
+    """收款认定摘要（公开入口）。
+
+    与 `_receipt_text` 同一实现：复核页里**不是 invoice 行**的条目（应收账款 deferred 行）
+    也要显示「收款认定」列，直接复用同一口径，避免两处文案漂移。
+    """
+    return _receipt_text(inv)
+
+
 def _receipt_text(inv: Dict) -> str:
     """收款认定摘要（与预览框一致）。
 

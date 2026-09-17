@@ -7,8 +7,15 @@
 
 对外接口：
     panel = ProblemFixPanel(staff_names, period)
-    panel.set_problem(p)      # 载入一行（p=None 清空）
-    data = panel.read_fix()   # 校验并返回修正数据；失败抛 ImportError_
+    panel.set_problem(p)             # 载入一个问题行（p=None 清空）
+    panel.set_invoice(inv, ev)       # 载入一条已解析发票/应收账款行（就地编辑）
+    panel.set_invoice(inv, prefill_rows=[...])   # 由调用方直接给出预填行
+    data = panel.read_fix()          # 校验并返回修正结果；失败抛 ImportError_
+
+模块级：
+    rows_from_handlers(handlers, split_receipts) -> list
+        把 (经办人分摊, 收款明细) 展开成面板预填行；**同一经办人多笔收款 → 多行**
+        （同名多期收款），与 app.engine.raw_ledger.expand_receipts 同口径。
 
 校验规则与 problem_dialog.py 完全一致（经办人须在花名册、开票额合计须等于总额、
 填了收款金额必须同时填收款日期、同名经办人合并前弹确认）。
@@ -52,6 +59,36 @@ def _norm_dt(s: str) -> str | None:
 
 def _money(x: float) -> str:
     return f"{x:,.2f}"
+
+
+def rows_from_handlers(handlers: list, split_receipts: list) -> list:
+    """(经办人分摊, 收款明细) → 面板预填行；同一经办人有多笔收款 → **多行**（同名多期）。
+
+    每人**首行**带开票分摊额、其余行开票额为 0 —— 与
+    `app.engine.raw_ledger.expand_receipts` 同口径，保证「开票额合计 = 开票总额」
+    校验通过（同名多行由 `_aggregate_handlers` 合并回各人分摊），而收款逐行保留，
+    多期收款得以无损表达。
+    """
+    agg: dict = {}
+    for name, billing in (handlers or []):
+        agg[name] = agg.get(name, 0.0) + (billing or 0.0)
+    by_name: dict = defaultdict(list)
+    for name, amt, ym in (split_receipts or []):
+        by_name[name].append((amt, ym))
+    rows: list = []
+    for name, bill in agg.items():
+        recs = by_name.get(name) or []
+        if not recs:
+            rows.append({"name": name, "bill": bill, "recv_amt": "", "recv_date": ""})
+            continue
+        for k, (amt, ym) in enumerate(recs):
+            rows.append({
+                "name": name,
+                "bill": (bill if k == 0 else 0.0),
+                "recv_amt": ("" if not amt else _money(amt)),
+                "recv_date": ym or "",
+            })
+    return rows
 
 
 class ProblemFixPanel(QWidget):
@@ -214,12 +251,17 @@ class ProblemFixPanel(QWidget):
         self.btn_del.setEnabled(not ro)
         self.hint.setText("高置信：默认只读，点「编辑」可修改。" if ro else (self._edit_hint or ""))
 
-    def set_invoice(self, inv: dict, ev: dict | None = None) -> None:
+    def set_invoice(self, inv: dict, ev: dict | None = None,
+                    prefill_rows: list | None = None) -> None:
         """载入一条已解析发票（高/低置信或修正后）预填表单，供就地编辑。
 
         与 set_problem 的区别：数据来自 invoice 结构（handlers / remark / split_receipts），
-        而非 problem 原始台账文本。每经办人的收款金额/日期优先取既有 split_receipts，
-        否则用 system_received 按备注日期兜底预填，便于直接核对、微调。
+        而非 problem 原始台账文本。
+
+        prefill_rows：调用方直接给出预填行。应收账款(sheet3)行由复核页用
+        `app.engine.raw_ledger.expand_receipts` 展开后传入（支持同一经办人多期收款 → 多行）；
+        给了就不再自行推导。
+        ev：评估结果（含 system_received），仅在自行推导时用于兜底预填。
         """
         ev = ev or {}
         self._problem = {
@@ -236,31 +278,30 @@ class ProblemFixPanel(QWidget):
         self._readonly = False
 
         handlers = inv.get("handlers") or []
-        sys_recv = ev.get("system_received", {}) or {}
-        split = {name: (amt, ym) for name, amt, ym in (inv.get("split_receipts") or [])}
-        rem = inv.get("remark") or {}
-        if rem.get("pure_date"):
-            date_hint = rem["pure_date"]
-        elif rem.get("receipts"):
-            date_hint = rem["receipts"][0][0] if rem["receipts"] else ""
+        if prefill_rows is not None:
+            rows = [dict(r) for r in prefill_rows]
         else:
-            date_hint = ""
-        rows = []
-        for name, billing in handlers:
-            if name in split:
-                amt, ym = split[name]
-                rows.append({
-                    "name": name, "bill": billing,
-                    "recv_amt": ("" if not amt else _money(amt)),
-                    "recv_date": ym or "",
-                })
+            split_list = list(inv.get("split_receipts") or [])
+            if split_list:
+                # 显式收款明细（用户改过 / 多期）→ 逐条展开，不回落备注推导
+                rows = rows_from_handlers(handlers, split_list)
             else:
-                amt = sys_recv.get(name, 0.0)
-                rows.append({
-                    "name": name, "bill": billing,
-                    "recv_amt": ("" if not amt else _money(amt)),
-                    "recv_date": (date_hint if amt > 0 else ""),
-                })
+                sys_recv = ev.get("system_received", {}) or {}
+                rem = inv.get("remark") or {}
+                if rem.get("pure_date"):
+                    date_hint = rem["pure_date"]
+                elif rem.get("receipts"):
+                    date_hint = rem["receipts"][0][0] if rem["receipts"] else ""
+                else:
+                    date_hint = ""
+                rows = []
+                for name, billing in handlers:
+                    amt = sys_recv.get(name, 0.0)
+                    rows.append({
+                        "name": name, "bill": billing,
+                        "recv_amt": ("" if not amt else _money(amt)),
+                        "recv_date": (date_hint if amt > 0 else ""),
+                    })
         self._render_rows(rows)
         self._edit_hint = (
             "可直接修改开票日期 / 总额 / 经办人分摊 / 收款金额与日期；"
