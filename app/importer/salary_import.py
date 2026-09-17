@@ -19,7 +19,7 @@ from __future__ import annotations
 import re
 from typing import Dict, List, Optional, Tuple
 
-from app.importer.excel_reader import read_sheet, sheet_names
+from app.importer.excel_reader import norm_header, read_sheet, sheet_names
 
 # sheet 名 -> sheet_key（包含匹配，兼容「后勤 (实)」这类带后缀的原始名）
 SHEET_KEY_RULES = [
@@ -45,6 +45,10 @@ HEADER_ALIASES = {
 
 # 表头必需列（用于识别表头行）
 _HEADER_MUST = ("编号", "姓名")
+
+# 去空白后的别名表 / 必需列（表头比较统一忽略空白，见 excel_reader.norm_header）
+_HEADER_ALIASES_NORM = {norm_header(k): v for k, v in HEADER_ALIASES.items()}
+_HEADER_MUST_NORM = tuple(norm_header(k) for k in _HEADER_MUST)
 
 # 金额项目识别顺序（先匹配到的为准）：表头出现哪个金额列名 -> item_type
 _ITEM_TYPE_BY_HEADER = [
@@ -75,8 +79,9 @@ def _norm_name(txt: str) -> str:
 
 
 def _sheet_key_of(name: str) -> Optional[str]:
+    flat = norm_header(name)  # sheet 名也可能带排版空格，统一忽略空白
     for kw, key in SHEET_KEY_RULES:
-        if kw in name:
+        if kw in flat:
             return key
     return None
 
@@ -86,8 +91,8 @@ def _cells(row) -> List[str]:
 
 
 def _looks_like_header(row) -> bool:
-    joined = "".join(_cells(row))
-    return all(k in joined for k in _HEADER_MUST)
+    joined = "".join(norm_header(c) for c in _cells(row))
+    return all(k in joined for k in _HEADER_MUST_NORM)
 
 
 def _is_end_row(row) -> bool:
@@ -104,16 +109,16 @@ def _is_end_row(row) -> bool:
 def _map_columns(header) -> Dict[str, int]:
     cols: Dict[str, int] = {}
     for i, h in enumerate(header):
-        h = str(h or "").strip()
-        if h in HEADER_ALIASES:
-            cols[HEADER_ALIASES[h]] = i
+        field = _HEADER_ALIASES_NORM.get(norm_header(h))
+        if field:
+            cols[field] = i
     return cols
 
 
 def _item_type_of(header) -> str:
-    joined = "".join(_cells(header))
+    joined = "".join(norm_header(c) for c in _cells(header))
     for kw, label in _ITEM_TYPE_BY_HEADER:
-        if kw in joined:
+        if norm_header(kw) in joined:
             return label
     return ""
 

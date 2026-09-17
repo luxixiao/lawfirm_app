@@ -55,19 +55,30 @@ def sheet_names(path: str) -> List[str]:
         wb.close()
 
 
+def norm_header(s) -> str:
+    """表头文本规范化：**抹掉全部空白**（半角空格 / 全角空格 U+3000 / Tab / 换行）。
+
+    为什么需要：台账 Excel 的表头常带排版空格 —— 真台账 4 个 sheet 的对方列表头
+    实际是「对  方」（中间两个空格），不是「对方」；按原文比较会整列取不到值
+    （曾导致 raw_ledger.buyer 93/93 全空、「发票台账」页对方列空白）。
+    所有「按表头名找列」的地方一律走本函数，口径统一。
+    """
+    return "".join(str(s or "").split())
+
+
 def find_header_row(rows: List[List[str]], required: List[str]) -> int:
-    """定位表头行（须同时包含 required 中的关键词，忽略空格），找不到返回 -1"""
+    """定位表头行（须同时包含 required 中的关键词，忽略空白），找不到返回 -1"""
     for i, row in enumerate(rows):
-        joined = "".join(row).replace(" ", "")
-        if all(k.replace(" ", "") in joined for k in required):
+        joined = "".join(norm_header(c) for c in row)
+        if all(norm_header(k) in joined for k in required):
             return i
     return -1
 
 
 def col_index(header: List[str], *keywords: str) -> int:
-    """在表头中找列下标（忽略空格，返回第一个命中关键词的列），找不到返回 -1"""
+    """在表头中找列下标（忽略空白，返回第一个命中关键词的列），找不到返回 -1"""
     for i, h in enumerate(header):
-        hh = h.replace(" ", "")
-        if any(k.replace(" ", "") in hh for k in keywords):
+        hh = norm_header(h)
+        if any(norm_header(k) in hh for k in keywords):
             return i
     return -1

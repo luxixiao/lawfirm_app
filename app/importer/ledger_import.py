@@ -22,7 +22,7 @@ from typing import Dict, List
 
 from app.engine.backfill import is_period_before
 from app.importer.date_utils import normalize_date
-from app.importer.excel_reader import ImportError_, cell_text, col_index, find_header_row, read_sheet, sheet_names
+from app.importer.excel_reader import ImportError_, cell_text, col_index, find_header_row, norm_header, read_sheet, sheet_names
 from app.importer.parse_handler import parse_handler_column
 from app.importer.parse_remark import parse_remark
 
@@ -113,16 +113,17 @@ def _pick_sheet(rows: List[List[str]], keyword: str) -> List[List[str]] | None:
 
 
 def classify_sheets(names: List[str]) -> Dict[str, str]:
-    """把 sheet 名映射到类型：sheet1/sheet2/sheet3/sheet4"""
+    """把 sheet 名映射到类型：sheet1/sheet2/sheet3/sheet4（比较忽略空白）"""
     mapping: Dict[str, str] = {}
     for name in names:
-        if "已开票已入账" in name:
+        flat = norm_header(name)  # sheet 名也可能带排版空格，统一忽略空白
+        if "已开票已入账" in flat:
             mapping["sheet1"] = name
-        elif "已开票未入账" in name:
+        elif "已开票未入账" in flat:
             mapping["sheet2"] = name
-        elif "应收账款" in name:
+        elif "应收账款" in flat:
             mapping["sheet3"] = name
-        elif "已入账未开票" in name:
+        elif "已入账未开票" in flat:
             mapping["sheet4"] = name
     return mapping
 

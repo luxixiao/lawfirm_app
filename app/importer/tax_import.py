@@ -22,7 +22,7 @@ import json
 import re
 from typing import Dict, List, Optional
 
-from app.importer.excel_reader import read_sheet, sheet_names
+from app.importer.excel_reader import norm_header, read_sheet, sheet_names
 
 # 税局字段编号 -> 标准字段（编号体系稳定，是本解析器的主锚点）
 FIELD_BY_NO = {
@@ -47,6 +47,9 @@ FIELD_BY_NAME = {
     "减免税额": "relief", "已缴税额": "paid",
     "应补/退税额": "refill", "实际已纳税额": "net_paid",
 }
+
+# 去空白后的列名表（表头比较统一忽略空白，见 excel_reader.norm_header）
+_FIELD_BY_NAME_NORM = {norm_header(k): v for k, v in FIELD_BY_NAME.items()}
 
 # 这些字段按原文存储（不转数值：序号可能带前导零、税率可能是 "-"）
 TEXT_FIELDS = {"seq", "staff_name", "tax_rate"}
@@ -85,9 +88,10 @@ def _cells(row) -> List[str]:
 
 
 def _find_header_row(rows: List[List[str]]) -> int:
-    """表头首行 = 第一个含「姓名」的行。"""
+    """表头首行 = 第一个含「姓名」的行（表头比较**忽略空白**）。"""
+    want = norm_header("姓名")
     for i, row in enumerate(rows):
-        if any(c == "姓名" for c in _cells(row)):
+        if any(norm_header(c) == want for c in _cells(row)):
             return i
     return -1
 
@@ -130,7 +134,7 @@ def _build_col_map(rows, header_row: int, no_row: int, ncols: int):
     for c, name in enumerate(names):
         if c in mapped or not name:
             continue
-        field = FIELD_BY_NAME.get(name)
+        field = _FIELD_BY_NAME_NORM.get(norm_header(name))
         if field and field not in used:
             mapped[c] = field
             used.add(field)

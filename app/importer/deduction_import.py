@@ -24,7 +24,7 @@ import json
 import re
 from typing import Dict, List, Tuple
 
-from app.importer.excel_reader import read_sheet, sheet_names
+from app.importer.excel_reader import norm_header, read_sheet, sheet_names
 
 # (关键词元组, 字段) —— 列名需**全部包含**这些关键词才命中；按顺序先到先得。
 # 顺序要点：先具体后宽泛（「专项扣除」必须在「专项」之前，否则会被宽泛规则抢走）。
@@ -95,22 +95,28 @@ def _uniq_names(names: List[str]) -> List[str]:
 
 
 def _find_header_row(rows: List[List[str]]) -> int:
-    """表头行 = 第一个含「姓名」的行。"""
+    """表头行 = 第一个含「姓名」的行（表头比较**忽略空白**）。"""
+    want = norm_header("姓名")
     for i, row in enumerate(rows):
-        if any(c == "姓名" for c in _cells(row)):
+        if any(norm_header(c) == want for c in _cells(row)):
             return i
     return -1
 
 
 def _build_col_map(names: List[str]):
-    """返回 (字段映射 {列索引: 字段}, 附加列 {列索引: 列名})。"""
+    """返回 (字段映射 {列索引: 字段}, 附加列 {列索引: 列名})。
+
+    匹配前把列名**去空白**（`norm_header`）：台账表头常带排版空格（如「应 发 工 资」），
+    不去空白会整列漏掉；`extra` 仍回填**原始列名**，保持界面显示不变。
+    """
     mapped: Dict[int, str] = {}
     used = set()
     for c, name in enumerate(names):
         if not name:
             continue
+        flat = norm_header(name)
         for keys, field in FIELD_RULES:
-            if all(k in name for k in keys) and field not in used:
+            if all(norm_header(k) in flat for k in keys) and field not in used:
                 mapped[c] = field
                 used.add(field)
                 break

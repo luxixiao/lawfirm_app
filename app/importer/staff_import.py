@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import List, Tuple
 
 import xlrd
+from app.importer.excel_reader import norm_header
 from app.importer.xlsx_io import load_workbook
 
 
@@ -22,10 +23,11 @@ def _cell_text(v) -> str:
 
 
 def _find_header_row(rows: List[List[str]]) -> int:
-    """定位表头行：包含'姓名'且包含'类型'"""
+    """定位表头行：包含'姓名'且包含'类型'（表头比较**忽略空白**）"""
+    want_name, want_type = norm_header("姓名"), norm_header("类型")
     for i, row in enumerate(rows):
-        names = [_cell_text(c) for c in row]
-        if any("姓名" in n for n in names) and any("类型" in n for n in names):
+        names = [norm_header(_cell_text(c)) for c in row]
+        if any(want_name in n for n in names) and any(want_type in n for n in names):
             return i
     return -1
 

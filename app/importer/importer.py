@@ -22,6 +22,7 @@ from app.engine.backfill import (
 )
 from app.engine.collection import over_collection_message
 from app.engine.raw_ledger import SHEET_LABELS
+from app.importer.excel_reader import col_index
 from app.importer.expense_import import parse_expense_file
 from app.importer.invoice_import import parse_invoice_file, parse_invoice_workbook
 from app.importer.ledger_import import (
@@ -105,17 +106,27 @@ def _new_batch(conn, batch_type: str, period: str, file_name: str, archive_path:
 
 
 def _raw_cell(row, header, *names) -> str:
-    """从原始行按表头取某列文本（兼容多别名）。"""
+    """从原始行按表头取某列文本（兼容多别名）。
+
+    **与解析侧同一口径**：直接复用 `excel_reader.col_index` 定位列（列名去空白后
+    「包含」任一别名的最左列），与 `ledger_import._parse_invoice_sheet` /
+    `_parse_sheet4` 的取列方式完全一致 —— 保证镜像值与解析值取自**同一列**，
+    导入后复核页「源 ⇄ 库」可逐字对照。
+
+    两个历史坑（2026-09-17）：
+    1. **表头带排版空格**：真台账 12 个文件的对方列表头都是「对  方」（中间两个
+       空格），原先按原文精确比较 → 整列取不到 → raw_ledger.buyer 93/93 全空、
+       「发票台账」页对方列空白（用户报障）。
+    2. **别名用 `==` 而非包含**：预收款表买方列若叫「汇款单位」，别名「汇款」
+       永远匹配不上，而解析侧（col_index 用包含）却认得 → 镜像与解析不一致。
+       现统一为包含匹配，两处不会再分叉。
+    """
     if not header or not row:
         return ""
-    for n in names:
-        try:
-            i = header.index(n)
-        except ValueError:
-            continue
-        if 0 <= i < len(row):
-            return (row[i] or "").strip()
-    return ""
+    i = col_index(header, *names)
+    if i < 0 or i >= len(row):
+        return ""
+    return (row[i] or "").strip()
 
 
 def compute_expected_receipts(inv: Dict) -> Tuple[float, List[Dict]]:
@@ -390,7 +401,9 @@ def _insert_raw_ledger(conn, item: dict, batch_id: int, kind: str) -> None:
         amt_raw = _raw_cell(item.get("raw_row"), item.get("header"), "金额")
         if has_raw:
             handler = _raw_cell(item.get("raw_row"), item.get("header"), "经办人")
-            buyer = _raw_cell(item.get("raw_row"), item.get("header"), "对方", "购方")
+            # 别名与 ledger_import._parse_sheet4 的 col_index(header,"对方","购方","汇款")
+            # 保持一致：预收款表的买方列可能叫「汇款单位」，少这个别名镜像会取空。
+            buyer = _raw_cell(item.get("raw_row"), item.get("header"), "对方", "购方", "汇款")
             case_no = _raw_cell(item.get("raw_row"), item.get("header"), "案号")
         else:
             handler = item.get("person_text") or ""
