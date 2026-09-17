@@ -273,6 +273,113 @@ check("已收款行的日期预填 '25.9' 归一为 2025-09",
 check("明细表里 25.9 这类写法也能被 _read_detail 读出",
       bool(_dts) and _dts[0].is_valid())
 
+# ------------------------------------------------------------------ #
+# 阶段 3（B2f）：BackfillDialog 抽取 —— 复核页与补录页共用的弹窗
+# （两处调用点：本页 open_backfill_pending/open_backfill → _open_dialog；
+#   复核页行内「补录原票」→ 同一个类）
+# ------------------------------------------------------------------ #
+import app.ui.backfill_dialog as BD  # noqa: E402
+from PySide6.QtWidgets import QDialogButtonBox as _QDBB  # noqa: E402
+
+
+class _MB2:
+    """记录 (title, text)，便于区分「提示」与「无法保存」两类。"""
+    calls = []
+
+    @staticmethod
+    def warning(parent, title, text, *a, **k):
+        _MB2.calls.append((title, text))
+
+    @staticmethod
+    def critical(parent, title, text, *a, **k):
+        _MB2.calls.append((title, text))
+
+
+BD.QMessageBox = _MB2
+
+
+def _pf(no="Z2", date="2025-09-01", total=100.0, handlers=None):
+    return {"invoice_no": no, "invoice_date": date, "buyer": "甲", "total_amount": total,
+            "handlers": handlers if handlers is not None else [
+                {"name": "周立生", "billing": 100.0, "received": 0.0, "date": ""}]}
+
+
+# 1) 默认态：票号可改、明细预填、校验通过后 data() 归一化
+_d1 = BD.BackfillDialog(_pf())
+check("BackfillDialog：票号可改（新增态）", not _d1.no_edit.isReadOnly())
+check("BackfillDialog：明细表预填 1 行", _d1.detail.rowCount() == 1,
+      f"got={_d1.detail.rowCount()}")
+_d1._on_accept()
+check("BackfillDialog：校验通过 → data() 归一化（日期 YYYY-MM-DD）",
+      _d1.data() is not None and _d1.data()["invoice_date"] == "2025-09-01",
+      str(_d1.data()))
+check("BackfillDialog：data() 带 handlers",
+      bool(_d1.data()) and _d1.data()["handlers"][0]["name"] == "周立生",
+      str(_d1.data()))
+
+# 2) locked_no：票号只读（编辑已补录票，票号是主键）
+_d2 = BD.BackfillDialog(_pf(), locked_no=True)
+check("BackfillDialog locked_no：票号只读", _d2.no_edit.isReadOnly())
+
+# 3) validator（复核页用它跑 build_backfill）失败 → 留在弹窗、data() 仍为 None
+_MB2.calls.clear()
+_d3 = BD.BackfillDialog(_pf(), validator=lambda d: "补录票号 Z2 已在库中，无需补录。")
+_d3._on_accept()
+check("BackfillDialog：validator 失败 → 不 accept", _d3.data() is None, str(_d3.data()))
+check("BackfillDialog：validator 失败 → 「无法保存」提示原样透出",
+      any(t == "无法保存" and "已在库中" in x for t, x in _MB2.calls), str(_MB2.calls))
+
+# 4) 字段级校验四连：都留在弹窗（data() 恒为 None）
+_MB2.calls.clear()
+_d4 = BD.BackfillDialog(_pf())
+_d4.no_edit.setText("")
+_d4._on_accept()
+check("BackfillDialog：票号空 → 提示且不放行",
+      _d4.data() is None and any(t == "提示" and "发票号码不能为空" in x for t, x in _MB2.calls),
+      str(_MB2.calls))
+
+_d5 = BD.BackfillDialog(_pf(date=""))
+_d5._on_accept()
+check("BackfillDialog：开票日期空 → 提示且不放行",
+      _d5.data() is None and any("开票日期为必填项" in x for _t, x in _MB2.calls), str(_MB2.calls))
+
+_d6 = BD.BackfillDialog(_pf(date="乱码"))
+_d6._on_accept()
+check("BackfillDialog：开票日期无法识别 → 提示且不放行",
+      _d6.data() is None and any("开票日期无法识别" in x for _t, x in _MB2.calls),
+      str(_MB2.calls))
+
+_d7 = BD.BackfillDialog(_pf(total=50.0, handlers=[
+    {"name": "周立生", "billing": 100.0, "received": 100.0, "date": "2025-09"}]))
+_d7._on_accept()
+check("BackfillDialog：已收超价税合计 → 提示且不放行",
+      _d7.data() is None and any("超过价税合计" in x for _t, x in _MB2.calls), str(_MB2.calls))
+
+# 5) readonly（复核页「查看原票」）：全只读 + 仅「关闭」按钮 + 不产出数据
+_d8 = BD.BackfillDialog(_pf(), title="查看原票", readonly=True)
+check("BackfillDialog readonly：票号/日期/明细均不可编辑",
+      not _d8.no_edit.isEnabled() and not _d8.date_edit.isEnabled()
+      and not _d8.detail.isEnabled())
+check("BackfillDialog readonly：增删行按钮隐藏",
+      not _d8.b_add.isVisibleTo(_d8) and not _d8.b_del.isVisibleTo(_d8))
+_bb = _d8.findChildren(_QDBB)
+_std = _bb[0].standardButtons() if _bb else _QDBB.StandardButton.NoButton
+check("BackfillDialog readonly：仅「关闭」按钮",
+      _std == _QDBB.StandardButton.Close, str(_std))
+check("BackfillDialog readonly：不产出 data()", _d8.data() is None)
+
+# 6) 共用的 backfill_validator（与写库同源：build_backfill）
+_err = BD.backfill_validator({"invoice_no": "V1", "invoice_date": "2024-01-01",
+                              "total_amount": 10.0,
+                              "handlers": [{"name": "查无此人", "billing": 10.0}]})
+check("backfill_validator：不在花名册 → 返回文案",
+      bool(_err) and "不在职工花名册" in _err, str(_err))
+check("backfill_validator：合规 → None",
+      BD.backfill_validator({"invoice_no": "V2", "invoice_date": "2024-01-01",
+                             "total_amount": 10.0,
+                             "handlers": [{"name": "周立生", "billing": 10.0,
+                                           "received": 0.0, "date": ""}]}) is None)
+
 bad = [n for n, ok in results if not ok]
 print(f"\nSMOKE {'PASS' if not bad else 'FAIL'} {len(results) - len(bad)}/{len(results)}")
 if bad:
