@@ -564,6 +564,36 @@ check("O：原因列写明不一致 + 对照本次补录",
 check("O：底部汇总报出不一致 1 张",
       "红字与蓝字原票不一致 1 张" in d_o.lbl_summary.text(), d_o.lbl_summary.text())
 
+# ================================================================ P2) sheet3（蓝字应收）行补录：本行无红字可比 → 软校验绝不误报
+# 2026-09-18 用户报告：sheet3 引起需补录（如 24332000000041172942）时弹「补录的蓝字
+# 原票与红字发票不一致」—— 本行根本没有红字发票。根因：deferred 行 ev=None，旧
+# `_red_prefill_diff` 拿空 ev 当红字侧（0 元/无经办人）→ 填什么都「不一致」。
+# 口径（用户拍板）：红蓝一致性软提示**只属于 sheet1/2 的红字行**补录；sheet3 行补录不比对。
+d_p2 = mk_dlg([mk_inv("AR-1", 5000.0, sheet="sheet3",
+                      remark={"receipts": [], "remaining": None, "pure_date": "2024-11-20"})])
+r_p2 = _def_row(d_p2)
+check("P2：sheet3 缺号行落待补录（前置）", r_p2["status"] == "待补录", r_p2["status"])
+_select(d_p2, r_p2)
+_FakeBF.seen.clear()
+d_p2._open_backfill()
+_seen_p2 = _FakeBF.seen[-1]
+check("P2：sheet3 行补录弹窗仍带 soft_check（结构不变，只是恒放行）",
+      callable(_seen_p2["soft_check"]), str(_seen_p2["soft_check"]))
+check("P2：本行无红字可比 → 随便填什么都**不**弹「不一致」（误报根除）",
+      _seen_p2["soft_check"]({"total_amount": 1234.0, "handlers": []}) is None,
+      str(_seen_p2["soft_check"]({"total_amount": 1234.0, "handlers": []})))
+check("P2：与行数据一致的补录 → 同样 None（双保险）",
+      _seen_p2["soft_check"]({"total_amount": 5000.0,
+                              "handlers": [{"name": "周立生", "billing": 5000.0}]}) is None)
+# 对照：红字行的 soft_check 在同一份代码下**依旧生效**（P 节已验，此处防「一刀切关死」）
+d_p2r = mk_dlg([mk_red("RED-1", orig_total=-3000.0)], red_map={"RED-1": "ORIG-9"})
+_select(d_p2r, _red_row(d_p2r))
+_FakeBF.seen.clear()
+d_p2r._open_backfill()
+check("P2：对照 —— 红字行的 soft_check 仍会报不一致（没被一刀切关掉）",
+      "不一致" in (_FakeBF.seen[-1]["soft_check"]({"total_amount": 2000.0}) or ""),
+      str(_FakeBF.seen[-1]["soft_check"]({"total_amount": 2000.0})))
+
 _MB.calls.clear()
 d_o.accept()
 _wq_o = [c[2] for c in _MB.calls if c[1] == "尚有未处理的行"]

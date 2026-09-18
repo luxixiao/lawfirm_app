@@ -1514,8 +1514,17 @@ class UnifiedImportDialog(QWidget):
         """补录**弹窗内容** vs 本行红字发票 → `red_orig_diff`（一致 → None）。
 
         供 `soft_check` 用：保存那一刻就拦住「蓝字与红字不一致」并让用户确认。
+
+        ⚠️ **只对「本行真的是红字发票」比对**（2026-09-18 用户报告的误报）：
+        sheet3 应收账款行是**蓝字**、且 deferred 行的 `ev` 恒为 None —— 那里根本没有
+        红字发票可比；旧写法拿空 ev 当红字侧（0 元 / 无经办人）→ 弹窗填什么都报
+        「不一致」。红字 ⇄ 蓝字比对只属于 sheet1/2 销项里的红字行落「待补录」的场景
+        （`ev["is_red"]`）；sheet3 行的补录不挂本比对（补录页 `_red_soft_check` 走
+        查库反查 `load_red_reference`，查不到红字返回 None，那条路径本来就对）。
         """
         ev = (r or {}).get("ev") or {}
+        if not ev.get("is_red"):
+            return None
         return red_orig_diff(ev.get("total_amount"), ev.get("handlers"),
                              (data or {}).get("total_amount"), (data or {}).get("handlers"))
 
