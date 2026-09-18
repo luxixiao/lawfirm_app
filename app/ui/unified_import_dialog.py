@@ -94,7 +94,9 @@ from PySide6.QtWidgets import (
 
 from app.db import get_conn
 from app.engine.backfill_module import load_invoice_detail, prefill_red_original
-from app.engine.import_confidence import SHEET_LABEL, evaluate, receipt_summary, red_orig_diff
+from app.engine.import_confidence import (  # noqa: F401  （REASON_LIB_DIFF 供测试断言）
+    REASON_LIB_DIFF, SHEET_LABEL, evaluate, receipt_summary, red_orig_diff,
+)
 from app.engine.raw_ledger import expand_receipts
 from app.importer.excel_reader import ImportError_
 from app.ui import scale
@@ -173,6 +175,9 @@ class UnifiedImportDialog(QWidget):
         self._mode = mode if mode in ("pre", "post") else "pre"
         # post 模式的溯源三要素（批次存档路径 / 文件名 / 批次号），load_period 时填
         self._post_meta: Dict = {"batch_id": None, "path": "", "file_name": ""}
+        # 批 2：「台账 ⇄ 库」比对的库侧上下文（仅导入前模式构建，见 load_data）。
+        # None = 不比对（post 模式 / 无账期 / 读库失败 —— 比对是增强项，绝不卡导入）。
+        self._lib_ctx: Dict | None = None
         # 载入时的原始快照（深拷贝）：accept() 会把 _data 原地替换为合并结果，
         # 之后 collect_import_fixes 若再读 _data 取"旧值"就会拿到新值（差异全部消失、
         # 留痕丢失）。故单独保留这份未被修改的原始数据供取旧值。
@@ -314,6 +319,16 @@ class UnifiedImportDialog(QWidget):
         self._idx_to_p = {}
         self._confirmed = set()
         self._rows = []
+        # 批 2：导入前模式才建「台账 ⇄ 库」比对上下文（post 刻意不建 —— 导入后镜表
+        # 原文与库的差异正是导入时人工修正的痕迹，重报 = 毛病 1 复活成假待办）。
+        # 一次读库、缓存到本次载入；失败 → None（比对整体跳过，绝不卡导入）。
+        self._lib_ctx = None
+        if self._mode == "pre" and period:
+            try:
+                from app.engine.review_compare import build_lib_context
+                self._lib_ctx = build_lib_context(period)
+            except Exception:  # noqa: BLE001
+                self._lib_ctx = None
         self.setWindowTitle(f"发票台账导入确认 — {period}")
         self._rebuild_fix_panel()
         self._rebuild()
@@ -626,7 +641,9 @@ class UnifiedImportDialog(QWidget):
         self._batch_nos_cache = None
         # 阶段 6：同轮内「库中蓝字原票」取数只查一次（`_lib_blue_amounts` 的缓存）
         self._blue_cache = None
-        evs = evaluate(self._work, self._staff_set, self._confirmed, self._period)
+        # 批 2：「台账 ⇄ 库」比对只在导入前模式启用（lib=None → evaluate 完全跳过）
+        evs = evaluate(self._work, self._staff_set, self._confirmed, self._period,
+                       lib=(self._lib_ctx if self._mode == "pre" else None))
         rows: List[Dict] = []
         for i, ev in enumerate(evs):
             inv_idx = i if i < self._orig_inv_len else None

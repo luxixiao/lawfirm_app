@@ -20,6 +20,9 @@
 - 阶段 4-2（散落各节，标签含「4-2」「A 甲」）：状态四态 + 默认筛选「待补录」+ 待补录排在
   待确认之前；补录完**不再直接高置信**而是落到「待确认」并**回显**补录里填的收款；
   待补录行不显示「确认」（点了给可读提示、不写数据）。
+- 批 2（第 12 节）：导入前「台账 ⇄ 库」三维比对（金额 / 经办人分摊 / 已收认定，
+  sheet3 除外）判进四态 —— 命中 → 待确认（原因带两侧对照值）；一致 → 零扰动；
+  「确认」是唯一消除机制（不吃 has_split 豁免）；post 模式刻意不比对。
 """
 import os
 import sys
@@ -43,6 +46,15 @@ import app.importer.importer as _imp0  # noqa: E402
 _LIB: set = set()
 _bf.library_invoice_nos = lambda conn=None: set(_LIB)
 _imp0.library_invoice_nos = lambda conn=None: set(_LIB)
+
+# 批 2：pre 模式 load_data 会按账期读**真实 DB**建「台账⇄库」比对上下文。
+# 本冒烟的假票号（INV-1 等）在真实库里一律「库中缺失」→ 全部被误判待确认，
+# 既有断言全灭。故把 build_lib_context 打桩成返回 None（evaluate 视为跳过比对）；
+# 批 2 自身的比对行为全部集中在第 12 节用**临时库 + 真函数**验证（12-10）。
+import app.engine.review_compare as _rc  # noqa: E402
+
+_rc_build_lib_context_real = _rc.build_lib_context
+_rc.build_lib_context = lambda period, invoice_nos=None, batch_id=None, conn=None: None
 
 
 class _MB:
@@ -1147,6 +1159,189 @@ check("B2d：写前校验不过 → 原样返回错误文案",
       b1._validate_backfill({"invoice_no": "NEW-2", "total_amount": 0.0})
       == "价税合计必须大于 0")
 U.backfill_validator = _orig_validator
+
+
+# ------------------------------------------- 12) 批 2：「台账 ⇄ 库」三维比对判进四态
+# 导入前把旧「导入后」页的台账⇄库比对（金额 / 经办人分摊 / 已收认定；sheet3 除外）
+# 以低置信原因判进四态：命中 → 待确认；一致 → 零扰动。
+# 引擎层用**伪造 lib 上下文**（不碰 DB）；对话框层用**临时库**走真 build_lib_context。
+_FULL_R = {"receipts": [("2025-01", 0)], "remaining": None, "pure_date": None}
+
+
+def _lib_ctx2(invs=None, cd=None, act=None):
+    """伪造 build_lib_context 产物（snap 恒空 → 走 live 口径）。"""
+    return {"period": "2025-01", "inv": invs or {}, "cd": cd or {},
+            "act": act or {}, "snap": {}}
+
+
+def _inv2(no="L1", total=1000.0):
+    return mk_inv(no, total, sheet="sheet1", remark=_FULL_R)
+
+
+# 12-1 完全一致 → 零扰动（保持高置信、无台账⇄库原因）
+_eA = {"period": "2025-01", "invoices": [_inv2()], "prepayments": [], "problems": [],
+       "sheet_totals": {"sheet1": 1000.0}, "sheet12_total": 1000.0}
+_rA = _eval(_eA, set(STAFF), period="2025-01",
+            lib=_lib_ctx2({"L1": {"buyer": "某某公司", "total_amount": 1000.0}},
+                          {"L1": {"周立生": 1000.0}},
+                          {"L1": [("2025-01", 1000.0, "周立生")]}))[0]
+check("批2：台账⇄库完全一致 → 不加原因、保持高置信（零扰动）",
+      _rA["conf"] == "high" and not any("台账⇄库" in x for x in _rA["reasons"]),
+      f"reasons={_rA['reasons']}")
+
+# 12-2 金额不符 → 待确认，原因带维度名与两侧对照值
+_eB = _copy.deepcopy(_eA)
+_rB = _eval(_eB, set(STAFF), period="2025-01",
+            lib=_lib_ctx2({"L1": {"buyer": "某某公司", "total_amount": 800.0}},
+                          {"L1": {"周立生": 1000.0}},
+                          {"L1": [("2025-01", 1000.0, "周立生")]}))[0]
+check("批2：金额不符 → 待确认 + 「台账⇄库不一致（金额）」+ 对照值",
+      _rB["conf"] == "low"
+      and any(U.REASON_LIB_DIFF.format("金额") in x
+              and "金额 台账1,000.00 ⇄ 库800.00" in x for x in _rB["reasons"]),
+      f"reasons={_rB['reasons']}")
+
+# 12-3 库中缺失 → 待确认 + 金额对照（台账值 ⇄ 库 —）
+_eC = _copy.deepcopy(_eA)
+_rC = _eval(_eC, set(STAFF), period="2025-01", lib=_lib_ctx2())[0]
+check("批2：库中缺失 → 「库中缺失」+ 对照（台账1,000.00 ⇄ 库 —）",
+      _rC["conf"] == "low"
+      and any("库中缺失" in x and "台账1,000.00 ⇄ 库 —" in x for x in _rC["reasons"]),
+      f"reasons={_rC['reasons']}")
+
+# 12-4 经办人分摊不符（库侧多人、源侧单人）
+_eD = _copy.deepcopy(_eA)
+_rD = _eval(_eD, set(STAFF), period="2025-01",
+            lib=_lib_ctx2({"L1": {"buyer": "某某公司", "total_amount": 1000.0}},
+                          {"L1": {"周立生": 600.0, "陈娟": 400.0}},
+                          {"L1": [("2025-01", 1000.0, "周立生")]}))[0]
+check("批2：经办人分摊不符 → 原因含「经办人分摊」",
+      _rD["conf"] == "low" and any("经办人分摊" in x for x in _rD["reasons"]),
+      f"reasons={_rD['reasons']}")
+
+# 12-5 已收认定不符（库侧无收款）
+_eE = _copy.deepcopy(_eA)
+_rE = _eval(_eE, set(STAFF), period="2025-01",
+            lib=_lib_ctx2({"L1": {"buyer": "某某公司", "total_amount": 1000.0}},
+                          {"L1": {"周立生": 1000.0}}))[0]
+check("批2：已收认定不符 → 原因含「已收认定」",
+      _rE["conf"] == "low" and any("已收认定" in x for x in _rE["reasons"]),
+      f"reasons={_rE['reasons']}")
+
+# 12-6 sheet3 行不参与比对（同号 sheet2/sheet3 并存矛盾是已知噪声源，批 0 §9.6）
+_eF = {"period": "2025-01",
+       "invoices": [mk_inv("L3", 1000.0, sheet="sheet3",
+                           remark={"receipts": [], "remaining": None,
+                                   "pure_date": "2025-01-20"})],
+       "prepayments": [], "problems": [],
+       "sheet_totals": {"sheet3": 1000.0}, "sheet12_total": 0.0}
+_rF = _eval(_eF, set(STAFF), period="2025-01", lib=_lib_ctx2())[0]
+check("批2：sheet3 行不比对（库中缺失也不报，只走应收账款兜底）",
+      _rF["conf"] == "low" and not any("台账⇄库" in x for x in _rF["reasons"])
+      and any("应收账款纯日期" in x for x in _rF["reasons"]),
+      f"reasons={_rF['reasons']}")
+
+# 12-7 「确认」可消除台账⇄库待办（3-1 留痕是唯一消除机制）
+_eG = _copy.deepcopy(_eA)
+_rG = _eval(_eG, set(STAFF), confirmed={0}, period="2025-01",
+            lib=_lib_ctx2({"L1": {"buyer": "某某公司", "total_amount": 800.0}}))[0]
+check("批2：confirmed 命中 → 台账⇄库原因被压制（确认即消待办）",
+      _rG["conf"] == "high" and not any("台账⇄库" in x for x in _rG["reasons"]),
+      f"reasons={_rG['reasons']}")
+
+# 12-8 has_split **不**压制（用户填收款 ≠ 认可台账与库一致 —— 与兜底类的关键差异）
+_eH = _copy.deepcopy(_eA)
+_eH["invoices"][0]["split_receipts"] = [("周立生", 500.0, "2025-01")]
+_rH = _eval(_eH, set(STAFF), period="2025-01",
+            lib=_lib_ctx2({"L1": {"buyer": "某某公司", "total_amount": 800.0}}))[0]
+check("批2：填了逐人收款仍报台账⇄库（不吃 has_split 豁免）",
+      _rH["conf"] == "low" and any("台账⇄库" in x for x in _rH["reasons"]),
+      f"reasons={_rH['reasons']}")
+
+# 12-9 纯人名豁免：源经办人列无金额（沿用首月拆分省略写法）→ 不比分摊金额
+_inv9 = _inv2("L9")
+_inv9["handler_text"] = "周立生、陈娟"
+_inv9["handlers"] = [("周立生", 500.0), ("陈娟", 500.0)]
+_eI = {"period": "2025-01", "invoices": [_inv9], "prepayments": [], "problems": [],
+       "sheet_totals": {"sheet1": 1000.0}, "sheet12_total": 1000.0}
+_rI = _eval(_eI, set(STAFF), period="2025-01",
+            lib=_lib_ctx2({"L9": {"buyer": "某某公司", "total_amount": 1000.0}},
+                          {"L9": {"周立生": 800.0, "陈娟": 200.0}},
+                          {"L9": [("2025-01", 1000.0, "周立生")]}))[0]
+check("批2：源经办人纯人名 → 豁免分摊金额比对（沿用首月拆分）",
+      _rI["conf"] == "high" and not any("台账⇄库" in x for x in _rI["reasons"]),
+      f"reasons={_rI['reasons']}")
+_inv9b = _inv2("L9")
+_inv9b["handler_text"] = "周立生500 陈娟500"
+_inv9b["handlers"] = [("周立生", 500.0), ("陈娟", 500.0)]
+_eI["invoices"] = [_inv9b]
+_rIb = _eval(_eI, set(STAFF), period="2025-01",
+             lib=_lib_ctx2({"L9": {"buyer": "某某公司", "total_amount": 1000.0}},
+                           {"L9": {"周立生": 800.0, "陈娟": 200.0}},
+                           {"L9": [("2025-01", 1000.0, "周立生")]}))[0]
+check("批2：对照 —— 源经办人带金额 → 正常比分摊（报经办人分摊不符）",
+      _rIb["conf"] == "low" and any("经办人分摊" in x for x in _rIb["reasons"]),
+      f"reasons={_rIb['reasons']}")
+
+# 12-10 对话框层（临时库走真 build_lib_context）：一致不扰 / 不符判待确认 / post 不比对
+_rc.build_lib_context = _rc_build_lib_context_real   # 还原真函数（顶部打过桩）
+_tmp2 = _P(tempfile.mkdtemp(prefix="lawfirm_smoke_p2_")) / "t.db"
+try:
+    _db.DB_PATH = _tmp2
+    _db.init_db()
+    _c2 = _db.get_conn()
+    _c2.execute("INSERT INTO invoice (invoice_no, invoice_date, buyer, total_amount, source) "
+                "VALUES (?,?,?,?,?)", ("INV-OK", "2025-01-15", "某某公司", 1000.0, "import"))
+    _c2.execute("INSERT INTO invoice (invoice_no, invoice_date, buyer, total_amount, source) "
+                "VALUES (?,?,?,?,?)", ("INV-BAD", "2025-01-15", "某某公司", 2000.0, "import"))
+    _c2.execute("INSERT INTO charge_detail (invoice_no, person_name, billing_amount, source) "
+                "VALUES (?,?,?,?)", ("INV-OK", "周立生", 1000.0, "import"))
+    _c2.execute("INSERT INTO charge_detail (invoice_no, person_name, billing_amount, source) "
+                "VALUES (?,?,?,?)", ("INV-BAD", "周立生", 2000.0, "import"))
+    _c2.execute("INSERT INTO collection (invoice_no, amount, receipt_date, person_name, source) "
+                "VALUES (?,?,?,?,?)", ("INV-OK", 1000.0, "2025-01-20", "周立生", "import"))
+    _c2.commit()
+    _c2.close()
+
+    _d12 = {"period": "2025-01",
+            "invoices": [mk_inv("INV-OK", 1000.0, remark=_FULL_R),
+                         mk_inv("INV-BAD", 2000.0, remark=_FULL_R)],
+            "prepayments": [], "problems": [],
+            "sheet_totals": {"sheet1": 3000.0}, "sheet12_total": 3000.0}
+    dlg12 = UnifiedImportDialog(_d12, "2025-01", STAFF)
+    dlg12.show()
+    check("批2：导入前模式真实建库上下文（含库侧两票）",
+          dlg12._lib_ctx is not None
+          and set(dlg12._lib_ctx["inv"]) == {"INV-OK", "INV-BAD"},
+          str(sorted((dlg12._lib_ctx or {}).get("inv", {}))))
+    _rok = next(r for r in dlg12._rows
+                if r["kind"] == "invoice" and r["ev"]["invoice_no"] == "INV-OK")
+    check("批2：库侧完全一致 → 该行保持高置信（真实库零扰动）",
+          _rok["ev"]["conf"] == "high"
+          and not any("台账⇄库" in x for x in _rok["ev"]["reasons"]),
+          f"reasons={_rok['ev']['reasons']}")
+    _rbad = next(r for r in dlg12._rows
+                 if r["kind"] == "invoice" and r["ev"]["invoice_no"] == "INV-BAD")
+    check("批2：库侧已收认定不符 → 该行判待确认（对话框层贯通）",
+          _rbad["status"] == "待确认"
+          and any("台账⇄库不一致（已收认定）" in x for x in _rbad["ev"]["reasons"]),
+          f"status={_rbad['status']} reasons={_rbad['ev']['reasons']}")
+
+    _d12p = {"period": "2025-01",
+             "invoices": [mk_inv("INV-OK", 1000.0, remark=_FULL_R),
+                          mk_inv("INV-BAD", 2000.0, remark=_FULL_R)],
+             "prepayments": [], "problems": [],
+             "sheet_totals": {"sheet1": 3000.0}, "sheet12_total": 3000.0}
+    dlg12p = UnifiedImportDialog(_d12p, "2025-01", STAFF, mode="post")
+    dlg12p.show()
+    check("批2：post 模式不建库上下文、不重报差异（人工修正痕迹≠假待办）",
+          dlg12p._lib_ctx is None
+          and all(r["ev"]["conf"] == "high"
+                  for r in dlg12p._rows if r["kind"] == "invoice"),
+          str([(r["ev"]["invoice_no"], r["ev"]["conf"]) for r in dlg12p._rows
+               if r["kind"] == "invoice"]))
+finally:
+    _db.DB_PATH = _real_db
 
 
 # ------------------------------------------- 汇总

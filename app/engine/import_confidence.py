@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import re
 from collections import defaultdict
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from app.engine.split import allocate_invoice
 
@@ -56,7 +56,13 @@ def _to_ym(s: str) -> str:
     return ""
 
 
-def evaluate(data: Dict, staff_set: set, confirmed: set = None, period: str = None) -> List[Dict]:
+# 批 2：台账 ⇄ 库 三维比对（金额 / 经办人分摊 / 已收认定）命中时的原因列前缀。
+# 差异维度名与对照值由 `review_compare.lib_diff` 产出（唯一口径，旧页共用）。
+REASON_LIB_DIFF = "台账⇄库不一致（{}），请确认"
+
+
+def evaluate(data: Dict, staff_set: set, confirmed: set = None, period: str = None,
+             lib: Optional[Dict] = None) -> List[Dict]:
     """评估全部发票，返回逐张结果列表。
 
     Args:
@@ -67,6 +73,10 @@ def evaluate(data: Dict, staff_set: set, confirmed: set = None, period: str = No
                    系统默认口径（例如 sheet1 空备注按全额收款、应收账款纯日期按全额等）。
         period: 导入账期（"YYYY-MM"）。用于校验应收账款(sheet3)备注收款日期是否落在当月；
                 缺省时回退到 data.get("period")，仍取不到则跳过该月校验。
+        lib: 批 2「台账 ⇄ 库」比对的**库侧上下文**（`review_compare.build_lib_context`
+             的产物）。`None`（缺省）→ 完全跳过比对，行为与批 1 一致；
+             调用方（复核页）**只在导入前模式传入** —— 导入后镜表原文与库的差异正是
+             导入时人工修正的痕迹，再报一遍就是把毛病 1 复活成点不掉的假待办。
 
     Returns: 每项为一张发票的评估结果 dict，含 inv 引用（_inv）。
     """
@@ -146,6 +156,37 @@ def evaluate(data: Dict, staff_set: set, confirmed: set = None, period: str = No
                 got = system_received.get(n, 0.0)
                 if got > b + 0.01:
                     reasons.append(f"经办人{n}已收({got:g})>开票金额({b:g})")
+
+        # ---- 批 2：台账 ⇄ 库 三维比对（金额 / 经办人分摊 / 已收认定）----
+        # 口径与旧「导入后」页 `review_compare.build_review_rows` **逐字同一套**
+        # （含「源经办人纯人名 → 豁免分摊金额比对」）。sheet3（应收账款）行排除：
+        # 同一票号可能与 sheet2 并存且收款声明不同（应收视角 vs 发票视角，批 0 §9.6），
+        # 实测 12 期：不排除会报 127 行「已收认定不符」，排除后 **0 差异**。
+        # 消除机制与兜底类不同：**只吃「确认」**（`i in confirmed` → 3-1 留痕），
+        # 不吃 `has_split` 豁免 —— 用户填了逐人收款 ≠ 认可台账金额与库一致。
+        if lib is not None and sheet != "sheet3" and i not in confirmed:
+            no2 = (inv.get("invoice_no") or "").strip()
+            if no2:
+                from app.engine.review_compare import lib_diff, lib_recv_totals  # 局部导入：避免环
+                src = {
+                    "invoice_no": no2,
+                    "buyer": inv.get("buyer", ""),
+                    "total_amount": total,
+                    "is_red": is_red,
+                    "handler_text": inv.get("handler_text", ""),
+                    "handlers": {n: a for n, a in handlers},
+                    "remark": remark,
+                }
+                d_inv = lib["inv"].get(no2)
+                if d_inv is None:
+                    reasons.append(f"台账⇄库不一致（库中缺失），请确认"
+                                   f"〔金额 台账{total:,.2f} ⇄ 库 —〕")
+                else:
+                    exp_t, act_t = lib_recv_totals(lib, no2, src)
+                    d = lib_diff(src, d_inv, lib["cd"].get(no2, {}), exp_t, act_t)
+                    if d:
+                        reasons.append(REASON_LIB_DIFF.format("、".join(d["fields"]))
+                                       + "〔" + "；".join(d["detail"]) + "〕")
 
         conf = "low" if reasons else "high"
         results.append({
