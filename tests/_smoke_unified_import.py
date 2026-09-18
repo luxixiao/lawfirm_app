@@ -5,8 +5,10 @@
 - 问题行就地修正 → 保存后立即重算并刷新，真实 data 不被修改
 - 各经办人已收覆盖值回写
 - 预收款问题行修正
-- 跳过行
-- 「确认入库」就地校验：校验不过留在对话框内、真实 data 不变
+- 不允许跳过（阶段 1a，2026-09-18 用户拍板）：全对话框已删除「跳过」按钮，问题行只有
+  「保存修改」一个出口；「确认入库」升级为**硬拦** —— 只要还存在任一「待补录 / 待确认」
+  行即拒绝入库（不再问「是否继续」），真实 data 一行不写
+- 「确认入库」就地校验：校验不过留在对话框内、真实 data 不变（须先清零两类未处理行）
 - 校验通过才合并：problems 清空、sheet 合计含修正行
 - 阶段 2-2（第 10 节）：A1 应收账款(sheet3)行进表 / A2 原因三态 / A3 就地编辑回写
   （需补录行不出收款；已在库行「确认」后置 receipt_confirmed 交 A10 追加收款；
@@ -177,6 +179,23 @@ def fill_invoice_fix(dlg):
     p.htable.item(1, 1).setText("2000")
 
 
+def mk_clean_data():
+    """**干净数据**：无「待补录 / 待确认」行 —— 阶段 1a 起 accept 硬拦的放行前提。
+
+    「确认入库」现在只在两类未处理行全清零时才写库，故凡是要走 `accept()` 端到端
+    路径的用例都必须用这份数据；`mk_data()` 自带 2 个问题行 + 1 个待补录行，只能用来
+    验「硬拦」与「合并口径」。
+    """
+    return {
+        "period": "2025-01",
+        "invoices": [mk_inv("INV-HI", 1000.0,
+                            remark={"receipts": [("2025-01", 0)],
+                                    "remaining": None, "pure_date": None})],
+        "prepayments": [], "problems": [],
+        "sheet_totals": {"sheet1": 1000.0}, "sheet12_total": 1000.0,
+    }
+
+
 # ---------------------------------------------------------------- 1) 行模型
 data = mk_data()
 dlg = UnifiedImportDialog(data, "2025-01", STAFF, path="2025.1台账.xlsx")
@@ -255,7 +274,8 @@ check("问题行携带 header/raw_row（可查看原始台账行）",
       bool(row0["problem"].get("header")) and bool(row0["problem"].get("raw_row")))
 check("问题行右侧显示修正面板（发票表单）",
       dlg.fix_panel.isVisible() and dlg.fix_panel.inv_box.isVisible())
-check("保存/跳过按钮对问题行可见", dlg.btn_save.isVisible() and dlg.btn_skiprow.isVisible())
+check("保存按钮对问题行可见；「跳过」按钮已删除（阶段 1a 不允许跳过）",
+      dlg.btn_save.isVisible() and not hasattr(dlg, "btn_skiprow"))
 
 # ---------------------------------------------------------------- 2) 就地修正
 n_inv_before = len(data["invoices"])
@@ -302,7 +322,7 @@ target = next(r for r in dlg._rows if r["kind"] == "invoice" and r["inv_idx"] ==
 check("右侧编辑后 各经办人已收 显示 800.00", "800.00" in dlg._recv_text(target), dlg._recv_text(target))
 check("右侧编辑后 收款认定 同步更新", "800.00" in target["ev"]["receipt_text"], target["ev"]["receipt_text"])
 
-# ---------------------------------------------------------------- 4) 校验不过 → 留在对话框
+# ------------------------------- 4) 硬拦：待补录 / 待确认 未清零 → 拒绝入库
 calls = {"n": 0}
 
 
@@ -312,55 +332,109 @@ def bad_validator(d):
 
 
 dlg._validate = bad_validator
+_MB.calls.clear()
 dlg.accept()
-check("校验不过：调用了校验器", calls["n"] == 1)
-check("校验不过：真实 data 未合并（problems 仍在）", len(data.get("problems", [])) == 2)
-check("校验不过：发票数未增加", len(data["invoices"]) == n_inv_before)
+check("硬拦：先被未处理行拦下（校验器未被调用）", calls["n"] == 0, f"got={calls['n']}")
+check("硬拦：真实 data 未合并（problems 仍在）", len(data.get("problems", [])) == 2)
+check("硬拦：发票数未增加", len(data["invoices"]) == n_inv_before)
+_warns4 = [c[1] for c in _MB.calls if c[0] == "warning"]
+_n_bf4 = statuses(dlg).count("待补录")
+_n_pd4 = statuses(dlg).count("待确认")
+check("硬拦：弹「尚有未处理的行」（桩只记 text → 认正文「无法入库」）并分别列出计数",
+      any("无法入库" in t for t in _warns4)
+      and any(f"「待补录」{_n_bf4} 行" in t and f"「待确认」{_n_pd4} 行" in t
+              for t in _warns4),
+      str(_warns4[:1]))
 
-# ---------------------------------------------------------------- 5) 校验通过 → 合并
-dlg._validate = lambda d: None
-dlg.accept()
-check("校验通过：problems 清空", data.get("problems") == [], f"got={data.get('problems')}")
-check("校验通过：合并后 invoices = sheet1 原票 + 修正行（sheet3 行已移出）",
-      {i["invoice_no"] for i in data["invoices"]} == {"INV-1", "BAD-1"},
-      f"got={[i['invoice_no'] for i in data['invoices']]}")
-check("校验通过：sheet3 行合并进 deferred（未丢失）",
-      {d["invoice_no"] for d in data.get("deferred", [])} == {"INV-2"},
-      f"got={[d['invoice_no'] for d in data.get('deferred', [])]}")
-check("校验通过：右侧编辑的收款写入 split_receipts",
-      data["invoices"][0].get("split_receipts") == [("周立生", 800.0, "2025-01")],
-      f"got={data['invoices'][0].get('split_receipts')}")
-fixed = data["invoices"][-1]
-check("修正行透传原始台账行", bool(fixed.get("header")) and bool(fixed.get("raw_row")))
-check("修正行保留源文件 sheet 分类", fixed.get("sheet") == "sheet1", f"got={fixed.get('sheet')}")
-check("修正行经办人分摊 2 人", len(fixed["handlers"]) == 2, f"got={fixed['handlers']}")
+# ------------------------------- 4b) 清零后：校验不过 → 留在对话框
+d_c = mk_clean_data()
+dlg_c = UnifiedImportDialog(d_c, "2025-01", STAFF)
+dlg_c.show()
+check("4b：干净数据无待补录 / 待确认（accept 可放行）",
+      statuses(dlg_c) == ["高置信"], str(statuses(dlg_c)))
+_c_conf = []
+dlg_c.confirmed.connect(lambda: _c_conf.append(1))
+calls_c = {"n": 0}
 
-# ---------------------------------------------------------------- 6) 跳过 + 预收款
+
+def bad_validator_c(d):
+    calls_c["n"] += 1
+    return "台账 sheet1+sheet2 合计(1000) ≠ 销项文档本月价税合计(0)"
+
+
+dlg_c._validate = bad_validator_c
+_MB.calls.clear()
+dlg_c.accept()
+check("4b：校验不过 → 调用了校验器", calls_c["n"] == 1, f"got={calls_c['n']}")
+check("4b：校验不过 → 弹出校验错误正文（QMessageBox.warning 桩只记 text）",
+      any("销项文档本月价税合计" in c[1] for c in _MB.calls if c[0] == "warning"),
+      str(_MB.calls[-1:]))
+check("4b：校验不过 → 真实 data 未被替换（发票仍在 / 无 deferred / 无 confirmed）",
+      len(d_c["invoices"]) == 1 and not d_c.get("deferred") and _c_conf == [],
+      f"deferred={d_c.get('deferred')} conf={_c_conf}")
+
+# ------------------------------- 5) 清零后：校验通过 → 合并（端到端）
+d5 = mk_clean_data()
+dlg5 = UnifiedImportDialog(d5, "2025-01", STAFF)
+dlg5.show()
+_n5 = []
+dlg5.confirmed.connect(lambda: _n5.append(1))
+_show_all(dlg5)      # 干净数据无「待补录」行 → 默认筛选下表格为空，须先切「全部」
+r5 = next(r for r in dlg5._rows if r["kind"] == "invoice" and r["inv_idx"] == 0)
+_select(dlg5, r5)
+check("5：右栏已载入该发票（各经办人一行）",
+      dlg5.fix_panel.htable.rowCount() == 1, str(dlg5.fix_panel.htable.rowCount()))
+dlg5.fix_panel.htable.item(0, 2).setText("800.00")   # 各经办人已收 1000 → 800
+dlg5._inv_edits[0] = dlg5.fix_panel.read_fix()
+dlg5._rebuild()
+dlg5._validate = lambda d: None
+dlg5.accept()
+check("5：校验通过 → 发 confirmed 一次", _n5 == [1], str(_n5))
+check("5：校验通过 → 原地替换调用方的**同一个** dict（新增 backfills 键）",
+      "backfills" in d5 and d5.get("problems") == [], f"got={sorted(d5)}")
+check("5：校验通过 → 右侧编辑的收款写入 split_receipts",
+      d5["invoices"][0].get("split_receipts") == [("周立生", 800.0, "2025-01")],
+      f"got={d5['invoices'][0].get('split_receipts')}")
+
+# ---------------- 5b) 未清零时（accept 被硬拦）直接验合并口径 _merged_data()
+_merged = dlg._merged_data()
+check("5b：合并口径 problems 清空", _merged.get("problems") == [],
+      f"got={_merged.get('problems')}")
+check("5b：合并口径 invoices = sheet1 原票 + 修正行（sheet3 行已移出）",
+      {i["invoice_no"] for i in _merged["invoices"]} == {"INV-1", "BAD-1"},
+      f"got={[i['invoice_no'] for i in _merged['invoices']]}")
+check("5b：合并口径 sheet3 行落进 deferred（未丢失）",
+      {d["invoice_no"] for d in _merged.get("deferred", [])} == {"INV-2"},
+      f"got={[d['invoice_no'] for d in _merged.get('deferred', [])]}")
+check("5b：合并口径含右侧编辑的收款",
+      _merged["invoices"][0].get("split_receipts") == [("周立生", 800.0, "2025-01")],
+      f"got={_merged['invoices'][0].get('split_receipts')}")
+_fixed = _merged["invoices"][-1]
+check("5b：修正行透传原始台账行", bool(_fixed.get("header")) and bool(_fixed.get("raw_row")))
+check("5b：修正行保留源文件 sheet 分类", _fixed.get("sheet") == "sheet1",
+      f"got={_fixed.get('sheet')}")
+check("5b：修正行经办人分摊 2 人", len(_fixed["handlers"]) == 2, f"got={_fixed['handlers']}")
+
+# ---------------------------------------- 6) 不允许跳过 + 预收款 + 硬拦不写库
 data2 = mk_data()
 dlg2 = UnifiedImportDialog(data2, "2025-01", STAFF)
 dlg2.show()
 dlg2._validate = lambda d: None
-# 跳过发票问题行（4-2 后默认筛选 = 待补录，第 0 行已不是问题行 → 先切「全部」按类型定位）
-dlg2._grp.button(U.FILTER_ALL).setChecked(True)  # 全部
-dlg2._render()
+# 4-2 后默认筛选 = 待补录，第 0 行已不是问题行 → 先切「全部」按类型定位
+_show_all(dlg2)
+check("6：已无「跳过」按钮（阶段 1a 不允许跳过）", not hasattr(dlg2, "btn_skiprow"))
 inv_prob = next(r for r in dlg2._rows
                 if r["kind"] == "problem" and r["problem"]["kind"] == "invoice")
-_i = dlg2._rows.index(inv_prob)
-dlg2.table.setCurrentCell(_i, 0)
-dlg2.table.selectRow(_i)
-dlg2._load_right()
+_select(dlg2, inv_prob)
 r = dlg2._current_row()
 check("定位到发票问题行", r["kind"] == "problem" and r["problem"]["kind"] == "invoice",
       str(r.get("problem")))
-dlg2._skip_row()
-check("跳过后状态=已跳过", statuses(dlg2).count("已跳过") == 1, f"got={statuses(dlg2)}")
-# 修正预收款问题行
+check("6：发票问题行仍在「待确认」（唯一出口是「保存修改」）",
+      r["status"] == "待确认", r["status"])
+# 修正预收款问题行（另一条「待确认」出口）
 pp_prob = next(r for r in dlg2._rows
                if r["kind"] == "problem" and r["problem"]["kind"] == "prepayment")
-_j = dlg2._rows.index(pp_prob)
-dlg2.table.setCurrentCell(_j, 0)
-dlg2.table.selectRow(_j)
-dlg2._load_right()
+_select(dlg2, pp_prob)
 check("预收款行显示预收款表单", dlg2.fix_panel.pp_box.isVisible())
 dlg2.fix_panel.pp_date.setText("2025-01-08")
 dlg2.fix_panel.pp_amount.setText("2000")
@@ -368,16 +442,21 @@ dlg2.fix_panel.pp_person.setText("胡坚")
 dlg2._save_fix()
 check("预收款修正后 prepayments +1", len(dlg2._work.get("prepayments", [])) == 1,
       f"got={len(dlg2._work.get('prepayments', []))}")
+check("6：预收款问题行已离开待确认（只剩发票问题行 1 行）",
+      sum(1 for x in dlg2._rows
+          if x["kind"] == "problem" and x["status"] == "待确认") == 1,
+      str(statuses(dlg2)))
+# 发票问题行未修正 + sheet3 行待补录 → 仍有未处理行 → 硬拦、一行不写
+_MB.calls.clear()
+n_before2 = len(data2["invoices"])
 dlg2.accept()
-# 跳过的发票问题行不入库；sheet3 行（INV-2）按 C3 移入 deferred → invoices 只剩 INV-1
-check("跳过的行不入库（问题行未追加）",
-      [i["invoice_no"] for i in data2["invoices"]] == ["INV-1"],
-      f"got={[i['invoice_no'] for i in data2['invoices']]}")
-check("sheet3 行落入 deferred（未丢失）",
-      [d["invoice_no"] for d in data2.get("deferred", [])] == ["INV-2"],
-      f"got={[d['invoice_no'] for d in data2.get('deferred', [])]}")
-check("预收款修正行入库", len(data2["prepayments"]) == 1, f"got={len(data2['prepayments'])}")
-check("预收款金额正确", abs(data2["prepayments"][0]["amount"] - 2000.0) < 0.01)
+check("6：仍有未处理行 → accept 硬拦、真实 data 一行不写",
+      len(data2["invoices"]) == n_before2 and not data2.get("deferred")
+      and len(data2["prepayments"]) == 0,
+      f"inv={len(data2['invoices'])} def={data2.get('deferred')} pp={data2['prepayments']}")
+check("6：硬拦时给出「尚有未处理的行」提示（正文含「无法入库」）",
+      any("无法入库" in c[1] for c in _MB.calls if c[0] == "warning"),
+      str(_MB.calls[-1:]))
 
 # ---------------------------------------------------------------- 7) 渲染无告警
 data3 = mk_data()
@@ -729,7 +808,7 @@ check("A3：留痕 new 侧带 4 条多期收款",
       _items_mp and len(_items_mp[0]["new"].get("split_receipts") or []) == 4,
       str(_items_mp and _items_mp[0]["new"].get("split_receipts")))
 
-# ---- 10f) 未处理应收账款行：确认入库前给出可读预警（不静默）----
+# ---- 10f) 未处理应收账款行：确认入库前**硬拦**（不静默、不允许跳过）----
 _MB.calls.clear()
 _LIB.add("AR-4")
 d10f = mk_ar_data(mk_ar("AR-4", 8000.0, [("周立生", 8000.0)], PURE))
@@ -738,12 +817,12 @@ g.show()
 check("A2：已在库行 reason = 已入库，请确认收款",
       g._row_field(_deferred_row(g), "reason") == "已入库，请确认收款")
 g.accept()
-_warns = [t for _k, t in _MB.calls if "未处理" in t]
-check("A1：存在未处理的应收账款行时 accept 给出预警",
-      bool(_warns), str(_MB.calls[-3:]))
-check("A1：预警说明已入库行本次不会写入收款",
-      bool(_warns) and "不会写入这些收款" in _warns[0], str(_warns[:1]))
-check("A1：未确认收款的已入库行不置 receipt_confirmed（不误写）",
+_warns = [c[1] for c in _MB.calls if c[0] == "warning"]
+check("A1：存在未处理的应收账款行时 accept 硬拦（不静默）",
+      any("无法入库" in t for t in _warns), str(_MB.calls[-3:]))
+check("A1：硬拦文案说明该「已入库」行要先确认收款",
+      any("待确认" in t and "已入库，请确认收款" in t for t in _warns), str(_warns[:1]))
+check("A1：硬拦 → 未确认收款的已入库行不置 receipt_confirmed（不误写）",
       not (d10f.get("deferred") or [{}])[0].get("receipt_confirmed"),
       str((d10f.get("deferred") or [{}])[0].get("receipt_confirmed")))
 _LIB.discard("AR-4")

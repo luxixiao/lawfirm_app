@@ -23,7 +23,7 @@
   M 红字行补录预填=**本行红字**（绝对值），**不查库**（库桩故意给不同值）
   N 情形 a（库中已有蓝字）：一致 → 不动；不一致 → 落「待确认」+ 原因列 + 确认后回高置信
   O 情形 b（补录填的蓝字）：保存后落「待确认」（不直接高置信）+ soft_check 提示 +
-    确认入库前预警列出该行 + 确认后解除
+    确认入库硬拦时列出该行 + 确认后解除
   P 复核页行内补录**锁定票号**
   —— 阶段 6-2b（蓝字缺分摊的零成本防御）——
   Q 蓝字**无分摊数据**：金额一致 → 不误判；金额不符 → 只报「总金额」；
@@ -411,8 +411,8 @@ check("K：且**零写入**（未记已确认）", d_k._confirmed == set(), str(
 check("K：状态仍是待补录", _red_row(d_k)["status"] == "待补录", _red_row(d_k)["status"])
 
 # ================================================================ L) 筛选栏
-check("L：筛选栏顺序 = 待补录/待确认/已补录/已确认/高置信/已跳过/全部",
-      U.FILTERS == ["待补录", "待确认", "已补录", "已确认", "高置信", "已跳过", "全部"],
+check("L：筛选栏顺序 = 待补录/待确认/已补录/已确认/高置信/全部（已无「已跳过」）",
+      U.FILTERS == ["待补录", "待确认", "已补录", "已确认", "高置信", "全部"],
       str(U.FILTERS))
 check("L：FILTER_ALL 指向「全部」", U.FILTERS[U.FILTER_ALL] == "全部", str(U.FILTER_ALL))
 d_l = mk_dlg([mk_inv("INV-1", 1000.0,
@@ -488,16 +488,18 @@ check("N：该行**给**「确认」按钮（确认后才回高置信）",
 check("N：右栏仍默认只读（高置信行防误改）",
       d_n2.fix_panel.inv_date.isReadOnly(), str(d_n2.fix_panel.inv_date.isReadOnly()))
 
-# ---- 确认入库预警：把不一致行数写出来；点「返回处理」→ 不提交 ----
+# ---- 确认入库**硬拦**（阶段 1a 起不再问「是否继续」）：列出不一致行 + 不提交 ----
 _n_conf = []
 d_n2.confirmed.connect(lambda: _n_conf.append(1))
 _MB.calls.clear()
-_MB.answer = None                      # 非 Yes → 返回处理
 d_n2.accept()
-check("N：入库预警列出「红字与蓝字原票不一致」1 行",
-      any(c[0] == "question" and "「红字与蓝字原票不一致」1 行" in c[2] for c in _MB.calls),
-      str([c for c in _MB.calls if c[0] == "question"]))
-check("N：点「返回处理」→ 未提交（confirmed 未发出）", not _n_conf, str(_n_conf))
+# 该文件的 `_MB.warning = _MB.information` 是**别名** → 记的 kind 恒为 "information"，
+# 故只能按 title 认（accept 硬拦固定用标题「尚有未处理的行」）。
+_wq_n = [c[2] for c in _MB.calls if c[1] == "尚有未处理的行"]
+check("N：入库硬拦列出「红字与蓝字原票不一致」1 行",
+      any("红字与蓝字原票不一致" in t and "其中 1 行是" in t for t in _wq_n),
+      str(_wq_n[:2]))
+check("N：硬拦 → 未提交（confirmed 未发出）", not _n_conf, str(_n_conf))
 
 # ---- 点「确认」→ 回高置信，预警/汇总/原因列都不再报它 ----
 _show_all(d_n2)
@@ -511,10 +513,9 @@ check("N：确认后原因列不再报不一致",
 check("N：确认后汇总不再报不一致",
       "红字与蓝字原票不一致" not in d_n2.lbl_summary.text(), d_n2.lbl_summary.text())
 _MB.calls.clear()
-_MB.answer = _MB.StandardButton.Yes
 d_n2.accept()
-check("N：确认后入库预警不再列它",
-      not any(c[0] == "question" and "不一致" in c[2] for c in _MB.calls), str(_MB.calls))
+check("N：确认后硬拦不再列它（无「红字与蓝字原票不一致」）",
+      not any("红字与蓝字原票不一致" in c[2] for c in _MB.calls), str(_MB.calls))
 check("N：确认后 accept 正常提交", bool(_n_conf), str(_n_conf))
 
 # ================================================================ O) 情形 b：补录填的蓝字
@@ -557,14 +558,13 @@ check("O：底部汇总报出不一致 1 张",
       "红字与蓝字原票不一致 1 张" in d_o.lbl_summary.text(), d_o.lbl_summary.text())
 
 _MB.calls.clear()
-_MB.answer = None
 d_o.accept()
-check("O：入库预警列出「红字与蓝字原票不一致」1 行",
-      any(c[0] == "question" and "「红字与蓝字原票不一致」1 行" in c[2] for c in _MB.calls),
-      str([c for c in _MB.calls if c[0] == "question"]))
-check("O：预警文案同时仍提醒「待补录」行数（两类互不遮挡）",
-      any(c[0] == "question" and "「待补录」1 行" in c[2] for c in _MB.calls),
-      str([c for c in _MB.calls if c[0] == "question"]))
+_wq_o = [c[2] for c in _MB.calls if c[1] == "尚有未处理的行"]
+check("O：入库硬拦列出「红字与蓝字原票不一致」1 行",
+      any("红字与蓝字原票不一致" in t and "其中 1 行是" in t for t in _wq_o),
+      str(_wq_o[:2]))
+check("O：硬拦文案同时仍提醒「待补录」行数（两类互不遮挡）",
+      any("「待补录」1 行" in t for t in _wq_o), str(_wq_o[:2]))
 
 # 一致的话就不会被判待确认（回到 evaluate 的自然判定）
 d_o2 = mk_dlg([mk_red("RED-1", orig_total=-3000.0)], red_map={"RED-1": "ORIG-9"})

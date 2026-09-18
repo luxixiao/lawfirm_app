@@ -325,7 +325,7 @@ class ImportReviewView(QWidget):
         self.queue_changed.emit()
 
     def _advance(self) -> None:
-        """当前账期处理完毕（已确认 / 已跳过 / 载入失败）→ 处理队列下一个。"""
+        """当前账期处理完毕（确认入库 / 取消 / 载入失败）→ 处理队列下一个。"""
         self._idx += 1
         self._load_current()
         self.queue_changed.emit()

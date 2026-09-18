@@ -5,12 +5,15 @@
     2) 导入预览确认 PreviewDialog → 只能看与改已收，解析失败的行已被处理掉、无法回头改
 本对话框把两者合并为「一张表 + 右侧就地修正」：
 
-- 一张表承载全部行，状态分四类：**待补录**（要补的原票不在库且本次未补录 —— 来源有二：
+- 一张表承载全部行，状态分三类：**待补录**（要补的原票不在库且本次未补录 —— 来源有二：
   应收账款 sheet3 行自身缺号、红字行引用的蓝字原票缺号）/ 待确认
-  （解析失败 + 低置信 + 应收账款待确认收款）/ 高置信 / 已跳过
+  （解析失败 + 低置信 + 应收账款待确认收款）/ 高置信
 - 顶部筛选胶囊（**默认「待补录」**，阶段 4-2 B 甲；阶段 5 加入「已补录」）：待补录 /
-  待确认 / 已补录 / 已确认 / 高置信 / 已跳过 / 全部。排序按「待补录 → 待确认 → 高置信 →
-  已跳过」，故待补录排最前（C 甲）
+  待确认 / 已补录 / 已确认 / 高置信 / 全部。排序按「待补录 → 待确认 → 高置信」，
+  故待补录排最前（C 甲）
+- **不允许跳过**（2026-09-18 用户拍板）：删除「跳过此行」按钮；`accept()` 只要还存在任一
+  「待补录 / 待确认」行即**硬拦**（不再问「是否继续」）。未修正的问题行同为「待确认」，
+  故一并被拦 —— **入库 ≡ 全部处理完毕**。放弃本次导入请点「取消」。
   - 「已确认」与「高置信」重叠：已修正、点「确认」、或编辑过的发票均属高置信且归入已确认
   - **「已补录」是叠加视图**（阶段 5 A 甲，用户 2026-09-18）：判据 `is_backfilled`，
     与行自己的状态**互不影响** —— 本次填过补录的行既出现在「已补录」，也照旧留在
@@ -116,8 +119,8 @@ COL_STATUS, COL_KIND, COL_SRC, COL_NO, COL_BUYER, COL_AMT, COL_HANDLER, \
 # 阶段 5：新增「已补录」（放在待确认与已确认之间，A 甲）。它是**叠加视图**而非状态：
 # 一张票填过补录后进入本筛，同时**不受影响地**留在自己的状态里（高置信 / 待确认…），
 # 与既有「已确认」和「高置信」重叠同一模式（见 `_match` / `_row_backfilled`）。
-FILTERS = ["待补录", "待确认", "已补录", "已确认", "高置信", "已跳过", "全部"]
-_PRIO = {"待补录": 0, "待确认": 1, "高置信": 2, "已跳过": 3}
+FILTERS = ["待补录", "待确认", "已补录", "已确认", "高置信", "全部"]
+_PRIO = {"待补录": 0, "待确认": 1, "高置信": 2}
 # 「全部」在筛选栏中的下标 —— 测试与其它模块按它取「全部」按钮（改 FILTERS 必须同步）
 FILTER_ALL = FILTERS.index("全部")
 
@@ -154,7 +157,6 @@ class UnifiedImportDialog(QWidget):
         self._staff_set: set = set(staff_names or [])
         self._orig_inv_len = 0
         self._fix: Dict[int, dict] = {}          # problem index -> 修正数据
-        self._skip: set = set()                  # problem index -> 跳过
         self._ov: Dict[int, Dict[str, float]] = {}  # invoice 下标 -> {经办人: 已收}
         self._inv_edits: Dict[int, dict] = {}    # work invoice 下标 -> 表单编辑结果（原地更新）
         # 应收账款(sheet3)行（阶段 2 A3）：deferred 下标 -> 表单编辑结果；
@@ -270,7 +272,6 @@ class UnifiedImportDialog(QWidget):
         self._staff_set = set(staff_names or [])
         self._orig_inv_len = len(data.get("invoices", []))
         self._fix = {}
-        self._skip = set()
         self._ov = {}
         self._inv_edits = {}
         self._deferred_edits = {}
@@ -362,13 +363,10 @@ class UnifiedImportDialog(QWidget):
         self.btn_confirm_row.clicked.connect(self._confirm_row)
         self.btn_edit = PushButton("编辑")
         self.btn_edit.clicked.connect(self._enter_edit_mode)
-        self.btn_skiprow = PushButton("跳过此行")
-        self.btn_skiprow.clicked.connect(self._skip_row)
         ab.addWidget(self.btn_save)
         ab.addWidget(self.btn_refix)
         ab.addWidget(self.btn_confirm_row)
         ab.addWidget(self.btn_edit)
-        ab.addWidget(self.btn_skiprow)
         ab.addStretch()
         rv.addLayout(ab)
 
@@ -547,7 +545,7 @@ class UnifiedImportDialog(QWidget):
                 continue
             rows.append({
                 "kind": "problem",
-                "status": "已跳过" if i in self._skip else "待确认",
+                "status": "待确认",
                 "p_index": i, "inv_idx": None, "work_idx": None,
                 "ev": None, "problem": p,
             })
@@ -717,8 +715,6 @@ class UnifiedImportDialog(QWidget):
                             AMBER if (r["deferred"] or {}).get("need_backfill") else BLUE)
                 if r["status"] in ("待补录", "待确认"):
                     item.setBackground(DIFF_BG)
-                if r["status"] == "已跳过":
-                    item.setForeground(GRAY)
                 self.table.setItem(r_i, c, item)
             self.table.setRowHeight(r_i, scale.px(34))
             self.table.item(r_i, 0).setData(Qt.ItemDataRole.UserRole, id(r))
@@ -733,14 +729,12 @@ class UnifiedImportDialog(QWidget):
         n_backfill = sum(1 for r in self._rows if r["status"] == "待补录")
         n_pending = sum(1 for r in self._rows if r["status"] == "待确认")
         n_high = sum(1 for r in self._rows if r["status"] == "高置信")
-        n_skip = sum(1 for r in self._rows if r["status"] == "已跳过")
         n_confirmed = sum(1 for r in self._rows if r.get("is_confirmed"))
         n_bfed = sum(1 for r in self._rows if r.get("is_backfilled"))
         self.lbl_stat.setText(
             f"待补录 {n_backfill}　待确认 {n_pending}　高置信 {n_high}"
             + (f"　已补录 {n_bfed}" if n_bfed else "")
             + (f"　已确认 {n_confirmed}" if n_confirmed else "")
-            + (f"　已跳过 {n_skip}" if n_skip else "")
         )
 
         inv_total = sum(r["ev"]["total_amount"] for r in self._rows if r["kind"] == "invoice")
@@ -813,8 +807,6 @@ class UnifiedImportDialog(QWidget):
             return bool(r.get("is_confirmed"))
         if filt == "高置信":
             return r["status"] == "高置信"
-        if filt == "已跳过":
-            return r["status"] == "已跳过"
         return False
 
     def _current_anchor(self):
@@ -948,18 +940,18 @@ class UnifiedImportDialog(QWidget):
             # 必须先点「补录原票」；补录后该行落到「待确认」，那时才可确认收款信息。
             self._set_actions(save=True, confirm=(r["status"] != "待补录"))
         else:
-            # 待修正 / 已跳过 问题行仍走 set_problem 修正路径（始终可编辑）
+            # 未修正的问题行走 set_problem 修正路径（始终可编辑）。
+            # ⚠️ 没有「跳过」出口（2026-09-18 用户拍板）→ 必须修正后才能入库。
             self.fix_panel.setVisible(True)
             self.fix_panel.set_problem(r["problem"])
-            self._set_actions(save=True, skip=(r["status"] == "待确认"))
+            self._set_actions(save=True)
         # 阶段 3（B2g/B2h）：行内补录按钮的可见性与文案（随行类型/票号是否在库切换）
         self._set_backfill_button(r)
 
-    def _set_actions(self, *, save: bool = False, skip: bool = False,
+    def _set_actions(self, *, save: bool = False,
                      refix: bool = False, confirm: bool = False,
                      edit: bool = False) -> None:
         self.btn_save.setVisible(save)
-        self.btn_skiprow.setVisible(skip)
         self.btn_refix.setVisible(refix)
         self.btn_confirm_row.setVisible(confirm)
         self.btn_edit.setVisible(edit)
@@ -1432,7 +1424,6 @@ class UnifiedImportDialog(QWidget):
         elif r["p_index"] is not None:
             # 待修正问题行 / 已修正行（源自问题修正）：走追加 / 覆盖修正路径
             self._fix[r["p_index"]] = data
-            self._skip.discard(r["p_index"])
             self._rebuild()
 
     def _refix(self) -> None:
@@ -1510,14 +1501,6 @@ class UnifiedImportDialog(QWidget):
                 self, "仍有未确认的疑问",
                 f"该行的「兜底判定」已确认，但还残留以下硬疑问，确认无法消除：\n\n"
                 f"　{residual}\n\n请点「保存修改」修正数据后再确认。")
-
-    def _skip_row(self) -> None:
-        r = self._current_row()
-        if r is None or r["p_index"] is None:
-            return
-        self._skip.add(r["p_index"])
-        self._fix.pop(r["p_index"], None)
-        self._rebuild()
 
     # ------------------------------------------------------------------ #
     # 确认入库
@@ -1614,35 +1597,45 @@ class UnifiedImportDialog(QWidget):
         return merged
 
     def accept(self) -> None:
-        # 阶段 4-2：未处理 = 「待补录」+「待确认」（待补录行本次不会建票，同样要提醒）
-        todo = [r for r in self._rows if r["status"] in ("待补录", "待确认")]
-        if todo:
-            n_bf = sum(1 for r in todo if r["status"] == "待补录")
-            n_inlib = sum(1 for r in todo if r["kind"] == "deferred"
-                          and r["status"] == "待确认"
+        """「确认入库」——**全部处理完毕**才放行（2026-09-18 用户拍板）。
+
+        硬拦条件（不再问「是否继续」）：只要还存在任一「待补录 / 待确认」行即拒绝入库。
+        该单一条件天然覆盖全部三类未处理行：
+          · 未修正的问题行 —— 解析失败一律落「待确认」，且已无「跳过」出口；
+          · 低置信发票行 / 红字与蓝字原票不一致的行（确认后才回高置信）；
+          · 应收账款 sheet3 行 —— 「待补录」需先用右侧「补录原票」补录，
+            「待确认」需点「确认」采纳收款口径。
+        放弃本次导入请点「取消」（`reject`），真实 data 一行不动。
+        """
+        n_backfill = sum(1 for r in self._rows if r["status"] == "待补录")
+        n_pending = sum(1 for r in self._rows if r["status"] == "待确认")
+        if n_backfill or n_pending:
+            n_prob = sum(1 for r in self._rows
+                         if r["kind"] == "problem" and r["status"] == "待确认")
+            n_inlib = sum(1 for r in self._rows
+                          if r["kind"] == "deferred" and r["status"] == "待确认"
                           and not (r["deferred"] or {}).get("need_backfill"))
-            # 阶段 6（用户 2026-09-18 拍板「拦」）：红字 ⇄ 蓝字原票不一致且**未点确认**
-            # 的行数 —— 复用本预警弹一次汇总，用户可「仍要入库」或返回逐行处理。
-            # （不一致的行必然落在「待确认」，故一定在 todo 里；已确认的不再计入。）
-            n_red_diff = sum(1 for r in todo if r.get("red_diff")
-                             and r["inv_idx"] not in self._confirmed)
-            msg = (f"还有 {len(todo)} 行未处理，确认入库时这些行将被跳过（不入库）。\n"
-                   + (f"\n其中「待补录」{n_bf} 行：原票不在库，本次不会为它们建票，"
-                      "请先用右侧「补录原票」补录。\n" if n_bf else "")
-                   + (f"\n其中「红字与蓝字原票不一致」{n_red_diff} 行："
-                      "请核对该红字发票与它引用的蓝字原票（金额 / 经办人 / 经办人金额），"
-                      "确认无误后点该行右侧「确认」；本次若仍要入库，这些行会被跳过。\n"
-                      if n_red_diff else "")
-                   + (f"\n其中应收账款「已入库，请确认收款」{n_inlib} 行：本次不会写入这些收款"
-                      "（该票已有收款不受影响；重新导入同一账期可再确认）。\n"
-                      if n_inlib else "")
-                   + "\n是否继续？")
-            if QMessageBox.question(
-                self, "存在未处理的问题行", msg,
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.No,
-            ) != QMessageBox.StandardButton.Yes:
-                return
+            n_red = sum(1 for r in self._rows if r.get("red_diff")
+                        and r["inv_idx"] not in self._confirmed)
+            msg = f"还有 {n_backfill + n_pending} 行未处理，无法入库：\n"
+            if n_backfill:
+                msg += (f"\n· 「待补录」{n_backfill} 行：引用的原票不在库，"
+                        "请用右侧「补录原票」逐张补录（补完即离开本状态）。\n")
+            if n_pending:
+                msg += (f"\n· 「待确认」{n_pending} 行：请逐行核对后点右侧「确认」，"
+                        "或先「保存修改」修正数据。")
+                if n_prob:
+                    msg += f"（其中 {n_prob} 行是解析失败的问题行，必须先修正）"
+                if n_red:
+                    msg += (f"（其中 {n_red} 行是「红字与蓝字原票不一致」，"
+                            "请核对金额 / 经办人 / 经办人金额）")
+                if n_inlib:
+                    msg += (f"（其中 {n_inlib} 行是 sheet3「已入库，请确认收款」，"
+                            "确认后本次会追加该票收款）")
+                msg += "\n"
+            msg += "\n全部处理完毕后才能入库。若要放弃本次导入，请点「取消」。"
+            QMessageBox.warning(self, "尚有未处理的行", msg)
+            return
 
         merged = self._merged_data()
         if self._validate is not None:
