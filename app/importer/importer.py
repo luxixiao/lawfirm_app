@@ -83,6 +83,13 @@ def rollback_batch(conn, batch_id: int) -> None:
     conn.execute("DELETE FROM expense_ledger WHERE import_batch_id=?", (batch_id,))
     conn.execute("DELETE FROM invoice WHERE import_batch_id=?", (batch_id,))
     conn.execute("DELETE FROM staff WHERE import_batch_id=?", (batch_id,))
+    # 批 3-1：本批的「导入时确认」留痕随之失效（只清本模块的 dim='import_confirm'，
+    # 旧「导入后」页写的人工备注 'merged' 等**不动**）。留痕按账期存放，故先取批次账期。
+    _b = conn.execute("SELECT batch_type, period FROM import_batch WHERE id=?",
+                      (batch_id,)).fetchone()
+    if _b and _b[0] == "ledger" and _b[1]:
+        from app.engine.import_confirm import CONFIRM_DIM
+        conn.execute("DELETE FROM anomaly_note WHERE period=? AND dim=?", (_b[1], CONFIRM_DIM))
     conn.execute("UPDATE import_batch SET status='rolled_back' WHERE id=?", (batch_id,))
 
 
@@ -951,6 +958,18 @@ def commit_ledger_import(data: Dict, period: str, path: str,
             # 原始镜表双写（kind=prepayment）
             _insert_raw_ledger(conn, pp, batch_id, "prepayment")
 
+        # ---- 导入时「确认」留痕（批 3-1）----
+        # 为什么写：四态里「兜底低置信」「红字⇄蓝字不一致」两类疑问**只能靠人点确认消掉**，
+        #   而确认只改复核页内存集合 → 库里零痕迹 → 批 1b 的「导入后」模式重推四态时必然
+        #   把它们重新报成「待确认」，而 post 又隐藏了「确认」按钮 ⇒ 点不掉的假待办。
+        # 落点：复用 `anomaly_note` 的独立 dim（零 schema），与旧「导入后」页写的人工备注
+        #   （dim='merged'）分开存放，互不覆盖。
+        # 事务：与台账**同一事务**；先清本账期本 dim —— 覆盖式重导同一账期时，
+        #   上一次的确认已不适用，必须失效（否则会拿旧确认去压制新一批的疑问）。
+        from app.engine.import_confirm import clear_confirmations, save_confirmations
+        clear_confirmations(conn, period)
+        confirm_n = save_confirmations(conn, period, data.get("confirmations"))
+
         conn.commit()
     except Exception:
         conn.rollback()
@@ -967,6 +986,8 @@ def commit_ledger_import(data: Dict, period: str, path: str,
         "deferred_count": len(data.get("deferred") or []),
         # 阶段 3 B2b：随本批同一事务写入的补录票数（供复核页汇总提示）
         "backfill_count": len(backfills or []),
+        # 批 3-1：随本批同一事务写入的「导入时确认」留痕条数（anomaly_note/dim=import_confirm）
+        "confirmation_count": confirm_n,
         # A10：确认收款时会「超额收款」的已在库票（台账信息错误，未写入收款）。
         # 供调用方提示用户核对台账（复核页在阶段 2-2 把它标成问题行）。
         "over_collected": over_collected,

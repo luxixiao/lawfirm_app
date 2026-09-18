@@ -359,3 +359,94 @@ sheet3 行按现行 D1-甲口径本就不建票 / 不写 `charge_detail`，因�
 （13 对象 201）→ `VERIFY_REMOTE MATCH`、`AHEAD_BEHIND 0 0`、父数 1。
 （`git commit` 又打印「已自动推送 ✅」——依旧是**假消息**，别信。）
 
+## 11. 批 3-1 落地（2026-09-18）：导入时「确认」留痕 → 「导入后」不再重报已处理疑问
+
+### 11.1 要解决的问题（批 1b 暴露的两条毛病之一）
+
+批 1b 的 `mode="post"` 是**只读**的（隐藏「确认」按钮），而四态里有两类疑问**只能靠人点
+「确认」消掉**：
+
+1. `import_confidence.evaluate()` 的**兜底低置信**（无经办人 / 经办人重复 / 分摊合计≠价税合计 /
+   经办人已收>开票金额 / 勾稽不平 …）；
+2. `import_confidence.red_orig_diff()` 的**红字 ⇄ 蓝字原票不一致**。
+
+这两类的状态只活在 `UnifiedImportDialog._confirmed`（**内存下标集合**）里，**库里零痕迹**。
+批 1a 把 `accept()` 升级为硬拦（「待补录 / 待确认」必须清零才能入库）之后，**入库那一刻这些
+疑问必然都已逐行消掉**；于是 post 模式再从 `raw_ledger` 重推四态时，会把它们**原样重新报成
+「待确认」** —— 而 post 隐藏了「确认」按钮 ⇒ **用户点不掉的假待办**。
+（批 2 把「台账 ⇄ 销项/库」比对判进待确认后，这条会成为放大器。）
+
+> 注：本条（毛病 2）与毛病 1（手工修正过的行，`raw_ledger` 刻意存**原文** → post 重解析拿不到
+> 修好的值）是两件事；毛病 1 归 **批 3-2**。
+
+### 11.2 落点：复用 `anomaly_note` 的独立 dim（**零 schema**）
+
+`app/db.py:353` 早有 `anomaly_note(invoice_no, dim, period, note, confirmed_at)`，主键
+`(invoice_no, dim, period)`，`dim` 为 TEXT ⇒ **新增一个 dim 取值不需要建表**。它原先只被
+**旧「导入后」页**（`review_post_view`）的「标记已确认异常」写（`dim='merged'`），由
+`review_compare.load_confirmed_notes(period)` 读回。
+
+新增引擎 `app/engine/import_confirm.py`，用**独立 dim `import_confirm`**，与旧页人工备注
+`merged` **互不覆盖**：
+
+| 函数 | 作用 |
+| --- | --- |
+| `save_confirmations(conn, period, items)` | 逐票 `INSERT OR REPLACE`（票号为空跳过），返回条数 |
+| `clear_confirmations(conn, period)` | **只删本 dim**；旧页 `merged`/`handler`/`received` 绝不碰 |
+| `load_confirmations(period, conn=None)` | 本 dim 优先，缺失时回退 `merged`→`handler`/`received`（与 `review_compare` 同口径） |
+
+### 11.3 三处接线
+
+1. **写**（`importer.commit_ledger_import`）：**同一事务**内 `clear_confirmations(period)`
+   → `save_confirmations(period, data["confirmations"])`；返回值新增 `confirmation_count`。
+   **先清后写**是刻意的：覆盖式重导同一账期时，上一次的确认对新一批已不适用，必须失效
+   （否则会拿旧确认去压制新一批的疑问）。
+2. **收集**（`UnifiedImportDialog._merged_data`）：把本次点过「确认」的**发票行**收成
+   `merged["confirmations"] = [{invoice_no, note}]`（`note` = 该行疑问原文；红字不一致的行
+   前置一条「红字与蓝字原票不一致（…）」）。**只收发票行** —— 账面行（deferred）的确认走
+   `receipt_confirmed`（A10 写收款），两者不是一件事。
+3. **清**（`importer.rollback_batch`）：撤销本批时按**批次账期**清本 dim（只对
+   `batch_type='ledger'`；先查 `import_batch` 拿账期再删，且在做 `UPDATE status` 之前）。
+
+### 11.4 复核页 post 模式：逐票压制，且**不隐藏原文**
+
+新增 `_import_confirmation(r)`（**只在 `mode == "post"` 生效**）+ `_rebuild` 里一行判定：
+
+- 有留痕 ⇒ 该行 `is_import_confirmed=True`、`import_confirm_note=<备注>`；
+  **仅当状态是「待确认」时**降为「高置信」（「待补录」是真待办 —— 票不在库得去补，留痕
+  **绝不**覆盖它）。
+- 无留痕 ⇒ 状态一字不动（**逐票判定，不一刀切**）。
+- 原因列：疑问原文**照旧全展示**，只在末尾追加 `〔导入时已确认〕`（`REASON_IMPORT_CONFIRMED`）。
+  刻意如此：post 是**只读查看**，不该把历史疑问从屏幕上抹掉，只该说明它已被处理过。
+
+**`pre` 模式刻意不读留痕**：pre 的确认是**实时**的（`_confirmed` 下标集合）。若 pre 也读留痕，
+「入库不过 → 返回修改 → 覆盖式重导同一账期」时，上一批的旧确认会**提前吞掉本批的疑问**。
+
+### 11.5 边界
+
+- 落痕只认**发票号**；问题行（`problems`）在 post 恒为空桶（镜表不含问题行），无票号可挂。
+- `data["confirmations"]` 在 pre 模式不存在（`parse_ledger_file` 不产该键）→ 读侧一律
+  `.get(...) or {}`，不报错。
+- 旧页 `merged` 备注**只读不写**（`load_confirmations` 兜底兼容），批 4 删旧页时收口。
+
+### 11.6 验证
+
+| 项 | 结果 |
+| --- | --- |
+| 新测试 | `tests/test_import_confirm.py` **21/21**（引擎往返 9 + commit 同事务 7 + 读侧带出 4 + 空骨架 1） |
+| 扩充测试 | `tests/_smoke_review_rebuild.py` **56 → 71/71**（新增 D 节 15 条：pre 不生效 / post 逐票压制 / 标注与原因文案 / `_merged_data` 收集） |
+| 全量回归 | **35/35 全绿，0 Traceback，61.8s**（基线 34 → **35**，已同步 `run_tests.py` 的 `EXPECTED_FILES` + skill 的 4 处基线） |
+| 反向校验 | `rev_check.py` 本批 **6 条探针全部如实变红**：P1 关 post 读留痕→红 4；P2 关 `_merged_data` 收集闸门→红 2；P3 关 commit 同事务写→**红 6**；P4 关 `rollback_batch` 清理→红 1；P5 `clear_confirmations` 误删 `merged`→红 3；P6 优先级反转→红 1 |
+| 还原校验 | 跑完 `git diff --stat` = 本批 4 个改动文件，无探针残留 |
+
+**本批踩到的坑**：**低置信原因必须选「能过写前校验」的那一类**。
+`validate_ledger_before_write` 只查「经办人是否在花名册」，所以「**不在花名册**」的行在真实
+导入里**到不了「确认入库」**（会被拦死）；第一版 fixture 用它 → 等于对着**不存在的情形**做验证。
+改用「**无经办人**」（`handlers` 为空 → 校验直接通过）才是真实的「导入时确认」场景，并在用例里
+加了 `D0` 前置断言锁定 fixture 语义（照抄「fixture 必须能被解析成预期形态」这条既有教训）。
+
+### 11.7 提交
+
+（见本文件末尾补记）
+
+

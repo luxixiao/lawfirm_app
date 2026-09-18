@@ -16,6 +16,11 @@ C. `UnifiedImportDialog(mode="post")` —— 只读契约：
    底部隐藏「确认入库」+「取消」改「关闭」；右栏表单只读；行内写按钮与「补录原票」全隐藏；
    `accept()` 不写库；sheet3「已在库」行归高置信（导入后无待办），「待补录」仍是有效待办；
    pre 模式（默认）行为一字不变。
+D. 批 3-1「导入时确认」留痕：导入那一刻点过「确认」的票（`anomaly_note` 独立 dim）→
+   post 模式**不再重报成「待确认」**（否则 post 隐藏了「确认」按钮 = 用户点不掉的假待办）；
+   **逐票判定**（同类的未确认行仍留「待确认」）；疑问原文照旧展示，仅追加「导入时已确认」标注；
+   **pre 模式不读留痕**（确认是实时的 `_confirmed` 下标；读留痕会让「覆盖式重导同账期」时
+   上一批的旧确认提前吞掉本批的疑问）。引擎/写库/读库三层的完整覆盖见 `test_import_confirm.py`。
 
 运行：python tests/_smoke_review_rebuild.py   （需 QT_QPA_PLATFORM=offscreen）
 """
@@ -40,7 +45,8 @@ from app.importer.ledger_import import (  # noqa: E402
 )
 from app.importer.parse_remark import parse_remark  # noqa: E402
 from app.ui.unified_import_dialog import (  # noqa: E402
-    FILTER_ALL, REASON_BACKFILL, REASON_NO_DOUBT, UnifiedImportDialog,
+    FILTER_ALL, REASON_BACKFILL, REASON_IMPORT_CONFIRMED, REASON_NO_DOUBT,
+    UnifiedImportDialog,
 )
 
 results = []
@@ -398,6 +404,91 @@ check("C2 存档不可读 → 提示「无原始行」而非抛异常",
 # 清空数据后 load_period 空账期 → 空表不报错
 dlg.load_period("2030-01")
 check("C2 空账期 load_period → 0 行且不抛异常", dlg.table.rowCount() == 0)
+
+# ==================================================================== D) 批 3-1 导入时确认留痕
+# 独立账期 2025-02 → 不扰动 B/C 的计数断言。
+# ⚠️ 低置信原因必须选「**能过写前校验**」的那一类：`validate_ledger_before_write` 只查
+#    「经办人是否在花名册」，所以「不在花名册」在真实导入里**到不了「确认入库」**（会被拦）；
+#    而「无经办人」handlers 为空 → 校验直接通过 ⇒ 才是真实的「导入时确认」场景。
+from app.engine import import_confirm as _IC  # noqa: E402
+
+_ROWS_D = [
+    _HDR_INV,
+    ["1", "2025.2.6", "Q2", "壬公司", "2000", "周立生2000", "", ""],   # 无疑问 → 高置信
+    ["2", "2025.2.7", "Q3", "癸公司", "3000", "", "", ""],             # 无经办人 → 待确认（已确认）
+    ["3", "2025.2.8", "Q4", "子公司", "4000", "", "", ""],             # 无经办人 → 待确认（未确认）
+]
+_conn2 = _db.get_conn()
+_conn2.execute(
+    "INSERT INTO import_batch (batch_type, period, file_name, archive_path, imported_at, status) "
+    "VALUES ('ledger','2025-02','2025.2台账.xlsx','测试/存档/2025.2台账.xlsx','2025-03-01 10:00','active')")
+_bid2 = _conn2.execute("SELECT id FROM import_batch ORDER BY id DESC LIMIT 1").fetchone()[0]
+_items_d, _probs_d = _parse_invoice_sheet(_ROWS_D, "sheet1", "202502sheet1", "2025-02")
+check("D0 构造：0 问题行（无经办人照常成行，不进问题桶）",
+      _probs_d == [], f"{[p['reason'] for p in _probs_d]}")
+check("D0 构造：Q3/Q4 的 handlers 确实为空（低置信原因 = 无经办人）",
+      _by_no(_items_d)["Q3"]["handlers"] == [] and _by_no(_items_d)["Q4"]["handlers"] == [],
+      f"{[_by_no(_items_d)[n]['handlers'] for n in ('Q3', 'Q4')]}")
+for _i in _items_d:
+    _insert_raw_ledger(_conn2, _i, _bid2, "invoice")
+# 只有 Q3 在导入那一刻被点过「确认」；Q4 没点（用于验证「逐票判定」而非一刀切）
+_IC.save_confirmations(_conn2, "2025-02", [{"invoice_no": "Q3", "note": "无经办人"}])
+_conn2.commit()
+_conn2.close()
+
+_d2 = RB.rebuild_period_data("2025-02")
+check("D1 读侧：留痕随 rebuild 带出（票号 → 备注）",
+      _d2["confirmations"] == {"Q3": "无经办人"}, f"{_d2['confirmations']}")
+
+# --- pre 模式：留痕**不生效**。确认在 pre 是实时的 `_confirmed` 下标集合；
+#     若 pre 也读留痕，「覆盖式重导同一账期」时上一批的旧确认会提前吞掉本批的疑问。
+_pre2 = UnifiedImportDialog(_d2, "2025-02", STAFF)
+_st_pre = {_row_no_of(r): r["status"] for r in _pre2._rows}
+check("D2 pre 模式：留痕不生效（Q3/Q4 都仍是「待确认」）",
+      _st_pre.get("Q3") == "待确认" and _st_pre.get("Q4") == "待确认", f"{_st_pre}")
+check("D2 pre 模式也不打标注（is_import_confirmed 恒 False）",
+      all(not r.get("is_import_confirmed") for r in _pre2._rows))
+
+# --- post 模式：已确认 → 高置信 + 标注；未确认 → 仍「待确认」
+_dlg2 = UnifiedImportDialog(mode="post")
+_dlg2.load_period("2025-02")
+_d_row = {_row_no_of(r): r for r in _dlg2._rows}
+check("D3 post 模式：导入时已确认的行 → 高置信（假待办消失）",
+      _d_row["Q3"]["status"] == "高置信", f"{_d_row['Q3']['status']}")
+check("D3 post 模式：同为「无经办人」但未确认的行 → 仍「待确认」（逐票判定，不一刀切）",
+      _d_row["Q4"]["status"] == "待确认", f"{_d_row['Q4']['status']}")
+check("D3 post 模式：无疑问行不受影响", _d_row["Q2"]["status"] == "高置信")
+check("D3 post 模式：「待确认」筛选里已无 Q3",
+      all(_row_no_of(r) != "Q3" for r in _dlg2._rows if r["status"] == "待确认"),
+      f"{[(_row_no_of(r), r['status']) for r in _dlg2._rows if r['status'] == '待确认']}")
+
+check("D4 标注：已确认行带 is_import_confirmed + 留痕备注",
+      _d_row["Q3"].get("is_import_confirmed") is True
+      and _d_row["Q3"].get("import_confirm_note") == "无经办人",
+      f"{_d_row['Q3'].get('is_import_confirmed')}/{_d_row['Q3'].get('import_confirm_note')!r}")
+check("D4 标注：未确认行不带标记",
+      _d_row["Q4"].get("is_import_confirmed") is False
+      and _d_row["Q4"].get("import_confirm_note") == "",
+      f"{_d_row['Q4'].get('is_import_confirmed')}/{_d_row['Q4'].get('import_confirm_note')!r}")
+_r_q3 = _dlg2._row_field(_d_row["Q3"], "reason")
+check("D4 原因列：疑问原文照旧展示 + 追加「导入时已确认」（绝不隐藏原文）",
+      "无经办人" in _r_q3 and REASON_IMPORT_CONFIRMED in _r_q3, _r_q3)
+check("D4 原因列：未确认行不加标注",
+      REASON_IMPORT_CONFIRMED not in _dlg2._row_field(_d_row["Q4"], "reason"),
+      _dlg2._row_field(_d_row["Q4"], "reason"))
+
+# --- _merged_data：把本次点过「确认」的发票行收集成 confirmations（随台账同一事务落库）
+_pre3 = UnifiedImportDialog(_d2, "2025-02", STAFF)
+_q3 = next(r for r in _pre3._rows if _row_no_of(r) == "Q3")
+_pre3._confirmed.add(_q3["work_idx"])          # 模拟用户点了「确认」
+_md = _pre3._merged_data()
+check("D5 _merged_data：确认过的行 → confirmations 一条（票号 + 原因备注）",
+      len(_md["confirmations"]) == 1
+      and _md["confirmations"][0]["invoice_no"] == "Q3"
+      and "无经办人" in _md["confirmations"][0]["note"],
+      f"{_md['confirmations']}")
+check("D5 _merged_data：**未**确认的行不进留痕",
+      all(c["invoice_no"] != "Q4" for c in _md["confirmations"]))
 
 # 恢复真实库路径
 _db.DB_PATH = _real_db

@@ -123,6 +123,10 @@ REASON_BACKFILL_RED = "需补录原票（红字引用 {}）"
 # 阶段 6（红字 ⇄ 蓝字一致性）：蓝字原票金额/经办人与引用的红字发票不符 → 该红字行落
 # 「待确认」，原因列写明**哪几项**不符（字段名来自 `red_orig_diff`），确认后才回高置信。
 REASON_RED_MISMATCH = "红字与蓝字原票不一致（{}），请确认"
+# 批 3-1：该行的疑问在**入库那一刻已由人点「确认」消掉**（留痕见 `engine.import_confirm`）。
+# 「导入后」模式据此不再把它重报成「待确认」（post 隐藏了「确认」按钮，重报就是点不掉的
+# 假待办）；疑问原文照旧展示，只在末尾加本标注 —— 绝不隐藏。
+REASON_IMPORT_CONFIRMED = "导入时已确认"
 
 HEADERS = [
     "状态", "类型", "来源", "发票号", "购方", "金额",
@@ -569,6 +573,28 @@ class UnifiedImportDialog(QWidget):
             agg[name] += amt or 0.0
         return "、".join(f"{n} {_fmt_money(a)}" for n, a in agg.items()) or "—"
 
+    @staticmethod
+    def _row_invoice_no(r: Dict) -> str:
+        """行 → 发票号码（发票行取 `ev`、应收账款行取 `deferred`；问题行无号）。"""
+        if r["kind"] == "invoice":
+            return str(((r.get("ev") or {}).get("invoice_no")) or "").strip()
+        if r["kind"] == "deferred":
+            return str(((r.get("deferred") or {}).get("invoice_no")) or "").strip()
+        return ""
+
+    def _import_confirmation(self, r: Dict) -> str:
+        """该行的「导入时确认」留痕备注（批 3-1）；无留痕返回空串。
+
+        **只在 post 模式生效**：pre 模式的确认是**实时**的（`_confirmed` 下标集合），
+        若也读留痕，「覆盖式重导同一账期」时上一批的旧确认会提前吞掉本批的疑问。
+        """
+        if self._mode != "post":
+            return ""
+        no = self._row_invoice_no(r)
+        if not no:
+            return ""
+        return (self._data.get("confirmations") or {}).get(no, "")
+
     def _deferred_status(self, d: dict, d_index: int) -> str:
         """应收账款(sheet3)行的状态（阶段 4-2 四态；批 1b 起随模式微调）。
 
@@ -668,6 +694,15 @@ class UnifiedImportDialog(QWidget):
                 confirmed = True
             elif r["kind"] == "deferred" and r["d_index"] in self._deferred_confirmed:
                 confirmed = True
+            # 批 3-1：导入时点过「确认」的行（有留痕）→ 导入后不再重报。
+            # **只降「待确认」**：「待补录」是真待办（票不在库，得去补录），留痕绝不覆盖它。
+            note = self._import_confirmation(r)
+            r["import_confirm_note"] = note
+            r["is_import_confirmed"] = bool(note)
+            if note:
+                if r["status"] == "待确认":
+                    r["status"] = "高置信"
+                confirmed = True
             r["is_confirmed"] = confirmed
             r["is_backfilled"] = self._row_backfilled(r)
         # 排序：先按状态优先级（阶段 4-2 起「待补录」= 0 排最前，见 `_PRIO`），
@@ -718,8 +753,13 @@ class UnifiedImportDialog(QWidget):
                 if parts:
                     if ev["reasons"]:
                         parts.append("、".join(ev["reasons"]))
-                    return "；".join(parts)
-                return "、".join(ev["reasons"]) if ev["reasons"] else REASON_NO_DOUBT
+                    text = "；".join(parts)
+                else:
+                    text = "、".join(ev["reasons"]) if ev["reasons"] else REASON_NO_DOUBT
+                # 批 3-1：导入时已由人确认过的行 → 在其后标注（疑问原文照旧全展示，不隐藏）
+                if r.get("is_import_confirmed"):
+                    text += f"〔{REASON_IMPORT_CONFIRMED}〕"
+                return text
             if key == "kind":
                 return "红字发票" if ev["is_red"] else "发票"
         if r["kind"] == "deferred":
@@ -1658,6 +1698,28 @@ class UnifiedImportDialog(QWidget):
             # A3 的 deferred 下标才不会错位（直连构造时数据尚未切分）。
             self._split_work(merged)
         merged["problems"] = []
+
+        # 批 3-1：本次点过「确认」的发票行 → 随台账**同一事务**落一条留痕
+        # （`anomaly_note` 独立 dim，由 `commit_ledger_import` 写）。
+        # 为什么必须落库：确认只活在内存集合 `_confirmed` 里 → 不落库，「导入后」模式重推
+        # 四态时会把这些疑问重新报成「待确认」，而 post 隐藏了「确认」按钮 ⇒ 点不掉的假待办。
+        confs: List[Dict] = []
+        for r in self._rows:
+            if r["kind"] != "invoice" or r.get("work_idx") not in self._confirmed:
+                continue
+            ev = r.get("ev") or {}
+            _no = str(ev.get("invoice_no") or "").strip()
+            if not _no:
+                continue
+            parts = list(ev.get("reasons") or [])
+            if r.get("red_diff"):
+                parts.insert(0, "红字与蓝字原票不一致（"
+                             + "、".join(r["red_diff"].get("fields") or []) + "）")
+            confs.append({
+                "invoice_no": _no,
+                "note": "；".join(parts) or "兜底判定（系统口径不确定，已人工过目）",
+            })
+        merged["confirmations"] = confs
 
         # 已存在发票的右侧就地编辑：原地覆盖
         for inv_idx, ed in self._inv_edits.items():
