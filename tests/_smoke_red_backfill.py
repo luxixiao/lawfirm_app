@@ -25,6 +25,9 @@
   O 情形 b（补录填的蓝字）：保存后落「待确认」（不直接高置信）+ soft_check 提示 +
     确认入库前预警列出该行 + 确认后解除
   P 复核页行内补录**锁定票号**
+  —— 阶段 6-2b（蓝字缺分摊的零成本防御）——
+  Q 蓝字**无分摊数据**：金额一致 → 不误判；金额不符 → 只报「总金额」；
+    同总金额但蓝字**有**分摊且不同 → 仍报「经办人」（证开关在起作用）
 """
 from __future__ import annotations
 
@@ -158,7 +161,7 @@ class _Conn:
 U.get_conn = lambda: _Conn()
 # 库中蓝字原票：默认与 mk_red 的 -3000/周立生 **一致**（红字为负、蓝字为正）；
 # 题面可用 `blue=` 覆盖（阶段 6 情形 a 的一致性正/反例）。
-_BLUE: dict = {}       # 原票号 → (总额, 经办人)
+_BLUE: dict = {}       # 原票号 → (总额, 经办人)；经办人给 None = 该蓝字**没有分摊数据**
 
 
 def _fake_detail(no):
@@ -166,8 +169,9 @@ def _fake_detail(no):
     if no not in _LIB_DB:
         return {}
     total, name = _BLUE.get(no, (3000.0, "周立生"))
+    hs = [] if name is None else [{"name": name, "billing": total}]
     return {"invoice_no": no, "invoice_date": "2024-01-01", "buyer": "库中购方",
-            "total_amount": total, "handlers": [{"name": name, "billing": total}]}
+            "total_amount": total, "handlers": hs}
 
 
 U.load_invoice_detail = _fake_detail
@@ -576,6 +580,54 @@ check("O：补录与红字**一致** → 直接回高置信（不落待确认）
 check("O：一致 → 不产生 red_diff",
       _red_by(d_o2, "RED-1").get("red_diff") is None,
       str(_red_by(d_o2, "RED-1").get("red_diff")))
+
+# ================================================================ Q) 阶段 6-2b：蓝字缺分摊 → 只比总金额
+# 前提（导入顺序铁律）：票在库 ⟹ 它那期台账已导入 ⟹ 分摊必在。
+# 故「库中蓝字查不到分摊」在真实流程里**不可达**——Q 是零成本防御：
+# 真出现时**只比总金额**，绝不把「缺数据」当成「经办人不一致」而误落待确认。
+d_q1 = mk_dlg([mk_red("RED-1", orig_total=-3000.0), mk_inv("INV-HI", 1000.0,
+                                                            remark={"receipts": [("2025-01", 0)],
+                                                                    "remaining": None,
+                                                                    "pure_date": None})],
+              red_map={"RED-1": "ORIG-9"}, lib={"ORIG-9"},
+              blue={"ORIG-9": (3000.0, None)})       # 蓝字无分摊数据
+r_q1 = _red_row(d_q1)
+check("Q：蓝字**无分摊数据** + 总金额一致 → 不误判（仍高置信）",
+      r_q1["status"] == "高置信", r_q1["status"])
+check("Q：蓝字无分摊 → 不产生 red_diff（缺数据 ≠ 不一致）",
+      r_q1.get("red_diff") is None, str(r_q1.get("red_diff")))
+check("Q：蓝字无分摊 → 汇总也不报不一致",
+      "红字与蓝字原票不一致" not in d_q1.lbl_summary.text(), d_q1.lbl_summary.text())
+
+# 对照：**同样总金额 3000**，只是蓝字**有**分摊（且经办人不同）→ 必须报「经办人」。
+# 这一对（Q1 vs Q1b）正是「开关真的在起作用」的证明。
+d_q1b = mk_dlg([mk_red("RED-1", orig_total=-3000.0), mk_inv("INV-HI", 1000.0,
+                                                             remark={"receipts": [("2025-01", 0)],
+                                                                     "remaining": None,
+                                                                     "pure_date": None})],
+               red_map={"RED-1": "ORIG-9"}, lib={"ORIG-9"},
+               blue={"ORIG-9": (3000.0, "李四")})     # 总额相同、分摊存在且不同
+r_q1b = _red_row(d_q1b)
+check("Q：同总金额但蓝字**有**分摊且经办人不同 → 报「经办人」不一致",
+      (r_q1b.get("red_diff") or {}).get("fields") == ["经办人"],
+      str(r_q1b.get("red_diff")))
+check("Q：该不一致 → 落「待确认」", r_q1b["status"] == "待确认", r_q1b["status"])
+
+# 蓝字无分摊 + 总金额**不符** → 仍要拦，但**只报「总金额」**（不凭空报经办人）
+d_q2 = mk_dlg([mk_red("RED-1", orig_total=-3000.0), mk_inv("INV-HI", 1000.0,
+                                                            remark={"receipts": [("2025-01", 0)],
+                                                                    "remaining": None,
+                                                                    "pure_date": None})],
+              red_map={"RED-1": "ORIG-9"}, lib={"ORIG-9"},
+              blue={"ORIG-9": (2500.0, None)})       # 无分摊 + 金额不符
+r_q2 = _red_row(d_q2)
+check("Q：蓝字无分摊 + 总金额不符 → 落「待确认」（金额差异仍拦）",
+      r_q2["status"] == "待确认", r_q2["status"])
+check("Q：且**只报「总金额」**（不把缺数据当经办人不一致）",
+      (r_q2.get("red_diff") or {}).get("fields") == ["总金额"],
+      str(r_q2.get("red_diff")))
+check("Q：对照来源仍标为「库中蓝字原票」",
+      r_q2.get("red_diff_src") == "库中蓝字原票", str(r_q2.get("red_diff_src")))
 
 bad = [n for n, ok, _ in results if not ok]
 print(f"\n{len(results) - len(bad)}/{len(results)} passed")

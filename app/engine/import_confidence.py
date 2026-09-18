@@ -197,7 +197,8 @@ def _handler_amounts(handlers) -> Dict[str, float]:
     return out
 
 
-def red_orig_diff(red_total, red_handlers, orig_total, orig_handlers) -> Dict | None:
+def red_orig_diff(red_total, red_handlers, orig_total, orig_handlers, *,
+                  orig_persons_known: bool = True) -> Dict | None:
     """比对红字发票与其引用的蓝字原票；**一致返回 None**，不一致返回描述。
 
     比对三项（用户 2026-09-18 指定，**不含购方**）：
@@ -211,6 +212,13 @@ def red_orig_diff(red_total, red_handlers, orig_total, orig_handlers) -> Dict | 
 
     用途有二（阶段 6）：① 台账红字行 vs **库中已有**蓝字原票；② 台账红字行 vs
     **本次补录**的蓝字原票（保存补录信息时提示）。
+
+    `orig_persons_known=False`（阶段 6-2b）：**蓝字侧拿不到经办人分摊数据** ——
+    只比总金额，**跳过「经办人 / 经办人金额」两项**。
+    理由（用户 2026-09-18 口径）：结论「不一致」只能在**两侧都有数据**时下；
+    蓝字侧没有 `charge_detail` 是**缺数据**，绝不能被当成差异报出来（否则误导排查）。
+    正常流程下蓝字在库 ⟹ 它自己那期台账已导入（按期顺序导入且不漏期）⟹ 分摊必在，
+    故此开关是**零成本防御**，不改变常规路径的行为。
     """
     dims: List[str] = []
     lines: List[str] = []
@@ -220,19 +228,21 @@ def red_orig_diff(red_total, red_handlers, orig_total, orig_handlers) -> Dict | 
         dims.append("总金额")
         lines.append(f"发票总金额：红字 {rt:,.2f}　蓝字 {ot:,.2f}")
 
-    rmap, omap = _handler_amounts(red_handlers), _handler_amounts(orig_handlers)
-    rset, oset = set(rmap), set(omap)
-    if rset != oset:
-        dims.append("经办人")
-        lines.append("经办人：红字 " + ("、".join(sorted(rset)) or "—")
-                     + "　蓝字 " + ("、".join(sorted(oset)) or "—"))
+    rmap = _handler_amounts(red_handlers)
+    omap = _handler_amounts(orig_handlers) if orig_persons_known else {}
+    if orig_persons_known:
+        rset, oset = set(rmap), set(omap)
+        if rset != oset:
+            dims.append("经办人")
+            lines.append("经办人：红字 " + ("、".join(sorted(rset)) or "—")
+                         + "　蓝字 " + ("、".join(sorted(oset)) or "—"))
 
-    # 只对**两侧都有**的人比金额；姓名集合本身不同已由上一项报出，不重复刷屏
-    for n in sorted(rset & oset):
-        if abs(rmap[n] - omap[n]) > 0.01:
-            if "经办人金额" not in dims:
-                dims.append("经办人金额")
-            lines.append(f"经办人金额：{n} 红字 {rmap[n]:,.2f}　蓝字 {omap[n]:,.2f}")
+        # 只对**两侧都有**的人比金额；姓名集合本身不同已由上一项报出，不重复刷屏
+        for n in sorted(rset & oset):
+            if abs(rmap[n] - omap[n]) > 0.01:
+                if "经办人金额" not in dims:
+                    dims.append("经办人金额")
+                lines.append(f"经办人金额：{n} 红字 {rmap[n]:,.2f}　蓝字 {omap[n]:,.2f}")
 
     if not dims:
         return None

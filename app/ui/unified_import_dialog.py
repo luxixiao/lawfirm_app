@@ -1093,10 +1093,14 @@ class UnifiedImportDialog(QWidget):
     # 阶段 6：红字 ⇄ 蓝字 一致性
     # ------------------------------------------------------------------ #
     def _lib_blue_amounts(self, invoice_no: str) -> dict | None:
-        """库中一张**蓝字原票**的 `{total_amount, handlers:[(name, billing)]}`；不在库 → None。
+        """库中一张**蓝字原票**的 `{total_amount, handlers, persons_known}`；不在库 → None。
 
         取数走 `load_invoice_detail`（与补录页「编辑」同一口径），不另写 SQL；
         同轮 `_rebuild` 内按票号缓存（`_blue_cache` 每轮重置）。
+
+        `persons_known`（阶段 6-2b）= 该票**有没有** `charge_detail` 分摊数据。
+        没有 → 比对时**只比总金额**，绝不把「缺数据」当「不一致」
+        （票在库 ⟹ 它那期台账已导入 ⟹ 分摊必在；此分支是零成本防御）。
         """
         no = (invoice_no or "").strip()
         if not no:
@@ -1111,10 +1115,11 @@ class UnifiedImportDialog(QWidget):
             detail = {}
         out = None
         if detail:
+            raw = [h for h in (detail.get("handlers") or []) if (h.get("name") or "").strip()]
             out = {
                 "total_amount": detail.get("total_amount"),
-                "handlers": [(h.get("name") or "", h.get("billing") or 0.0)
-                             for h in (detail.get("handlers") or [])],
+                "handlers": [(h.get("name") or "", h.get("billing") or 0.0) for h in raw],
+                "persons_known": bool(raw),
             }
         self._blue_cache[no] = out
         return out
@@ -1132,6 +1137,9 @@ class UnifiedImportDialog(QWidget):
         查库会拿到空经办人 → 比对失真（这正是要求 2 预填缺口的同一个根因）。
 
         金额一律取绝对值（红字在库是负数）—— 由 `red_orig_diff` 负责，符号相反算一致。
+
+        阶段 6-2b：情形 a 若查不到蓝字的 `charge_detail`（分摊数据）→ **只比总金额**，
+        不判「经办人 / 经办人金额」（缺数据 ≠ 不一致；正常流程下走不到这条分支）。
         """
         if r["kind"] != "invoice":
             return (None, "")
@@ -1150,7 +1158,10 @@ class UnifiedImportDialog(QWidget):
         blue = self._lib_blue_amounts(orig)
         if blue is None:
             return (None, "")
-        return (red_orig_diff(rt, rh, blue["total_amount"], blue["handlers"]), "库中蓝字原票")
+        # 阶段 6-2b：蓝字侧没有分摊数据 → 只比总金额（缺数据 ≠ 不一致）
+        return (red_orig_diff(rt, rh, blue["total_amount"], blue["handlers"],
+                              orig_persons_known=blue.get("persons_known", True)),
+                "库中蓝字原票")
 
     def _red_prefill_diff(self, r: Dict, data: dict):
         """补录**弹窗内容** vs 本行红字发票 → `red_orig_diff`（一致 → None）。

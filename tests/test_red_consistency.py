@@ -1,4 +1,4 @@
-"""阶段 6（6-1）单元测试 —— 红字发票 ⇄ 蓝字原票 一致性口径（引擎层）。
+"""阶段 6（6-1 + 6-2b）单元测试 —— 红字发票 ⇄ 蓝字原票 一致性口径（引擎层）。
 
 运行：python tests/test_red_consistency.py
 
@@ -7,7 +7,9 @@
   同名聚合、空姓名与非数值跳过
 - `import_confidence.red_orig_diff`：**一致返回 None** / 不一致返回 {fields, detail}；
   三项（总金额 / 经办人 / 经办人金额）逐一可独立触发；0.01 容差；
-  **符号相反算一致**（红字 -5000 vs 蓝字 5000 —— 用户 2026-09-18 明确口径）
+  **符号相反算一致**（红字 -5000 vs 蓝字 5000 —— 用户 2026-09-18 明确口径）；
+  **6-2b**：`orig_persons_known=False`（蓝字侧无 charge_detail）→ 只比总金额，
+  绝不把「缺数据」当「经办人不一致」
 - `backfill_module.load_red_reference`：红字票取法单一口径（金额取绝对值、只认负数票、
   多张红字取最早、无 charge_detail 返空）
 - `backfill_module.prefill_red_original`：重构为复用 `load_red_reference` 后**行为不变**
@@ -155,6 +157,21 @@ def main() -> int:
     check("C7：两侧都无经办人但金额不同 → 只报「总金额」",
           (lambda x: x and x["fields"] == ["总金额"])(
               red_orig_diff(-2000.0, [], 1800.0, [])))
+
+    # ---- C8–C10 阶段 6-2b：蓝字侧无分摊数据 → 只比总金额（缺数据 ≠ 不一致） ----
+    check("C8：蓝字无分摊数据 + 金额一致 → 一致（不拿缺数据当「经办人」不一致）",
+          red_orig_diff(-2000.0, [("张三", -2000.0)], 2000.0, [],
+                        orig_persons_known=False) is None)
+    check("C9：蓝字无分摊数据 + 金额不符 → 只报「总金额」",
+          (lambda x: x and x["fields"] == ["总金额"]
+           and "经办人" not in x["detail"])(
+              red_orig_diff(-2000.0, [("张三", -2000.0)], 1800.0, [],
+                            orig_persons_known=False)))
+    check("C9b：**同一组数据**把开关关掉（默认 True）→ 报「经办人」（证明开关真的在起作用）",
+          (lambda x: x and "经办人" in x["fields"])(
+              red_orig_diff(-2000.0, [("张三", -2000.0)], 2000.0, [])))
+    check("C10：蓝字无分摊数据 + 红字也无经办人 + 金额一致 → 一致",
+          red_orig_diff(-2000.0, [], 2000.0, [], orig_persons_known=False) is None)
 
     # ==================================================================== #
     # D) load_red_reference / prefill_red_original
