@@ -352,3 +352,10 @@ sheet3 行按现行 D1-甲口径本就不建票 / 不写 `charge_detail`，因�
 1b 只交付「能力 + 测试」。切页 + 删旧页（`review_post_view.py` / `review_compare`）
 按原计划归批 4。
 
+### 10.7 提交
+
+`aee6b2c`（5 文件 +924/−31）→ 分支 ref 照旧未推进 → Python 直写 loose ref + `pack-refs --all`
+→ `ls-remote` 问远端仍是 `91f3fe3` → 走 skill `github-api-push` 的 `push_commit.py`
+（13 对象 201）→ `VERIFY_REMOTE MATCH`、`AHEAD_BEHIND 0 0`、父数 1。
+（`git commit` 又打印「已自动推送 ✅」——依旧是**假消息**，别信。）
+
