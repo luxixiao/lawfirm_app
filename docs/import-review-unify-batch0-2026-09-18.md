@@ -657,6 +657,14 @@ skill 踩坑 #26）。
 > ② exec 桩首版**忘了填 note** → `_on_ok` 走「修改原因必填」校验提前 return，
 > 断言红得莫名其妙 —— 桩必须复刻真实输入（必填项也要填）。
 
+### 14.5 提交
+
+`b066b91`（6 文件 +497/−144：`review_rebuild.py` / `writeback_dialog.py`（新）/
+`review_post_view.py` / `unified_import_dialog.py` / `_smoke_unified_import.py` / 本文档）
+→ 分支 ref 照旧未推进 → 按 commit stdout 新短 SHA 解析完整 OID 修 ref（本批未再踩 #26）
+→ skill `github-api-push` 的 `push_commit.py`（13 对象：1 commit / 6 tree / 6 blob，全 201）
+→ `VERIFY_REMOTE MATCH True`、`AHEAD_BEHIND 0 0`、父数 1。
+
 
 
 
