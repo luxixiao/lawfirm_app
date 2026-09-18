@@ -602,7 +602,12 @@ import_batch_id=本批)`。新增 `review_rebuild._batch_handlers(conn, batch_id
 OID + `pack-refs --all`）→ 走 skill `github-api-push` 的 `push_commit.py`
 （13 对象：1 commit / 6 tree / 6 blob，全部 201）
 → `VERIFY_REMOTE MATCH True`、`AHEAD_BEHIND 0 0`、父数 1。
-（本批 docs 与代码**同一次提交** —— §12.8 的两段式补记不再需要，提交号已验后写入本节。）
+→ `d282718`（docs 补记提交号与验证口径，1 文件 +10）→ 同通道推送（4 对象全 201）→
+`MATCH True`、`0 0`、父数 1。
+⚠️ 本节初稿误写「docs 与代码同一次提交」，实际仍是两段式（代码+文档主体 → docs 补记）——
+**修 ref 时还踩了新坑**：commit 后立刻 `rev-parse HEAD` 读到的仍是**旧值**（ref 未推进），
+把旧 OID 写进了 ref；正确做法是**用 commit stdout 里的新短 SHA 解析完整 OID** 再写（已补进
+skill 踩坑 #26）。
 
 
 
