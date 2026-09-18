@@ -93,6 +93,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.db import get_conn
+from app.engine import raw_ledger as rl
 from app.engine.backfill_module import load_invoice_detail, prefill_red_original
 from app.engine.import_confidence import (  # noqa: F401  （REASON_LIB_DIFF 供测试断言）
     REASON_LIB_DIFF, SHEET_LABEL, evaluate, receipt_summary, red_orig_diff,
@@ -104,8 +105,10 @@ from app.ui.backfill_dialog import BackfillDialog, backfill_validator, red_misma
 from app.ui.ledger_source import show_ledger_source
 from app.ui.preview_dialog import _fmt_money
 from app.ui.problem_fix_panel import ProblemFixPanel
+from app.engine.review_writeback import restore_from_archive
 from app.ui.table_view import auto_fit_columns
 from app.ui.widgets import CaptionLabel, PrimaryPushButton, PushButton, TableWidget
+from app.ui.writeback_dialog import WritebackDialog
 
 RED = QColor("#C0392B")
 AMBER = QColor("#B7791F")
@@ -350,6 +353,14 @@ class UnifiedImportDialog(QWidget):
         post = self._mode == "post"
         self.btn_confirm.setVisible(not post)
         self.btn_cancel.setText("关闭" if post else "取消")
+        # 批 3-3：post 的行级修改走「编辑回写 / 还原为原件」（单事务写库+留痕）；
+        # pre 隐藏 —— 导入前数据还没落库，没有镜表锚点可改。
+        # 初始禁用：选中行后由 `_set_writeback_buttons` 按行解锁（空表/无选中
+        # 时 itemSelectionChanged 不触发，按钮必须停在禁用态防误点）。
+        self.btn_writeback.setVisible(post)
+        self.btn_restore.setVisible(post)
+        self.btn_writeback.setEnabled(False)
+        self.btn_restore.setEnabled(False)
         self._lock_panel_for_mode()
 
     def _lock_panel_for_mode(self) -> None:
@@ -447,6 +458,16 @@ class UnifiedImportDialog(QWidget):
         self.btn_backfill.clicked.connect(self._open_backfill)
         self.btn_backfill.setVisible(False)
         row_btn.addWidget(self.btn_backfill)
+        # 批 3-3：导入后「编辑回写 / 还原为原件」—— 只在 post 模式可见（见
+        # `_apply_mode_chrome`）；pre 的修改走右栏就地面板，不与这两条路径混用。
+        self.btn_writeback = PushButton("编辑回写")
+        self.btn_writeback.clicked.connect(self._writeback_row)
+        self.btn_writeback.setVisible(False)
+        row_btn.addWidget(self.btn_writeback)
+        self.btn_restore = PushButton("还原为原件")
+        self.btn_restore.clicked.connect(self._restore_row)
+        self.btn_restore.setVisible(False)
+        row_btn.addWidget(self.btn_restore)
         row_btn.addStretch()
         rv.addLayout(row_btn)
 
@@ -1063,6 +1084,7 @@ class UnifiedImportDialog(QWidget):
             self.fix_panel.setVisible(False)
             self._set_actions()
             self._set_backfill_button(None)
+            self._set_writeback_buttons(None)
             # ⚠️ `set_problem(None)` 内部会把面板**重置为可编辑**（它服务于问题行修正路径）
             # → post 模式下必须重新锁一次，否则「无行选中」时面板停在可编辑态
             self._lock_panel_for_mode()
@@ -1115,6 +1137,8 @@ class UnifiedImportDialog(QWidget):
             self.fix_panel.set_readonly(True)
         # 阶段 3（B2g/B2h）：行内补录按钮的可见性与文案（随行类型/票号是否在库切换）
         self._set_backfill_button(r)
+        # 批 3-3：post 的「编辑回写 / 还原为原件」可用性随行切换
+        self._set_writeback_buttons(r)
 
     def _set_actions(self, *, save: bool = False,
                      refix: bool = False, confirm: bool = False,
@@ -1129,6 +1153,102 @@ class UnifiedImportDialog(QWidget):
         self.btn_refix.setVisible(refix)
         self.btn_confirm_row.setVisible(confirm)
         self.btn_edit.setVisible(edit)
+
+    # ------------------------------------------------------------------ #
+    # 导入后编辑回写 / 还原原件（批 3-3）
+    # ------------------------------------------------------------------ #
+    def _row_raw_id(self, r: Dict | None):
+        """行 → 镜表行 id（raw_ledger.id）；无锚点返回 None。
+
+        invoice 行在 `ev["_inv"]`（`rebuild_period_data` 产物，批 3-3 起带
+        raw_id/synced）；deferred（sheet3）行由 `split_deferred` 原样搬 item，
+        同样带锚点。pre 模式解析侧没有 raw_id → 恒 None，编辑入口天然只在 post。
+        """
+        if r is None:
+            return None
+        if r["kind"] == "invoice":
+            return (r["ev"].get("_inv") or {}).get("raw_id")
+        if r["kind"] == "deferred":
+            return (r.get("deferred") or {}).get("raw_id")
+        return None
+
+    def _row_synced(self, r: Dict) -> bool:
+        """行是否与 Excel 原件一致（默认 True：无标记按未修订处理，不给还原）。"""
+        if r["kind"] == "invoice":
+            return bool((r["ev"].get("_inv") or {}).get("synced", True))
+        if r["kind"] == "deferred":
+            return bool((r.get("deferred") or {}).get("synced", True))
+        return True
+
+    def _row_invoice_no(self, r: Dict) -> str:
+        if r["kind"] == "invoice":
+            return r["ev"].get("invoice_no") or ""
+        if r["kind"] == "deferred":
+            return (r.get("deferred") or {}).get("invoice_no") or ""
+        return ""
+
+    def _set_writeback_buttons(self, r: Dict | None) -> None:
+        """按当前行切换「编辑回写 / 还原为原件」可用性（可见性在 _apply_mode_chrome）。
+
+        编辑：行有镜表锚点（raw_id）即可 —— 与旧页 `_on_sel` 同口径。
+        还原：还须「已手工修订」（synced=0）+ 账期有存档文件（还原要对原件重解析）。
+        """
+        raw_id = self._row_raw_id(r)
+        has_archive = bool(self._post_meta.get("path"))
+        self.btn_writeback.setEnabled(raw_id is not None)
+        self.btn_restore.setEnabled(
+            raw_id is not None and not self._row_synced(r) and has_archive)
+
+    def _reload_post(self) -> None:
+        """回写 / 还原成功后的重载：按账期从库重建（行值、四态、汇总、按钮全刷新）。"""
+        self.load_period(self._period)
+
+    def _writeback_row(self) -> None:
+        """导入后编辑回写：WritebackDialog → `apply_edit`（单事务）→ 重载本账期。"""
+        r = self._current_row()
+        raw_id = self._row_raw_id(r)
+        if raw_id is None:
+            QMessageBox.information(self, "提示", "请先选中一行。")
+            return
+        raw = rl.get_row(raw_id)
+        if raw is None:
+            QMessageBox.information(self, "提示", "镜表行已不存在，请刷新后重试。")
+            return
+        dlg = WritebackDialog(self, self._period, self._row_invoice_no(r), raw, raw_id)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            self._reload_post()
+            from qfluentwidgets import InfoBar, InfoBarPosition
+            InfoBar.success("", "已回写（修改记录可查）", parent=self.window(),
+                            position=InfoBarPosition.TOP_RIGHT, duration=2500)
+
+    def _restore_row(self) -> None:
+        """单行还原为 Excel 原件（spec §5.3）：确认 → restore_from_archive → 重载。"""
+        r = self._current_row()
+        raw_id = self._row_raw_id(r)
+        if raw_id is None:
+            QMessageBox.information(self, "提示", "请先选中一行。")
+            return
+        archive = self._post_meta.get("path") or ""
+        if not archive:
+            QMessageBox.information(self, "提示", "该账期无存档文件，无法还原原件。")
+            return
+        ret = QMessageBox.question(
+            self, "还原为原件",
+            f"将把发票 {self._row_invoice_no(r)} 恢复为 {self._period} 台账 Excel 原件"
+            "（覆盖当前手工修改，同步业务表并留痕）。\n\n确认还原？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No)
+        if ret != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            restore_from_archive(self._period, raw_id, archive)
+        except ValueError as e:
+            QMessageBox.warning(self, "无法还原", str(e))
+            return
+        self._reload_post()
+        from qfluentwidgets import InfoBar, InfoBarPosition
+        InfoBar.success("", "已还原为 Excel 原件（修改记录可查）", parent=self.window(),
+                        position=InfoBarPosition.TOP_RIGHT, duration=2500)
 
     # ------------------------------------------------------------------ #
     # 行内「补录原票」（阶段 3 B2g/B2h）

@@ -1344,6 +1344,157 @@ finally:
     _db.DB_PATH = _real_db
 
 
+# ------------------------------------------- 13) 批 3-3：post 编辑回写 + 还原原件
+# 引擎层（apply_edit / restore_from_archive 单元）已由 tests/test_review_writeback.py
+# 覆盖；本节验 **UI 接线**：重建行带镜表锚点 → post 按钮可见/可用性随行切换 →
+# WritebackDialog 落库 → load_period 重载 → 还原（桩 parse_ledger_file，无需真 Excel）。
+import app.engine.raw_ledger as _rl13  # noqa: E402
+import app.importer.importer as _imp13  # noqa: E402
+import app.ui.writeback_dialog as _wd  # noqa: E402
+
+_wd.QMessageBox = _MB        # 回写对话框走异常分支时不许真弹窗
+_orig_parse13 = _imp13.parse_ledger_file
+_tmp13 = _P(tempfile.mkdtemp(prefix="lawfirm_smoke_p33_")) / "t.db"
+try:
+    _db.DB_PATH = _tmp13
+    _db.init_db()
+    _c13 = _db.get_conn()
+    _c13.execute(
+        "INSERT INTO import_batch (id, batch_type, period, file_name, status, "
+        "imported_at, archive_path) VALUES (1,'ledger','2025-01','w.xlsx','active',"
+        "datetime('now','localtime'),'X:/fake_archive.xlsx')")
+    _c13.execute(
+        "INSERT INTO raw_ledger (id, sheet_key, sheet_name, row_no, invoice_no, buyer,"
+        " amount_raw, amount_num, handler_text, remark, kind, synced, import_batch_id)"
+        " VALUES (1,'sheet1','已开票已入账',2,'INV-W','某某公司','1000',1000.0,"
+        "'周立生1000','25.11.30','invoice',1,1)")
+    _c13.execute(
+        "INSERT INTO invoice (invoice_no, invoice_date, buyer, total_amount, source,"
+        " import_batch_id) VALUES ('INV-W','2025-01-05','某某公司',1000.0,'import',1)")
+    _c13.execute(
+        "INSERT INTO charge_detail (invoice_no, person_name, billing_amount, source,"
+        " import_batch_id) VALUES ('INV-W','周立生',1000.0,'import',1)")
+    _c13.execute(
+        "INSERT INTO collection (invoice_no, amount, receipt_date, person_name, source,"
+        " import_batch_id) VALUES ('INV-W',1000.0,'2025-11-30','','import',1)")
+    _c13.commit()
+    _c13.close()
+
+    dlg13 = UnifiedImportDialog(mode="post")
+    dlg13.load_period("2025-01")
+    dlg13.show()
+    _inv13 = dlg13._data["invoices"][0]
+    check("批3-3：重建行带镜表锚点（raw_id=1 / synced=True）",
+          _inv13.get("raw_id") == 1 and _inv13.get("synced") is True,
+          f"raw_id={_inv13.get('raw_id')} synced={_inv13.get('synced')}")
+    check("批3-3：post 显示编辑/还原按钮（初始禁用）",
+          dlg13.btn_writeback.isVisible() and dlg13.btn_restore.isVisible()
+          and not dlg13.btn_writeback.isEnabled() and not dlg13.btn_restore.isEnabled(),
+          f"vis={dlg13.btn_writeback.isVisible()}/{dlg13.btn_restore.isVisible()} "
+          f"en={dlg13.btn_writeback.isEnabled()}/{dlg13.btn_restore.isEnabled()}")
+    check("批3-3：pre 模式不显示编辑/还原按钮（批 1b 契约不破）",
+          not dlg12.btn_writeback.isVisible() and not dlg12.btn_restore.isVisible(),
+          f"vis={dlg12.btn_writeback.isVisible()}/{dlg12.btn_restore.isVisible()}")
+
+    _show_all(dlg13)
+    dlg13.table.setCurrentCell(0, 0)
+    check("批3-3：选中行后编辑可用、还原禁用（未修订 synced=1）",
+          dlg13.btn_writeback.isEnabled() and not dlg13.btn_restore.isEnabled(),
+          f"en={dlg13.btn_writeback.isEnabled()}/{dlg13.btn_restore.isEnabled()}")
+
+    # 行内按钮可用性由 `_load_right → _set_writeback_buttons` 接线；对话框本体不 exec
+    # （offscreen 阻塞）→ 直接构造 + `_on_ok`，走与真实点击完全相同的落库路径。
+    raw13 = _rl13.get_row(1)
+    wd13 = U.WritebackDialog(dlg13, "2025-01", "INV-W", raw13, 1)
+    wd13.edits["amount_raw"].setText("1200")
+    wd13.edits["handler_text"].setText("周立生1200")
+    wd13.note_edit.setText("金额笔误修正")
+    wd13._on_ok()
+    check("批3-3：回写落库（镜表 amount_num=1200 / synced=0）",
+          _db.get_conn().execute("SELECT amount_num, synced FROM raw_ledger WHERE id=1"
+                                 ).fetchone()["amount_num"] == 1200
+          and _db.get_conn().execute("SELECT synced FROM raw_ledger WHERE id=1"
+                                     ).fetchone()["synced"] == 0,
+          str(dict(_db.get_conn().execute(
+              "SELECT amount_num, synced FROM raw_ledger WHERE id=1").fetchone())))
+    check("批3-3：invoice.total_amount 同步 1200",
+          abs(_db.get_conn().execute(
+              "SELECT total_amount FROM invoice WHERE invoice_no='INV-W'"
+          ).fetchone()["total_amount"] - 1200.0) < 1e-9)
+    check("批3-3：charge_detail 重算 1200（经办人文本变更触发）",
+          abs(_db.get_conn().execute(
+              "SELECT billing_amount FROM charge_detail WHERE invoice_no='INV-W'"
+          ).fetchone()["billing_amount"] - 1200.0) < 1e-9)
+
+    dlg13._reload_post()
+    _show_all(dlg13)
+    dlg13.table.setCurrentCell(0, 0)
+    check("批3-3：重载后行显示回写值、还原按钮解禁（synced=0）",
+          dlg13._rows and "1,200.00" in dlg13._row_field(dlg13._rows[0], "amt")
+          and dlg13.btn_restore.isEnabled(),
+          f"amt={dlg13._row_field(dlg13._rows[0], 'amt') if dlg13._rows else '—'} "
+          f"restore_en={dlg13.btn_restore.isEnabled()}")
+
+    # 按钮路径（exec 桩）：btn_writeback.click → _writeback_row → WritebackDialog
+    # （exec 桩内走与真实确定相同的 _on_ok）→ Accepted → **_reload_post 自动重载**。
+    # exec 在 offscreen 会阻塞，桩只把「模态循环」换掉、落库路径逐字相同。
+    from app.engine.review_writeback import apply_edit as _ae13
+    _ae13("2025-01", 1, {"amount_raw": "1300", "handler_text": "周立生1300"},
+          "按钮链路预置 1300")          # 引擎直改库，不重载 → 对话框行还停在 1200
+    _real_wd13 = U.WritebackDialog
+    _old_rows13 = dlg13._rows
+
+    class _WD13(_real_wd13):
+        def exec(self):
+            self.note_edit.setText("按钮链路回写")   # 修改原因必填 → 不填会走校验提前 return
+            self._on_ok()               # 字段=打开时镜表现值(1300) 原样回写
+            return 1                    # QDialog.DialogCode.Accepted
+
+    U.WritebackDialog = _WD13
+    try:
+        dlg13.btn_writeback.click()
+    finally:
+        U.WritebackDialog = _real_wd13
+    check("批3-3：按钮路径回写后自动重载（行对象已换、显示 1,300.00）",
+          dlg13._rows is not _old_rows13
+          and "1,300.00" in dlg13._row_field(dlg13._rows[0], "amt"),
+          f"rows_swapped={dlg13._rows is not _old_rows13} "
+          f"amt={dlg13._row_field(dlg13._rows[0], 'amt') if dlg13._rows else '—'}")
+
+    # 还原：parse_ledger_file 桩（还原引擎对存档重解析；无需真 Excel）。
+    def _fake_parse13(path, period):
+        return {"invoices": [{
+            "sheet_name": "已开票已入账", "row_no": 2, "invoice_no": "INV-W",
+            "buyer": "某某公司", "total_amount": 1000.0, "handler_text": "周立生1000",
+            "remark_raw": "25.11.30", "case_no": "",
+            "raw_row": ["1", "2025-01-05", "1000", "INV-W", "某某公司", "周立生1000",
+                        "25.11.30"],
+            "header": ["序号", "开票日期", "金额", "发票号码", "对方", "经办人", "备注"],
+        }], "prepayments": [], "problems": []}
+
+    _imp13.parse_ledger_file = _fake_parse13
+    dlg13._restore_row()   # question 桩恒 Yes → restore_from_archive → 重载
+    _row13 = _db.get_conn().execute(
+        "SELECT amount_num, synced FROM raw_ledger WHERE id=1").fetchone()
+    check("批3-3：还原后金额回 1000、synced=1",
+          _row13["amount_num"] == 1000.0 and _row13["synced"] == 1,
+          str(dict(_row13)))
+    check("批3-3：还原后收款按原备注重写（1 条 1000）",
+          abs(_db.get_conn().execute(
+              "SELECT amount FROM collection WHERE invoice_no='INV-W'"
+          ).fetchone()["amount"] - 1000.0) < 1e-9)
+    _imp13.parse_ledger_file = _orig_parse13
+    _show_all(dlg13)
+    dlg13.table.setCurrentCell(0, 0)
+    check("批3-3：还原后行恢复原值、还原按钮回到禁用（synced=1）",
+          dlg13._rows and "1,000.00" in dlg13._row_field(dlg13._rows[0], "amt")
+          and not dlg13.btn_restore.isEnabled() and dlg13.btn_writeback.isEnabled(),
+          f"amt={dlg13._row_field(dlg13._rows[0], 'amt') if dlg13._rows else '—'} "
+          f"en={dlg13.btn_writeback.isEnabled()}/{dlg13.btn_restore.isEnabled()}")
+finally:
+    _db.DB_PATH = _real_db
+
+
 # ------------------------------------------- 汇总
 bad = [n for n, ok, _ in results if not ok]
 print(f"\n{len(results) - len(bad)}/{len(results)} passed")

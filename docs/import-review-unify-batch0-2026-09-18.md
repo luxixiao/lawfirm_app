@@ -609,6 +609,54 @@ OID + `pack-refs --all`）→ 走 skill `github-api-push` 的 `push_commit.py`
 把旧 OID 写进了 ref；正确做法是**用 commit stdout 里的新短 SHA 解析完整 OID** 再写（已补进
 skill 踩坑 #26）。
 
+## 14. 批 3-3 落地（2026-09-18）：post 行级「编辑回写 + 还原为原件」接进新 post 页
+
+### 14.1 要解决的问题
+
+批 1b 落地的新「导入后」页（`UnifiedImportDialog(mode="post")`）只有**只读**能力；
+旧 `ReviewPostView` 的编辑回写（`apply_edit`）与还原原件（`restore_from_archive`）
+还挂在旧页上。批 3-3 把这两条能力接进新页 —— 「入库后仍可看**可改**」成立，
+批 4 换页/删旧页的前提（三能力搬完）就差本批 + 批 3-1/3-2 已完成的这两项。
+
+### 14.2 落点（四文件 + 一个新模块，零 schema）
+
+| 文件 | 改动 |
+| --- | --- |
+| `app/engine/review_rebuild.py` | 重建 invoice item 补 `raw_id`（镜表行锚点）/ `synced`（修订标记）；sheet3 行经 `split_deferred` 原样搬 → 同样带锚点。pre 模式解析侧没有这两个键 → 编辑入口按「行有没有 raw_id」判定，天然只在 post 出现 |
+| `app/ui/writeback_dialog.py`（**新**） | `WritebackDialog` 从 `review_post_view.py` **原样搬出**（字段/校验/收款明细逐字一致，仅新增 `result_data` 回执）；旧页改 import → 批 4 删旧页无牵连 |
+| `app/ui/review_post_view.py` | 删除原地 `WritebackDialog` 类（−137 行），改 import 中立模块；行为不变 |
+| `app/ui/unified_import_dialog.py` | 右栏加「编辑回写 / 还原为原件」两按钮（**仅 post 可见**）；可用性随行切换（编辑=行有 raw_id；还原=raw_id + synced=0 + 账期有存档）；`_writeback_row` / `_restore_row` → 引擎 → `load_period` 重载 + InfoBar 提示 |
+
+### 14.3 口径要点
+
+- **pre 模式不受影响**：批 1b 只读契约不破（右栏表单仍锁死、两按钮 pre 隐藏）；
+  导入前的修改走既有的右栏就地面板。
+- **按钮初始禁用**：post 空表/无选中行时 `itemSelectionChanged` 不触发，
+  可用性停在 `_apply_mode_chrome` 的禁用态，防误点；选中行后由
+  `_set_writeback_buttons` 按行解锁。
+- **还原门闸三条件**（与旧页 `_on_sel` 同口径）：行有镜表锚点 + 已手工修订
+  （synced=0）+ 账期有存档文件（还原要对原件重解析）。
+- **重载统一走 `load_period`**：回写/还原成功后按账期从库重建（行值、四态、
+  汇总、按钮全刷新），不做局部补丁。
+- deferred（sheet3）行同样带锚点 → 编辑入口对其开放（旧页同口径）；
+  `restore` 的「无原件坐标」拦截（问题行）由引擎侧 `ValueError` 兜底并弹「无法还原」。
+
+### 14.4 验证
+
+| 项 | 结果 |
+| --- | --- |
+| 扩充测试 | `tests/_smoke_unified_import.py` **179 → 191/191**（第 13 节 12 条：锚点/按钮可见性与可用性/回写三表落库/按钮路径自动重载/还原全链） |
+| 全量回归 | **35/35 全绿（40.0s，复跑 47.6s）** |
+| 反向校验 | `rev_check.py` 本批 **5 条探针全部如实变红**：P1 锚点置空→红 6；P2 还原门闸去 synced→红 2；P3 编辑按钮恒可用→红 1；P4 回写后不重载→红 1；P5 还原不置回 synced→红 2 |
+
+> ⚠️ **本批测试实现两坑**：
+> ① 反向探针 P4 首跑 **0 变红** —— 断言只测了手动 `_reload_post()`，没覆盖「按钮路径
+> → 回写 → 自动重载」。补按钮路径断言：**exec 桩**（offscreen 不能真模态）——
+> 子类覆写 `exec()` = 填必填项 + `_on_ok()` + 返回 Accepted，再 `U.WritebackDialog`
+> 替换后 `btn_writeback.click()`，落库路径与真实点击逐字相同。
+> ② exec 桩首版**忘了填 note** → `_on_ok` 走「修改原因必填」校验提前 return，
+> 断言红得莫名其妙 —— 桩必须复刻真实输入（必填项也要填）。
+
 
 
 

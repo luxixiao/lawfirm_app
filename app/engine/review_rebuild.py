@@ -286,6 +286,12 @@ def rebuild_period_data(period: str, conn=None, in_library: set | None = None) -
                 "remark": remark,
                 "case_no": r["case_no"] or "",
                 "is_red": total < 0,
+                # 批 3-3：镜表行锚点 + 修订标记 —— post 模式「编辑回写 /
+                # 还原为原件」按 raw_id 定位 `apply_edit` / `restore_from_archive`；
+                # synced=False（已手工修订）才允许还原。pre 模式解析侧没有这两个键
+                # → 编辑入口按「行有没有 raw_id」判定，天然只在 post 出现。
+                "raw_id": r["id"],
+                "synced": bool(r["synced"]),
             }
             # 显式逐人收款（问题行修正 / 右栏编辑）不存镜表 → 从本批 collection 读回，
             # 且**只在备注推不出收款时**注入（否则会覆盖备注推导的逐人分摊显示）
