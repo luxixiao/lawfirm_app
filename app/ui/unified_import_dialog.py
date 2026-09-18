@@ -61,6 +61,22 @@
 
 数据流：真实 data 全程不被修改，修正只作用于工作副本；点「确认入库」时才一次性
 把 resolved 合并进真实 data。点「取消」真实 data 保持原样。
+
+双模式（批 1b）
+---------------
+- `mode="pre"`（默认，**导入前**）：数据由调用方解析源文件后经 `load_data(...)` 传入；
+  「确认入库」写库、「取消」零副作用（以上整段说明均指本模式）。
+- `mode="post"`（**导入后**）：数据由 `load_period(period)` 从
+  `app.engine.review_rebuild` **反向重建**（该账期 active 台账批次的 `raw_ledger` 镜像
+  + 本批 `collection`），与解析结果同构，故四态/右栏/筛选全部复用。**只读查看**：
+  · 底部只有「关闭」（无「确认入库」）；
+  · 右栏表单恒只读；行内写操作按钮（保存修改 / 重新修正 / 确认 / 编辑 / 补录原票）全部隐藏；
+  · 左侧表格照旧可用：筛选、单元格 tooltip、双击「查看原始台账行」
+    （镜表不存原始行 → 由存档文件按行号读回，见 `review_rebuild.read_ledger_row`）；
+  · 「待补录」**仍是有效待办**（去「发票补录」页处理），故保留该状态与原因文案；
+    而 sheet3「已在库」行在导入后**没有待办**（收款已于入库时按 A10 处理完毕）→
+    归入「高置信」而非「待确认」（见 `_deferred_status`）。
+编辑回写属批 3（`review_writeback.apply_edit`），本批不实现。
 """
 from __future__ import annotations
 
@@ -137,15 +153,22 @@ class UnifiedImportDialog(QWidget):
     cancelled = Signal()
 
     def __init__(self, data=None, period="", staff_names=None,
-                 parent=None, path: str = "", validator=None) -> None:
+                 parent=None, path: str = "", validator=None,
+                 mode: str = "pre") -> None:
         """validator: 可选 callable(data) -> str | None（确认入库时先做写前校验）。
 
         作为对话框：直接传 data/staff_names 即可使用。
         作为嵌入面板：可只传 parent，随后调用 load_data(...) 载入待确认数据。
+        mode: `"pre"`（导入前，默认，可改可确认入库）/ `"post"`（导入后，只读）；
+              post 用 `load_period(period)` 从库反向重建，见模块 docstring「双模式」。
         """
         super().__init__(parent)
         # 数据相关的状态在 load_data 中初始化；这里给占位默认值以便无数据时也能构造
         self._data: Dict = {}
+        # 批 1b：pre=导入前（可改可入库）/ post=导入后（只读查看，数据由 load_period 重建）
+        self._mode = mode if mode in ("pre", "post") else "pre"
+        # post 模式的溯源三要素（批次存档路径 / 文件名 / 批次号），load_period 时填
+        self._post_meta: Dict = {"batch_id": None, "path": "", "file_name": ""}
         # 载入时的原始快照（深拷贝）：accept() 会把 _data 原地替换为合并结果，
         # 之后 collect_import_fixes 若再读 _data 取"旧值"就会拿到新值（差异全部消失、
         # 留痕丢失）。故单独保留这份未被修改的原始数据供取旧值。
@@ -238,12 +261,13 @@ class UnifiedImportDialog(QWidget):
         btns = QHBoxLayout()
         self.btn_confirm = PrimaryPushButton("确认入库")
         self.btn_confirm.clicked.connect(self.accept)
-        b_cancel = PushButton("取消")
-        b_cancel.clicked.connect(self.reject)
+        self.btn_cancel = PushButton("取消")
+        self.btn_cancel.clicked.connect(self.reject)
         btns.addStretch()
-        btns.addWidget(b_cancel)
+        btns.addWidget(self.btn_cancel)
         btns.addWidget(self.btn_confirm)
         root.addLayout(btns)
+        self._apply_mode_chrome()
 
         self._init_cell_tooltip()
 
@@ -290,6 +314,71 @@ class UnifiedImportDialog(QWidget):
         self._rebuild_fix_panel()
         self._rebuild()
 
+    # ------------------------------------------------------------------ #
+    # 双模式（批 1b）：导入前可改可入库 / 导入后只读查看
+    # ------------------------------------------------------------------ #
+    @property
+    def mode(self) -> str:
+        """`"pre"`（导入前）/ `"post"`（导入后，只读）。"""
+        return self._mode
+
+    def _apply_mode_chrome(self) -> None:
+        """按模式调整**底部按钮**（右侧行内按钮由 `_set_actions` 负责）。
+
+        post（导入后）**不写库**：隐藏「确认入库」，把「取消」改成「关闭」。
+        关闭仍走 `reject()` → `cancelled` 信号，由宿主决定回哪个页面。
+        """
+        post = self._mode == "post"
+        self.btn_confirm.setVisible(not post)
+        self.btn_cancel.setText("关闭" if post else "取消")
+        self._lock_panel_for_mode()
+
+    def _lock_panel_for_mode(self) -> None:
+        """post 模式下**建完面板即锁死**，不依赖「有没有行被选中」。
+
+        `_load_right` 里也有一次 `set_readonly(True)`，但那要求有当前行；
+        默认筛选为「待补录」而本期没有待补录行时（空表）没有任何行被选中，
+        右栏不会被走到 → 面板会停在可编辑态（虽然此时它是隐藏的）。
+        这里补一道与选中无关的保证，避免以后有人让面板常显而漏锁。
+        """
+        if self._mode == "post" and self.fix_panel is not None:
+            self.fix_panel.set_readonly(True)
+
+    def load_period(self, period: str) -> None:
+        """（导入后模式）按账期从库中**反向重建**并载入，只读展示。
+
+        数据源：`app.engine.review_rebuild.rebuild_period_data` —— 该账期 active 台账
+        批次的 `raw_ledger` 镜像 + 本批 `collection`，产出与源文件解析**同构**的 data，
+        故四态/筛选/右栏全部复用导入前的那一套。
+        库无该期 active 批次（被清空 / 没导过）→ 载入空骨架，界面显示空表。
+
+        只读约束（见模块 docstring「双模式」）：不校验、不写库；`validator` 传 None。
+        """
+        from app.engine.review_rebuild import rebuild_period_data
+        data = rebuild_period_data(period)
+        self._post_meta = {
+            "batch_id": data.get("batch_id"),
+            "path": data.get("path") or "",
+            "file_name": data.get("file_name") or "",
+        }
+        staff = self._staff_names_from_db()
+        # path 传存档路径 → 「查看原始台账行」在 post 模式直接拿它读存档文件
+        self.load_data(data, period, staff, self._post_meta["path"], None)
+
+    def _staff_names_from_db(self) -> list:
+        """花名册（与写库侧同一口径 `importer._staff_names`），供右侧下拉与置信度判定。
+
+        查库失败不阻断显示（返回空集合 → 经办人一律报「不在花名册」，属保守提示）。
+        """
+        conn = get_conn()
+        try:
+            from app.engine.backfill import all_staff_names
+            return sorted(all_staff_names(conn))
+        except Exception:  # noqa: BLE001
+            return []
+        finally:
+            conn.close()
+
     def _rebuild_fix_panel(self) -> None:
         """按当前 staff_set 重建右侧修正表单（staff 变化时需重建下拉）。"""
         if self.fix_panel is not None:
@@ -300,6 +389,7 @@ class UnifiedImportDialog(QWidget):
             self.fix_panel.deleteLater()
         self.fix_panel = ProblemFixPanel(sorted(self._staff_set), self._period, self)
         self._fix_host_ly.addWidget(self.fix_panel, 1)
+        self._lock_panel_for_mode()
 
     # ------------------------------------------------------------------ #
     # 右侧面板
@@ -480,7 +570,7 @@ class UnifiedImportDialog(QWidget):
         return "、".join(f"{n} {_fmt_money(a)}" for n, a in agg.items()) or "—"
 
     def _deferred_status(self, d: dict, d_index: int) -> str:
-        """应收账款(sheet3)行的状态（阶段 4-2 四态）。
+        """应收账款(sheet3)行的状态（阶段 4-2 四态；批 1b 起随模式微调）。
 
         - 已确认过 → `高置信`；
         - 需补录原票、且本次**还没填过**补录 → **`待补录`**（要去点「补录原票」）；
@@ -488,12 +578,19 @@ class UnifiedImportDialog(QWidget):
 
         判据取**工作副本**（`_rebuild_work` 已用最新库票号集合重判 `need_backfill`），
         故显示的「待补录 / 待确认」始终对应当前库状态与本次已填的补录。
+
+        批 1b（导入后模式）唯一差异：**「已在库」行不再算待确认** —— 收款已在入库那一刻
+        按 A10 处理完毕（`receipt_confirmed` 由 `_merged_data` 写入），导入后没有待办；
+        仍按「待确认」显示会让用户以为还有活要干。故名次落在「高置信」。
+        注意「**待补录」在导入后照样是有效待办**（去「发票补录」页逐张补），故不降级。
         """
         if d_index in self._deferred_confirmed:
             return "高置信"
         no = (d.get("invoice_no") or "").strip()
         if d.get("need_backfill") and no not in self._backfills:
             return "待补录"
+        if self._mode == "post":
+            return "高置信"
         return "待确认"
 
     def _rebuild(self) -> None:
@@ -648,7 +745,10 @@ class UnifiedImportDialog(QWidget):
                 # 已入库请确认收款（普通发票行的「✓ 系统判定无疑问」不在此分支）
                 if (d.get("invoice_no") or "").strip() in self._backfills:
                     return REASON_BACKFILLED
-                return REASON_BACKFILL if d.get("need_backfill") else REASON_IN_LIBRARY
+                if d.get("need_backfill"):
+                    return REASON_BACKFILL
+                # 批 1b：导入后「已在库」行无待办（收款已于入库时按 A10 处理）→ 无疑问
+                return REASON_NO_DOUBT if self._mode == "post" else REASON_IN_LIBRARY
             if key == "kind":
                 return "应收账款"
         p = r["problem"] or {}
@@ -706,13 +806,18 @@ class UnifiedImportDialog(QWidget):
                     item.setForeground(
                         AMBER if (r["status"] == "待补录" or r["ev"]["reasons"]) else GREEN)
                 if c == COL_REASON and r["kind"] == "deferred":
-                    # 需补录原票（要去补录）用琥珀；其余两类「请确认收款」都用蓝
+                    # 需补录原票（要去补录）用琥珀；「请确认收款」两类用蓝；
+                    # 批 1b：导入后「已在库」行无待办 → 用绿（与 REASON_NO_DOUBT 同色）
                     _dno = ((r["deferred"] or {}).get("invoice_no") or "").strip()
+                    _need_bf = bool((r["deferred"] or {}).get("need_backfill"))
                     if _dno in self._backfills:
                         item.setForeground(BLUE)
+                    elif _need_bf:
+                        item.setForeground(AMBER)
+                    elif self._mode == "post":
+                        item.setForeground(GREEN)
                     else:
-                        item.setForeground(
-                            AMBER if (r["deferred"] or {}).get("need_backfill") else BLUE)
+                        item.setForeground(BLUE)
                 if r["status"] in ("待补录", "待确认"):
                     item.setBackground(DIFF_BG)
                 self.table.setItem(r_i, c, item)
@@ -901,6 +1006,9 @@ class UnifiedImportDialog(QWidget):
             self.fix_panel.setVisible(False)
             self._set_actions()
             self._set_backfill_button(None)
+            # ⚠️ `set_problem(None)` 内部会把面板**重置为可编辑**（它服务于问题行修正路径）
+            # → post 模式下必须重新锁一次，否则「无行选中」时面板停在可编辑态
+            self._lock_panel_for_mode()
             return
         for key in ("src", "no", "buyer", "amt", "receipt", "remark", "reason"):
             self._info[key].setText(self._row_field(r, key))
@@ -945,12 +1053,21 @@ class UnifiedImportDialog(QWidget):
             self.fix_panel.setVisible(True)
             self.fix_panel.set_problem(r["problem"])
             self._set_actions(save=True)
+        # 批 1b：导入后模式**只读**（编辑回写属批 3）；右栏表单一律锁死
+        if self._mode == "post":
+            self.fix_panel.set_readonly(True)
         # 阶段 3（B2g/B2h）：行内补录按钮的可见性与文案（随行类型/票号是否在库切换）
         self._set_backfill_button(r)
 
     def _set_actions(self, *, save: bool = False,
                      refix: bool = False, confirm: bool = False,
                      edit: bool = False) -> None:
+        """按当前行切换右侧行内动作按钮。
+
+        批 1b：`post`（导入后）一律全隐藏 —— 本模式不写库（编辑回写属批 3）。
+        """
+        if self._mode == "post":
+            save = refix = confirm = edit = False
         self.btn_save.setVisible(save)
         self.btn_refix.setVisible(refix)
         self.btn_confirm_row.setVisible(confirm)
@@ -1165,7 +1282,14 @@ class UnifiedImportDialog(QWidget):
                              (data or {}).get("total_amount"), (data or {}).get("handlers"))
 
     def _set_backfill_button(self, r: Dict | None) -> None:
-        """按当前行切换「补录原票 / 查看原票」（B2g 文案 + B2h 刷新）。"""
+        """按当前行切换「补录原票 / 查看原票」（B2g 文案 + B2h 刷新）。
+
+        批 1b：`post`（导入后）隐藏入口 —— 补录/改补录都会写库，只读模式不给入口；
+        需要补录的票在导入后去「发票补录」页处理（本表仍照实显示「待补录」）。
+        """
+        if self._mode == "post":
+            self.btn_backfill.setVisible(False)
+            return
         tgt = self._row_backfill_target(r) if r is not None else None
         if tgt is None:
             self.btn_backfill.setVisible(False)
@@ -1365,6 +1489,11 @@ class UnifiedImportDialog(QWidget):
         return out
 
     def _show_source(self) -> None:
+        """双击 → 查看该行的原始台账行。
+
+        批 1b（post）：镜表**不存**原始行（`raw_ledger` 是归一化镜像）→ 按批次存档文件
+        + `sheet_name` / `row_no` 读回（`review_rebuild.read_ledger_row`），逐列原文照旧可对照。
+        """
         r = self._current_row()
         if r is None:
             return
@@ -1372,20 +1501,27 @@ class UnifiedImportDialog(QWidget):
             inv = r["ev"]["_inv"]
             header = inv.get("header") or []
             raw_row = inv.get("raw_row") or []
-            sheet_name = inv.get("sheet_name") or "—"
+            raw_sheet = inv.get("sheet_name") or ""
+            sheet_name = raw_sheet or "—"
             row_no = inv.get("row_no") or 0
         elif r["kind"] == "deferred":
             d = r["deferred"] or {}
             header = d.get("header") or []
             raw_row = d.get("raw_row") or []
-            sheet_name = SHEET_LABEL.get(d.get("sheet"), d.get("sheet") or "—")
+            raw_sheet = d.get("sheet_name") or ""
+            sheet_name = raw_sheet or SHEET_LABEL.get(d.get("sheet"), d.get("sheet") or "—")
             row_no = d.get("row_no") or 0
         else:
             p = r["problem"] or {}
             header = p.get("header") or []
             raw_row = p.get("raw_row") or []
-            sheet_name = SHEET_LABEL.get(p.get("sheet"), p.get("sheet") or "—")
+            raw_sheet = p.get("sheet_name") or ""
+            sheet_name = raw_sheet or SHEET_LABEL.get(p.get("sheet"), p.get("sheet") or "—")
             row_no = p.get("row_no") or 0
+        if not raw_row and self._mode == "post":
+            # 导入后：镜表无原始行 → 从该批次存档文件按同一行号读回
+            from app.engine.review_rebuild import read_ledger_row
+            header, raw_row = read_ledger_row(raw_sheet, row_no, self._path)
         if not raw_row:
             QMessageBox.information(self, "无原始行", "该行没有对应的原始台账行数据。")
             return
@@ -1606,7 +1742,12 @@ class UnifiedImportDialog(QWidget):
           · 应收账款 sheet3 行 —— 「待补录」需先用右侧「补录原票」补录，
             「待确认」需点「确认」采纳收款口径。
         放弃本次导入请点「取消」（`reject`），真实 data 一行不动。
+
+        批 1b：`post`（导入后）模式**不写库** —— 本方法直接返回（`_data` 一行不改），
+        也不做硬拦检查（无待办概念，按钮已隐藏）。
         """
+        if self._mode == "post":
+            return
         n_backfill = sum(1 for r in self._rows if r["status"] == "待补录")
         n_pending = sum(1 for r in self._rows if r["status"] == "待确认")
         if n_backfill or n_pending:

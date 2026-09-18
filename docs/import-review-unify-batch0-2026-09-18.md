@@ -263,12 +263,92 @@ sheet3 行按现行 D1-甲口径本就不建票 / 不写 `charge_detail`，因�
    `_smoke_red_backfill.py` 的 `warning = information` 是**别名**，记的是 `(kind, title, text)`
    → 按 `c[0] == "warning"` 过滤**恒为空**。断言必须按「记的是 text 还是 title」分别写。
 
-### 9.6 后续批次（未开工）
+### 9.6 后续批次
 
-| 批 | 内容 |
+| 批 | 内容 | 状态 |
+| --- | --- | --- |
+| 1b | `app/engine/review_rebuild.py`：从 `raw_ledger` 重建某账期的导入期 `data` 结构（sheet1/2→invoices、sheet3→deferred、sheet4→prepayments）；`UnifiedImportDialog` 加 `mode="pre"/"post"`，post 读库重建 | ✅ 见 §10 |
+| 1c | 把「确认入库那一刻的状态」持久化到库，供导入后读回 | 未开工 |
+| 2 | 把「台账 vs 销项/库」比对接进导入时判定（口径见 §7.4） | 未开工 |
+| 3 | 第二落点 `review_writeback.apply_edit` | 未开工 |
+| 4 | 删除旧页（`review_post_view.py` / `review_compare` 融合比对）+ 死代码 + 文档收口 | 未开工 |
+
+---
+
+## 10. 批 1b 落地（2026-09-18）：导入后读库重建 + `mode="post"` 只读
+
+### 10.1 做了什么
+
+| # | 改动 | 文件 |
+| --- | --- | --- |
+| 1 | **抽出共享规则** `apply_sheet_receipt_rule(sheet_key, remark, total, period)`（sheet2 纯日期降级 / sheet1 空备注全额兜底 / sheet3 保留），`_parse_invoice_sheet` 改为调用它 | `app/importer/ledger_import.py` |
+| 2 | **新增** `app/engine/review_rebuild.py`：`active_ledger_batch()` / `rebuild_period_data()` / `read_ledger_row()` | 新增 |
+| 3 | `UnifiedImportDialog` 加 `mode="pre"/"post"` + `load_period(period)` + 只读契约 | `app/ui/unified_import_dialog.py` |
+| 4 | 新增 7 节 56 条断言的冒烟（含**往返等价性**） | `tests/_smoke_review_rebuild.py`（新增） |
+
+### 10.2 数据源与口径（`review_rebuild`）
+
+`raw_ledger` 是**归一化**镜像（18 列业务字段，非逐列镜像）—— 它存的是原始文本
+（`invoice_date_raw` / `amount_raw` / `handler_text` / `buyer` / `case_no` / `remark` / `recv_date_raw`）
+**加上** `amount_num`（解析后金额）。故重建只需再跑一遍**同一批**纯函数：
+
+| 维度 | 复用函数 |
 | --- | --- |
-| 1b | `app/engine/review_rebuild.py`：从 `raw_ledger` 重建某账期的导入期 `data` 结构（sheet1/2→invoices、sheet3→deferred、sheet4→prepayments）；`UnifiedImportDialog` 加 `mode="pre"/"post"`，post 读库重建 |
-| 1c | 把「确认入库那一刻的状态」持久化到库，供导入后读回 |
-| 2 | 把「台账 vs 销项/库」比对接进导入时判定（口径见 §7.4） |
-| 3 | 第二落点 `review_writeback.apply_edit` |
-| 4 | 删除旧页（`review_post_view.py` / `review_compare` 融合比对）+ 死代码 + 文档收口 |
+| 日期 | `date_utils.normalize_date` |
+| 经办人 | `parse_handler.parse_handler_column`（**纯函数**，不查库） |
+| 备注 | `parse_remark.parse_remark` |
+| sheet 归属收款修正 | `ledger_import.apply_sheet_receipt_rule`（**批 1b 新抽出**） |
+| sheet3 切分 | `ledger_import.split_deferred` |
+
+**与导入期的三处已知不等价**（都可接受、已写进模块 docstring）：
+
+1. **`problems` 恒为空**：解析失败的问题行**不写镜表**（`commit_ledger_import` 只镜像
+   `invoices` + `deferred`），只有被复核页修正后的行才随之落库 → 导入后本就不存在该桶。
+2. **`header` / `raw_row` 恒为空**：镜表不存表头与原始整行。
+   → 「查看原始台账行」改走批次存档文件：`read_ledger_row(sheet_name, row_no, archive_path)`
+   （`archive_path` 取自 `import_batch`），行号口径与 `ledger_import` 一致，**逐列原文照样能看**。
+3. **显式逐人收款（`split_receipts`）不存镜表** → 从本批 `collection` 读回，且
+   **只在「备注推不出收款」时注入**：普通行的 `collection.person_name` 是空串
+   （备注分支不带姓名），盲目注入会把「各经办人已收」整列打成 0。
+
+### 10.3 `mode="post"` 只读契约
+
+| 维度 | pre（默认） | post |
+| --- | --- | --- |
+| 底部按钮 | 「取消」+「确认入库」 | 只有「关闭」（`accept()` 直接 return，**一行不写**） |
+| 右栏表单 | 按行状态可编辑 / 只读 | **恒只读**（建面板即锁 + 每次选行再锁一次） |
+| 行内动作 | 保存修改 / 重新修正 / 确认 / 编辑 | 全部隐藏（`_set_actions` 内统一短路） |
+| 「补录原票」入口 | 按行四态显示 | 隐藏（补录写库，去「发票补录」页） |
+| 左表 | 筛选 / tooltip / 双击溯源 | 同 pre |
+| sheet3「已在库」行状态 | **待确认**（去确认收款信息） | **高置信** —— 收款已在入库那一刻按 A10 处理完毕，导入后无待办 |
+| sheet3「需补录」行状态 | 待补录 | **仍是待补录**（真待办，去补录页） |
+
+### 10.4 验证
+
+| 项 | 结果 |
+| --- | --- |
+| 新测试 | `_smoke_review_rebuild.py` **56/56**；`_smoke_unified_import.py` **165/165**；`_smoke_red_backfill.py` **84/84** |
+| 全量回归 | **34/34 全绿，0 Traceback，67.5s**（基线 33 → **34**，已同步 `run_tests.py` 的 `EXPECTED_FILES`） |
+| 反向校验 | `rev_check.py` 本批 **6 条探针全部如实变红**：P1 关 post 状态判定→红 1；P2 关 `_set_actions` 短路→红 1；P3 关补录按钮隐藏→红 1；P4 关「建面板即锁」→红 1；P5 去掉 collection 注入闸门→红 1；P6 关 sheet2 纯日期降级→**红 2** |
+| 往返等价性 | 同一份台账行「解析 → 落镜表 → 重建」后，invoices / deferred 的 13 个业务字段**逐字段一致**，prepayments 9 个字段一致 |
+
+### 10.5 本批踩到的三个坑
+
+1. **`parse_remark` 只认 2 位年的纯日期**（`25.1.20` ✅ / `2025.1.20` ❌）。
+   第一版 fixture 写了 `2025.1.20` → sheet2 的「纯日期降级」断言**空转**（本来就为空，
+   规则关掉也不变红，反向校验才发现）。→ 改 fixture 为 `25.1.20`，并加了一条
+   **前置断言**（「fixture 备注确实能被 `parse_remark` 认成纯日期」）防止再次空转。
+2. **`_load_right()` 的「无行选中」早退分支里 `set_problem(None)` 会把面板重置为可编辑**
+   （它服务于问题行修正路径，内部 `self._readonly = False`）。
+   默认筛选「待补录」而本期没有待补录行时，表格空、无行被选中 → 面板停在可编辑态。
+   → 在 `_apply_mode_chrome` / `_rebuild_fix_panel` / `_load_right` 三处补
+   `_lock_panel_for_mode()`（与选中无关的保证），并加一条「空表时也锁死」的断言。
+3. **`collection.invoice_no` 有外键约束**：fixture 里给不存在的票插收款行会
+   `IntegrityError: FOREIGN KEY constraint failed`。→ 先补最小 `invoice` 行。
+
+### 10.6 未接线（属批 4）
+
+`ImportReviewView` 的「导入后」仍指向 `ReviewPostView`（`page_post`），**本批未切换** ——
+1b 只交付「能力 + 测试」。切页 + 删旧页（`review_post_view.py` / `review_compare`）
+按原计划归批 4。
+

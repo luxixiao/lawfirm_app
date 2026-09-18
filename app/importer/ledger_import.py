@@ -106,6 +106,28 @@ def split_deferred(data: Dict, period: str, in_library: set | None = None) -> in
     return len(moved)
 
 
+def apply_sheet_receipt_rule(sheet_key: str, remark: Dict, total: float, period: str) -> None:
+    """已收/未收按 sheet 归属修正（sheet 是权威，备注为辅）—— **就地修改 remark**。
+
+    解析期（`_parse_invoice_sheet`）与**导入后读库重建**（`app.engine.review_rebuild`）
+    共用本函数，保证两条路径的收款认定口径不分叉（批 1b 抽出，原为内联代码）。
+
+    - sheet2（已开票未入账）：纯日期备注不是收款证据（单日期是挂账/应收信息，如 25.3.4），
+      降级为未收；有明确收款动词（收/汇/到）才收。
+    - sheet1（已开票已入账）：备注无任何收款明细（空备注/旧写法）→ 补全额收款兜底
+      （金额哨兵 0.0 = 全额，日期取导入账期月），保证「已开已收」的票一定判已收。
+    - sheet3（应收账款）：纯日期备注 = 该历史应收的【收款日期】，按全额收款处理
+      （如 25.2.28 表示此笔应收在 2025-02 收回）；故**不清空**，交由写库侧处理。
+
+    只改 remark，无返回值；`total < 0`（红字）不加兜底。
+    """
+    if sheet_key == "sheet2" and remark.get("pure_date"):
+        remark["pure_date"] = None
+        remark["receipts"] = []
+    if sheet_key == "sheet1" and not remark.get("receipts") and total >= 0:
+        remark["receipts"] = [(period, 0.0)]  # 0 = 全额（写库时填开票总额）
+
+
 def _pick_sheet(rows: List[List[str]], keyword: str) -> List[List[str]] | None:
     """按关键词返回数据行（跳过表头）"""
     hr = find_header_row(rows, [keyword if keyword == "发票号码" else keyword[:4]])
@@ -212,17 +234,8 @@ def _parse_invoice_sheet(rows: List[List[str]], sheet_key: str, sheet_name: str,
                 )
 
         # ---- 已收/未收按 sheet 归属修正（sheet 是权威，备注为辅）----
-        # sheet2（已开票未入账）：纯日期备注不是收款证据（单日期是挂账/应收信息，如 25.3.4），
-        #   降级为未收；有明确收款动词（收/汇/到）才收。
-        # sheet3（应收账款）：纯日期备注 = 该历史应收的【收款日期】，按全额收款处理
-        #   （如 25.2.28 表示此笔应收在 2025-02 收回）；故不再清空，交由下方 importer 写收款。
-        if sheet_key == "sheet2" and remark.get("pure_date"):
-            remark["pure_date"] = None
-            remark["receipts"] = []
-        # sheet1（已开票已入账）：备注无任何收款明细（空备注/旧写法）→ 补全额收款兜底，
-        # 保证「已开已收」的票一定判已收（日期取导入账期月）。
-        if sheet_key == "sheet1" and not remark["receipts"] and total >= 0:
-            remark["receipts"] = [(period, 0.0)]  # 0 = 全额（importer 写入时填开票总额）
+        # 规则见 apply_sheet_receipt_rule（与导入后读库重建**同一函数**，绝不各写一份）
+        apply_sheet_receipt_rule(sheet_key, remark, total, period)
 
         items.append({
             "sheet": sheet_key,
