@@ -725,3 +725,49 @@ skill 踩坑 #26）。
 未被推送、未被引用，无害）→ 分支 ref 照旧未推进 → 完整 OID 直写 loose ref + `pack-refs`
 → skill `github-api-push` 的 `push_commit.py` → `VERIFY_REMOTE MATCH True`、
 `AHEAD_BEHIND 0 0`、父数 1。
+
+## 16. 批 3-2b 落地（2026-09-18）：导入时就地修改的字段留痕（方案 B，dim=`import_edit`）
+
+### 16.1 要解决的问题（§12.5 刻意留下的缺口）
+
+sheet3「**已在库**」行在导入时被人工修改的**文本字段**（购方 / 经办人分摊 / 案号 /
+开票日期 / 总金额 / 经办人原文）库内**零落点**（收款走 A10 落 `collection`，文本不写任何
+表）⇒「导入后」模式从 `raw_ledger`（原文镜表）重建时会**无声显示旧值**，用户以为改动丢了。
+修改记录页（change_log）有字段级留痕，但不在复核现场。用户在 A(静默) / B(提示留痕) /
+C(镜表回写) / D(加列) / E(查 change_log) 五案中拍板 **B**：只记「改了哪些字段」，不改
+镜表原文（铁律不破坏），post 页原因列就地标注；回写仍走批 3-3 的 `review_writeback`。
+
+### 16.2 落点（与批 3-1 同构，零 schema）
+
+| 文件 | 改动 |
+|---|---|
+| `app/engine/import_confirm.py` | 新增 `EDIT_DIM="import_edit"` + `clear_edit_hints` / `save_edit_hints` / `load_edit_hints`（无 legacy 维度，不需要回退） |
+| `app/importer/importer.py` | `commit_ledger_import` 同一事务内先清本账期本 dim → `save_edit_hints(data["edit_hints"])`；返回 dict 加 `edit_hint_count` |
+| `app/engine/review_rebuild.py` | `rebuild_period_data` 带出 `edit_hints`（空骨架含该键） |
+| `app/ui/unified_import_dialog.py` | ① `REASON_IMPORT_EDIT="导入时已修改"`；② `_edit_changed_fields(orig, ed)`：右侧表单编辑 vs 行原值的 7 字段归一化比较（金额 2 位小数、handlers/splits 排序后比）；③ `_merged_data` 收集 `_inv_edits` + `_deferred_edits` → `merged["edit_hints"]`（同票号合并去重；**待补录行跳过** —— 其修改随补录条目落库，不重复提示；发票行编辑也留痕 —— post 只显示镜表原文，批 3-2 只回填分摊）；④ `_rebuild` 设 `r["import_edit_hint"]`（`_import_edit_hint` 仅 post 生效）；⑤ `_row_field` invoice/deferred 两处 reason 追加〔导入时已修改：字段…〕（无疑问的高置信行同样标注，deferred 分支由早退 return 改为 text 累积） |
+
+### 16.3 口径要点
+
+- **pre 模式不读留痕**（与确认留痕同款约束）：pre 的修改实时显示在右栏；读留痕会让
+  「覆盖式重导同账期」时上一批的旧提示提前混进本批。
+- 提示**只标注、不改状态**：疑问原文照旧展示，绝不隐藏。
+- 「已确认」「待补录」「待确认」等状态判定完全不受影响。
+
+### 16.4 验证
+
+- `test_import_confirm.py` 新增 D1–D10（dim 往返 / 空 items / 幂等 / 两 dim 并存互不覆盖 /
+  clear 只清自己 / commit 同事务写 + `edit_hint_count` / rebuild 带出 / 覆盖式重导先清后写），
+  全文件 **32/32**。
+- `_smoke_review_rebuild.py` 新增 D6–D11（rebuild 带出 / pre 不读 / post 行 dict +
+  原因列标注 / sheet3 在库行主场景 / `_merged_data` 发票行与 sheet3 在库行收集 +
+  待补录行跳过；每段带**前置断言锁 fixture 语义**防空转），全文件 **93/93**。
+- 全量 **35/35**（基线不变，`EXPECTED_FILES` 未动）。
+- 反向校验 `rev_check.py` 5 探针全红：P1 importer 不写→3 红；P2 rebuild 不带出→5 红；
+  P3 `_rebuild` 不收集→3 红；P4 `_merged_data` 不产出→1 红；P5 buyer 比对关掉→3 红
+  （diff 逻辑非空转）。复跑全量确认还原（`git diff --stat` 恰好 6 文件）。
+
+### 16.5 提交
+
+`a0c329b`（6 文件 +345/−12，按路径 add）→ 分支 ref 照旧未推进 → 完整 OID 直写 loose
+ref + `pack-refs` → `push_commit.py` API 推送 → `VERIFY_REMOTE MATCH True`、
+`AHEAD_BEHIND 0 0`、父数 1。
