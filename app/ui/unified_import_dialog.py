@@ -132,6 +132,9 @@ REASON_RED_MISMATCH = "红字与蓝字原票不一致（{}），请确认"
 # 「导入后」模式据此不再把它重报成「待确认」（post 隐藏了「确认」按钮，重报就是点不掉的
 # 假待办）；疑问原文照旧展示，只在末尾加本标注 —— 绝不隐藏。
 REASON_IMPORT_CONFIRMED = "导入时已确认"
+# 批 3-2b：导入时就地修改过字段的提示（post 页原因列标注「导入时已修改：字段…」）。
+# sheet3 在库行的文本字段库内零落点，post 从镜表（原文）重建会无声显示旧值 → 需提示。
+REASON_IMPORT_EDIT = "导入时已修改"
 
 HEADERS = [
     "状态", "类型", "来源", "发票号", "购方", "金额",
@@ -569,6 +572,37 @@ class UnifiedImportDialog(QWidget):
         inv["remark"] = rem
         inv.pop("received_overrides", None)
 
+    @staticmethod
+    def _edit_changed_fields(orig: dict, ed: dict) -> List[str]:
+        """右侧表单编辑结果 vs 行原值 → 被改动的字段中文名列表（批 3-2b）。
+
+        只比 `_apply_invoice_edit` 实际覆盖的 7 个字段；比较前做同款归一化
+        （金额取两位小数、handlers/splits 排序），避免顺序差异造成假报。
+        """
+        changed: List[str] = []
+        if (ed.get("invoice_date") or "") != (orig.get("invoice_date") or ""):
+            changed.append("开票日期")
+        if abs(float(ed.get("total_amount") or 0.0)
+               - float(orig.get("total_amount") or 0.0)) > 0.005:
+            changed.append("总金额")
+        if sorted((str(n or "").strip(), round(float(b or 0.0), 2))
+                  for n, b in (ed.get("handlers") or [])) != sorted(
+                (str(n or "").strip(), round(float(b or 0.0), 2))
+                for n, b in (orig.get("handlers") or [])):
+            changed.append("经办人分摊")
+        if (ed.get("handler_text") or "") != (orig.get("handler_text") or ""):
+            changed.append("经办人原文")
+        if sorted((str(n or "").strip(), round(float(a or 0.0), 2), str(ym or "")[:10])
+                  for n, a, ym in (ed.get("split_receipts") or [])) != sorted(
+                (str(n or "").strip(), round(float(a or 0.0), 2), str(ym or "")[:10])
+                for n, a, ym in (orig.get("split_receipts") or [])):
+            changed.append("收款明细")
+        if ed.get("buyer") is not None and (ed.get("buyer") or "") != (orig.get("buyer") or ""):
+            changed.append("购方")
+        if ed.get("case_no") is not None and (ed.get("case_no") or "") != (orig.get("case_no") or ""):
+            changed.append("案号")
+        return changed
+
     # ------------------------------------------------------------------ #
     # 应收账款(sheet3)行（deferred）：预填展开 / 收款明细
     # ------------------------------------------------------------------ #
@@ -630,6 +664,20 @@ class UnifiedImportDialog(QWidget):
         if not no:
             return ""
         return (self._data.get("confirmations") or {}).get(no, "")
+
+    def _import_edit_hint(self, r: Dict) -> str:
+        """该行的「导入时已修改」字段提示（批 3-2b）；无提示返回空串。
+
+        **只在 post 模式生效**：pre 模式的修改实时显示在右栏表单里，无需提示；
+        若 pre 也读留痕，「覆盖式重导同一账期」时上一批的旧提示会提前混进本批
+        （与 `_import_confirmation` 同款约束）。
+        """
+        if self._mode != "post":
+            return ""
+        no = self._row_invoice_no(r)
+        if not no:
+            return ""
+        return (self._data.get("edit_hints") or {}).get(no, "")
 
     def _deferred_status(self, d: dict, d_index: int) -> str:
         """应收账款(sheet3)行的状态（阶段 4-2 四态；批 1b 起随模式微调）。
@@ -737,6 +785,8 @@ class UnifiedImportDialog(QWidget):
             note = self._import_confirmation(r)
             r["import_confirm_note"] = note
             r["is_import_confirmed"] = bool(note)
+            # 批 3-2b：导入时就地修改过字段的提示（仅 post 生效；只标注原因列，不改状态）
+            r["import_edit_hint"] = self._import_edit_hint(r)
             if note:
                 if r["status"] == "待确认":
                     r["status"] = "高置信"
@@ -797,6 +847,10 @@ class UnifiedImportDialog(QWidget):
                 # 批 3-1：导入时已由人确认过的行 → 在其后标注（疑问原文照旧全展示，不隐藏）
                 if r.get("is_import_confirmed"):
                     text += f"〔{REASON_IMPORT_CONFIRMED}〕"
+                # 批 3-2b：导入时就地修改过字段 → 标注改了哪些（post 从镜表重建会显示
+                # 原文旧值，此提示说明改动仍在、可用右侧「编辑回写」就地修正）
+                if r.get("import_edit_hint"):
+                    text += f"〔{REASON_IMPORT_EDIT}：{r['import_edit_hint']}〕"
                 return text
             if key == "kind":
                 return "红字发票" if ev["is_red"] else "发票"
@@ -822,11 +876,18 @@ class UnifiedImportDialog(QWidget):
                 # A2 + 阶段 4-2：应收账款行三态 —— 需补录原票 / 已补录请确认收款 /
                 # 已入库请确认收款（普通发票行的「✓ 系统判定无疑问」不在此分支）
                 if (d.get("invoice_no") or "").strip() in self._backfills:
-                    return REASON_BACKFILLED
-                if d.get("need_backfill"):
-                    return REASON_BACKFILL
-                # 批 1b：导入后「已在库」行无待办（收款已于入库时按 A10 处理）→ 无疑问
-                return REASON_NO_DOUBT if self._mode == "post" else REASON_IN_LIBRARY
+                    text = REASON_BACKFILLED
+                elif d.get("need_backfill"):
+                    text = REASON_BACKFILL
+                else:
+                    # 批 1b：导入后「已在库」行无待办（收款已于入库时按 A10 处理）→ 无疑问
+                    text = REASON_NO_DOUBT if self._mode == "post" else REASON_IN_LIBRARY
+                # 批 3-2b：导入时就地修改过字段（库内零落点）→ 标注改了哪些。
+                # 「待补录」行的修改随补录条目落库（bf["handlers"]/buyer/…），生成端已
+                # 过滤不掉它们；这里对拿得到的提示照常标注。
+                if r.get("import_edit_hint"):
+                    text += f"〔{REASON_IMPORT_EDIT}：{r['import_edit_hint']}〕"
+                return text
             if key == "kind":
                 return "应收账款"
         p = r["problem"] or {}
@@ -1858,18 +1919,42 @@ class UnifiedImportDialog(QWidget):
             })
         merged["confirmations"] = confs
 
+        # 批 3-2b：本次就地修改过字段的行 → 随台账**同一事务**落「修改字段」留痕
+        # （`anomaly_note` 独立 dim=import_edit，由 `commit_ledger_import` 写）。
+        # 为什么必须落库：sheet3 在库行的文本修改（购方/经办人分摊/案号）库内零落点，
+        # 「导入后」模式从 raw_ledger（原文镜表）重建 → 会无声显示旧值；留痕让 post 页
+        # 原因列标注「导入时已修改：字段…」。「待补录」行的修改随补录条目落库 → 不过滤
+        # 会重复提示，故 need_backfill 行跳过。发票行的修改虽随本批写库，但 post 页同样
+        # 只显示镜表原文（批 3-2 只回填经办人分摊）→ 一并留痕。
+        edit_fields: Dict[str, List[str]] = {}
+
         # 已存在发票的右侧就地编辑：原地覆盖
         for inv_idx, ed in self._inv_edits.items():
             invs = merged.get("invoices", [])
             if 0 <= inv_idx < len(invs):
-                self._apply_invoice_edit(invs[inv_idx], ed)
+                inv = invs[inv_idx]
+                _no = str(inv.get("invoice_no") or "").strip()
+                _fields = self._edit_changed_fields(inv, ed)
+                if _no and _fields:
+                    edit_fields.setdefault(_no, []).extend(_fields)
+                self._apply_invoice_edit(inv, ed)
 
         # A3 + A10：应收账款(sheet3)行的就地编辑与「确认收款」结果回写 data["deferred"]。
         # 下标对应 data["deferred"] 顺序（split_deferred 只追加、不重排）。
         deferred = merged.get("deferred") or []
         for d_idx, ed in sorted(self._deferred_edits.items()):
             if 0 <= d_idx < len(deferred):
-                self._apply_invoice_edit(deferred[d_idx], ed)
+                d = deferred[d_idx]
+                if not d.get("need_backfill"):
+                    _no = str(d.get("invoice_no") or "").strip()
+                    _fields = self._edit_changed_fields(d, ed)
+                    if _no and _fields:
+                        edit_fields.setdefault(_no, []).extend(_fields)
+                self._apply_invoice_edit(d, ed)
+        merged["edit_hints"] = [
+            {"invoice_no": no, "note": "、".join(dict.fromkeys(fields))}
+            for no, fields in edit_fields.items()
+        ]
         for d_idx in sorted(self._deferred_confirmed):
             if not (0 <= d_idx < len(deferred)):
                 continue

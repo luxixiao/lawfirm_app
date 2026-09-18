@@ -966,9 +966,19 @@ def commit_ledger_import(data: Dict, period: str, path: str,
         #   （dim='merged'）分开存放，互不覆盖。
         # 事务：与台账**同一事务**；先清本账期本 dim —— 覆盖式重导同一账期时，
         #   上一次的确认已不适用，必须失效（否则会拿旧确认去压制新一批的疑问）。
-        from app.engine.import_confirm import clear_confirmations, save_confirmations
+        from app.engine.import_confirm import (
+            clear_confirmations, save_confirmations,
+            clear_edit_hints, save_edit_hints,
+        )
         clear_confirmations(conn, period)
         confirm_n = save_confirmations(conn, period, data.get("confirmations"))
+        # 批 3-2b：导入时就地修改过的行（改了哪些字段）同事务落留痕（dim=import_edit）。
+        # 为什么写：sheet3 在库行的文本字段（购方/经办人分摊/案号）库内零落点，而「导入后」
+        #   模式从 raw_ledger（原文镜表）重建 → 会无声显示旧值；留痕让 post 页原因列
+        #   标注「导入时已修改：字段…」，修改记录页（change_log）之外多一个就地可见的提示。
+        # 事务：与确认留痕同款 —— 同一事务；先清本账期本 dim，覆盖式重导时旧提示整体失效。
+        clear_edit_hints(conn, period)
+        edit_hint_n = save_edit_hints(conn, period, data.get("edit_hints"))
 
         conn.commit()
     except Exception:
@@ -988,6 +998,8 @@ def commit_ledger_import(data: Dict, period: str, path: str,
         "backfill_count": len(backfills or []),
         # 批 3-1：随本批同一事务写入的「导入时确认」留痕条数（anomaly_note/dim=import_confirm）
         "confirmation_count": confirm_n,
+        # 批 3-2b：随本批同一事务写入的「导入时修改」留痕条数（anomaly_note/dim=import_edit）
+        "edit_hint_count": edit_hint_n,
         # A10：确认收款时会「超额收款」的已在库票（台账信息错误，未写入收款）。
         # 供调用方提示用户核对台账（复核页在阶段 2-2 把它标成问题行）。
         "over_collected": over_collected,

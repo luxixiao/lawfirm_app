@@ -40,6 +40,14 @@ from app.db import get_conn
 # 这个是**导入那一刻**点过「确认」的留痕（归台账批次，随覆盖式重导整体失效）。
 CONFIRM_DIM = "import_confirm"
 
+# 批 3-2b：导入时**就地修改**的字段留痕（另一独立 dim，与确认留痕互不覆盖）。
+# 为什么需要：sheet3「在库」行的文本字段（购方 / 经办人分摊 / 案号…）在导入时被改过后，
+# 库内**零落点**（收款走 A10 落 collection，文本不写任何表）→「导入后」模式从
+# raw_ledger（原文镜表）重建时会**无声显示旧值**，用户会以为改动丢了。
+# 留痕只记「改了哪些字段」，不记新值 —— 镜表=原文的铁律不破坏，回写仍走
+# `review_writeback.apply_edit`（批 3 落点）。
+EDIT_DIM = "import_edit"
+
 # 旧页写入的维度（读取时作为回退来源，批 4 删旧页后仍保留兼容历史数据）
 _LEGACY_DIMS = ("merged", "handler", "received")
 
@@ -111,3 +119,59 @@ def load_confirmations(period: str, conn=None) -> Dict[str, str]:
         if no not in out:
             out[no] = "；".join(p for p in parts if p)
     return out
+
+
+# ---------------------------------------------------------------------------
+# 批 3-2b：导入时就地修改的字段留痕（dim=import_edit）
+# 结构与「确认」留痕完全同构：`[{invoice_no, note=字段列表}, ...]`，
+# 例如 note="购方、案号"。同票多来源修改（发票行 + 应收账款行）由调用方合并去重。
+# 无 legacy 维度 —— 本 dim 是全新引入，不需要回退。
+# ---------------------------------------------------------------------------
+
+def clear_edit_hints(conn, period: str) -> int:
+    """清掉该账期 `import_edit` 维度的修改留痕；返回删除条数。
+
+    只删自己的 dim —— 确认留痕（`import_confirm`）与旧页人工备注（`merged`）绝不动。
+    """
+    cur = conn.execute(
+        "DELETE FROM anomaly_note WHERE period=? AND dim=?", (period, EDIT_DIM))
+    return cur.rowcount or 0
+
+
+def save_edit_hints(conn, period: str, items: Optional[Iterable[Dict]]) -> int:
+    """把导入时就地修改过的行写进 `anomaly_note`（调用方保证同一事务）。
+
+    items: `[{"invoice_no": str, "note": "购方、案号"}, ...]`；票号或字段列表为空的行跳过。
+    同票同账期靠主键 `INSERT OR REPLACE` 幂等。返回写入条数。
+    """
+    n = 0
+    for it in items or []:
+        no = (it.get("invoice_no") or "").strip()
+        note = (it.get("note") or "").strip()
+        if not no or not note:
+            continue
+        conn.execute(
+            "INSERT OR REPLACE INTO anomaly_note "
+            "(invoice_no, dim, period, note, confirmed_at) "
+            "VALUES (?,?,?,?, datetime('now','localtime'))",
+            (no, EDIT_DIM, period, note),
+        )
+        n += 1
+    return n
+
+
+def load_edit_hints(period: str, conn=None) -> Dict[str, str]:
+    """某账期「导入时修改过字段」的发票号 → 字段列表（如 `"购方、案号"`）。"""
+    own = conn is None
+    if own:
+        conn = get_conn()
+    try:
+        rows = conn.execute(
+            "SELECT invoice_no, note FROM anomaly_note WHERE period=? AND dim=?",
+            (period, EDIT_DIM),
+        ).fetchall()
+    finally:
+        if own:
+            conn.close()
+    return {(r["invoice_no"] or "").strip(): (r["note"] or "")
+            for r in rows if (r["invoice_no"] or "").strip()}

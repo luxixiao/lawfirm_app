@@ -24,6 +24,11 @@ B) 写侧接线 `commit_ledger_import`
 C) 读侧 `rebuild_period_data`
    - `confirmations` 随 data 带出（供 post 模式压制已确认疑问）
    - 无 active 台账批次 → 空字典（骨架字段齐全，不抛异常）
+D) 批 3-2b：修改字段留痕（dim=`import_edit`，与确认留痕同构）
+   - save/load 往返；空票号/空字段列表跳过；幂等
+   - 与 `import_confirm` dim 并存互不覆盖；`clear_edit_hints` 只清自己
+   - `commit_ledger_import` 同事务写 + 覆盖式重导先清后写；返回 `edit_hint_count`
+   - `rebuild_period_data` 带出 `edit_hints`
 """
 import sqlite3
 import sys
@@ -241,6 +246,69 @@ def main() -> int:
           all(k in rd0 for k in ("invoices", "deferred", "prepayments", "problems",
                                  "sheet_totals", "sheet12_total", "backfills",
                                  "confirmations")))
+
+    # ============================================================ D) 批 3-2b：修改字段留痕
+    P4 = "2025-06"
+    conn.execute("INSERT INTO invoice (invoice_no, invoice_date, buyer, total_amount, source) "
+                 "VALUES ('S6', '2025-06-10', '销项丙', 100.0, 'import')")
+    conn.commit()
+    n = IC.save_edit_hints(proxy, P4, [
+        {"invoice_no": "E1", "note": "购方、案号"},
+        {"invoice_no": "E2", "note": "经办人分摊"},
+        {"invoice_no": "", "note": "空票号应跳过"},
+        {"invoice_no": "E3", "note": ""},
+    ])
+    check("D1 save_edit_hints：写入 2 条（空票号/空字段列表跳过）", n == 2, str(n))
+    check("D2 load_edit_hints：票号 → 字段列表",
+          IC.load_edit_hints(P4, proxy) == {"E1": "购方、案号", "E2": "经办人分摊"},
+          str(IC.load_edit_hints(P4, proxy)))
+    check("D3 save_edit_hints：同票幂等（INSERT OR REPLACE）",
+          IC.save_edit_hints(proxy, P4, [{"invoice_no": "E1", "note": "购方"}]) == 1
+          and IC.load_edit_hints(P4, proxy).get("E1") == "购方")
+
+    # 与确认留痕互不覆盖：同账期两条 dim 并存，clear 各自只清自己。
+    # （注意 `_dims` 是 {票号: dim} 字典，同票两 dim 会互相顶掉 —— 这里用 (票号, dim) 二元组。）
+    IC.save_confirmations(proxy, P4, [{"invoice_no": "E1", "note": "无经办人"}])
+    rows4 = {(r["invoice_no"], r["dim"]) for r in conn.execute(
+        "SELECT invoice_no, dim FROM anomaly_note WHERE period=?", (P4,))}
+    check("D4 两 dim 并存：互不覆盖",
+          {d for _, d in rows4} == {IC.CONFIRM_DIM, IC.EDIT_DIM}
+          and ("E1", IC.CONFIRM_DIM) in rows4 and ("E1", IC.EDIT_DIM) in rows4,
+          str(sorted(rows4)))
+    IC.clear_edit_hints(proxy, P4)
+    check("D5 clear_edit_hints：只清 import_edit（确认留痕原样保留）",
+          IC.load_edit_hints(P4, proxy) == {}
+          and IC.load_confirmations(P4, proxy).get("E1") == "无经办人", str(_dims(P4)))
+
+    # commit 同事务写 + 读侧带出（commit 的「先清本账期」会顺带清掉上面手工造的
+    # E1/E2 import_edit 行 —— 同 dim 整体失效，属预期；E1 的 import_confirm 同样被清，
+    # 故本段不再回看 D4/D5 的行）。
+    d4 = {
+        "invoices": [], "deferred": [], "prepayments": [], "problems": [],
+        "sheet_totals": {"sheet1": 100.0}, "sheet12_total": 100.0,
+        "edit_hints": [{"invoice_no": "F1", "note": "购方、经办人分摊"}],
+    }
+    r4 = imp.commit_ledger_import(d4, P4, "2025.6台账.xlsx")
+    check("D6 commit：返回 edit_hint_count", r4.get("edit_hint_count") == 1,
+          str(r4.get("edit_hint_count")))
+    check("D7 commit：留痕落库",
+          IC.load_edit_hints(P4, proxy) == {"F1": "购方、经办人分摊"},
+          str(IC.load_edit_hints(P4, proxy)))
+    rd4 = RB.rebuild_period_data(P4, proxy)
+    check("D8 rebuild：edit_hints 随 data 带出（供 post 页原因列标注）",
+          rd4.get("edit_hints") == {"F1": "购方、经办人分摊"}, str(rd4.get("edit_hints")))
+
+    # 覆盖式重导同账期 → 旧修改提示对新一批已不适用，必须失效（先清后写）
+    r4b = imp.commit_ledger_import({**d4, "edit_hints": []}, P4, "2025.6台账.xlsx")
+    check("D9 覆盖式重导：先清后写（旧留痕失效）",
+          IC.load_edit_hints(P4, proxy) == {}, str(IC.load_edit_hints(P4, proxy)))
+    check("D9 覆盖式重导：edit_hint_count = 0",
+          r4b.get("edit_hint_count") == 0, str(r4b.get("edit_hint_count")))
+
+    rd0b = RB.rebuild_period_data("2099-02", proxy)
+    check("D10 rebuild：无 active 批次 → edit_hints 空字典（骨架字段齐全）",
+          rd0b.get("edit_hints") == {} and "edit_hints" in rd0b,
+          str(rd0b.get("edit_hints")))
 
     # ============================================================ 汇总
     print(f"\n{OK}/{OK + len(FAILS)} passed")

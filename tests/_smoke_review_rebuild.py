@@ -21,6 +21,9 @@ D. 批 3-1「导入时确认」留痕：导入那一刻点过「确认」的票�
    **逐票判定**（同类的未确认行仍留「待确认」）；疑问原文照旧展示，仅追加「导入时已确认」标注；
    **pre 模式不读留痕**（确认是实时的 `_confirmed` 下标；读留痕会让「覆盖式重导同账期」时
    上一批的旧确认提前吞掉本批的疑问）。引擎/写库/读库三层的完整覆盖见 `test_import_confirm.py`。
+D+. 批 3-2b「导入时就地修改」留痕（独立 dim=import_edit）：sheet3 在库行的文本修改库内
+   零落点 → post 原因列标注「导入时已修改：字段…」（无疑问行也标注）；pre 模式不读留痕；
+   `_merged_data` 只记**真改了**的字段，「待补录」行跳过（修改随补录条目落库，不重复提示）。
 E. 批 3-2「经办人分摊」取**库侧真值**：`raw_ledger` 只存台账原文 ⇒ 导入时人工改过的分摊
    重解析会在 post 退回旧值/空值。真值在 `charge_detail`，且**只认本台账批次**（可证明是
    本次导入写入的），并要求与行金额勾稽才采用。含 4 条反向探针：非本批次不取 / 不勾稽不取 /
@@ -49,8 +52,8 @@ from app.importer.ledger_import import (  # noqa: E402
 )
 from app.importer.parse_remark import parse_remark  # noqa: E402
 from app.ui.unified_import_dialog import (  # noqa: E402
-    FILTER_ALL, REASON_BACKFILL, REASON_IMPORT_CONFIRMED, REASON_NO_DOUBT,
-    UnifiedImportDialog,
+    FILTER_ALL, REASON_BACKFILL, REASON_IMPORT_CONFIRMED, REASON_IMPORT_EDIT,
+    REASON_NO_DOUBT, UnifiedImportDialog,
 )
 
 results = []
@@ -493,6 +496,101 @@ check("D5 _merged_data：确认过的行 → confirmations 一条（票号 + 原
       f"{_md['confirmations']}")
 check("D5 _merged_data：**未**确认的行不进留痕",
       all(c["invoice_no"] != "Q4" for c in _md["confirmations"]))
+
+# ==================================================================== D+) 批 3-2b 导入时就地修改的字段留痕
+# 背景：sheet3「已在库」行的文本修改（购方/经办人分摊/案号）库内**零落点** → post 从
+# raw_ledger（原文镜表）重建会**无声显示旧值**。留痕（anomaly_note 独立 dim=import_edit）
+# 让 post 原因列标注「导入时已修改：字段…」；pre 模式不读留痕（修改实时显示在右栏）。
+_conn3 = _db.get_conn()
+_IC.save_edit_hints(_conn3, "2025-02", [{"invoice_no": "Q2", "note": "购方、案号"}])
+_IC.save_edit_hints(_conn3, "2025-01", [{"invoice_no": "P6", "note": "购方、案号"}])
+_conn3.commit()
+_conn3.close()
+
+_d3 = RB.rebuild_period_data("2025-02")
+check("D6 读侧：edit_hints 随 rebuild 带出",
+      _d3["edit_hints"] == {"Q2": "购方、案号"}, f"{_d3['edit_hints']}")
+
+# pre 模式：不读留痕 —— 修改实时显示在右栏；若 pre 也读，「覆盖式重导同账期」时
+# 上一批的旧提示会提前混进本批（与确认留痕同款约束）。
+_pre4 = UnifiedImportDialog(_d3, "2025-02", STAFF)
+check("D7 pre 模式：不读编辑留痕（import_edit_hint 恒空）",
+      all(not r.get("import_edit_hint") for r in _pre4._rows))
+
+# post 模式：原因列标注「导入时已修改：字段…」（无疑问的高置信行也标注 —— 高置信 ≠ 没改过）
+_dlg3 = UnifiedImportDialog(mode="post")
+_dlg3.load_period("2025-02")
+_q2 = next(r for r in _dlg3._rows if _row_no_of(r) == "Q2")
+check("D8 post 模式：行 dict 带 import_edit_hint",
+      _q2.get("import_edit_hint") == "购方、案号", f"{_q2.get('import_edit_hint')!r}")
+_r_q2 = _dlg3._row_field(_q2, "reason")
+check("D8 post 模式：原因列追加「导入时已修改：…」（无疑问行同样标注）",
+      REASON_IMPORT_EDIT in _r_q2 and "购方、案号" in _r_q2, _r_q2)
+check("D8 post 模式：未修改的行不加标注",
+      REASON_IMPORT_EDIT not in _dlg3._row_field(
+          next(r for r in _dlg3._rows if _row_no_of(r) == "Q3"), "reason"))
+
+# post 模式 sheet3「已在库」行同样标注（3-2b 的主场景：文本修改库内零落点）
+_dlg1b = UnifiedImportDialog(mode="post")
+_dlg1b.load_period("2025-01")
+_p6 = next(r for r in _dlg1b._rows if _row_no_of(r) == "P6")
+check("D9 post 模式：sheet3 已在库行同样标注（主场景）",
+      _p6.get("import_edit_hint") == "购方、案号"
+      and REASON_IMPORT_EDIT in _dlg1b._row_field(_p6, "reason"),
+      f"{_p6.get('import_edit_hint')!r}/{_dlg1b._row_field(_p6, 'reason')}")
+
+# --- _merged_data：右侧就地编辑 → 收集成 edit_hints（随台账同一事务落库）
+_o_q2 = _by_no(_d3["invoices"])["Q2"]
+_ed = {
+    "invoice_date": _o_q2["invoice_date"],
+    "total_amount": _o_q2["total_amount"],
+    "handlers": list(_o_q2["handlers"]),
+    "handler_text": _o_q2.get("handler_text") or "",
+    "split_receipts": list(_o_q2.get("split_receipts") or []),
+    "buyer": "改过的购方",
+    "case_no": _o_q2.get("case_no"),
+}
+check("D10 前置：ed 相对原行**只有** buyer 变了（防止 fixture 空转）",
+      U.UnifiedImportDialog._edit_changed_fields(_o_q2, _ed) == ["购方"],
+      f"{U.UnifiedImportDialog._edit_changed_fields(_o_q2, _ed)}")
+_pre5 = UnifiedImportDialog(_d3, "2025-02", STAFF)
+_q2r = next(r for r in _pre5._rows if _row_no_of(r) == "Q2")
+_pre5._inv_edits[_q2r["inv_idx"]] = dict(_ed)
+_md2 = _pre5._merged_data()
+check("D10 _merged_data：发票行编辑 → edit_hints 一条（只记改了的字段）",
+      _md2["edit_hints"] == [{"invoice_no": "Q2", "note": "购方"}], f"{_md2['edit_hints']}")
+
+# sheet3 在库行编辑同样收集；「待补录」行（修改随补录条目落库）**跳过** —— 否则重复提示
+_d1 = RB.rebuild_period_data("2025-01")
+_pre6 = UnifiedImportDialog(_d1, "2025-01", STAFF)
+_p6r = next(r for r in _pre6._rows if _row_no_of(r) == "P6")
+_p5r = next(r for r in _pre6._rows if _row_no_of(r) == "P5")
+check("D11 前置：P5 确为待补录行、P6 已在库（fixture 语义锁定）",
+      _d1["deferred"][_p5r["d_index"]].get("need_backfill") is True
+      and _d1["deferred"][_p6r["d_index"]].get("need_backfill") is False)
+
+def _ed_of(od, buyer):
+    return {
+        "invoice_date": od["invoice_date"],
+        "total_amount": od["total_amount"],
+        "handlers": list(od["handlers"]),
+        "handler_text": od.get("handler_text") or "",
+        "split_receipts": list(od.get("split_receipts") or []),
+        "buyer": buyer,
+        "case_no": od.get("case_no"),
+    }
+
+_od6 = _d1["deferred"][_p6r["d_index"]]
+_p5o = _d1["deferred"][_p5r["d_index"]]
+_pre6._deferred_edits[_p6r["d_index"]] = _ed_of(_od6, "改过的购方")
+_pre6._deferred_edits[_p5r["d_index"]] = _ed_of(_p5o, "待补录改购方")
+_md3 = _pre6._merged_data()
+check("D11 _merged_data：sheet3 在库行编辑 → edit_hints（主场景）",
+      any(h["invoice_no"] == "P6" and "购方" in h["note"] for h in _md3["edit_hints"]),
+      f"{_md3['edit_hints']}")
+check("D11 _merged_data：待补录行编辑**不进** edit_hints（修改随补录条目落库）",
+      all(h["invoice_no"] != "P5" for h in _md3["edit_hints"]),
+      f"{_md3['edit_hints']}")
 
 # ==================================================================== E) 批 3-2 分摊取库侧真值
 # 背景：`raw_ledger` **刻意**只存台账原文（`importer._insert_raw_ledger` 的口径：好让
