@@ -594,6 +594,16 @@ import_batch_id=本批)`。新增 `review_rebuild._batch_handlers(conn, batch_id
 > ② 「不吃 has_split」是代码里的**缺席**（没有分支可关），反向探针探不了它 ——
 > 由 12-8 正向断言覆盖；探针改为探「confirmed 压制」这个真实分支（P5）。
 
+### 13.6 提交
+
+`5149ca6`（6 文件 +498/−53：`review_compare.py` / `import_confidence.py` /
+`unified_import_dialog.py` / `_smoke_unified_import.py` / `_smoke_red_backfill.py` / 本文档）
+→ 分支 ref 照旧未推进（commit stderr 的「已自动推送 ✅」仍是假消息）→ 修引用（完整 40 位
+OID + `pack-refs --all`）→ 走 skill `github-api-push` 的 `push_commit.py`
+（13 对象：1 commit / 6 tree / 6 blob，全部 201）
+→ `VERIFY_REMOTE MATCH True`、`AHEAD_BEHIND 0 0`、父数 1。
+（本批 docs 与代码**同一次提交** —— §12.8 的两段式补记不再需要，提交号已验后写入本节。）
+
 
 
 
