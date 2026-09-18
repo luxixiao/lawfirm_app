@@ -665,6 +665,63 @@ skill 踩坑 #26）。
 → skill `github-api-push` 的 `push_commit.py`（13 对象：1 commit / 6 tree / 6 blob，全 201）
 → `VERIFY_REMOTE MATCH True`、`AHEAD_BEHIND 0 0`、父数 1。
 
+## 15. 批 4 落地（2026-09-18）：`ImportReviewView` 换页 + 删旧页 —— 统一收口
 
+至此**入库前后是同一套实现**：`page_post = UnifiedImportDialog(parent, mode="post")`，
+`page_pre = UnifiedImportDialog(parent)`。1b / 3-1 / 3-2 / 批 2 / 3-3 五批交付的能力
+自此在界面上全部可见。
 
+### 15.1 换页接线（`import_review_view.py`）
 
+- `self.page_post = UnifiedImportDialog(parent=self, mode="post")`；`_reload_periods` /
+  `_on_period_changed` 的 `set_period(cur)` 全部换成 `load_period(cur)`。
+- **post 页「关闭」接线**：post 的「关闭」按钮走 `reject()` → `cancelled` →
+  宿主 `_on_cancelled`。队列未跑时该方法的语义正是「清空队列态 + 回导入后 + navigate_back」
+  ⇒ 关闭 = 返回导入页（旧 ReviewPostView 没有关闭按钮，这是换页后的新行为，配了 7b 断言）。
+- `refresh()` / `showEvent` 契约不变：每次显示 `_set_mode("post")` → `load_period` 重读库。
+
+### 15.2 删除清单
+
+- **`app/ui/review_post_view.py` 整删**（423 行）：融合比对单表 + 筛选胶囊 +
+  `AnomalyConfirmDialog`。⚠️ **「标记已确认异常」写入能力（`anomaly_note` dim='merged'）
+  随之退役** —— 这是刻意收口：批 2 把差异判进导入前四态、批 1a 硬拦要求入库前清零、
+  批 3-1 的 `dim='import_confirm'` 留痕取代了"入库后补标记"；旧 merged 数据的**读取回退链**
+  （`load_confirmations`：本 dim 优先 → merged → handler/received）原样保留，历史标记仍生效。
+- **`review_compare.py` 只留批 2 共用核心**（453 → 227 行）：删
+  `build_review_rows` / `latest_batch` / `_derive_raw` / `_raw_side` / `load_confirmed_notes`
+  及 `sqlite3` / `raw_ledger` / `parse_handler` / `parse_remark` 四个 import；
+  docstring 重写为「台账 ⇄ 库比对共用核心」。
+- `import_confidence.py` 一处注释同步改指向 `lib_diff`。
+
+### 15.3 测试迁移（文件数不变，`EXPECTED_FILES` 未动）
+
+| 文件 | 改法 |
+|---|---|
+| `test_review_compare.py` | **整文件重写**：13 节 `build_review_rows` 场景移植为**直测共用核心**（`lib_diff` 8 场景 + `build_lib_context` 8 + `lib_recv_totals` 2 + `_recv_sides` 3，共 23 断言）；「仅源有/仅库有/已确认异常」不再重复覆盖（批 2 四态 + `test_import_confirm` 已盖） |
+| `test_deferred_sheet3.py` | H/H-2 弃用 `build_review_rows`，改「镜表行存在 + `build_lib_context` 库侧缺失/补录后出缺 + `deferred_sheet3_nos`」 |
+| `_smoke_import_review.py` | 第 1/6/7 节换新页断言（6 胶囊、默认待补录、`load_period("")` 空安全、`btn_writeback/btn_restore` 初始禁用、`WritebackDialog` 构造）；**新增 7b**：post「关闭」→ navigate_back；深交互断言（按钮按行解锁/还原门闸）已在 `_smoke_review_rebuild.py` C 段，不重复 |
+| `_smoke_import_queue.py` | 删 RP 引用；`_fake_load` 类级桩加 `mode=="post"` 早退（否则 post 页 `load_period` 也计数，「只载入队首一次」红）；补 `_uid/_RR get_conn` 桩 |
+| `_smoke_data_clear.py` | 桩从 `RC.build_review_rows` 换成 `RR.rebuild_period_data`（喂假发票行，形状对齐 `review_rebuild` 产物）+ `_staff_names_from_db` 方法桩；断言前 `_show_all`（默认筛选=待补录）；空账期统计断言改 `"高置信 0"` |
+
+**⚠️ 新坑（换页类改动的通用问题）**：`page_post` 也是 `UnifiedImportDialog` ⇒ 凡类级
+打桩（如 `_fake_load`）或按属性断言（`chips`/`lbl_stat` 文案）的旧测试都会**同时命中两页**。
+另一个必须记住的点：`load_period` 在 `load_data` **之前**还有两次查库
+（`review_rebuild.get_conn` 取批次 + `_uid.get_conn` 取花名册，均为模块级
+`from app.db import get_conn`）⇒ 构造 `ImportReviewView` 的冒烟**这两个也要桩**，
+否则打到真实 `data/lawfirm.db`。
+
+### 15.4 反向校验（`rev_check.py` 5 探针，全部如实变红）
+
+1. 换页本体退回 `mode="pre"` → 「导入后页 mode='post'」红 1；
+2. `_reload_periods` 不驱动 `load_period` → data_clear A1/A3 红 2；
+3. 切账期不重载 → data_clear A2 红 1；
+4. post「关闭」不接 `cancelled` → 7b 红 1；
+5. `lib_diff` 金额比对关掉 → 重写后的单测「金额不一致」红 2（证明不是空转）。
+
+### 15.5 提交
+
+`35dcf9b`（9 文件 +313/−964；本批 **`git add -A` 差点把工作树里 C# 重写工作流的未跟踪
+文件扫进提交 —— 已 `git reset` 后按 9 个路径重新暂存提交**；悬空的错误提交对象 `a30758a`
+未被推送、未被引用，无害）→ 分支 ref 照旧未推进 → 完整 OID 直写 loose ref + `pack-refs`
+→ skill `github-api-push` 的 `push_commit.py` → `VERIFY_REMOTE MATCH True`、
+`AHEAD_BEHIND 0 0`、父数 1。
