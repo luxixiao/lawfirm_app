@@ -144,8 +144,11 @@ def _show_all(dlg):
 
     阶段 4-2 起默认筛选 = 待补录；凡是要按 `_rows` 下标选行、或断言「已处理完的行」
     的用例，都必须先切「全部」，否则默认视图里根本没有该行。
+
+    阶段 5 起筛选栏插入了「已补录」（待确认与已确认之间）→ 「全部」的下标从 5 变 6，
+    故一律用 `U.FILTER_ALL`，不要再写死数字。
     """
-    dlg._grp.button(5).setChecked(True)
+    dlg._grp.button(U.FILTER_ALL).setChecked(True)
     dlg._render()
 
 
@@ -200,6 +203,11 @@ check("阶段4-2：状态含 1 高置信 / 2 待确认 / 1 待补录（应收账
 check("阶段4-2：待补录排最前（最紧急、最前）", st.index("待补录") == 0, f"got={st}")
 check("阶段4-2：筛选栏首位 = 待补录、第二位 = 待确认（C 甲）",
       U.FILTERS[0] == "待补录" and U.FILTERS[1] == "待确认", str(U.FILTERS))
+check("阶段5：新增「已补录」夹在待确认与已确认之间（A 甲）",
+      U.FILTERS[2] == "已补录" and U.FILTERS[3] == "已确认" and U.FILTERS[4] == "高置信",
+      str(U.FILTERS))
+check("阶段5：FILTER_ALL 指向「全部」（不再写死下标）",
+      U.FILTERS[U.FILTER_ALL] == "全部", f"idx={U.FILTER_ALL}")
 
 # ---- A2：右栏「原因 / 疑问」三态 ----
 check("A2：票号不在库 → 需补录原票",
@@ -221,16 +229,20 @@ check("阶段4-2：默认筛选=待补录，1 行", dlg.table.rowCount() == 1,
       f"got={dlg.table.rowCount()}")
 check("阶段4-2：默认勾选的是首位（待补录）", dlg._grp.checkedId() == 0,
       f"got={dlg._grp.checkedId()}")
-dlg._grp.button(5).setChecked(True)  # 全部
+dlg._grp.button(U.FILTER_ALL).setChecked(True)  # 全部
 dlg._render()
 check("切「全部」= 4 行", dlg.table.rowCount() == 4, f"got={dlg.table.rowCount()}")
-dlg._grp.button(1).setChecked(True)  # 待确认
+dlg._grp.button(U.FILTERS.index("待确认")).setChecked(True)
 dlg._render()
 check("切「待确认」= 2 行", dlg.table.rowCount() == 2, f"got={dlg.table.rowCount()}")
-dlg._grp.button(2).setChecked(True)  # 已确认
+dlg._grp.button(U.FILTERS.index("已补录")).setChecked(True)
+dlg._render()
+check("阶段5：切「已补录」= 0 行（本次未填过补录）",
+      dlg.table.rowCount() == 0, f"got={dlg.table.rowCount()}")
+dlg._grp.button(U.FILTERS.index("已确认")).setChecked(True)  # 阶段5：已确认由 2 移到 3
 dlg._render()
 check("切「已确认」= 0 行（尚未修正/确认）", dlg.table.rowCount() == 0, f"got={dlg.table.rowCount()}")
-dlg._grp.button(3).setChecked(True)  # 高置信
+dlg._grp.button(U.FILTERS.index("高置信")).setChecked(True)  # 阶段5：高置信由 3 移到 4
 dlg._render()
 check("切「高置信」= 1 行", dlg.table.rowCount() == 1, f"got={dlg.table.rowCount()}")
 
@@ -273,7 +285,7 @@ check("sheet12_total 同步重算", abs(dlg._work["sheet12_total"] - 6000.0) < 0
       f"got={dlg._work['sheet12_total']}")
 
 # ---------------------------------------------------------------- 3) 右侧就地编辑已存在发票 → 各经办人已收 / 收款认定 同步
-dlg._grp.button(5).setChecked(True)  # 全部
+dlg._grp.button(U.FILTER_ALL).setChecked(True)  # 全部
 dlg._render()
 target = next(r for r in dlg._rows if r["kind"] == "invoice" and r["inv_idx"] == 0)
 dlg.table.selectRow(dlg._rows.index(target))   # 触发 _load_right → set_invoice
@@ -329,7 +341,7 @@ dlg2 = UnifiedImportDialog(data2, "2025-01", STAFF)
 dlg2.show()
 dlg2._validate = lambda d: None
 # 跳过发票问题行（4-2 后默认筛选 = 待补录，第 0 行已不是问题行 → 先切「全部」按类型定位）
-dlg2._grp.button(5).setChecked(True)  # 全部
+dlg2._grp.button(U.FILTER_ALL).setChecked(True)  # 全部
 dlg2._render()
 inv_prob = next(r for r in dlg2._rows
                 if r["kind"] == "problem" and r["problem"]["kind"] == "invoice")
@@ -588,8 +600,8 @@ check("A3：右键面板为发票表单且可编辑（非只读）",
       a.fix_panel.inv_box.isVisible() and not a.fix_panel.inv_date.isReadOnly())
 check("A3：应收账款行显示「保存修改」；待补录行暂不显示「确认」（阶段 4-2）",
       a.btn_save.isVisible() and not a.btn_confirm_row.isVisible())
-check("A1：汇总行显示「需补录原票 N 张」",
-      "应收账款需补录原票 1 张" in a.lbl_summary.text(), a.lbl_summary.text())
+check("A1：汇总行显示「需补录原票 N 张」并按来源拆分（阶段 5）",
+      "需补录原票 1 张（应收账款 1 · 红字引用 0）" in a.lbl_summary.text(), a.lbl_summary.text())
 
 # ---- 10b) 就地修改 → 回写 data["deferred"]；需补录行不置 receipt_confirmed ----
 a.fix_panel.htable.item(0, 2).setText("3,000.00")
@@ -896,7 +908,7 @@ check("阶段4-2：补录后原因列 = 已补录，请确认收款",
       b1._row_field(rb, "reason") == U.REASON_BACKFILLED,
       b1._row_field(rb, "reason"))
 check("B2h：补录后不再计入「需补录原票」计数",
-      "应收账款需补录原票" not in b1.lbl_summary.text(), b1.lbl_summary.text())
+      "需补录原票" not in b1.lbl_summary.text(), b1.lbl_summary.text())
 check("阶段4-2：底部出现「已补录待确认收款 1 张」",
       "已补录待确认收款 1 张" in b1.lbl_summary.text(), b1.lbl_summary.text())
 check("阶段4-2：底部出现「本次已填补录 1 张」",
@@ -965,8 +977,8 @@ check("B2c：取消后按钮仍为「补录原票」", b2.btn_backfill.text() ==
       b2.btn_backfill.text())
 check("B2c：取消后底部无「已填补录」计数",
       "已填补录" not in b2.lbl_summary.text(), b2.lbl_summary.text())
-check("B2c：取消后仍计入「需补录原票 1 张」",
-      "应收账款需补录原票 1 张" in b2.lbl_summary.text(), b2.lbl_summary.text())
+check("B2c：取消后仍计入「需补录原票 1 张」（来源拆分：应收账款 1）",
+      "需补录原票 1 张（应收账款 1 · 红字引用 0）" in b2.lbl_summary.text(), b2.lbl_summary.text())
 check("B2c：取消 → merged 无 backfills", not (b2._merged_data().get("backfills")))
 
 # ---- 11d) 票已在库且未填过 → 只读「查看原票」（不收集） ----

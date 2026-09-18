@@ -119,7 +119,7 @@ w.reapply_metrics()
 check("回标准档行高复原 34", hdr.height() == 34, f"got={hdr.height()}")
 
 # ------------------------------------------------- 5) 表格行高派生（统一导入对话框）
-from app.ui.unified_import_dialog import UnifiedImportDialog  # noqa: E402
+from app.ui.unified_import_dialog import FILTER_ALL, UnifiedImportDialog  # noqa: E402
 
 data = {
     "period": "2025-01",
@@ -142,7 +142,8 @@ scale.set_step(2)
 dlg = UnifiedImportDialog(data, "2025-01", ["周立生"])
 # 阶段 4-2 起默认筛选 = 待补录，而本用例只有普通发票行（待确认）→ 不切「全部」表格为空、
 # rowHeight(0) 会返回 0。切「全部」后行高才可测。
-dlg._grp.button(5).setChecked(True)
+# 阶段 5 起筛选栏插入「已补录」→「全部」下标后移，故用 FILTER_ALL 而非写死数字。
+dlg._grp.button(FILTER_ALL).setChecked(True)
 dlg._render()
 check("标准档表格行高 34", dlg.table.rowHeight(0) == 34, f"got={dlg.table.rowHeight(0)}")
 scale.set_step(4)
