@@ -529,7 +529,18 @@ import_batch_id=本批)`。新增 `review_rebuild._batch_handlers(conn, batch_id
 
 ### 12.8 提交
 
-`<待补>`（2 文件 +161/−1）。
+`06a72dc`（3 文件 +242/−2：`app/engine/review_rebuild.py` / `tests/_smoke_review_rebuild.py` / 本文档）
+→ 分支 ref 照旧未推进（`git commit` 打印的「已自动推送 ✅」仍是**假消息**）→ 修引用 → 走 skill
+`github-api-push` 的 `push_commit.py`（9 对象：1 commit / 5 tree / 3 blob，全部 201）
+→ `VERIFY_REMOTE MATCH`、`AHEAD_BEHIND 0 0`、`HEAD_PARENTS` 父数 1。
+
+> 🆕 **本批新踩的坑（已补进 `github-api-push` skill 的踩坑清单 #25）**：
+> 修引用时把 loose ref 写成了**短 SHA**（`06a72dc`，7 位）。git 只认**完整 40 位 OID** ——
+> 于是 `git rev-parse HEAD` 返回**字面量 `HEAD`**、`git log` 空、`git status --short` 把整棵树
+> 显示成 `A `（"像要删库"的 unborn 假象）。**对象层与 reflog 全程无损**，重写完整 OID 即愈。
+> 判据：`git cat-file -p <sha>` + `rev-list --parents -n 1 <sha>` 能正常读出提交 ⇒ 只是引用写坏了。
+> **禁止**在此状态下 `reset --hard`。
+
 
 
 
