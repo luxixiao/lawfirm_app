@@ -21,6 +21,10 @@ D. 批 3-1「导入时确认」留痕：导入那一刻点过「确认」的票�
    **逐票判定**（同类的未确认行仍留「待确认」）；疑问原文照旧展示，仅追加「导入时已确认」标注；
    **pre 模式不读留痕**（确认是实时的 `_confirmed` 下标；读留痕会让「覆盖式重导同账期」时
    上一批的旧确认提前吞掉本批的疑问）。引擎/写库/读库三层的完整覆盖见 `test_import_confirm.py`。
+E. 批 3-2「经办人分摊」取**库侧真值**：`raw_ledger` 只存台账原文 ⇒ 导入时人工改过的分摊
+   重解析会在 post 退回旧值/空值。真值在 `charge_detail`，且**只认本台账批次**（可证明是
+   本次导入写入的），并要求与行金额勾稽才采用。含 4 条反向探针：非本批次不取 / 不勾稽不取 /
+   sheet3 行不取别的批次 / 无库值完整回退原文。**顺序依赖**：E 节必须在 B2 往返等价之后。
 
 运行：python tests/_smoke_review_rebuild.py   （需 QT_QPA_PLATFORM=offscreen）
 """
@@ -489,6 +493,92 @@ check("D5 _merged_data：确认过的行 → confirmations 一条（票号 + 原
       f"{_md['confirmations']}")
 check("D5 _merged_data：**未**确认的行不进留痕",
       all(c["invoice_no"] != "Q4" for c in _md["confirmations"]))
+
+# ==================================================================== E) 批 3-2 分摊取库侧真值
+# 背景：`raw_ledger` **刻意**只存台账原文（`importer._insert_raw_ledger` 的口径：好让
+# 「源 ⇄ 库」逐字对照）⇒ 导入时在复核页手工改过的分摊，导入后重解析原文只会拿回**旧值**；
+# 原文本就解析不出的问题行更是拿回**空值**（→ 界面重报「无经办人」等假待办）。
+# 真值在 `charge_detail`，且只有 `import_batch_id = 本台账批次` 的那批可证明是本次写入的。
+#
+# ⚠️ 本节必须在 B2「往返等价」**之后**跑：它会往 2025-01 的票上补 charge_detail，
+#    之后重建就不再与解析结果逐字段等价（那正是本节要证明的效果）。顺序不可调换。
+_conn3 = _db.get_conn()
+
+
+def _set_charge(no, rows, batch_id):
+    """把某票的 charge_detail 置为 rows（(姓名, 金额)），批次号可控 → 供反向探针造场景。"""
+    _conn3.execute("DELETE FROM charge_detail WHERE invoice_no=?", (no,))
+    for _nm, _amt in rows:
+        _conn3.execute(
+            "INSERT INTO charge_detail (invoice_no, person_name, billing_amount, source, "
+            "import_batch_id) VALUES (?,?,?,'import',?)", (no, _nm, _amt, batch_id))
+    _conn3.commit()
+
+
+# --- E1 主场景：P1 台账原文「周立生」，导入时人工改成「陈娟」（同额）
+_set_charge("P1", [("陈娟", 10000.0)], _batch_id)
+_d3 = RB.rebuild_period_data("2025-01")
+_p1 = _by_no(_d3["invoices"])["P1"]
+check("E1 分摊取库侧真值（人工修正后的值，不再是原文旧值）",
+      _p1["handlers"] == [("陈娟", 10000.0)], f"{_p1['handlers']}")
+check("E1 原文照旧保留在 handler_text（〔源填写〕不丢）",
+      _p1["handler_text"] == "周立生", f"{_p1['handler_text']!r}")
+check("E1 标记 handlers_from_lib=True（供「源 ⇄ 库」比对区分来源）",
+      _p1.get("handlers_from_lib") is True)
+check("E1 注入后仍与行金额勾稽（绝不引入「分摊合计≠价税合计」）",
+      abs(sum(a for _n, a in _p1["handlers"]) - _p1["total_amount"]) <= 0.01)
+check("E1 金额本就存的是修正值（镜表 amount_num = 修正后金额，不受本节影响）",
+      _p1["total_amount"] == 10000.0, f"{_p1['total_amount']}")
+
+# --- E2 端到端：post 界面「经办人分摊」列 = 库值 + 〔源填写〕原文
+_dlg3 = UnifiedImportDialog(mode="post")
+_dlg3.load_period("2025-01")
+_dlg3._grp.button(FILTER_ALL).setChecked(True)
+_dlg3._render()
+_r_p1 = next(r for r in _dlg3._rows if _row_no_of(r) == "P1")
+_txt_p1 = _dlg3._row_field(_r_p1, "handler")
+check("E2 post 界面：分摊列显示库值 + 〔源填写〕台账原文",
+      "陈娟" in _txt_p1 and "〔源填写〕" in _txt_p1 and "周立生" in _txt_p1, _txt_p1)
+
+# --- E3 反向探针①：charge_detail 属**别的批次** → 一律不采用（只认本批次）
+_set_charge("P1", [("陈娟", 10000.0)], _batch_id + 999)
+_p1b = _by_no(RB.rebuild_period_data("2025-01")["invoices"])["P1"]
+check("E3 反向：非本批次 charge_detail 不采用（回退原文解析）",
+      _p1b["handlers"] == [("周立生", 10000.0)]
+      and _p1b.get("handlers_from_lib") is False, f"{_p1b['handlers']}")
+
+# --- E4 反向探针②：本批次但合计≠行金额 → 不采用（宁可显示原文，也不造反疑问）
+_set_charge("P1", [("陈娟", 9999.0)], _batch_id)
+_d4 = RB.rebuild_period_data("2025-01")
+_p1c = _by_no(_d4["invoices"])["P1"]
+check("E4 反向：库值不勾稽 → 不采用（回退原文解析）",
+      _p1c["handlers"] == [("周立生", 10000.0)]
+      and _p1c.get("handlers_from_lib") is False, f"{_p1c['handlers']}")
+_dlg4 = UnifiedImportDialog(mode="post")
+_dlg4.load_period("2025-01")
+_dlg4._grp.button(FILTER_ALL).setChecked(True)
+_dlg4._render()
+_r_p1c = next(r for r in _dlg4._rows if _row_no_of(r) == "P1")
+check("E4 端到端：不采用时原因列也不出现「分摊合计≠价税合计」（假待办绝不新增）",
+      "分摊合计" not in _dlg4._row_field(_r_p1c, "reason"),
+      _dlg4._row_field(_r_p1c, "reason"))
+
+# --- E5 反向探针③：sheet3（应收账款）行不取**别的批次**的 charge_detail
+#     理由：镜表 sheet3 行是「应收账款视角」，别的批次的 charge_detail 是「发票视角」
+#     （批 0 §9.6：两者语义不同，不得混用）。真实 12 期库里 sheet3 198 行中有 121 行
+#     的票在库，但都不属本批次 → 一律回退原文解析。
+_set_charge("P6", [("陈娟", 5000.0)], _batch_id + 1)
+_d5 = RB.rebuild_period_data("2025-01")
+_p6 = _by_no(_d5["deferred"])["P6"]
+check("E5 反向：sheet3 行不取非本批次的 charge_detail（仍按原文解析）",
+      _p6["handlers"] == [("柳立中", 5000.0)]
+      and _p6.get("handlers_from_lib") is False, f"{_p6['handlers']}")
+
+# --- E6 反向探针④：没有 charge_detail 的票 → 完整回退原文（零扰动，回归保护）
+check("E6 反向：无库值 → 完全按原文解析（P2 不受本节影响）",
+      _by_no(_d5["invoices"])["P2"]["handlers"] == [("陈娟", -2000.0)]
+      and _by_no(_d5["invoices"])["P2"].get("handlers_from_lib") is False,
+      f"{_by_no(_d5['invoices'])['P2']['handlers']}")
 
 # 恢复真实库路径
 _db.DB_PATH = _real_db

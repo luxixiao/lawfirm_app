@@ -14,9 +14,26 @@
 | --- | --- | --- |
 | 日期 | `date_utils.normalize_date` | 同一函数 |
 | 经办人 | `parse_handler.parse_handler_column` | 同一函数（纯函数，不查库） |
+| 经办人（**库侧真值**） | `charge_detail`（**本台账批次**） | **批 3-2**：原文解析之外再取库值，见下节 |
 | 备注 | `parse_remark.parse_remark` | 同一函数 |
 | sheet 归属收款修正 | `ledger_import.apply_sheet_receipt_rule` | **同一函数**（批 1b 从内联代码抽出） |
 | sheet3 切分 | `ledger_import.split_deferred` | 同一函数 |
+
+### 批 3-2：「经办人分摊」以库侧真值为准（原文解析只作兜底）
+`raw_ledger` **刻意**只存台账原文（`importer._insert_raw_ledger` 的明确口径：镜表的
+经办人/对方/案号一律取原始行，好让「源 ⇄ 库」逐字对照）⇒ 导入时在复核页手工改过的
+分摊，导入后重解析原文只会拿回**旧值**；原文本就解析不出的问题行（人工补的经办人）
+更是拿回**空值**，界面上还会重新冒出一堆「无经办人 / 分摊合计≠价税合计」——post 模式
+没有「确认」按钮，这些就成了**点不掉的假待办**。真正入库的值在 `charge_detail`。
+
+口径见 `_batch_handlers`：**只认 `import_batch_id = 本台账批次`**（可证明是本次导入
+写入的、即人工修正后的值），并要求**与行金额勾稽**才采用。sheet3 行天然不满足
+（不建票、不写 `charge_detail`）→ 自动回退原文解析，与「应收账款视角不得混用别的
+账期的发票视角」（批 0 §9.6）一致。
+
+> ⚠️ 已知缺口（不属批 3-2）：**sheet3 行在导入时手工修正的分摊，库里没有任何落点**
+> （`commit_ledger_import` 对 sheet3 只写镜表），故 post 只能显示台账原文。
+> 要回显它得先新增落点（`raw_ledger` 加列 / `anomaly_note` 新 dim），归后续批次。
 
 与导入期**不等价**之处（已知、已接受，见批 0 §9.6）
 ----------------------------------------------------
@@ -119,10 +136,49 @@ def _collection_splits(conn, batch_id: int) -> Dict[str, list]:
     return out
 
 
+def _batch_handlers(conn, batch_id: int) -> Dict[str, List[Tuple[str, float]]]:
+    """本台账批次写入 `charge_detail` 的分摊 → `{发票号: [(姓名, 金额), ...]}`（批 3-2）。
+
+    **为什么需要它**：`raw_ledger` 刻意只存台账**原文**（见
+    `importer._insert_raw_ledger` 的口径：经办人/对方/案号一律取原始行，好让
+    「源 ⇄ 库」逐字对照）⇒ 导入时在复核页手工改过的分摊，重解析原文只会拿回旧值；
+    原文本就解析不出的问题行（人工补的经办人）更会拿回空值。真正入库的值在这里。
+
+    **只认 `import_batch_id = 本批次`**，不是「票号在库就取」：
+    - 本批次 ⟺ 本次台账导入把该行当**发票视角**建过账（`commit_ledger_import` 只对
+      sheet1/2 建票）⇒ 分摊与行金额必然勾稽（导入前校验过）；
+    - 跨批次/跨账期的 `charge_detail` 属**别的账期的发票视角**，而 sheet3 行是
+      **应收账款视角**（批 0 §9.6：两者语义不同，不得混用）→ 一律不取。
+      sheet3 行因此天然拿不到值、自动回退原文解析。
+
+    同名多行按姓名聚合（与导入侧 `_agg_h` 同口径）——`charge_detail` 本应
+    (票号, 姓名) 唯一，这是零成本防御，避免万一出现重复名时被判成「经办人重复」。
+    """
+    out: Dict[str, List[Tuple[str, float]]] = {}
+    try:
+        rows = conn.execute(
+            "SELECT invoice_no, person_name, billing_amount FROM charge_detail "
+            "WHERE import_batch_id=? ORDER BY id",
+            (batch_id,),
+        ).fetchall()
+    except Exception:  # noqa: BLE001 补不出库值不影响主表重建（回退原文解析）
+        return out
+    agg: Dict[str, Dict[str, float]] = {}
+    for r in rows:
+        no = (r["invoice_no"] or "").strip()
+        name = (r["person_name"] or "").strip()
+        if not no or not name:
+            continue
+        agg.setdefault(no, {})
+        agg[no][name] = agg[no].get(name, 0.0) + float(r["billing_amount"] or 0.0)
+    for no, by_name in agg.items():
+        out[no] = list(by_name.items())
+    return out
+
+
 def _has_remark_receipts(remark: Dict) -> bool:
     """备注侧能否推出收款（纯日期 或 逐期明细）。"""
     return bool(remark.get("pure_date") or remark.get("receipts"))
-
 
 def rebuild_period_data(period: str, conn=None, in_library: set | None = None) -> Dict:
     """某账期的 `raw_ledger` 镜像 → 与 `parse_ledger_file` 同构的 data。
@@ -168,6 +224,8 @@ def rebuild_period_data(period: str, conn=None, in_library: set | None = None) -
             (batch["id"],),
         ).fetchall()
         splits = _collection_splits(conn, batch["id"])
+        # 批 3-2：本次导入真正入库的分摊（手工修正后的值），供逐行覆盖原文解析结果
+        lib_handlers = _batch_handlers(conn, batch["id"])
 
         for r in rows:
             sheet = (r["sheet_key"] or "").strip()
@@ -195,6 +253,15 @@ def rebuild_period_data(period: str, conn=None, in_library: set | None = None) -
                 handlers = parse_handler_column(handler_text, total, no)
             except ImportError_:
                 handlers = []          # 与 deferred 派生同口径：解析失败按空分摊
+            # 批 3-2：上面是从**台账原文**解析出的「源侧」值；本次导入真正入库的分摊在
+            # `charge_detail`（硬拦保证入库 ≡ 全部处理完，故库侧才是最终真值）。
+            # 库侧优先，但带**勾稽门闸**：合计与行金额不符就不采用 —— 宁可照旧显示原文，
+            # 也绝不因此冒出「分摊合计≠价税合计」；post 没有「确认」按钮，
+            # 这种假疑问就是用户点不掉的假待办（批 1b 的老毛病，不能自己再引入一个）。
+            lib_h = lib_handlers.get(no)
+            handlers_from_lib = False
+            if lib_h and abs(sum(a for _n, a in lib_h) - total) <= 0.01:
+                handlers, handlers_from_lib = lib_h, True
             remark_raw = r["remark"] or ""
             try:
                 remark = parse_remark(remark_raw, default_year=year)
@@ -212,6 +279,9 @@ def rebuild_period_data(period: str, conn=None, in_library: set | None = None) -
                 "total_amount": total,
                 "handlers": handlers,
                 "handler_text": handler_text,
+                # 批 3-2：handlers 是否取自库侧（charge_detail 本批次）。
+                # 界面不直接显示，但「源 ⇄ 库」比对与测试要能区分这两个来源。
+                "handlers_from_lib": handlers_from_lib,
                 "remark_raw": remark_raw,
                 "remark": remark,
                 "case_no": r["case_no"] or "",
