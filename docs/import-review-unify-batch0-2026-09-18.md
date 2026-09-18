@@ -771,3 +771,34 @@ C(镜表回写) / D(加列) / E(查 change_log) 五案中拍板 **B**：只记�
 `a0c329b`（6 文件 +345/−12，按路径 add）→ 分支 ref 照旧未推进 → 完整 OID 直写 loose
 ref + `pack-refs` → `push_commit.py` API 推送 → `VERIFY_REMOTE MATCH True`、
 `AHEAD_BEHIND 0 0`、父数 1。
+
+## 17. bugfix（2026-09-18 晚）：sheet3 蓝字应收行补录误报「红字与蓝字原票不一致」（`c12dd66`）
+
+### 17.1 现象与根因
+
+用户报告：sheet3 引起需补录（如 `24332000000041172942`，**根本没有红字发票引用它**）时，
+补录弹窗保存会弹「补录的蓝字原票与引用它的红字发票不一致」—— 填什么都报。
+
+根因在 `_red_prefill_diff`（批 3-3/阶段 6-2 情形 b 的软校验取数）：它拿「**本行 ev**」当
+红字侧去比，而 **deferred（sheet3）行的 `r["ev"]` 恒为 None**（sheet3 行不进 evaluate）
+→ `red_orig_diff(None, None, 弹窗金额, 弹窗经办人)` 把红字侧当成 **0 元 / 无经办人** →
+「总金额」「经办人」两项必中。该软校验在 `_open_backfill` 里对所有补录弹窗**无条件挂载**，
+于是**所有 sheet3 行的补录都吃到假提示**。
+
+（补录页 `ManualEntryView._red_soft_check` 走**查库反查** `load_red_reference`，查不到
+红字返回 None —— 那条路径本来就对，不受影响。四态判定 `_red_consistency` 也有
+`kind != "invoice"` 早退，同样不受影响。）
+
+### 17.2 修复（用户口径：该提示只属于 sheet1/2 的补录）
+
+`_red_prefill_diff` 加 `is_red` 守卫：只有 `ev["is_red"]`（sheet1/2 销项里的红字行落
+「待补录」的场景）才做红⇄蓝一致性软比对；sheet3 行补录的 soft_check **结构保留但恒放行**。
+
+### 17.3 验证
+
+- `_smoke_red_backfill.py` 新增 **P2** 三断言：结构不变恒放行 / 随便填什么都不弹
+  「不一致」/ 对照组红字行 soft_check 仍生效（防一刀切关死）。全文件 **89/89**。
+- 全量 **35/35**；rev_check 1 探针（关掉 `is_red` 守卫）如实变红 2 条后复跑还原
+  （diff 恰好 2 文件）。
+- 提交 `c12dd66`（2 文件 +39）→ 直写 loose ref + `push_commit.py` → `MATCH True`、
+  `AHEAD_BEHIND 0 0`、父数 1。
