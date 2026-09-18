@@ -447,6 +447,9 @@ sheet3 行按现行 D1-甲口径本就不建票 / 不写 `charge_detail`，因�
 
 ### 11.7 提交
 
-（见本文件末尾补记）
+`43500e7`（7 文件 +645/−5）→ 分支 ref 照旧未推进（`git commit` 打印「已自动推送 ✅」仍是**假消息**：
+`ls-remote` 问远端还是 `870e63c`）→ Python 直写 loose ref + `pack-refs --all`
+→ 走 skill `github-api-push` 的 `push_commit.py`（15 对象：1 commit / 7 tree / 7 blob，全部 201）
+→ `VERIFY_REMOTE MATCH`、`AHEAD_BEHIND 0 0`、`HEAD_PARENTS` 父数 1。
 
 
