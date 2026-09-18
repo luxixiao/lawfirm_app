@@ -9,6 +9,9 @@
 与现有手工补录完全一致，不影响其他页面（收款表/结算/退款判定）。
 保存前校验经办人（至少一名 + 须在花名册），与导入写前校验共用 backfill.missing_handlers。
 
+红字票的「金额 / 经办人」取法统一走 `load_red_reference()`（阶段 6 起）：预填补录弹窗
+（`prefill_red_original`）与「红字 ⇄ 蓝字一致性比对」共用，避免两处 SQL 口径漂移。
+
 写入拆两层（阶段 3 B2a，参照 `raw_ledger.update_row(conn=None)` 既有模式）：
 - `build_backfill(conn, data)`  纯计算 + 校验 → 规范化 payload（不写库）；
 - `apply_backfill(conn, payload)` 用传入 conn 写入，**不 commit**（事务归调用方）。
@@ -25,11 +28,16 @@ from app.engine.backfill import HANDLER_WHITELIST, missing_handlers, norm_type, 
 from app.engine.raw_ledger import deferred_sheet3_invoices
 
 
-def prefill_red_original(conn, orig_no: str) -> Dict:
-    """源 A 预填：用引用该原票的红字发票（来自台账）信息预填。
+def load_red_reference(conn, orig_no: str) -> Dict | None:
+    """找引用原票 `orig_no` 的**红字发票** → 其信息；找不到返回 None。
 
-    原票尚未入库（正因缺失才补录），拿不到原票开票日期 → 留空让用户手填，
-    绝不能用红字发票的开票日期顶替。返回结构与源 B 预填一致。
+    **红字票的「金额 / 经办人」取法唯一口径**（阶段 6）：`prefill_red_original`
+    与复核页/补录页的「红字 vs 蓝字一致性比对」共用本函数，避免两处各写一份
+    SQL 而口径漂移。
+
+    返回 `{invoice_no, invoice_date, buyer, total_amount, handlers:[{name, billing}]}`
+    —— **金额一律取绝对值**（红字在库是负数、蓝字是正数，符号差异不算不一致）。
+    同一原票被多张红字票引用属异常，取开票日期最早的一张为参照。
     """
     red = conn.execute(
         "SELECT * FROM invoice WHERE orig_invoice_no=? AND total_amount < 0 "
@@ -37,23 +45,42 @@ def prefill_red_original(conn, orig_no: str) -> Dict:
         (orig_no,),
     ).fetchone()
     if red is None:
-        return {"invoice_no": orig_no, "invoice_date": "", "buyer": "",
-                "total_amount": None, "handlers": []}
+        return None
     cds = conn.execute(
         "SELECT person_name, billing_amount FROM charge_detail WHERE invoice_no=? ORDER BY id",
         (red["invoice_no"],),
     ).fetchall()
-    handlers = [
-        {"name": cd["person_name"], "billing": abs(cd["billing_amount"]),
-         "received": 0.0, "date": ""}
-        for cd in cds
-    ]
+    return {
+        "invoice_no": red["invoice_no"],
+        "invoice_date": red["invoice_date"] or "",
+        "buyer": red["buyer"] or "",
+        "total_amount": abs(red["total_amount"] or 0.0),
+        "handlers": [
+            {"name": cd["person_name"], "billing": abs(cd["billing_amount"] or 0.0)}
+            for cd in cds
+        ],
+    }
+
+
+def prefill_red_original(conn, orig_no: str) -> Dict:
+    """源 A 预填：用引用该原票的红字发票（来自台账）信息预填。
+
+    原票尚未入库（正因缺失才补录），拿不到原票开票日期 → 留空让用户手填，
+    绝不能用红字发票的开票日期顶替。返回结构与源 B 预填一致。
+    """
+    ref = load_red_reference(conn, orig_no)
+    if ref is None:
+        return {"invoice_no": orig_no, "invoice_date": "", "buyer": "",
+                "total_amount": None, "handlers": []}
     return {
         "invoice_no": orig_no,
-        "invoice_date": "",
-        "buyer": red["buyer"] or "",
-        "total_amount": abs(red["total_amount"]),
-        "handlers": handlers,
+        "invoice_date": "",      # 原票开票日期不可知，留空手填
+        "buyer": ref["buyer"],
+        "total_amount": ref["total_amount"],
+        "handlers": [
+            {"name": h["name"], "billing": h["billing"], "received": 0.0, "date": ""}
+            for h in ref["handlers"]
+        ],
     }
 
 

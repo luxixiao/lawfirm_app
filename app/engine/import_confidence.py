@@ -13,6 +13,10 @@
   经办人疑问：空经办人、重复经办人、不在花名册（防御性，导入校验已拦）、
             分摊合计≠发票总额（防御性，解析已校验）。
   推导疑点：分摊后某经办人已收>其开票金额（多为人工覆盖后越界）。
+
+另（阶段 6，**不由 `evaluate` 调用**，供复核页/补录弹窗按需调用）：
+  `red_orig_diff()` 比对红字发票与其引用的蓝字原票的「总金额 / 经办人 / 经办人金额」
+  —— 金额一律取绝对值，故红字 -5000 与蓝字 5000 属一致。
 """
 from __future__ import annotations
 
@@ -160,6 +164,79 @@ def evaluate(data: Dict, staff_set: set, confirmed: set = None, period: str = No
             "_inv": inv,
         })
     return results
+
+
+# ---------------------------------------------------------------------------- #
+# 阶段 6：红字发票 ⇄ 蓝字原票 一致性比对（纯函数，无 DB）
+# ---------------------------------------------------------------------------- #
+def _handler_amounts(handlers) -> Dict[str, float]:
+    """经办人 → {姓名: 开票金额（绝对值合计）}。
+
+    兼容本项目内部并存的两种形态：
+    - 解析侧 / `ev`：`[(name, amount), ...]` —— 红字票的 amount 是**负数**；
+    - 库侧 / 补录 payload：`[{"name":.., "billing":..}, ...]`。
+
+    一律取绝对值：红字 -5000 与蓝字 5000 属**一致**（用户 2026-09-18 口径）。
+    同名多行按姓名聚合，与 `backfill_module.build_backfill` 的 charge 聚合同口径。
+    """
+    out: Dict[str, float] = {}
+    for h in handlers or ():
+        if isinstance(h, dict):
+            name = str(h.get("name") or "").strip()
+            amt = h.get("billing", 0.0)
+        else:
+            seq = list(h)
+            name = str(seq[0] if seq else "").strip()
+            amt = seq[1] if len(seq) > 1 else 0.0
+        if not name:
+            continue
+        try:
+            out[name] = out.get(name, 0.0) + abs(float(amt or 0.0))
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def red_orig_diff(red_total, red_handlers, orig_total, orig_handlers) -> Dict | None:
+    """比对红字发票与其引用的蓝字原票；**一致返回 None**，不一致返回描述。
+
+    比对三项（用户 2026-09-18 指定，**不含购方**）：
+      1. 发票总金额（取绝对值）；
+      2. 经办人（姓名集合）；
+      3. 经办人金额（逐人、取绝对值）。
+
+    返回 `{"fields": ["总金额", "经办人金额"], "detail": "多行对照文案"}`：
+    - `fields` → 原因列短文案（「红字与蓝字原票不一致（总金额），请确认」）；
+    - `detail` → 提示框逐项列出两侧实际值。
+
+    用途有二（阶段 6）：① 台账红字行 vs **库中已有**蓝字原票；② 台账红字行 vs
+    **本次补录**的蓝字原票（保存补录信息时提示）。
+    """
+    dims: List[str] = []
+    lines: List[str] = []
+
+    rt, ot = abs(float(red_total or 0.0)), abs(float(orig_total or 0.0))
+    if abs(rt - ot) > 0.01:
+        dims.append("总金额")
+        lines.append(f"发票总金额：红字 {rt:,.2f}　蓝字 {ot:,.2f}")
+
+    rmap, omap = _handler_amounts(red_handlers), _handler_amounts(orig_handlers)
+    rset, oset = set(rmap), set(omap)
+    if rset != oset:
+        dims.append("经办人")
+        lines.append("经办人：红字 " + ("、".join(sorted(rset)) or "—")
+                     + "　蓝字 " + ("、".join(sorted(oset)) or "—"))
+
+    # 只对**两侧都有**的人比金额；姓名集合本身不同已由上一项报出，不重复刷屏
+    for n in sorted(rset & oset):
+        if abs(rmap[n] - omap[n]) > 0.01:
+            if "经办人金额" not in dims:
+                dims.append("经办人金额")
+            lines.append(f"经办人金额：{n} 红字 {rmap[n]:,.2f}　蓝字 {omap[n]:,.2f}")
+
+    if not dims:
+        return None
+    return {"fields": dims, "detail": "\n".join(lines)}
 
 
 def receipt_summary(inv: Dict) -> str:
