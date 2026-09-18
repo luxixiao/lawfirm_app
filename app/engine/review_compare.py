@@ -4,13 +4,23 @@
 导入复核统一化后，「台账 ⇄ 库」比对在**导入前**判进四态（命中 → 待确认），
 比对核心被抽成共用函数，新旧两个入口用**同一套口径**：
 
-- `lib_diff(src, d_inv, d_handlers, exp_total, act_total)`：逐维度差异
+- `lib_diff(src, d_inv, d_handlers, exp_total, act_total, dims=...)`：逐维度差异
   （金额 / 经办人分摊 / 已收认定，含「源经办人纯人名 → 豁免分摊金额比对」）；
 - `build_lib_context(...)`：库侧三方（invoice / charge_detail / collection /
   received_snapshot）一次读出，供逐行比对；
 - `_recv_sides` / `lib_recv_totals`：已收认定双方（快照优先，缺快照回退）。
 
-消费方：`import_confidence.evaluate`（导入前，批 2 起）。
+消费方：`import_confidence.evaluate`（导入前，批 2 起）—— 导入前只对
+「票已在库」的行调用，且 **`dims=(FIELD_AMOUNT,)` 只比金额**（批 2 修订 · 方案甲，
+2026-09-18 用户拍板）：
+- 票不在库 = 本批正要写入它（当期 sheet1/2 全量如此）→ 整行不比；
+- 「票在库」也 ≠「库侧有可比数据」：`charge_detail` / `collection` **就是本次台账导入
+  要写的**，导入那一刻必然为空 ⇒ 比它们等于拿「缺数据」当「不一致」，
+  实测把当期 86/86 行全刷成待确认（分摊 86 + 已收 67），而金额维度实测 0 差异；
+- 故另两维退出导入前比对（批 0 §5.5 / §6 早已结论：「已收认定不应进入导入时比对」
+  78.2% 假报、「经办人分摊是台账独有信息，比对它等于拿台账跟台账比」）。
+  核心函数与 `build_lib_context` 的另两维能力**保留**（缺省 `dims=None` 三维全比），
+  供测试与将来的导入后场景复用。
 批 4（2026-09-18）：旧「导入后」页 `build_review_rows` 及其专属管线
 （`latest_batch` / `_derive_raw` / `_raw_side` / `load_confirmed_notes`）随
 `review_post_view.py` 一并删除 —— 导入后查看改走 `review_rebuild` 反向重建 +
@@ -86,8 +96,9 @@ FIELD_HANDLERS = "经办人分摊"
 FIELD_RECV = "已收认定"
 
 
-def lib_diff(src: Dict, d_inv: Dict, d_handlers: Dict[str, float],
-             exp_total: float, act_total: float) -> Optional[Dict]:
+def lib_diff(src: Dict, d_inv: Dict, d_handlers: Optional[Dict[str, float]] = None,
+             exp_total: Optional[float] = None, act_total: Optional[float] = None, *,
+             dims: Optional[Tuple[str, ...]] = None) -> Optional[Dict]:
     """源 ⇄ 库 **逐维度差异**核心（批 2 抽出，唯一口径）。
 
     比对三维：金额 / 经办人分摊 / 已收认定 —— 与导入前 `evaluate` 的原因短语
@@ -95,12 +106,23 @@ def lib_diff(src: Dict, d_inv: Dict, d_handlers: Dict[str, float],
     （含「源经办人纯人名 → 豁免分摊金额比对」）。**前提：源、库两侧都有此票**
     （仅一侧有的情形由调用方按「仅源有 / 仅库有」单独处理）。
 
+    `dims`（批 2 修订 · 方案甲，2026-09-18）：**只比指定维度**，
+    缺省 `None` = 三维全比（保旧行为）。`import_confidence.evaluate`（唯一的
+    导入前消费者）传 `(FIELD_AMOUNT,)` —— 导入前**只比金额**，理由见 §18：
+    另外两维的库侧数据（`charge_detail` / `collection`）**就是本次台账导入要写的**，
+    导入那一刻必然为空 ⇒ 拿「缺数据」当「不一致」，实测把当期 86/86 行全刷成待确认
+    （分摊 86 + 已收 67），而金额维度实测 0 差异（销项 ⇄ 台账两个独立来源的唯一交叉）。
+    不参与比对的维度：对应入参可省（`None`）。
+
     一致返回 `None`；不一致返回::
 
         {"fields": ["金额", "经办人分摊"],      # 差异维度名（原因列短语用）
          "flags":  ["金额不一致", ...],          # 与旧行为完全相同的短语
          "detail": ["金额 台账3,400.00 ⇄ 库3,000.00", ...]}   # 逐维度对照值
     """
+    if dims is None:
+        dims = (FIELD_AMOUNT, FIELD_HANDLERS, FIELD_RECV)
+    dims = tuple(dims)
     flags: List[str] = []
     fields: List[str] = []
 
@@ -110,33 +132,36 @@ def lib_diff(src: Dict, d_inv: Dict, d_handlers: Dict[str, float],
             fields.append(field)
 
     # ---- 金额 ----
-    if abs((src["total_amount"] or 0.0) - (d_inv["total_amount"] or 0.0)) > _AMT_EPS:
+    if FIELD_AMOUNT in dims and \
+            abs((src["total_amount"] or 0.0) - (d_inv["total_amount"] or 0.0)) > _AMT_EPS:
         _hit("金额不一致", FIELD_AMOUNT)
     # ---- 经办人分摊（保留「纯人名均分沿用首月拆分」豁免）----
-    p_h, d_h = src["handlers"], d_handlers
-    if set(p_h) != set(d_h):
-        miss = set(p_h) - set(d_h)
-        extra = set(d_h) - set(p_h)
-        if miss:
-            _hit("经办人缺失:" + "、".join(sorted(miss)), FIELD_HANDLERS)
-        if extra:
-            _hit("经办人多出:" + "、".join(sorted(extra)), FIELD_HANDLERS)
-    else:
-        diff = [n for n in p_h if abs(p_h[n] - d_h.get(n, 0.0)) > _AMT_EPS]
-        if diff and not (_names_only(src["handler_text"]) and set(p_h) == set(d_h)):
-            _hit("分摊金额不符:" + "、".join(sorted(diff)), FIELD_HANDLERS)
-        elif abs(sum(p_h.values()) - sum(d_h.values())) > _SUM_EPS:
-            _hit("分摊合计不符", FIELD_HANDLERS)
+    if FIELD_HANDLERS in dims and d_handlers is not None:
+        p_h, d_h = src["handlers"], d_handlers
+        if set(p_h) != set(d_h):
+            miss = set(p_h) - set(d_h)
+            extra = set(d_h) - set(p_h)
+            if miss:
+                _hit("经办人缺失:" + "、".join(sorted(miss)), FIELD_HANDLERS)
+            if extra:
+                _hit("经办人多出:" + "、".join(sorted(extra)), FIELD_HANDLERS)
+        else:
+            diff = [n for n in p_h if abs(p_h[n] - d_h.get(n, 0.0)) > _AMT_EPS]
+            if diff and not (_names_only(src["handler_text"]) and set(p_h) == set(d_h)):
+                _hit("分摊金额不符:" + "、".join(sorted(diff)), FIELD_HANDLERS)
+            elif abs(sum(p_h.values()) - sum(d_h.values())) > _SUM_EPS:
+                _hit("分摊合计不符", FIELD_HANDLERS)
     # ---- 已收认定 ----
-    src_warn = ""
-    rem = src.get("remark") or {}
-    if rem.get("remaining") is not None and rem.get("receipts") and not rem.get("pure_date"):
-        if abs((exp_total + rem["remaining"]) - src["total_amount"]) > _SUM_EPS:
-            src_warn = "源勾稽不平；"
-    if abs(exp_total - act_total) > _RECV_EPS:
-        _hit(f"{src_warn}已收认定不符(差{exp_total - act_total:,.2f})", FIELD_RECV)
-    elif src_warn:
-        _hit(src_warn.rstrip("；"), FIELD_RECV)
+    if FIELD_RECV in dims and exp_total is not None and act_total is not None:
+        src_warn = ""
+        rem = src.get("remark") or {}
+        if rem.get("remaining") is not None and rem.get("receipts") and not rem.get("pure_date"):
+            if abs((exp_total + rem["remaining"]) - src["total_amount"]) > _SUM_EPS:
+                src_warn = "源勾稽不平；"
+        if abs(exp_total - act_total) > _RECV_EPS:
+            _hit(f"{src_warn}已收认定不符(差{exp_total - act_total:,.2f})", FIELD_RECV)
+        elif src_warn:
+            _hit(src_warn.rstrip("；"), FIELD_RECV)
 
     if not flags:
         return None
@@ -177,7 +202,11 @@ def build_lib_context(period: str, invoice_nos: Optional[List[str]] = None,
     `batch_id` 给出时快照优先，缺省（导入前还没有本批）只用 live collection。
 
     返回 `{"period", "inv", "cd", "act", "snap"}`；
-    任一表读不出（旧库缺列等）→ 对应桶为空，比对按「库中缺失」处理。
+    任一表读不出（旧库缺列等）→ 对应桶为空。⚠️ 消费方（`import_confidence.evaluate`）
+    以「本票是否在 `inv` 里」为**是否比对的开关**：不在 → 整行不比不报，
+    故 `inv` 桶读空时表现为「零比对」，不会刷出「库中缺失，请确认」这类假待办；
+    且导入前**只消费 `inv`（金额维度）** —— `cd` / `act` / `snap` 对本消费者无用
+    （库侧这两份数据就是本次台账要写的），保留是为测试与将来导入后场景。
     """
     own = conn is None
     if own:

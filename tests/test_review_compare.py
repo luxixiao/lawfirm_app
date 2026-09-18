@@ -157,6 +157,29 @@ def main() -> int:
                     lib_inv(total=-50.0), {}, 0.0, 0.0)
     check("红字无收款 → 一致（None）", d is None, str(d))
 
+    # 9) `dims` 维度选择器（批 2 修订 · 方案甲）：导入前只比金额
+    d = rc.lib_diff(src(handlers={"张三": 60.0, "李四": 40.0},
+                        handler_text="张三60 李四40", total=100.0),
+                    lib_inv(total=300.0), {"张三": 100.0, "陈娟": 200.0}, 100.0, 50.0,
+                    dims=(rc.FIELD_AMOUNT,))
+    check("dims=(金额) → 只报金额，吞吐分摊/已收两维差异",
+          d is not None and d["fields"] == ["金额"]
+          and all(FIELD not in f for FIELD in ("经办人", "已收") for f in d["flags"]),
+          str(d))
+    d = rc.lib_diff(src(), lib_inv(), {"张三": 100.0}, 100.0, 50.0,
+                    dims=(rc.FIELD_AMOUNT,))
+    check("dims=(金额) 且金额一致 → None（另两维不合也不报）", d is None, str(d))
+    d = rc.lib_diff(src(), lib_inv(total=200.0), dims=(rc.FIELD_AMOUNT,))
+    check("dims=(金额) 时另两维入参可省（None）",
+          d is not None and d["fields"] == ["金额"], str(d))
+    d = rc.lib_diff(src(handlers={"张三": 60.0, "李四": 40.0},
+                        handler_text="张三60 李四40"),
+                    lib_inv(), {"张三": 100.0}, dims=(rc.FIELD_HANDLERS,))
+    check("dims 可单独选分摊（核心能力保留，供将来/导入后复用）",
+          d is not None and d["fields"] == ["经办人分摊"], str(d))
+    d = rc.lib_diff(src(), lib_inv(), dims=())
+    check("dims=() → 不比任何维度（None）", d is None, str(d))
+
     # ================================================ build_lib_context：库侧三方
     add_inv("B1", 100.0)                       # import
     add_inv("B2", 300.0, buyer="丙公司", source="manual")   # 补录 manual 纳入口径

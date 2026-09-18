@@ -56,7 +56,7 @@ def _to_ym(s: str) -> str:
     return ""
 
 
-# 批 2：台账 ⇄ 库 三维比对（金额 / 经办人分摊 / 已收认定）命中时的原因列前缀。
+# 批 2：台账 ⇄ 库 比对（导入前只比金额）命中时的原因列前缀。
 # 差异维度名与对照值由 `review_compare.lib_diff` 产出（唯一口径，旧页共用）。
 REASON_LIB_DIFF = "台账⇄库不一致（{}），请确认"
 
@@ -77,6 +77,13 @@ def evaluate(data: Dict, staff_set: set, confirmed: set = None, period: str = No
              的产物）。`None`（缺省）→ 完全跳过比对，行为与批 1 一致；
              调用方（复核页）**只在导入前模式传入** —— 导入后镜表原文与库的差异正是
              导入时人工修正的痕迹，再报一遍就是把毛病 1 复活成点不掉的假待办。
+             两道门槛（2026-09-18 用户拍板）：
+             **① 只比「票已在库」的行** —— 票不在库 = 本批正要写入它（当期 sheet1/2
+             全量如此），**不是差异**；
+             **② 只比「金额」维度**（`dims=(FIELD_AMOUNT,)`）—— 「票在库」≠「库侧有
+             可比数据」：`charge_detail` / `collection` 就是本次台账要写的，导入那一刻
+             必然为空，比它们 = 拿「缺数据」当「不一致」（实测当期 86/86 假报）。
+             理由详见批 0 §5.5/§6 与 `docs/…batch0…md` §18。
 
     Returns: 每项为一张发票的评估结果 dict，含 inv 引用（_inv）。
     """
@@ -157,17 +164,28 @@ def evaluate(data: Dict, staff_set: set, confirmed: set = None, period: str = No
                 if got > b + 0.01:
                     reasons.append(f"经办人{n}已收({got:g})>开票金额({b:g})")
 
-        # ---- 批 2：台账 ⇄ 库 三维比对（金额 / 经办人分摊 / 已收认定）----
-        # 口径与共用核心 `review_compare.lib_diff` **逐字同一套**
-        # （含「源经办人纯人名 → 豁免分摊金额比对」）。sheet3（应收账款）行排除：
-        # 同一票号可能与 sheet2 并存且收款声明不同（应收视角 vs 发票视角，批 0 §9.6），
-        # 实测 12 期：不排除会报 127 行「已收认定不符」，排除后 **0 差异**。
+        # ---- 批 2：台账 ⇄ 库 比对（导入前**只比金额**）----
+        # 口径与共用核心 `review_compare.lib_diff` **逐字同一套**，但用 `dims` 限定维度。
+        # sheet3（应收账款）行排除：同一票号可能与 sheet2 并存且收款声明不同
+        # （应收视角 vs 发票视角，批 0 §9.6），实测 12 期：不排除会报 127 行
+        # 「已收认定不符」，排除后 **0 差异**。
         # 消除机制与兜底类不同：**只吃「确认」**（`i in confirmed` → 3-1 留痕），
         # 不吃 `has_split` 豁免 —— 用户填了逐人收款 ≠ 认可台账金额与库一致。
+        # ⚠️ 两道门槛（2026-09-18 用户拍板，批 0 §5.5/§6 + 实测）：
+        # ① **只比「票已在库」的行**：票不在库 = 本批正要写入它（当期 sheet1/2 全量
+        #    如此）→ 旧写法把它们全报成「库中缺失，请确认」（假待办成灾）。
+        # ② **只比「金额」维度**：「票在库」≠「库侧有可比数据」—— `charge_detail` /
+        #    `collection` 正是本次台账导入要写的，导入那一刻必然为空 ⇒ 比它们等于拿
+        #    「缺数据」当「不一致」。实测（真实库 2025-01：销项已导 86 票、台账未导）
+        #    三维全比 → 当期 **86/86（100%）** 被判待确认（分摊 86 + 已收 67），
+        #    只比金额 → **0**（销项 ⇄ 台账金额完全一致，这才是两个独立来源的交叉校验）。
+        #    另两维退出导入前比对（与阶段 6-2b「缺数据≠不一致」同一条铁律）。
         if lib is not None and sheet != "sheet3" and i not in confirmed:
             no2 = (inv.get("invoice_no") or "").strip()
-            if no2:
-                from app.engine.review_compare import lib_diff, lib_recv_totals  # 局部导入：避免环
+            d_inv = lib["inv"].get(no2) if no2 else None
+            if no2 and d_inv is not None:
+                # 局部导入：避免环
+                from app.engine.review_compare import FIELD_AMOUNT, lib_diff
                 src = {
                     "invoice_no": no2,
                     "buyer": inv.get("buyer", ""),
@@ -177,16 +195,10 @@ def evaluate(data: Dict, staff_set: set, confirmed: set = None, period: str = No
                     "handlers": {n: a for n, a in handlers},
                     "remark": remark,
                 }
-                d_inv = lib["inv"].get(no2)
-                if d_inv is None:
-                    reasons.append(f"台账⇄库不一致（库中缺失），请确认"
-                                   f"〔金额 台账{total:,.2f} ⇄ 库 —〕")
-                else:
-                    exp_t, act_t = lib_recv_totals(lib, no2, src)
-                    d = lib_diff(src, d_inv, lib["cd"].get(no2, {}), exp_t, act_t)
-                    if d:
-                        reasons.append(REASON_LIB_DIFF.format("、".join(d["fields"]))
-                                       + "〔" + "；".join(d["detail"]) + "〕")
+                d = lib_diff(src, d_inv, dims=(FIELD_AMOUNT,))
+                if d:
+                    reasons.append(REASON_LIB_DIFF.format("、".join(d["fields"]))
+                                   + "〔" + "；".join(d["detail"]) + "〕")
 
         conf = "low" if reasons else "high"
         results.append({

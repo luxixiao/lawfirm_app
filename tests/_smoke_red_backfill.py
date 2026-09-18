@@ -74,9 +74,10 @@ class _MB:
 
 U.QMessageBox = _MB
 
-# 批 2：pre 模式 load_data 会按账期读**真实 DB**建「台账⇄库」比对上下文；本冒烟的
-# 假票号在真实库里一律「库中缺失」→ 红字/普通行全被误判待确认。打桩成 None（跳过
-# 比对）—— 批 2 比对行为由 _smoke_unified_import.py 第 12 节（临时库+真函数）验证。
+# 批 2：pre 模式 load_data 会按账期读**真实 DB**建「台账⇄库」比对上下文。**方案 B
+# （2026-09-18）之后**比对只跑「票已在库」的行，本冒烟的假票号本就不会被比对；
+# 此桩保留只为「不碰真实库 + 断言确定性」—— 批 2 比对行为由
+# _smoke_unified_import.py 第 12 节（临时库+真函数）验证。
 import app.engine.review_compare as _rc  # noqa: E402
 
 _rc.build_lib_context = lambda period, invoice_nos=None, batch_id=None, conn=None: None
