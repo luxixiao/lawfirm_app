@@ -32,9 +32,10 @@ from PySide6.QtWidgets import QApplication  # noqa: E402
 app = QApplication.instance() or QApplication(sys.argv)
 
 import app.ui.import_review_view as RV  # noqa: E402
-import app.ui.review_post_view as RP  # noqa: E402
 import app.engine.review_compare as RC  # noqa: E402
+import app.engine.review_rebuild as _RR  # noqa: E402
 from app.ui.import_review_view import ImportReviewView  # noqa: E402
+from app.ui import unified_import_dialog as _uid  # noqa: E402
 
 
 # ---- 打桩 ----
@@ -190,6 +191,8 @@ def _fake_commit(data, period, path):
 
 
 def _fake_load(self, data, period="", staff_names=None, path="", validator=None):
+    if getattr(self, "_mode", "") == "post":
+        return  # 批 4：post 页 load_period 也走这里，不计入「队首载入」计数
     _load_calls.append((period, path))
     self._data = data
     self._period = period
@@ -198,11 +201,15 @@ def _fake_load(self, data, period="", staff_names=None, path="", validator=None)
 
 
 RV.QMessageBox = _MB
-RP.QMessageBox = _MB
 RV.commit_ledger_import = _fake_commit
 RV.validate_ledger_before_write = lambda d, p: None
 RV.get_conn = lambda: _FakeConn()
 RC.get_conn = lambda: _FakeConn()
+# 批 4：page_post = UnifiedImportDialog(mode="post")，构造/回导入后时会走
+# load_period → review_rebuild / _uid 的模块级 get_conn 查库 → 打桩隔离真实 DB。
+# （load_data 本身已被下方类级桩替换，但 load_period 在其之前还有两次查库。）
+_uid.get_conn = lambda: _FakeConn()
+_RR.get_conn = lambda: _FakeConn()
 RV.UnifiedImportDialog.load_data = _fake_load
 RV._ledger_periods = lambda: ["2025-01"]
 # 待补录名单打桩：本测试只关心队列流转，不关心补录提示（否则会打到真实库）。

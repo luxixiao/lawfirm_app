@@ -423,18 +423,17 @@ def main() -> int:
     check("D1 甲：在库票不在待补录（源 B 排除已入库）",
           "OLD1" not in {p["invoice_no"] for p in bm.list_pending_backfill(conn=proxy)})
 
-    # -------------------------------------------------- H) 复核页保留 + 需补录标记
+    # -------------------------------------------------- H) 复核页可见性 + 需补录标记
+    # 批 4：旧页 `build_review_rows` 已删 ——「sheet3 票保留在复核」改由两件事表达：
+    # ① 镜表有该行（复核页重建可见）② 库侧缺失（build_lib_context）+ 需补录标记。
     batch2 = r["batch_id"]
-    _b, rows2 = rc.build_review_rows(P2)
-    by2 = {x["invoice_no"]: x for x in rows2}
-    check("sheet3 票保留在复核表内", "D300" in by2, str(sorted(by2)))
-    check("正常票在复核表内", "S1" in by2, str(sorted(by2)))
-    check("sheet3 票带 needs_backfill 标记", by2["D300"]["needs_backfill"] is True)
-    check("正常票无 needs_backfill 标记", by2["S1"]["needs_backfill"] is False)
-    check("sheet3 票状态仍是仅源有（库中缺失）", by2["D300"]["status"] == "仅源有",
-          by2["D300"]["status"])
-    check("sheet3 票说明指向补录原票",
-          "补录原票" in by2["D300"]["detail"], by2["D300"]["detail"])
+    check("sheet3 票写入镜表（复核页重建可见）",
+          conn.execute("SELECT 1 FROM raw_ledger WHERE invoice_no='D300' "
+                       "AND import_batch_id=?", (batch2,)).fetchone() is not None)
+    lib = rc.build_lib_context(P2, conn=proxy)
+    check("sheet3 票库侧缺失（→ 需补录）", "D300" not in lib["inv"],
+          str(sorted(lib["inv"])))
+    check("正常票在库", "S1" in lib["inv"], str(sorted(lib["inv"])))
     check("标记集合只含本批次缺号票",
           rl.deferred_sheet3_nos(P2, batch2, conn=proxy) == {"D300"},
           str(rl.deferred_sheet3_nos(P2, batch2, conn=proxy)))
@@ -442,22 +441,19 @@ def main() -> int:
           rl.deferred_sheet3_nos(P2, 1, conn=proxy) == set(),
           str(rl.deferred_sheet3_nos(P2, 1, conn=proxy)))
 
-    # ---- H-2) 补录后：manual 数据纳入比对 → 该行转普通行（方案 C 的闭环）----
+    # ---- H-2) 补录后：manual 数据纳入库侧口径 → 该票出缺（方案 C 的闭环）----
     bm.save_backfill({"invoice_no": "D300", "invoice_date": "2024-02-01",
                       "buyer": "庚公司", "total_amount": 400.0,
                       "handlers": [{"name": "陈娟", "billing": 400.0,
                                     "received": 0.0, "date": ""}]})
-    _b, rows3 = rc.build_review_rows(P2)
-    by3 = {x["invoice_no"]: x for x in rows3}
-    check("补录后该行仍在复核表内（未被剔除）", "D300" in by3, str(sorted(by3)))
-    check("补录后 needs_backfill 消失", by3["D300"]["needs_backfill"] is False)
+    lib2 = rc.build_lib_context(P2, conn=proxy)
     check("补录后库侧读到 manual 发票（金额/对方）",
-          by3["D300"]["amount_db"] == 400.0 and by3["D300"]["buyer_db"] == "庚公司",
-          f"{by3['D300']['amount_db']} / {by3['D300']['buyer_db']}")
-    check("补录后库侧读到 manual 分摊", "陈娟" in by3["D300"]["handlers_db"],
-          by3["D300"]["handlers_db"])
-    check("补录后转为一致", by3["D300"]["status"] == "一致",
-          f"{by3['D300']['status']} {by3['D300']['detail']}")
+          lib2["inv"].get("D300", {}).get("total_amount") == 400.0
+          and lib2["inv"].get("D300", {}).get("buyer") == "庚公司",
+          str(lib2["inv"].get("D300")))
+    check("补录后库侧读到 manual 分摊",
+          lib2["cd"].get("D300", {}).get("陈娟") == 400.0,
+          str(lib2["cd"].get("D300")))
     check("补录后不再进待补录",
           "D300" not in {p["invoice_no"] for p in bm.list_pending_backfill(conn=proxy)})
 

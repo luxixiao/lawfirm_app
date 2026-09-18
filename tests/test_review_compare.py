@@ -1,9 +1,17 @@
-"""review_compare（导入后融合比对引擎）单元测试 — 内存库。
+"""review_compare（「台账 ⇄ 库」比对共用核心）单元测试 — 内存库。
 
 运行：python tests/test_review_compare.py
-覆盖：镜表↔业务表 逐维度比对口径（金额/经办人分摊/已收认定）、
-仅源有/仅库有、纯人名均分豁免、快照优先/账期窗口回退、anomaly_note
-dim='merged' 优先 + 旧维度聚合回退、补录（source='manual'）纳入比对口径。
+批 4 重写（2026-09-18）：`build_review_rows` 及其行装配管线随旧「导入后」页
+（review_post_view.py）删除，本文件改为**直接测存活的共用核心**：
+`lib_diff` / `build_lib_context` / `lib_recv_totals` / `_recv_sides`。
+原 13 节的比对口径场景（金额 / 经办人缺失多出 / 分摊金额不符 / 纯人名豁免 /
+快照优先 / 账期窗口回退 / manual 纳入口径）全部移植；
+「仅源有 / 仅库有 / 已确认异常」属旧页行装配逻辑，已由批 2 的导入前四态
+与 `test_import_confirm.py`（回退聚合）覆盖，不再重复。
+
+「已收认定」场景里 `exp_total` 直接手填（`compute_expected_receipts` 对 remark
+的还原口径另有 `test_deferred_sheet3` / 冒烟覆盖），只在 `lib_recv_totals`
+的回退分支里用真实 `compute_expected_receipts` 走一遍 pure_date 还原。
 """
 import json
 import sqlite3
@@ -29,11 +37,18 @@ def check(label, cond, detail=""):
         print(f"[FAIL] {label} {detail}")
 
 
-def row_of(rows, no):
-    for r in rows:
-        if r["invoice_no"] == no:
-            return r
-    return None
+def src(no="A1", total=100.0, handlers=None, handler_text="张三100",
+        remark=None, buyer="甲公司", is_red=False):
+    """手工构造 lib_diff 的源侧（与旧 _derive_raw 产物同构）；
+    handlers 缺省 = 张三全额（沿用旧 13 节场景的最小形态）。"""
+    return {"invoice_no": no, "buyer": buyer, "total_amount": total,
+            "is_red": is_red, "handler_text": handler_text,
+            "handlers": {"张三": total} if handlers is None else dict(handlers),
+            "remark": remark or {}, "synced": True, "source": "sheet1 · 第2行"}
+
+
+def lib_inv(no="A1", total=100.0, buyer="甲公司"):
+    return {"invoice_no": no, "buyer": buyer, "total_amount": total}
 
 
 def main() -> int:
@@ -58,175 +73,141 @@ def main() -> int:
     rc.get_conn = lambda: _ConnProxy(conn)  # 注入内存库
 
     P = "2025-01"
-    conn.execute(
-        "INSERT INTO import_batch (id, batch_type, period, file_name, status, imported_at) "
-        "VALUES (1,'ledger',?,'2025.1台账.xlsx','active', datetime('now','localtime'))", (P,))
 
-    def add_raw(no, amount, handler, buyer="甲公司", remark="", rid=0):
-        conn.execute(
-            "INSERT INTO raw_ledger (id, sheet_key, sheet_name, row_no, invoice_no, "
-            "buyer, amount_num, handler_text, remark, kind, synced, import_batch_id) "
-            "VALUES (?, 'sheet1', '已开票已入账', 2, ?, ?, ?, ?, ?, 'invoice', 1, 1)",
-            (rid, no, buyer, amount, handler, remark))
-
-    def add_inv(no, amount, buyer="甲公司"):
+    def add_inv(no, amount, buyer="甲公司", source="import"):
         conn.execute(
             "INSERT INTO invoice (invoice_no, invoice_date, buyer, total_amount, source, import_batch_id) "
-            "VALUES (?, '2025-01-05', ?, ?, 'import', 1)", (no, buyer, amount))
+            "VALUES (?, '2025-01-05', ?, ?, ?, 1)", (no, buyer, amount, source))
 
-    def add_cd(no, pairs):
+    def add_cd(no, pairs, source="import"):
         for name, amt in pairs.items():
             conn.execute(
                 "INSERT INTO charge_detail (invoice_no, person_name, billing_amount, source) "
-                "VALUES (?, ?, ?, 'import')", (no, name, amt))
+                "VALUES (?, ?, ?, ?)", (no, name, amt, source))
 
-    def add_snap(no, exp_total, act_total, items_e=None, items_a=None):
+    def add_snap(no, exp_total, act_total, batch_id=1):
         conn.execute(
             "INSERT INTO received_snapshot (import_batch_id, invoice_no, expected_json, actual_json) "
-            "VALUES (1, ?, ?, ?)",
-            (no, json.dumps({"total": exp_total, "items": items_e or []}),
-             json.dumps({"total": act_total, "items": items_a or []})))
+            "VALUES (?, ?, ?, ?)",
+            (batch_id, no, json.dumps({"total": exp_total, "items": []}),
+             json.dumps({"total": act_total, "items": []})))
 
-    # ---------- 无批次 ----------
-    b, rows = rc.build_review_rows("2099-01")
-    check("无批次 → (None, [])", b is None and rows == [])
+    def add_coll(no, date, amount, person="张三", source="import"):
+        conn.execute(
+            "INSERT INTO collection (invoice_no, receipt_date, amount, person_name, source) "
+            "VALUES (?, ?, ?, ?, ?)", (no, date, amount, person, source))
 
-    # ---------- 1) 全一致 ----------
-    add_raw("A1", 100.0, "张三100", rid=11)
-    add_inv("A1", 100.0)
-    add_cd("A1", {"张三": 100.0})
-    b, rows = rc.build_review_rows(P)
-    r = row_of(rows, "A1")
-    check("一致：状态", r["status"] == "一致", r["status"])
-    check("一致：来源带 sheet 行号", "已开票已入账" in r["source"] and "第2行" in r["source"],
-          r["source"])
+    # ================================================= lib_diff：逐维度差异
+    # 1) 全一致 → None
+    d = rc.lib_diff(src(), lib_inv(), {"张三": 100.0}, 100.0, 100.0)
+    check("一致 → None", d is None, str(d))
 
-    # ---------- 2) 金额不一致 ----------
-    add_raw("A2", 100.0, "张三100", rid=12)
-    add_inv("A2", 200.0)
-    add_cd("A2", {"张三": 200.0})
-    r = row_of(rc.build_review_rows(P)[1], "A2")
-    check("金额不一致 → 不符", r["status"] == "不符" and "金额不一致" in r["detail"],
-          f"{r['status']}/{r['detail']}")
+    # 2) 金额不一致（同名不同额会连带「分摊金额不符」，故只断言包含）
+    d = rc.lib_diff(src(), lib_inv(total=200.0), {"张三": 200.0}, 100.0, 100.0)
+    check("金额不一致 → flag/field", d is not None and "金额不一致" in d["flags"]
+          and "金额" in d["fields"], str(d))
+    check("金额 detail 带两侧对照值",
+          d and "台账100.00" in d["detail"][0] and "库200.00" in d["detail"][0],
+          str(d and d["detail"]))
 
-    # ---------- 3) 经办人缺失/多出 ----------
-    add_raw("A3", 100.0, "张三60、李四40", rid=13)
-    add_inv("A3", 100.0)
-    add_cd("A3", {"张三": 100.0})
-    r = row_of(rc.build_review_rows(P)[1], "A3")
-    check("库内缺经办人 → 不符", any("经办人缺失" in f for f in r["flags"]), r["detail"])
+    # 3) 经办人缺失 / 多出
+    d = rc.lib_diff(src(handlers={"张三": 60.0, "李四": 40.0},
+                        handler_text="张三60、李四40"),
+                    lib_inv(), {"张三": 100.0}, 100.0, 100.0)
+    check("库内缺经办人 → 经办人缺失:李四",
+          d and any("经办人缺失:李四" in f for f in d["flags"]), str(d and d["flags"]))
+    d = rc.lib_diff(src(), lib_inv(), {"张三": 60.0, "李四": 40.0}, 100.0, 100.0)
+    check("库内多经办人 → 经办人多出:李四",
+          d and any("经办人多出:李四" in f for f in d["flags"]), str(d and d["flags"]))
 
-    add_raw("A4", 100.0, "张三100", rid=14)
-    add_inv("A4", 100.0)
-    add_cd("A4", {"张三": 60.0, "李四": 40.0})
-    r = row_of(rc.build_review_rows(P)[1], "A4")
-    check("库内多经办人 → 不符", any("经办人多出" in f for f in r["flags"]), r["detail"])
+    # 4) 分摊金额不符
+    d = rc.lib_diff(src(handlers={"张三": 60.0, "李四": 40.0},
+                        handler_text="张三60、李四40"),
+                    lib_inv(), {"张三": 70.0, "李四": 30.0}, 100.0, 100.0)
+    check("分摊金额不符 → flag",
+          d and any("分摊金额不符" in f for f in d["flags"]), str(d and d["flags"]))
 
-    # ---------- 4) 分摊金额不符 ----------
-    add_raw("A5", 100.0, "张三60、李四40", rid=15)
-    add_inv("A5", 100.0)
-    add_cd("A5", {"张三": 70.0, "李四": 30.0})
-    r = row_of(rc.build_review_rows(P)[1], "A5")
-    check("分摊金额不符 → 不符", any("分摊金额不符" in f for f in r["flags"]), r["detail"])
+    # 5) 纯人名均分豁免（handler_text 无数字 → 不比分摊金额；合计相等 → 全免）
+    d = rc.lib_diff(src(handlers={"张三": 50.0, "李四": 50.0},
+                        handler_text="张三、李四"),
+                    lib_inv(), {"张三": 60.0, "李四": 40.0}, 100.0, 100.0)
+    check("纯人名豁免 → 一致（None）", d is None, str(d))
+    # 5b) 纯人名但合计也不平 → 仍报「分摊合计不符」
+    d = rc.lib_diff(src(handlers={"张三": 50.0, "李四": 50.0},
+                        handler_text="张三、李四"),
+                    lib_inv(), {"张三": 60.0, "李四": 30.0}, 100.0, 100.0)
+    check("纯人名合计不平 → 分摊合计不符",
+          d and any("分摊合计不符" in f for f in d["flags"]), str(d and d["flags"]))
 
-    # ---------- 5) 纯人名均分豁免 ----------
-    add_raw("A6", 100.0, "张三、李四", rid=16)
-    add_inv("A6", 100.0)
-    add_cd("A6", {"张三": 60.0, "李四": 40.0})
-    r = row_of(rc.build_review_rows(P)[1], "A6")
-    check("纯人名均分沿用首月拆分 → 一致", r["status"] == "一致",
-          f"{r['status']}/{r['detail']}")
+    # 6) 已收认定不符（差额进 flag 文本）
+    d = rc.lib_diff(src(), lib_inv(), {"张三": 100.0}, 100.0, 50.0)
+    check("已收认定不符(差50.00)",
+          d and any("已收认定不符(差50.00)" in f for f in d["flags"])
+          and "已收认定" in d["fields"], str(d and d["flags"]))
 
-    # ---------- 6) 已收认定不符（快照优先） ----------
-    add_raw("A7", 100.0, "张三100", rid=17)
-    add_inv("A7", 100.0)
-    add_cd("A7", {"张三": 100.0})
-    add_snap("A7", 100.0, 50.0)
-    r = row_of(rc.build_review_rows(P)[1], "A7")
-    check("已收不符（快照）→ 不符", any("已收认定不符" in f for f in r["flags"]),
-          r["detail"])
-    check("已收不符差额文本", any("差50.00" in f for f in r["flags"]), r["detail"])
+    # 7) 源勾稽不平（exp + remaining ≠ 总额）→ 即便库侧已收对平也报
+    d = rc.lib_diff(src(remark={"remaining": 40.0, "receipts": [("2025-01", 70.0)],
+                                "pure_date": False}),
+                    lib_inv(), {"张三": 100.0}, 70.0, 70.0)
+    check("源勾稽不平 → FIELD_RECV", d and d["fields"] == ["已收认定"]
+          and any("源勾稽不平" in f for f in d["flags"]), str(d and d["flags"]))
 
-    # ---------- 7) 无快照回退：账期窗口 collection ----------
-    add_raw("A8", 100.0, "张三100", rid=18)
-    add_inv("A8", 100.0)
-    add_cd("A8", {"张三": 100.0})
-    conn.execute(
-        "INSERT INTO collection (invoice_no, receipt_date, amount, person_name, source) "
-        "VALUES ('A8','2025-01-10',80.0,'张三','import')")
-    r = row_of(rc.build_review_rows(P)[1], "A8")
-    check("无快照回退 collection 实收", r["recv_db"] != "—" and "80.00" in r["recv_db"],
-          r["recv_db"])
-    check("无快照回退已收不符", any("已收认定不符" in f for f in r["flags"]), r["detail"])
+    # 8) 红字：exp=0 口径下不误报（exp/act 都传 0；红字行源侧无经办人）
+    d = rc.lib_diff(src(total=-50.0, is_red=True, handler_text="", handlers={}),
+                    lib_inv(total=-50.0), {}, 0.0, 0.0)
+    check("红字无收款 → 一致（None）", d is None, str(d))
 
-    # ---------- 8) 仅源有 / 仅库有 ----------
-    add_raw("A9", 100.0, "张三100", rid=19)
-    add_inv("B1", 100.0)
+    # ================================================ build_lib_context：库侧三方
+    add_inv("B1", 100.0)                       # import
+    add_inv("B2", 300.0, buyer="丙公司", source="manual")   # 补录 manual 纳入口径
     add_cd("B1", {"张三": 100.0})
-    b, rows = rc.build_review_rows(P)
-    check("库中缺失 → 仅源有", row_of(rows, "A9")["status"] == "仅源有")
-    check("非 sheet3 的库中缺失不算需补录（needs_backfill=False）",
-          row_of(rows, "A9")["needs_backfill"] is False)
-    check("镜表缺失 → 仅库有", row_of(rows, "B1")["status"] == "仅库有")
-    check("仅库有行排在源侧之后",
-          rows.index(row_of(rows, "B1")) > rows.index(row_of(rows, "A1")))
+    add_cd("B2", {"李四": 300.0}, source="manual")
+    add_snap("B1", 100.0, 80.0)                # 快照挂 batch 1
+    add_coll("B1", "2025-01-10", 80.0)
+    add_coll("B2", "2025-02-10", 300.0, person="李四")       # 账期窗口之外（P=2025-01）
+    add_coll("B3", "2025-01-15", 999.0, source="other")      # 非 import/manual 不读
+    ctx = rc.build_lib_context(P, conn=_ConnProxy(conn))
+    check("ctx.inv 读 import+manual", set(ctx["inv"]) == {"B1", "B2"}
+          and ctx["inv"]["B2"]["buyer"] == "丙公司", str(sorted(ctx["inv"])))
+    check("ctx.cd 读 import+manual", ctx["cd"]["B1"] == {"张三": 100.0}
+          and ctx["cd"]["B2"] == {"李四": 300.0}, str(ctx["cd"]))
+    check("ctx.act 按账期窗口过滤（2025-02 排除）",
+          set(ctx["act"]) == {"B1"}, str(sorted(ctx["act"])))
+    check("ctx.act 排除其它 source", ctx["act"]["B1"] == [("2025-01", 80.0, "张三")],
+          str(ctx["act"]))
+    check("无 batch_id → ctx.snap 空", ctx["snap"] == {}, str(ctx["snap"]))
 
-    # ---------- 9) 已确认异常（旧维度聚合回退） ----------
-    conn.execute(
-        "INSERT INTO anomaly_note (invoice_no, dim, period, note) "
-        "VALUES ('A2','handler',?,'历史备注：手动改过')", (P,))
-    r = row_of(rc.build_review_rows(P)[1], "A2")
-    check("旧维度备注回退 → 已确认异常", r["status"] == "已确认异常", r["status"])
-    check("回退备注内容", r["confirmed_note"] == "历史备注：手动改过", r["confirmed_note"])
+    ctx2 = rc.build_lib_context(P, batch_id=1, conn=_ConnProxy(conn))
+    check("给 batch_id → 快照优先读出",
+          ctx2["snap"]["B1"] == ({"total": 100.0, "items": []},
+                                 {"total": 80.0, "items": []}), str(ctx2["snap"]))
+    # 坏快照按缺处理（回退 live）
+    conn.execute("INSERT INTO received_snapshot (import_batch_id, invoice_no, "
+                 "expected_json, actual_json) VALUES (1,'B9','{bad json','x')")
+    ctx3 = rc.build_lib_context(P, batch_id=1, conn=_ConnProxy(conn))
+    check("坏快照按缺处理", "B9" not in ctx3["snap"], str(sorted(ctx3["snap"])))
 
-    # ---------- 10) dim='merged' 优先 ----------
-    conn.execute(
-        "INSERT INTO anomaly_note (invoice_no, dim, period, note) "
-        "VALUES ('A5','merged',?,'融合后新备注')", (P,))
-    r = row_of(rc.build_review_rows(P)[1], "A5")
-    check("merged 优先", r["status"] == "已确认异常" and r["confirmed_note"] == "融合后新备注",
-          f"{r['status']}/{r['confirmed_note']}")
+    # ================================================= lib_recv_totals：已收双方
+    exp_t, act_t = rc.lib_recv_totals(ctx2, "B1", src())
+    check("lib_recv_totals 快照优先", (exp_t, act_t) == (100.0, 80.0),
+          f"{exp_t}/{act_t}")
+    # 无快照 → 源侧 compute_expected_receipts（pure_date=全额于该日）、库侧 live
+    s_pure = src(remark={"pure_date": "2025-01-10"})
+    exp_t, act_t = rc.lib_recv_totals(ctx, "B1", s_pure)
+    check("lib_recv_totals 回退：源 pure_date 全额 / 库 live 合计",
+          (exp_t, act_t) == (100.0, 80.0), f"{exp_t}/{act_t}")
 
-    # ---------- 11) 同号镜表取末行 ----------
-    conn.execute(
-        "INSERT INTO raw_ledger (id, sheet_key, sheet_name, row_no, invoice_no, "
-        "buyer, amount_num, handler_text, remark, kind, synced, import_batch_id) "
-        "VALUES (99, 'sheet1', '已开票已入账', 9, 'A1', '乙公司', 999.0, '', '', "
-        "'invoice', 1, 1)")
-    r = row_of(rc.build_review_rows(P)[1], "A1")
-    check("同号镜表取末行（后者覆盖）", r["buyer_src"] == "乙公司", r["buyer_src"])
-    check("同号末行触发金额不符", r["status"] == "不符", r["status"])
-
-    # ---------- 12) 红字无收款 ----------
-    add_raw("A10", -50.0, "", rid=20)
-    add_inv("A10", -50.0)
-    r = row_of(rc.build_review_rows(P)[1], "A10")
-    check("红字无收款不报已收不符", r["status"] == "一致",
-          f"{r['status']}/{r['detail']}")
-
-    # ---------- 13) 补录（source='manual'）纳入比对口径 ----------
-    # 期外票补录进库的是 manual 行；若比对只读 import，该行会永远停在「库中缺失」，
-    # 与「补录原票」页（票号对齐即移出）互相矛盾 —— 故库侧口径为
-    # source IN ('import','manual')。
-    add_raw("A11", 300.0, "张三300", remark="25.1.10", rid=21)
-    r = row_of(rc.build_review_rows(P)[1], "A11")
-    check("补录前：库中缺失（仅源有，非需补录）",
-          r["status"] == "仅源有" and r["needs_backfill"] is False,
-          f"{r['status']}/{r['needs_backfill']}")
-    conn.execute("INSERT INTO invoice (invoice_no, invoice_date, buyer, total_amount, source) "
-                 "VALUES ('A11','2024-03-01','丙公司',300.0,'manual')")
-    conn.execute("INSERT INTO charge_detail (invoice_no, person_name, billing_amount, source) "
-                 "VALUES ('A11','张三',300.0,'manual')")
-    conn.execute("INSERT INTO collection (invoice_no, receipt_date, amount, person_name, source) "
-                 "VALUES ('A11','2025-01-10',300.0,'张三','manual')")
-    conn.commit()
-    r = row_of(rc.build_review_rows(P)[1], "A11")
-    check("补录后：库侧读到 manual 发票（金额/对方）",
-          r["amount_db"] == 300.0 and r["buyer_db"] == "丙公司",
-          f"{r['amount_db']}/{r['buyer_db']}")
-    check("补录后：库侧读到 manual 分摊", "张三" in r["handlers_db"], r["handlers_db"])
-    check("补录后：已收认定读 manual 收款", "300.00" in r["recv_db"], r["recv_db"])
-    check("补录后：转为一致", r["status"] == "一致", f"{r['status']}/{r['detail']}")
+    # ================================================= _recv_sides：仅库有（src=None）
+    e_t, e_items, a_t, a_items = rc._recv_sides("B1", None, {}, ctx["act"])
+    check("src=None → 源侧 (0.0, [])", (e_t, e_items) == (0.0, []), f"{e_t}/{e_items}")
+    check("src=None 库侧仍读 live", a_t == 80.0 and a_items == [
+        {"ym": "2025-01", "amount": 80.0}], f"{a_t}/{a_items}")
+    # 快照优先于 live（含 items 直读）
+    snap = {"B1": ({"total": 100.0, "items": [{"ym": "2025-01", "amount": 100.0}]},
+                   {"total": 80.0, "items": [{"ym": "2025-01", "amount": 80.0}]})}
+    e_t, _e, a_t, _a = rc._recv_sides("B1", src(), snap, ctx["act"])
+    check("_recv_sides 快照优先（exp/act 双侧）", (e_t, a_t) == (100.0, 80.0),
+          f"{e_t}/{a_t}")
 
     conn.close()
     print(f"\n{OK} passed, {len(FAILS)} failed")

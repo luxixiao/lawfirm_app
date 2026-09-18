@@ -158,7 +158,7 @@ def evaluate(data: Dict, staff_set: set, confirmed: set = None, period: str = No
                     reasons.append(f"经办人{n}已收({got:g})>开票金额({b:g})")
 
         # ---- 批 2：台账 ⇄ 库 三维比对（金额 / 经办人分摊 / 已收认定）----
-        # 口径与旧「导入后」页 `review_compare.build_review_rows` **逐字同一套**
+        # 口径与共用核心 `review_compare.lib_diff` **逐字同一套**
         # （含「源经办人纯人名 → 豁免分摊金额比对」）。sheet3（应收账款）行排除：
         # 同一票号可能与 sheet2 并存且收款声明不同（应收视角 vs 发票视角，批 0 §9.6），
         # 实测 12 期：不排除会报 127 行「已收认定不符」，排除后 **0 差异**。

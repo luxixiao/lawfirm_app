@@ -1,7 +1,8 @@
-"""offscreen 冒烟：ImportReviewView + ReviewPostView（导入复核页，阶段 2）。
+"""offscreen 冒烟：ImportReviewView（导入复核页，批 4 换页后）。
 
 覆盖：
-- 结构：模式徽章 + 账期下拉 + 堆栈（0=导入后 ReviewPostView / 1=导入前 UnifiedImportDialog）
+- 结构：模式徽章 + 账期下拉 + 堆栈（0=导入后 UnifiedImportDialog(mode="post")
+  / 1=导入前 UnifiedImportDialog —— 批 4 起两页同为实现）
 - 默认导入后模式（账期下拉启用）；open_pending 后切导入前（下拉锁定并显示该账期）
 - confirmed → commit_ledger_import 一次 + navigate_back + 回导入后（下拉重新启用）
 - cancelled → 不写库 + navigate_back
@@ -10,13 +11,18 @@
   不推进队列；改好后再次确认即写库并推进
 - 确认入库后「存在需补录的发票」提示：点「去补录」→ navigate_to('manual')、
   点「稍后」/无待补录 → 照旧 navigate_back
-- ReviewPostView：筛选胶囊（全部/差异/需补录/一致/已确认异常）/统计文案/空账期安全
+- post 页：筛选胶囊（6 项，默认待补录）/空账期安全/行级编辑回写控件初始禁用
 - A5（阶段 2-1）：每个账期载入**前**重跑一次 split_deferred（判定刷新到最新库状态），
   队列追加时不刷、失败不阻断导入
 
+post 页行为（编辑回写按钮按行解锁、还原=锚点+synced=0+有存档）的深度断言在
+_smoke_review_rebuild.py C 段 —— 本文件只保初始态与构造安全。
+旧 ReviewPostView（融合比对单表/标记已确认异常）已随批 4 删除。
+
 commit_ledger_import / validate_ledger_before_write / get_conn /
-list_pending_backfill 均打桩，QMessageBox 换空桩；A5 的
-split_deferred / library_invoice_nos 在第 10 节内单独打桩。
+list_pending_backfill 均打桩，QMessageBox 换空桩；post 页 load_period 走
+review_rebuild / _uid 的模块级 get_conn（均 from app.db import get_conn）→
+两个都要打桩，否则打到真实 data/lawfirm.db。
 """
 import os
 import sys
@@ -29,10 +35,8 @@ from PySide6.QtWidgets import QApplication, QStackedWidget, QWidget
 app = QApplication.instance() or QApplication(sys.argv)
 
 import app.ui.import_review_view as RV  # noqa: E402
-import app.ui.review_post_view as RP  # noqa: E402
 import app.engine.review_compare as RC  # noqa: E402
 from app.ui.import_review_view import ImportReviewView  # noqa: E402
-from app.ui.review_post_view import ReviewPostView  # noqa: E402
 from app.ui.unified_import_dialog import UnifiedImportDialog  # noqa: E402
 from app.importer import importer as _imp  # noqa: E402
 
@@ -182,10 +186,15 @@ def _fake_validate(data, period):
 
 import PySide6.QtWidgets as _qt  # noqa: E402
 from app.ui import unified_import_dialog as _uid  # noqa: E402
+import app.ui.writeback_dialog as _WD  # noqa: E402
+import app.engine.review_rebuild as _RR  # noqa: E402
 _qt.QMessageBox = _MB
 RV.QMessageBox = _MB
-RP.QMessageBox = _MB
 _uid.QMessageBox = _MB
+_WD.QMessageBox = _MB
+# post 页 load_period 会经这两个模块级 get_conn 查库 → 打桩隔离真实 DB
+_uid.get_conn = lambda: _FakeConn()
+_RR.get_conn = lambda: _FakeConn()
 _imp.commit_ledger_import = _fake_commit
 _imp.validate_ledger_before_write = _fake_validate
 RV.commit_ledger_import = _fake_commit
@@ -215,19 +224,20 @@ v = ImportReviewView()
 check("ImportReviewView 是 QWidget", isinstance(v, QWidget))
 check("含模式徽章与账期下拉", hasattr(v, "lbl_mode") and hasattr(v, "combo_period"))
 check("堆栈 2 页", v.stack.count() == 2, f"got={v.stack.count()}")
-check("导入后页 = ReviewPostView（阶段2融合实现）", isinstance(v.page_post, ReviewPostView))
-check("导入前页 = UnifiedImportDialog", isinstance(v.page_pre, UnifiedImportDialog))
+check("导入后页 = UnifiedImportDialog(mode='post')",
+      isinstance(v.page_post, UnifiedImportDialog) and v.page_post.mode == "post",
+      f"{type(v.page_post).__name__}/{getattr(v.page_post, 'mode', '?')}")
+check("导入前页 = UnifiedImportDialog(pre)",
+      isinstance(v.page_pre, UnifiedImportDialog) and v.page_pre.mode == "pre")
 check("默认导入后模式", v.stack.currentWidget() is v.page_post)
 check("徽章显示已导入", "已导入" in v.lbl_mode.text(), v.lbl_mode.text())
 check("导入后账期下拉启用", v.combo_period.isEnabled())
-check("ReviewPostView 有 5 个筛选胶囊", len(v.page_post.chips) == 5,
-      str(list(v.page_post.chips)))
-check("筛选胶囊含「需补录」", "需补录" in v.page_post.chips,
-      str(list(v.page_post.chips)))
-check("ReviewPostView 默认「全部」", v.page_post._grp.checkedId() == 0)
-check("空账期安全（无批次统计）",
-      "该账期没有已导入的发票台账批次" in v.page_post.lbl_stat.text(),
-      v.page_post.lbl_stat.text())
+check("post 页筛选胶囊 6 项", len(v.page_post._grp.buttons()) == 6,
+      str(len(v.page_post._grp.buttons())))
+check("post 页默认「待补录」", v.page_post._grp.checkedId() == 0)
+check("空账期安全（统计全 0 + 空表）",
+      "高置信 0" in v.page_post.lbl_stat.text() and v.page_post.table.rowCount() == 0,
+      f"{v.page_post.lbl_stat.text()} rows={v.page_post.table.rowCount()}")
 
 # ---------------------------------------------------------------- 2) 导入前入口
 backs = []
@@ -379,25 +389,29 @@ check("B2d：修正后确认 → 队列清空回导入后模式",
       v._queue == [] and not v._queue_active
       and v.stack.currentWidget() is v.page_post)
 
-# ---------------------------------------------------------------- 6) ReviewPostView 筛选渲染（空数据安全）
+# ------------------------------------------------ 6) post 页筛选渲染（空数据安全）
 pv = v.page_post
-for name, chip in pv.chips.items():
-    chip.setChecked(True)
-    chip.clicked.emit()
-check("五个筛选切换不崩溃", True)
-pv.chips["全部"].setChecked(True)
-pv.chips["全部"].clicked.emit()
-check("切回全部", pv.chips["全部"].isChecked() and pv._grp.checkedId() == 0)
-pv.set_period("")   # 空账期
-check("set_period 空值安全", pv.table.rowCount() == 0)
+for b in pv._grp.buttons():
+    b.setChecked(True)
+    b.clicked.emit()
+check("六个筛选切换不崩溃", True)
+pv._grp.button(_uid.FILTER_ALL).setChecked(True)
+pv._render()
+check("切回全部", pv._grp.checkedId() == _uid.FILTER_ALL)
+pv.load_period("")   # 空账期
+check("load_period 空值安全", pv.table.rowCount() == 0,
+      f"rows={pv.table.rowCount()}")
 
-# ---------------------------------------------------------------- 7) 编辑回写控件（阶段 3）
-check("有「编辑回写」按钮且默认禁用", hasattr(pv, "btn_edit") and not pv.btn_edit.isEnabled())
+# ------------------------------------------------ 7) 编辑回写控件（批 3-3，post 行级）
+check("有「编辑回写」按钮且初始禁用",
+      hasattr(pv, "btn_writeback") and not pv.btn_writeback.isEnabled())
+check("有「还原为原件」按钮且初始禁用",
+      hasattr(pv, "btn_restore") and not pv.btn_restore.isEnabled())
+from app.ui.writeback_dialog import WritebackDialog  # noqa: E402
 fake_raw = {"id": 1, "invoice_date_raw": "2025-01-05", "invoice_no": "X1",
             "buyer": "甲公司", "amount_raw": "100", "case_no": "",
             "remark": "", "handler_text": "张三100", "kind": "invoice"}
-RP.rl.get_row = lambda rid: dict(fake_raw, id=rid)
-dlg = RP.WritebackDialog(pv, "2025-01", "X1", fake_raw, 1)
+dlg = WritebackDialog(pv, "2025-01", "X1", fake_raw, 1)
 check("WritebackDialog 可构造", dlg is not None)
 check("含修改原因输入框", hasattr(dlg, "note_edit"))
 check("含收款明细子表", hasattr(dlg, "tbl") and dlg.tbl.columnCount() == 3)
@@ -405,42 +419,16 @@ check("收款明细预填 0 行（get_conn 打桩）", dlg.tbl.rowCount() == 0)
 dlg._append_row("2025-12", "80.00", "张三")
 receipts = dlg._receipts()
 check("_receipts 收集正确", receipts == [("张三", 80.0, "2025-12")], str(receipts))
-# 选中行 → 编辑按钮启用（注入一条带 raw_id 的假比对行）
-pv._rows = [{
-    "invoice_no": "X1", "source": "已开票已入账 · 第2行",
-    "buyer_src": "甲公司", "buyer_db": "甲公司",
-    "amount_src": 100.0, "amount_db": 100.0,
-    "handlers_src": "张三 100.00", "handlers_db": "张三 100.00",
-    "recv_src": "未收款", "recv_db": "—",
-    "status": "一致", "detail": "", "confirmed_note": "",
-    "raw_id": 1, "synced": False,
-}]
-pv._render()
-pv.table.selectRow(0)
-pv._on_sel()
-check("选中源侧行后编辑按钮启用", pv.btn_edit.isEnabled())
 
-# ---------------------------------------------------------------- 7b) 还原为原件按钮（§5.3）
-check("有「还原为原件」按钮且默认禁用",
-      hasattr(pv, "btn_restore") and not pv.btn_restore.isEnabled())
-pv._rows[0]["synced"] = False
-pv._batch = {"archive_path": "data/archive/x.xlsx", "id": 1, "file_name": "f"}
-pv._render()
-pv.table.selectRow(0)
-pv._on_sel()
-check("synced=0 + 有存档 → 还原按钮启用", pv.btn_restore.isEnabled())
-pv._rows[0]["synced"] = True
-pv._render()
-pv.table.selectRow(0)
-pv._on_sel()
-check("synced=1（未修订）→ 还原按钮禁用", not pv.btn_restore.isEnabled())
-pv._rows[0]["synced"] = False
-pv._batch = {"archive_path": "", "id": 1, "file_name": "f"}
-pv._render()
-pv.table.selectRow(0)
-pv._on_sel()
-check("无存档 → 还原按钮禁用", not pv.btn_restore.isEnabled())
-pv._batch = None
+# ---------------------------------------- 7b) post 页「关闭」→ 返回导入页（批 4 接线）
+# post 的「关闭」走 reject() → cancelled → 宿主 _on_cancelled（队列未跑）→
+# navigate_back。旧 ReviewPostView 没有「关闭」按钮，这是换页后的新行为。
+_n_backs = len(backs)
+pv.reject()
+check("post 页「关闭」→ 发 navigate_back 一次", len(backs) == _n_backs + 1,
+      f"backs={len(backs)} before={_n_backs}")
+check("post 页「关闭」→ 仍停在导入后模式（队列未跑不清页面）",
+      v.stack.currentWidget() is v.page_post and not v._queue_active)
 
 # ---------------------------------------------------------------- 8) 导入前留痕装配（阶段 4）
 check("collect_import_fixes 空态返回 []", v.page_pre.collect_import_fixes() == [])

@@ -18,8 +18,9 @@
 - D. MainWindow 接线：收到 `data_cleared` → 重置复核页队列 + 清空侧栏角标 +
   收起导入页提示条。（D 直接 emit 信号，**不真清库** → 绝不触碰 data/lawfirm.db）
 
-打桩：`build_review_rows` / `_ledger_periods` / `split_deferred` /
-`library_invoice_nos` / `validate_ledger_before_write` / QMessageBox；
+打桩：`rebuild_period_data`（喂各账期假发票行）/ `_staff_names_from_db` /
+`_ledger_periods` / `split_deferred` / `library_invoice_nos` /
+`validate_ledger_before_write` / QMessageBox；
 C 段把 `app.db.DB_PATH` 临时指向 %TEMP% 下的空库（用完还原）。
 """
 import os
@@ -38,12 +39,13 @@ from PySide6.QtWidgets import QApplication  # noqa: E402
 app = QApplication.instance() or QApplication(sys.argv)
 
 import app.db as DB  # noqa: E402
-import app.engine.review_compare as RC  # noqa: E402
+import app.engine.review_rebuild as RR  # noqa: E402
 import app.ui.data_clear_view as DCV  # noqa: E402
 import app.ui.import_review_view as RV  # noqa: E402
 import app.ui.main_window as MW  # noqa: E402
 from app.ui.data_clear_view import DataClearView  # noqa: E402
 from app.ui.import_review_view import ImportReviewView  # noqa: E402
+from app.ui import unified_import_dialog as U  # noqa: E402
 
 results = []
 
@@ -118,30 +120,57 @@ import app.ui.unified_import_dialog as _UID  # noqa: E402
 _UID.QMessageBox = _MB
 
 # ---------------------------------------------------------------- 打桩：库/查询
-_periods = ["2025-12", "2025-11"]
+# 批 4：page_post = UnifiedImportDialog(mode="post")，数据由 load_period →
+# rebuild_period_data 从库重建 → 桩掉重建函数本身（喂各账期的假发票行），
+# 同时桩掉 load_period 里的花名册查询（_uid.get_conn → all_staff_names）。
+_period_keys = ["2025-12", "2025-11"]
+
+
+def _fake_inv(no, buyer, amount, handler):
+    return {"sheet": "sheet1", "sheet_name": "已开票已入账", "row_no": 2,
+            "header": [], "raw_row": [], "invoice_no": no,
+            "invoice_date": "2025-12-05", "buyer": buyer,
+            "total_amount": amount, "handlers": [(handler, amount)],
+            "handler_text": f"{handler}{amount:.0f}",
+            "handlers_from_lib": False, "remark_raw": "", "remark": {},
+            "case_no": "", "is_red": False, "raw_id": None, "synced": True}
+
+
 _rows = {
-    "2025-12": [{
-        "invoice_no": "INV-A", "source": "sheet1", "status": "差异",
-        "buyer_src": "甲公司", "buyer_db": "甲公司",
-        "amount_src": "1000", "amount_db": "1000",
-        "handlers_src": "张三1000", "handlers_db": "张三1000",
-        "recv_src": "", "recv_db": "", "needs_backfill": False,
-        "confirmed_note": "", "detail": "",
-    }],
+    "2025-12": [_fake_inv("INV-A", "甲公司", 1000.0, "张三")],
     "2025-11": [],
 }
-RV._ledger_periods = lambda: list(_periods)
-RC.build_review_rows = lambda p: ({"id": 1, "period": p} if p else None,
-                                  list(_rows.get(p, [])))
+
+
+def _fake_rebuild(period, conn=None, in_library=None):
+    has = period in _rows
+    return {"invoices": list(_rows.get(period, [])), "deferred": [],
+            "prepayments": [], "problems": [], "sheet_totals": {},
+            "sheet12_total": 0.0, "backfills": [], "confirmations": {},
+            "period": period, "batch_id": 1 if has else None,
+            "path": "", "file_name": "f.xlsx" if has else ""}
+
+
+RR.rebuild_period_data = _fake_rebuild
+U.UnifiedImportDialog._staff_names_from_db = lambda self: []
+
+RV._ledger_periods = lambda: list(_period_keys)
 RV.split_deferred = lambda *a, **k: 0
 RV.library_invoice_nos = lambda: set()
 RV.validate_ledger_before_write = lambda *a, **k: None
+
+
+def _show_all(d):
+    """切到「全部」筛选（默认筛选=待补录，普通发票行默认视图里没有）。"""
+    d._grp.button(U.FILTER_ALL).setChecked(True)
+    d._render()
 
 _data = {"invoices": [], "prepayments": [], "problems": [],
          "sheet_totals": {}, "sheet12_total": 0.0, "period": "2025-01"}
 
 # ---------------------------------------------------------------- A) 重渲染
 v = ImportReviewView()
+_show_all(v.page_post)     # 默认筛选=待补录，普通发票行要先切「全部」才可见
 check("A0 页面有 showEvent（主窗口刷新契约）",
       "showEvent" in type(v).__dict__ or hasattr(type(v), "showEvent"))
 check("A0 页面有 refresh() 钩子", callable(getattr(v, "refresh", None)))
@@ -161,7 +190,7 @@ check("A2 切回 2025-12 → 1 行", v.page_post.table.rowCount() == 1,
       f"rows={v.page_post.table.rowCount()}")
 
 # ---- 核心复现：库被清空（账期列表变空）→ showEvent 重渲染必须清空表格 ----
-_periods.clear()
+_period_keys.clear()
 _rows.clear()
 check("A3 清空前（未重渲染）：表格仍是旧内容（复现报障）",
       v.page_post.table.rowCount() == 1, f"rows={v.page_post.table.rowCount()}")
@@ -170,20 +199,13 @@ check("A3 showEvent → 重渲染后表格清空（修复点）",
       v.page_post.table.rowCount() == 0, f"rows={v.page_post.table.rowCount()}")
 check("A3 账期下拉同步清空", v.combo_period.count() == 0,
       str(v.combo_period.count()))
-check("A3 统计文案回到「无批次」",
-      "该账期没有已导入的发票台账批次" in v.page_post.lbl_stat.text(),
+check("A3 统计文案归零",
+      "高置信 0" in v.page_post.lbl_stat.text(),
       v.page_post.lbl_stat.text())
 
 # ---- refresh() 保留当前选中账期（不因回页而跳回最新）----
-_periods.extend(["2025-12", "2025-11"])
-_rows["2025-11"] = [{
-    "invoice_no": "INV-B", "source": "sheet2", "status": "差异",
-    "buyer_src": "乙公司", "buyer_db": "乙公司",
-    "amount_src": "2000", "amount_db": "2000",
-    "handlers_src": "李四2000", "handlers_db": "李四2000",
-    "recv_src": "", "recv_db": "", "needs_backfill": False,
-    "confirmed_note": "", "detail": "",
-}]
+_period_keys.extend(["2025-12", "2025-11"])
+_rows["2025-11"] = [_fake_inv("INV-B", "乙公司", 2000.0, "李四")]
 v.refresh()
 v.combo_period.setCurrentIndex(1)             # 选中 2025-11
 check("A4 选到 2025-11", v.combo_period.currentData() == "2025-11",

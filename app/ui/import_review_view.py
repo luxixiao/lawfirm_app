@@ -11,8 +11,10 @@
   即可恢复（同账期导入幂等，见 importer.commit_ledger_import 的覆盖式导入 +
   _auto_snapshot）。
 - 导入后：默认模式。顶部账期下拉可切换（同账期多批次以最新为准），
-  内容为 ReviewPostView 的「raw_ledger 镜表 ↔ 业务表」融合比对单表
-  （阶段 2 起取代旧 ImportVerifyView 三维度切换，spec §2/§4/§10）。
+  内容为 UnifiedImportDialog(mode="post") 的只读查看页 —— 数据由
+  `load_period` 从 `review_rebuild` 反向重建（raw_ledger 镜像 + 本批 collection），
+  四态/筛选/右栏与导入前**同一套实现**（批 4 换页，取代旧 ReviewPostView 融合比对单表）；
+  行级「编辑回写 / 还原为原件」走 `review_writeback`（批 3-3）。
 
 数据流（导入前）：真实 data 全程不改，修正只作用于工作副本；「确认入库」时
 commit_ledger_import 一次性写库；点「取消」零副作用。
@@ -41,7 +43,6 @@ from app.engine.backfill import library_invoice_nos
 from app.importer.excel_reader import ImportError_
 from app.importer.importer import commit_ledger_import, validate_ledger_before_write
 from app.importer.ledger_import import split_deferred
-from app.ui.review_post_view import ReviewPostView
 from app.ui.unified_import_dialog import UnifiedImportDialog
 from app.ui.widgets import CaptionLabel, ComboBox, PageHeader
 from app.diag import get_logger
@@ -114,11 +115,16 @@ class ImportReviewView(QWidget):
         lay.addLayout(bar)
 
         # ---- 内容堆栈：0=导入后(默认) 1=导入前 ----
+        # 批 4：两页同为实现 —— 导入后 = 同一个 UnifiedImportDialog 的 post 模式
+        # （load_period 从库反向重建，只读 + 行级编辑回写/还原），不再有第二套页面。
         self.stack = QStackedWidget()
-        self.page_post = ReviewPostView()
+        self.page_post = UnifiedImportDialog(parent=self, mode="post")
         self.page_pre = UnifiedImportDialog(parent=self)
         self.page_pre.confirmed.connect(self._on_confirmed)
         self.page_pre.cancelled.connect(self._on_cancelled)
+        # post 的「关闭」按钮走 reject() → cancelled：队列未跑时等价「返回导入页」
+        # （_on_cancelled 对非队列态的处理正是这个语义）；队列跑时本页不可见。
+        self.page_post.cancelled.connect(self._on_cancelled)
         self.stack.addWidget(self.page_post)
         self.stack.addWidget(self.page_pre)
         lay.addWidget(self.stack, 1)
@@ -164,11 +170,11 @@ class ImportReviewView(QWidget):
         cur = self.combo_period.currentData() or ""
         self.combo_period.blockSignals(False)
         # 手动驱动一次（blockSignals 期间信号被抑制）
-        self.page_post.set_period(cur)
+        self.page_post.load_period(cur)
 
     def _on_period_changed(self, *_):
         if self.stack.currentWidget() is self.page_post:
-            self.page_post.set_period(self.combo_period.currentData() or "")
+            self.page_post.load_period(self.combo_period.currentData() or "")
 
     # ------------------------------------------------------------------ #
     # 回到本页时的重渲染（清空数据 / 外部改库后必须重读，否则残留旧内容）
@@ -190,7 +196,7 @@ class ImportReviewView(QWidget):
         - 有待确认队列在跑（队列是**内存态**）：**不动队列**，只刷新进度徽章 ——
           队列被设计为「离开本页可随时回来继续」，不能因为一次显示就被清掉。
         - 否则：回导入后模式并重拉账期列表，同时**保留当前选中的账期**（若它还在）；
-          库已清空 → 账期列表为空 → `ReviewPostView.set_period("")` 自动清空表格。
+          库已清空 → 账期列表为空 → `load_period("")` 自动载入空骨架清空表格。
         """
         if self._queue_active:
             self._refresh_queue_label()
