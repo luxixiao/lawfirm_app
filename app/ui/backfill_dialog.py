@@ -20,6 +20,13 @@
 票号 / 开票日期必填、日期多写法归一、收款日期解析失败拦下、已收不超价税合计；
 `validator` 额外挂一层写前校验（复核页用它跑 `build_backfill` → 花名册 / 票号冲突），
 失败同样留在弹窗内改。两条路径与写库口径**同源**。
+
+`soft_check`（阶段 6）= **软校验**：硬校验通过后调用 `soft_check(data)`，
+返回非空字符串则弹一次「确认 / 取消」——
+- **取消** → 留在弹窗继续改（与硬校验同一口径，**不丢输入**）；
+- 确定 → 照常 accept。
+用于「补录的蓝字原票与引用它的红字发票不一致」这类**可以放行但须留痕**的情形
+（文案由 `red_mismatch_notice()` 统一生成，判定走 `import_confidence.red_orig_diff`）。
 """
 from __future__ import annotations
 
@@ -53,15 +60,36 @@ def backfill_validator(data: dict) -> str | None:
         conn.close()
 
 
+def red_mismatch_notice(diff) -> str | None:
+    """`red_orig_diff` 结果 → 软提示正文；**一致（None / 空）返回 None**。
+
+    阶段 6：复用于三个入口 —— 复核页行内补录（`soft_check`）、复核页红字行的
+    「待确认」原因列、补录页补录/编辑（`soft_check`）。文案在此**单点**维护，
+    避免三处各写一份而漂移。
+    """
+    if not diff:
+        return None
+    return (
+        "补录的蓝字原票与引用它的红字发票不一致：\n\n"
+        + str(diff.get("detail") or "")
+        + "\n\n提示：红字金额为负、蓝字为正，符号相反不算不一致。\n"
+        "若确属同一笔红冲业务，可继续保存"
+        "（在导入复核页保存后该票会进入「待确认」，需再次确认）。\n\n"
+        "是否继续保存？"
+    )
+
+
 class BackfillDialog(QDialog):
     """补录 / 编辑 / 查看一张原始发票。"""
 
     def __init__(self, prefill: dict | None = None, *,
                  title: str = "补录原始发票", locked_no: bool = False,
-                 readonly: bool = False, validator=None, parent=None) -> None:
+                 readonly: bool = False, validator=None, soft_check=None,
+                 parent=None) -> None:
         super().__init__(parent)
         self._data: dict | None = None
         self._validate = validator
+        self._soft_check = soft_check
         self._readonly = bool(readonly)
         prefill = prefill or {"invoice_no": "", "invoice_date": "", "buyer": "",
                               "total_amount": 0.0, "handlers": []}
@@ -237,7 +265,11 @@ class BackfillDialog(QDialog):
     # 确定
     # ------------------------------------------------------------------ #
     def _on_accept(self) -> None:
-        """字段级校验 → 归一化 → validator → 通过才 accept（校验不过留在弹窗）。"""
+        """字段级校验 → 归一化 → validator（硬）→ soft_check（软）→ 通过才 accept。
+
+        硬校验不过 → 直接留在弹窗改；软校验（红蓝不一致）点「取消」→ 同样留在弹窗，
+        不关窗不丢输入。两条路径都不写库。
+        """
         no = self.no_edit.text().strip()
         if not no:
             QMessageBox.warning(self, "提示", "发票号码不能为空")
@@ -282,5 +314,16 @@ class BackfillDialog(QDialog):
             if err:
                 QMessageBox.warning(self, "无法保存", str(err))
                 return
+        # 软校验（阶段 6）：可放行但须留痕的疑点 —— 弹「确认 / 取消」，
+        # 取消则留在弹窗继续改（不丢输入），确定才保存。
+        if self._soft_check is not None:
+            notice = self._soft_check(data)
+            if notice:
+                if QMessageBox.question(
+                    self, "提示", str(notice),
+                    QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel,
+                    QMessageBox.StandardButton.Cancel,
+                ) != QMessageBox.StandardButton.Ok:
+                    return
         self._data = data
         self.accept()

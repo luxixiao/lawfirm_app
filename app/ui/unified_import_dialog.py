@@ -75,11 +75,11 @@ from PySide6.QtWidgets import (
 
 from app.db import get_conn
 from app.engine.backfill_module import load_invoice_detail, prefill_red_original
-from app.engine.import_confidence import SHEET_LABEL, evaluate, receipt_summary
+from app.engine.import_confidence import SHEET_LABEL, evaluate, receipt_summary, red_orig_diff
 from app.engine.raw_ledger import expand_receipts
 from app.importer.excel_reader import ImportError_
 from app.ui import scale
-from app.ui.backfill_dialog import BackfillDialog, backfill_validator
+from app.ui.backfill_dialog import BackfillDialog, backfill_validator, red_mismatch_notice
 from app.ui.ledger_source import show_ledger_source
 from app.ui.preview_dialog import _fmt_money
 from app.ui.problem_fix_panel import ProblemFixPanel
@@ -101,6 +101,9 @@ REASON_NO_DOUBT = "✓ 系统判定无疑问"
 # 阶段 5（源 A 红字引用）：红字行的待补录文案 —— 补的是**它引用的蓝字原票**，
 # 故把原票号写在原因列，用户一眼能对上补的是哪张（B 乙：红字行自己落「待补录」）。
 REASON_BACKFILL_RED = "需补录原票（红字引用 {}）"
+# 阶段 6（红字 ⇄ 蓝字一致性）：蓝字原票金额/经办人与引用的红字发票不符 → 该红字行落
+# 「待确认」，原因列写明**哪几项**不符（字段名来自 `red_orig_diff`），确认后才回高置信。
+REASON_RED_MISMATCH = "红字与蓝字原票不一致（{}），请确认"
 
 HEADERS = [
     "状态", "类型", "来源", "发票号", "购方", "金额",
@@ -166,6 +169,8 @@ class UnifiedImportDialog(QWidget):
         self._rows: List[Dict] = []
         # 阶段 5：本批工作副本里出现过的票号缓存（`_rebuild` 每轮重置；纯内存，不查库）
         self._batch_nos_cache: set | None = None
+        # 阶段 6：库中蓝字原票的取数缓存（`_rebuild` 每轮重置；键 = 原票号）
+        self._blue_cache: dict | None = None
         self.fix_panel = None
 
         self.setWindowTitle(f"发票台账导入确认 — {period}")
@@ -498,6 +503,8 @@ class UnifiedImportDialog(QWidget):
         self._rebuild_work()
         # 每轮重建都重算「本批票号」缓存（工作副本刚被重建，缓存必须失效）
         self._batch_nos_cache = None
+        # 阶段 6：同轮内「库中蓝字原票」取数只查一次（`_lib_blue_amounts` 的缓存）
+        self._blue_cache = None
         evs = evaluate(self._work, self._staff_set, self._confirmed, self._period)
         rows: List[Dict] = []
         for i, ev in enumerate(evs):
@@ -511,6 +518,8 @@ class UnifiedImportDialog(QWidget):
                 "ev": ev,
                 "problem": None,
                 "bf_orig": "",
+                "red_diff": None,
+                "red_diff_src": "",
             }
             # 阶段 5（B 乙，用户 2026-09-18 拍板）：红字行引用的**蓝字原票**缺失
             # → 本红字行落「待补录」（补的是那张原票，票号写进「原因」列）。
@@ -520,6 +529,14 @@ class UnifiedImportDialog(QWidget):
             if orig:
                 r["bf_orig"] = orig
                 r["status"] = "待补录"
+            # 阶段 6：红字 ⇄ 蓝字一致性（用户 2026-09-18 第 1 点）。两种情形都收口在
+            # `_red_consistency`：①库中已有蓝字原票 a；②本次补录填的蓝字原票 d。
+            # 不一致 → 该行落「待确认」，**点「确认」后才回高置信**（`_confirmed` 一进
+            # 就不再压制，与 `evaluate` 的兜底确认同一机制，无需另设状态）。
+            diff, src = self._red_consistency(r)
+            r["red_diff"], r["red_diff_src"] = diff, src
+            if diff and r["status"] != "待补录" and r["inv_idx"] not in self._confirmed:
+                r["status"] = "待确认"
             rows.append(r)
         for i, p in enumerate(self._data.get("problems", [])):
             if i in self._fix:
@@ -592,13 +609,21 @@ class UnifiedImportDialog(QWidget):
                 src = (ev["_inv"].get("handler_text") or "").replace("\n", " ").strip()
                 return f"{parsed}　〔源填写〕{src}" if src else parsed
             if key == "reason":
-                # 阶段 5（B 乙）：待补录的红字行把「要补的是哪张蓝字原票」写进原因列，
-                # 本行自身的疑问（如经办人不全）仍照旧拼在后面 —— 绝不因待补录而隐藏。
+                # 阶段 5（B 乙）待补录 + 阶段 6 红蓝不一致：两类疑点都写进原因列，
+                # 本行自身的疑问（如经办人不全）仍照旧拼在后面 —— 绝不因此隐藏。
+                parts: List[str] = []
                 if r["status"] == "待补录" and r.get("bf_orig"):
-                    txt = REASON_BACKFILL_RED.format(r["bf_orig"])
+                    parts.append(REASON_BACKFILL_RED.format(r["bf_orig"]))
+                if r.get("red_diff") and r["inv_idx"] not in self._confirmed:
+                    head = REASON_RED_MISMATCH.format(
+                        "、".join(r["red_diff"].get("fields") or []))
+                    if r.get("red_diff_src"):
+                        head += f"〔对照：{r['red_diff_src']}〕"
+                    parts.append(head)
+                if parts:
                     if ev["reasons"]:
-                        txt += "；" + "、".join(ev["reasons"])
-                    return txt
+                        parts.append("、".join(ev["reasons"]))
+                    return "；".join(parts)
                 return "、".join(ev["reasons"]) if ev["reasons"] else REASON_NO_DOUBT
             if key == "kind":
                 return "红字发票" if ev["is_red"] else "发票"
@@ -738,11 +763,15 @@ class UnifiedImportDialog(QWidget):
         n_inlib = sum(1 for r in self._rows if r["kind"] == "deferred"
                       and not (r["deferred"] or {}).get("need_backfill"))
         n_bf = len(self._backfills)   # B2h：底部计数随行内补录同步
+        # 阶段 6：红字 ⇄ 蓝字不一致的行数（已点「确认」的不再计 —— 用户已放行）
+        n_red_diff = sum(1 for r in self._rows
+                         if r.get("red_diff") and r["inv_idx"] not in self._confirmed)
         self.lbl_summary.setText(
             f"发票 {n_inv} 张，合计 ¥{inv_total:,.2f}　"
             f"预收款 {len(pp)} 条，合计 ¥{pp_total:,.2f}"
             + (f"　·　需补录原票 {n_need} 张"
                f"（应收账款 {n_need_def} · 红字引用 {n_need_red}）" if n_need else "")
+            + (f"　·　红字与蓝字原票不一致 {n_red_diff} 张（待确认）" if n_red_diff else "")
             + (f"　·　已补录待确认收款 {n_bf_rows} 张" if n_bf_rows else "")
             + (f"　·　应收账款已入库待确认收款 {n_inlib} 张" if n_inlib else "")
             + (f"　·　本次已填补录 {n_bf} 张（随本次台账入库）" if n_bf else "")
@@ -892,10 +921,16 @@ class UnifiedImportDialog(QWidget):
             pending_bf = r["status"] == "待补录"
             self.fix_panel.setVisible(True)
             self.fix_panel.set_invoice(r["ev"]["_inv"], r["ev"])
-            if r["ev"]["conf"] == "high":
+            if r["ev"]["conf"] == "high" and r["status"] != "待确认":
                 # 高置信：默认只读，防止被随手改坏；点「编辑」才解锁
                 self.fix_panel.set_readonly(True)
                 self._set_actions(edit=True)
+            elif r["ev"]["conf"] == "high":
+                # 阶段 6：本身高置信，但**红字与蓝字原票不一致**被抬到「待确认」
+                # → 仍默认只读（防误改），但必须给「确认」：确认后才回高置信
+                # （要求 1「不一致则需要提示，确认后才能保存」）。
+                self.fix_panel.set_readonly(True)
+                self._set_actions(edit=True, confirm=True)
             else:
                 # 低置信（待确认）：可保存修改，也可点「确认」认可系统默认口径
                 self.fix_panel.set_readonly(False)
@@ -1054,6 +1089,78 @@ class UnifiedImportDialog(QWidget):
             return (orig, False)
         return None
 
+    # ------------------------------------------------------------------ #
+    # 阶段 6：红字 ⇄ 蓝字 一致性
+    # ------------------------------------------------------------------ #
+    def _lib_blue_amounts(self, invoice_no: str) -> dict | None:
+        """库中一张**蓝字原票**的 `{total_amount, handlers:[(name, billing)]}`；不在库 → None。
+
+        取数走 `load_invoice_detail`（与补录页「编辑」同一口径），不另写 SQL；
+        同轮 `_rebuild` 内按票号缓存（`_blue_cache` 每轮重置）。
+        """
+        no = (invoice_no or "").strip()
+        if not no:
+            return None
+        if self._blue_cache is None:
+            self._blue_cache = {}
+        if no in self._blue_cache:
+            return self._blue_cache[no]
+        try:
+            detail = load_invoice_detail(no) or {}
+        except Exception:  # noqa: BLE001 查库失败只影响「提示」，绝不影响导入
+            detail = {}
+        out = None
+        if detail:
+            out = {
+                "total_amount": detail.get("total_amount"),
+                "handlers": [(h.get("name") or "", h.get("billing") or 0.0)
+                             for h in (detail.get("handlers") or [])],
+            }
+        self._blue_cache[no] = out
+        return out
+
+    def _red_consistency(self, r: Dict) -> tuple:
+        """红字行 → `(red_orig_diff 结果 | None, 蓝字侧来源文案)`；非红字行 → `(None, "")`。
+
+        「蓝字侧」优先级（用户 2026-09-18 第 1 点两种情形）：
+        1. **本次补录**（`self._backfills`）—— 情形 b：原票不在库，用户刚在弹窗里填的蓝字 d；
+        2. **库中已有蓝字原票** —— 情形 a：`invoice` 表里已有的蓝字 a。
+        两者都没有（= 还在「待补录」等补录）→ `(None, "")`：**不比对、不误报**。
+
+        「红字侧」一律取**本行自己**（台账解析出的红字金额/经办人），不查库：
+        复核页在确认入库前，红字票的 charge_detail 尚未写入（销项导入只建 `invoice`），
+        查库会拿到空经办人 → 比对失真（这正是要求 2 预填缺口的同一个根因）。
+
+        金额一律取绝对值（红字在库是负数）—— 由 `red_orig_diff` 负责，符号相反算一致。
+        """
+        if r["kind"] != "invoice":
+            return (None, "")
+        ev = r.get("ev") or {}
+        if not ev.get("is_red"):
+            return (None, "")
+        tgt = self._row_backfill_target(r)
+        if tgt is None:
+            return (None, "")            # 无补录入口（本批/取不到原票号）→ 不比对
+        orig = tgt[0]
+        rt, rh = ev.get("total_amount"), ev.get("handlers")
+        if orig in self._backfills:
+            item = self._backfills.get(orig) or {}
+            return (red_orig_diff(rt, rh, item.get("total_amount"), item.get("handlers")),
+                    "本次补录")
+        blue = self._lib_blue_amounts(orig)
+        if blue is None:
+            return (None, "")
+        return (red_orig_diff(rt, rh, blue["total_amount"], blue["handlers"]), "库中蓝字原票")
+
+    def _red_prefill_diff(self, r: Dict, data: dict):
+        """补录**弹窗内容** vs 本行红字发票 → `red_orig_diff`（一致 → None）。
+
+        供 `soft_check` 用：保存那一刻就拦住「蓝字与红字不一致」并让用户确认。
+        """
+        ev = (r or {}).get("ev") or {}
+        return red_orig_diff(ev.get("total_amount"), ev.get("handlers"),
+                             (data or {}).get("total_amount"), (data or {}).get("handlers"))
+
     def _set_backfill_button(self, r: Dict | None) -> None:
         """按当前行切换「补录原票 / 查看原票」（B2g 文案 + B2h 刷新）。"""
         tgt = self._row_backfill_target(r) if r is not None else None
@@ -1118,6 +1225,8 @@ class UnifiedImportDialog(QWidget):
         应收账款行（阶段 4-2）：预填**连同台账里已有的收款**（`_deferred_payload` 同源）——
         否则用户先在右侧改过收款、再打开补录弹窗时，弹窗里的空白收款会在确定后被写回该行，
         把刚改的收款抹掉。
+
+        红字行（阶段 6）：预填=**本行红字发票**的金额/经办人（取绝对值），不查库（见下）。
         """
         if r["kind"] == "deferred":
             d = r["deferred"] or {}
@@ -1129,8 +1238,27 @@ class UnifiedImportDialog(QWidget):
                 "total_amount": d.get("total_amount") or 0.0,
                 "handlers": self._bf_handlers_from_row(d, split),
             }
-        # 红字行：补的是它引用的原票 —— 原票开票日期不可知（留空手填），
-        # 购方/金额/经办人取红字发票做参考（与补录页 prefill_red_original 同一函数）
+        # 红字行：补的是**它引用的蓝字原票**。原票开票日期不可知（留空手填）；
+        # 购方/金额/经办人**取本行红字发票**（用户 2026-09-18 第 2 点：默认带入红字发票的
+        # 经办人及分摊金额；红字 -2000/张三-2000 → 弹窗默认 2000/张三/开票 2000）。
+        # ⚠️ 不能查库（旧写法 `prefill_red_original(conn, no)`）：销项导入只建 `invoice`，
+        # 红字票的 `charge_detail` 要等**本次台账**入库才写 → 复核页此刻查库**经办人必为空**。
+        ev = r.get("ev") or {}
+        handlers = [
+            {"name": (n or "").strip(), "billing": abs(float(b or 0.0)),
+             "received": 0.0, "date": ""}
+            for n, b in (ev.get("handlers") or []) if (n or "").strip()
+        ]
+        total = abs(float(ev.get("total_amount") or 0.0))
+        if handlers or total:
+            return {
+                "invoice_no": no,
+                "invoice_date": "",          # 原票开票日期不可知，留空手填
+                "buyer": ev.get("buyer") or "",
+                "total_amount": total,
+                "handlers": handlers,
+            }
+        # 兜底：本行连金额/经办人都解析不出来 → 退回查库取红字票（能拿到多少算多少）
         conn = get_conn()
         try:
             return prefill_red_original(conn, no)
@@ -1178,7 +1306,12 @@ class UnifiedImportDialog(QWidget):
             prefill = self._backfill_prefill(r, no)
         dlg = BackfillDialog(
             prefill, title=("修改补录" if existing is not None else "补录原票"),
+            # 阶段 6 要求 3：票号已确定（= 红字反查出的蓝字原票号）→ **锁定不可编辑**
+            locked_no=True,
             validator=lambda d, _k=no: self._validate_backfill(d, _k),
+            # 阶段 6 要求 1(b)：保存那刻做软校验 —— 蓝字原票与红字发票不一致则弹提示，
+            # 「取消」留在弹窗继续改（不丢输入），确定则照常收集。
+            soft_check=(lambda d, _r=r: red_mismatch_notice(self._red_prefill_diff(_r, d))),
             parent=self)
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
@@ -1477,9 +1610,18 @@ class UnifiedImportDialog(QWidget):
             n_inlib = sum(1 for r in todo if r["kind"] == "deferred"
                           and r["status"] == "待确认"
                           and not (r["deferred"] or {}).get("need_backfill"))
+            # 阶段 6（用户 2026-09-18 拍板「拦」）：红字 ⇄ 蓝字原票不一致且**未点确认**
+            # 的行数 —— 复用本预警弹一次汇总，用户可「仍要入库」或返回逐行处理。
+            # （不一致的行必然落在「待确认」，故一定在 todo 里；已确认的不再计入。）
+            n_red_diff = sum(1 for r in todo if r.get("red_diff")
+                             and r["inv_idx"] not in self._confirmed)
             msg = (f"还有 {len(todo)} 行未处理，确认入库时这些行将被跳过（不入库）。\n"
                    + (f"\n其中「待补录」{n_bf} 行：原票不在库，本次不会为它们建票，"
                       "请先用右侧「补录原票」补录。\n" if n_bf else "")
+                   + (f"\n其中「红字与蓝字原票不一致」{n_red_diff} 行："
+                      "请核对该红字发票与它引用的蓝字原票（金额 / 经办人 / 经办人金额），"
+                      "确认无误后点该行右侧「确认」；本次若仍要入库，这些行会被跳过。\n"
+                      if n_red_diff else "")
                    + (f"\n其中应收账款「已入库，请确认收款」{n_inlib} 行：本次不会写入这些收款"
                       "（该票已有收款不受影响；重新导入同一账期可再确认）。\n"
                       if n_inlib else "")

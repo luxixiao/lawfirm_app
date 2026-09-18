@@ -126,8 +126,15 @@ check("表格显示来源列文本",
 
 # ---- 补录按钮 → 预填 ----
 captured = {}
-v._open_dialog = lambda prefill, edit, locked_no: captured.update(
-    prefill=prefill, edit=edit, locked_no=locked_no)
+
+
+def _capture(prefill, edit, locked_no, soft_check=None):
+    """捕获 _open_dialog 的实参（阶段 6 起多了 soft_check）。"""
+    captured.update(prefill=prefill, edit=edit, locked_no=locked_no,
+                    soft_check=soft_check)
+
+
+v._open_dialog = _capture
 
 
 def _btn_for(no):
@@ -145,8 +152,11 @@ check("源 B 点击补录 → 预填票号/日期/金额",
       and captured["prefill"]["total_amount"] == 500.0, str(captured.get("prefill")))
 check("源 B 点击补录 → 预填经办人明细",
       [(h["name"], h["billing"]) for h in captured["prefill"]["handlers"]] == [("周立生", 500.0)])
-check("非编辑态（可改票号）",
-      captured["edit"] is False and captured["locked_no"] is False)
+check("阶段 6：待补录行票号已确定 → 锁定票号（非编辑态也锁）",
+      captured["edit"] is False and captured["locked_no"] is True,
+      f"edit={captured['edit']} locked={captured['locked_no']}")
+check("阶段 6：D100 无红字引用 → 无红蓝一致性软校验",
+      captured["soft_check"] is None, str(captured["soft_check"]))
 
 captured.clear()
 _btn_for("MISS1").click()
@@ -156,6 +166,18 @@ check("源 A 点击补录 → 预填购方/金额、日期留空",
       and captured["prefill"]["total_amount"] == 300.0, str(captured.get("prefill")))
 check("源 A 预填经办人（取绝对值）",
       [(h["name"], h["billing"]) for h in captured["prefill"]["handlers"]] == [("周立生", 300.0)])
+check("阶段 6：MISS1 被红字 RED1 引用 → 挂了红蓝一致性软校验",
+      callable(captured["soft_check"]), str(captured["soft_check"]))
+check("阶段 6：软校验与红字发票一致（-300/周立生-300 ⇄ 补录 300/周立生300）→ 无提示",
+      captured["soft_check"]({"total_amount": 300.0,
+                              "handlers": [{"name": "周立生", "billing": 300.0}]}) is None)
+check("阶段 6：软校验不一致（金额不符）→ 出提示文案",
+      "不一致" in (captured["soft_check"](
+          {"total_amount": 250.0,
+           "handlers": [{"name": "周立生", "billing": 250.0}]}) or ""),
+      str(captured["soft_check"](
+          {"total_amount": 250.0,
+           "handlers": [{"name": "周立生", "billing": 250.0}]})))
 
 # ---- 保存校验失败在 UI 上不崩溃 ----
 import app.ui.manual_entry_view as _mv  # noqa: E402
@@ -285,6 +307,11 @@ from PySide6.QtWidgets import QDialogButtonBox as _QDBB  # noqa: E402
 class _MB2:
     """记录 (title, text)，便于区分「提示」与「无法保存」两类。"""
     calls = []
+    answer = None          # question 的返回值（None = 非 Ok → 视为「取消」）
+
+    class StandardButton:
+        Ok = Yes = 1
+        Cancel = No = 0
 
     @staticmethod
     def warning(parent, title, text, *a, **k):
@@ -293,6 +320,11 @@ class _MB2:
     @staticmethod
     def critical(parent, title, text, *a, **k):
         _MB2.calls.append((title, text))
+
+    @staticmethod
+    def question(parent, title, text, *a, **k):
+        _MB2.calls.append((title, text))
+        return _MB2.answer
 
 
 BD.QMessageBox = _MB2
@@ -367,6 +399,48 @@ _std = _bb[0].standardButtons() if _bb else _QDBB.StandardButton.NoButton
 check("BackfillDialog readonly：仅「关闭」按钮",
       _std == _QDBB.StandardButton.Close, str(_std))
 check("BackfillDialog readonly：不产出 data()", _d8.data() is None)
+
+# 5b) 阶段 6 soft_check（红字 ⇄ 蓝字不一致）：取消 → 留在弹窗（不丢输入）；Ok → 放行
+_MB2.calls.clear()
+_MB2.answer = None                    # 非 Ok → 视为「取消」
+_seen_soft = []
+_d9 = BD.BackfillDialog(_pf(no="Z9"),
+                        soft_check=lambda d: (_seen_soft.append(d) or "红蓝不一致，是否继续？"))
+_d9._on_accept()
+check("阶段 6：soft_check 被调用（拿到归一化后的数据）",
+      bool(_seen_soft) and _seen_soft[0].get("invoice_no") == "Z9", str(_seen_soft))
+check("阶段 6：soft_check 点「取消」→ 不 accept（data() 仍 None）",
+      _d9.data() is None, str(_d9.data()))
+check("阶段 6：取消后**留在弹窗**且输入未丢（票号/明细仍在）",
+      _d9.no_edit.text() == "Z9" and _d9.detail.rowCount() == 1,
+      f"{_d9.no_edit.text()}/{_d9.detail.rowCount()}")
+check("阶段 6：取消 → 弹的确认框文案原样透出",
+      any("红蓝不一致，是否继续？" in x for _t, x in _MB2.calls), str(_MB2.calls))
+
+_MB2.calls.clear()
+_MB2.answer = _MB2.StandardButton.Ok  # 确定 → 放行
+_d10 = BD.BackfillDialog(_pf(no="Z9"),
+                         soft_check=lambda d: "红蓝不一致，是否继续？")
+_d10._on_accept()
+check("阶段 6：soft_check 点「确定」→ 照常 accept",
+      bool(_d10.data()) and _d10.data()["invoice_no"] == "Z9", str(_d10.data()))
+
+# 软校验为 None（一致）→ 不弹框、直接放行
+_MB2.calls.clear()
+_MB2.answer = None
+_d11 = BD.BackfillDialog(_pf(no="Z9"), soft_check=lambda d: None)
+_d11._on_accept()
+check("阶段 6：soft_check 返回 None（一致）→ 不弹框、直接放行",
+      bool(_d11.data()) and not _MB2.calls, f"calls={_MB2.calls}")
+
+# 硬校验失败时**不**走到软校验（顺序：硬 → 软）
+_MB2.calls.clear()
+_soft_hit = []
+_d12 = BD.BackfillDialog(_pf(no="Z9"), validator=lambda d: "票号已在库中",
+                         soft_check=lambda d: (_soft_hit.append(1) or "不一致"))
+_d12._on_accept()
+check("阶段 6：硬校验不过 → 不调用 soft_check（硬在前）",
+      _d12.data() is None and not _soft_hit, str(_soft_hit))
 
 # 6) 共用的 backfill_validator（与写库同源：build_backfill）
 _err = BD.backfill_validator({"invoice_no": "V1", "invoice_date": "2024-01-01",

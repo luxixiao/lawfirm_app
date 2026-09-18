@@ -11,6 +11,10 @@
   不影响其他页面（收款表/结算/退款判定）。
 - 保存前校验：至少一名经办人 + 须在花名册（与导入写前校验同一口径，
   见 app/engine/backfill.missing_handlers）。
+- 阶段 6（用户 2026-09-18）：待补录 / 编辑补录时**票号锁定**（票号已确定，改号等于换票；
+  只有「新增补录」可手填）；该票若被红字发票引用，保存前做「红字 ⇄ 蓝字」一致性软校验
+  （总金额 / 经办人 / 经办人金额，红字为负、蓝字为正，符号相反算一致），
+  不一致则弹提示，「取消」留在弹窗继续改。
 """
 from __future__ import annotations
 
@@ -22,12 +26,13 @@ from PySide6.QtWidgets import (
 
 from app.db import get_conn
 from app.ui import scale
-from app.ui.backfill_dialog import BackfillDialog, backfill_validator
+from app.ui.backfill_dialog import BackfillDialog, backfill_validator, red_mismatch_notice
 from app.ui.widgets import PrimaryPushButton, PushButton, tab_help_corner
 from app.ui.column_layout import install_column_layout
+from app.engine.import_confidence import red_orig_diff
 from app.engine.backfill_module import (
     list_pending_backfill, list_backfilled, load_invoice_detail,
-    prefill_red_original, save_backfill, delete_backfill,
+    load_red_reference, prefill_red_original, save_backfill, delete_backfill,
 )
 
 
@@ -188,16 +193,51 @@ class ManualEntryView(QWidget):
             conn.close()
         if prefill is None:
             prefill = load_invoice_detail(no)
-        self._open_dialog(prefill, edit=False, locked_no=False)
+        # 阶段 6（用户 2026-09-18）：票号已确定（两源都确定补的是哪张票）→ **锁票号**；
+        # 若该票被红字发票引用，保存前软校验红字 ⇄ 蓝字一致性（不一致弹提示，取消留窗改）。
+        self._open_dialog(prefill, edit=False, locked_no=True,
+                          soft_check=self._red_soft_check(no))
+
+    # ------------------------------------------------------------------ #
+    def _red_soft_check(self, invoice_no: str):
+        """按「蓝字原票号」反查引用它的红字发票 → `soft_check` 回调；无引用返回 None。
+
+        阶段 6 要求 1：补录的蓝字原票与引用它的红字发票在
+        **总金额 / 经办人 / 经办人金额** 上应一致（红字为负、蓝字为正，符号相反算一致）。
+        取数一律走 `load_red_reference`（红字票的唯一口径，金额已取绝对值）。
+
+        本页（「发票补录」）是**立即写库**路径，没有「待确认」状态 —— 故此处只做
+        **软提示**（确认后照常保存）；「进待确认再确认」由导入复核页负责。
+        """
+        conn = get_conn()
+        try:
+            ref = load_red_reference(conn, invoice_no)
+        except Exception:  # noqa: BLE001 反查失败只影响提示，不影响补录
+            ref = None
+        finally:
+            conn.close()
+        if not ref:
+            return None
+
+        def _check(data: dict) -> str | None:
+            return red_mismatch_notice(red_orig_diff(
+                ref["total_amount"], ref["handlers"],
+                (data or {}).get("total_amount"), (data or {}).get("handlers")))
+
+        return _check
 
     # ------------------------------------------------------------------ #
     # 打开补录弹窗（已补录编辑 → 预填已存数据；新增 → 空白）
     # ------------------------------------------------------------------ #
     def open_backfill(self, invoice_no: str | None = None, edit: bool = False) -> None:
         prefill = load_invoice_detail(invoice_no) if invoice_no else None
-        self._open_dialog(prefill, edit=edit, locked_no=bool(invoice_no and edit))
+        # 「新增补录」（invoice_no 为空）→ 票号可手填、无红字可对照；
+        # 「编辑已补录」→ 票号锁定，且若该票已被红冲则做红蓝一致性软校验。
+        self._open_dialog(prefill, edit=edit, locked_no=bool(invoice_no and edit),
+                          soft_check=self._red_soft_check(invoice_no) if invoice_no else None)
 
-    def _open_dialog(self, prefill: dict | None, edit: bool, locked_no: bool) -> None:
+    def _open_dialog(self, prefill: dict | None, edit: bool, locked_no: bool,
+                     soft_check=None) -> None:
         """打开补录弹窗（阶段 3 B2f：表单已抽到 app.ui.backfill_dialog.BackfillDialog，
         与导入复核页的行内「补录原票」共用同一实现）。
 
@@ -210,6 +250,7 @@ class ManualEntryView(QWidget):
             title=("编辑补录发票" if edit else "补录原始发票"),
             locked_no=locked_no,
             validator=backfill_validator,
+            soft_check=soft_check,
             parent=self,
         )
         if dlg.exec() != QDialog.DialogCode.Accepted:

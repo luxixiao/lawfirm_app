@@ -19,6 +19,12 @@
   J deferred 行补录后：进「已补录」+ 仍在「待确认」
   K 待补录红字行不显示「确认」；硬调 _confirm_row 也零写入
   L 筛选栏顺序 / FILTER_ALL
+  —— 阶段 6（红字 ⇄ 蓝字 一致性 / 预填 / 锁票号）——
+  M 红字行补录预填=**本行红字**（绝对值），**不查库**（库桩故意给不同值）
+  N 情形 a（库中已有蓝字）：一致 → 不动；不一致 → 落「待确认」+ 原因列 + 确认后回高置信
+  O 情形 b（补录填的蓝字）：保存后落「待确认」（不直接高置信）+ soft_check 提示 +
+    确认入库前预警列出该行 + 确认后解除
+  P 复核页行内补录**锁定票号**
 """
 from __future__ import annotations
 
@@ -37,6 +43,7 @@ import app.ui.unified_import_dialog as U  # noqa: E402
 
 class _MB:
     calls: list = []
+    answer = None          # question 的返回值（None = 非 Yes → 视为「取消 / 返回处理」）
 
     class Icon:
         Information = Warning = Critical = 0
@@ -45,13 +52,21 @@ class _MB:
     class ButtonRole:
         AcceptRole = RejectRole = DestructiveRole = ActionRole = 0
 
+    class StandardButton:
+        Yes = Ok = 1
+        No = Cancel = 0
+
     @staticmethod
     def information(parent, title, text, *a, **k):
         _MB.calls.append(("information", title, text))
 
     warning = information
     critical = information
-    question = information
+
+    @staticmethod
+    def question(parent, title, text, *a, **k):
+        _MB.calls.append(("question", title, text))
+        return _MB.answer
 
 
 U.QMessageBox = _MB
@@ -141,13 +156,27 @@ class _Conn:
 
 
 U.get_conn = lambda: _Conn()
-U.load_invoice_detail = lambda no: {
-    "invoice_no": no, "invoice_date": "2024-01-01", "buyer": "库中购方",
-    "total_amount": 900.0, "handlers": [{"name": "周立生", "billing": 900.0}]}
+# 库中蓝字原票：默认与 mk_red 的 -3000/周立生 **一致**（红字为负、蓝字为正）；
+# 题面可用 `blue=` 覆盖（阶段 6 情形 a 的一致性正/反例）。
+_BLUE: dict = {}       # 原票号 → (总额, 经办人)
+
+
+def _fake_detail(no):
+    """`load_invoice_detail` 桩：**不在库返回 {}**（与真实现一致，别只按 _LIB_DB 判）。"""
+    if no not in _LIB_DB:
+        return {}
+    total, name = _BLUE.get(no, (3000.0, "周立生"))
+    return {"invoice_no": no, "invoice_date": "2024-01-01", "buyer": "库中购方",
+            "total_amount": total, "handlers": [{"name": name, "billing": total}]}
+
+
+U.load_invoice_detail = _fake_detail
+# ⚠️ 故意与「本行红字」不同（7777 / 库中某人）：用于证明**红字行预填不查库**
+#    （阶段 6 要求 2 —— 复核页此刻红字票的 charge_detail 还没入库，查库必空）
 U.prefill_red_original = lambda conn, no: {
     "invoice_no": no, "invoice_date": "", "buyer": "红字参考购方",
-    "total_amount": 3000.0,
-    "handlers": [{"name": "周立生", "billing": 3000.0, "received": 0.0, "date": ""}]}
+    "total_amount": 7777.0,
+    "handlers": [{"name": "库中某人", "billing": 7777.0, "received": 0.0, "date": ""}]}
 
 
 class _FakeBF:
@@ -155,8 +184,9 @@ class _FakeBF:
     seen: list = []
 
     def __init__(self, prefill=None, *, title="", locked_no=False,
-                 readonly=False, validator=None, parent=None):
+                 readonly=False, validator=None, soft_check=None, parent=None):
         type(self).seen.append({"title": title, "readonly": readonly,
+                                "locked_no": locked_no, "soft_check": soft_check,
                                 "prefill": dict(prefill or {})})
 
     def exec(self):
@@ -195,6 +225,12 @@ def _red_row(dlg):
     return next(r for r in dlg._rows if r["kind"] == "invoice" and r["ev"]["is_red"])
 
 
+def _red_by(dlg, no):
+    """按红字票号取行（多张红字时 `_red_row` 会受排序影响，按票号取才稳）。"""
+    return next(r for r in dlg._rows
+                if r["kind"] == "invoice" and r["ev"].get("invoice_no") == no)
+
+
 def _plain_row(dlg):
     return next(r for r in dlg._rows if r["kind"] == "invoice" and not r["ev"]["is_red"])
 
@@ -203,11 +239,13 @@ def _def_row(dlg):
     return next(r for r in dlg._rows if r["kind"] == "deferred")
 
 
-def mk_dlg(invoices, red_map=None, lib=None, period="2025-01", show_all=True):
+def mk_dlg(invoices, red_map=None, lib=None, period="2025-01", show_all=True, blue=None):
     _RED.clear()
     _RED.update(red_map or {})
     _LIB_DB.clear()
     _LIB_DB.update(lib or set())
+    _BLUE.clear()
+    _BLUE.update(blue or {})
     # split_deferred 决定 sheet3 行的 need_backfill，需要「库中票号集合」：
     # 这里与 _LIB_DB 同源打桩（真实运行时两者同一个库）。
     import app.importer.ledger_import as LI
@@ -377,6 +415,167 @@ d_l = mk_dlg([mk_inv("INV-1", 1000.0,
                      remark={"receipts": [("2025-01", 0)], "remaining": None, "pure_date": None})],
              show_all=False)
 check("L：默认筛选仍是「待补录」", d_l._grp.checkedId() == 0, str(d_l._grp.checkedId()))
+
+# ================================================================ M) 阶段 6：预填取本行红字
+d_m = mk_dlg([mk_red("RED-1", orig_total=-3000.0), mk_inv("INV-HI", 1000.0,
+                                                           remark={"receipts": [("2025-01", 0)],
+                                                                   "remaining": None,
+                                                                   "pure_date": None})],
+             red_map={"RED-1": "ORIG-9"})
+r_m = _red_row(d_m)
+_pf_m = d_m._backfill_prefill(r_m, "ORIG-9")
+check("M：预填票号 = 要补的**蓝字原票号**（不是红字票号）",
+      _pf_m["invoice_no"] == "ORIG-9", _pf_m["invoice_no"])
+check("M：预填总额取本行红字**绝对值**（-3000 → 3000）",
+      _pf_m["total_amount"] == 3000.0, str(_pf_m["total_amount"]))
+check("M：预填经办人=本行红字经办人 + 开票金额（绝对值）",
+      [(h["name"], h["billing"]) for h in _pf_m["handlers"]] == [("周立生", 3000.0)],
+      str(_pf_m["handlers"]))
+check("M：预填**不查库**（库/兜底桩是 7777・库中某人，绝不能被采用）",
+      _pf_m["total_amount"] != 7777.0
+      and all(h["name"] != "库中某人" for h in _pf_m["handlers"]), str(_pf_m))
+check("M：原票开票日期留空（不可知，不拿红字日期顶替）",
+      _pf_m["invoice_date"] == "", _pf_m["invoice_date"])
+check("M：预填经办人已收=0（红字不产生收款）",
+      all(h["received"] == 0.0 and h["date"] == "" for h in _pf_m["handlers"]), str(_pf_m["handlers"]))
+
+# 本行连金额/经办人都解析不出 → 才退回查库兜底
+d_m2 = mk_dlg([mk_inv("RED-1", 0.0, handler="", is_red=True)], red_map={"RED-1": "ORIG-9"})
+_pf_m2 = d_m2._backfill_prefill(_red_by(d_m2, "RED-1"), "ORIG-9")
+check("M：本行无金额/无经办人 → 退回查库兜底（7777）",
+      _pf_m2["total_amount"] == 7777.0, str(_pf_m2["total_amount"]))
+
+# ================================================================ N) 情形 a：库中已有蓝字
+d_n1 = mk_dlg([mk_red("RED-1", orig_total=-3000.0), mk_inv("INV-HI", 1000.0,
+                                                            remark={"receipts": [("2025-01", 0)],
+                                                                    "remaining": None,
+                                                                    "pure_date": None})],
+              red_map={"RED-1": "ORIG-9"}, lib={"ORIG-9"})
+r_n1 = _red_row(d_n1)
+check("N：库中蓝字与红字**一致**（-3000/周立生 ⇄ 3000/周立生）→ 状态不动（高置信）",
+      r_n1["status"] == "高置信", r_n1["status"])
+check("N：一致 → 不产生 red_diff", r_n1.get("red_diff") is None, str(r_n1.get("red_diff")))
+check("N：一致 → 原因列仍是「✓ 系统判定无疑问」",
+      d_n1._row_field(r_n1, "reason") == "✓ 系统判定无疑问", d_n1._row_field(r_n1, "reason"))
+
+d_n2 = mk_dlg([mk_red("RED-1", orig_total=-3000.0), mk_inv("INV-HI", 1000.0,
+                                                            remark={"receipts": [("2025-01", 0)],
+                                                                    "remaining": None,
+                                                                    "pure_date": None})],
+              red_map={"RED-1": "ORIG-9"}, lib={"ORIG-9"},
+              blue={"ORIG-9": (2500.0, "李四")})
+r_n2 = _red_row(d_n2)
+check("N：库中蓝字与红字**不一致** → 落「待确认」（不直接高置信）",
+      r_n2["status"] == "待确认", r_n2["status"])
+check("N：不一致项如实列出（总额 + 经办人）",
+      (r_n2.get("red_diff") or {}).get("fields") == ["总金额", "经办人"],
+      str(r_n2.get("red_diff")))
+check("N：对照来源标为「库中蓝字原票」", r_n2.get("red_diff_src") == "库中蓝字原票",
+      str(r_n2.get("red_diff_src")))
+_rsn = d_n2._row_field(r_n2, "reason")
+check("N：原因列写明不一致 + 请确认",
+      _rsn.startswith("红字与蓝字原票不一致（总金额、经办人）") and "请确认" in _rsn
+      and "库中蓝字原票" in _rsn, _rsn)
+check("N：底部汇总报出「红字与蓝字原票不一致 1 张」",
+      "红字与蓝字原票不一致 1 张" in d_n2.lbl_summary.text(), d_n2.lbl_summary.text())
+_select(d_n2, r_n2)
+check("N：该行**给**「确认」按钮（确认后才回高置信）",
+      d_n2.btn_confirm_row.isVisible(), str(d_n2.btn_confirm_row.isVisible()))
+check("N：右栏仍默认只读（高置信行防误改）",
+      d_n2.fix_panel.inv_date.isReadOnly(), str(d_n2.fix_panel.inv_date.isReadOnly()))
+
+# ---- 确认入库预警：把不一致行数写出来；点「返回处理」→ 不提交 ----
+_n_conf = []
+d_n2.confirmed.connect(lambda: _n_conf.append(1))
+_MB.calls.clear()
+_MB.answer = None                      # 非 Yes → 返回处理
+d_n2.accept()
+check("N：入库预警列出「红字与蓝字原票不一致」1 行",
+      any(c[0] == "question" and "「红字与蓝字原票不一致」1 行" in c[2] for c in _MB.calls),
+      str([c for c in _MB.calls if c[0] == "question"]))
+check("N：点「返回处理」→ 未提交（confirmed 未发出）", not _n_conf, str(_n_conf))
+
+# ---- 点「确认」→ 回高置信，预警/汇总/原因列都不再报它 ----
+_show_all(d_n2)
+_select(d_n2, r_n2)
+d_n2._confirm_row()
+r_n2b = _red_row(d_n2)
+check("N：点「确认」后回高置信（要求 1「确认后才能保存」）",
+      r_n2b["status"] == "高置信", r_n2b["status"])
+check("N：确认后原因列不再报不一致",
+      "不一致" not in d_n2._row_field(r_n2b, "reason"), d_n2._row_field(r_n2b, "reason"))
+check("N：确认后汇总不再报不一致",
+      "红字与蓝字原票不一致" not in d_n2.lbl_summary.text(), d_n2.lbl_summary.text())
+_MB.calls.clear()
+_MB.answer = _MB.StandardButton.Yes
+d_n2.accept()
+check("N：确认后入库预警不再列它",
+      not any(c[0] == "question" and "不一致" in c[2] for c in _MB.calls), str(_MB.calls))
+check("N：确认后 accept 正常提交", bool(_n_conf), str(_n_conf))
+
+# ================================================================ O) 情形 b：补录填的蓝字
+d_o = mk_dlg([mk_red("RED-1", orig_total=-3000.0), mk_red("RED-2", orig_total=-500.0),
+              mk_inv("INV-HI", 1000.0,
+                     remark={"receipts": [("2025-01", 0)], "remaining": None,
+                             "pure_date": None})],
+             red_map={"RED-1": "ORIG-9", "RED-2": "ORIG-8"})
+r_o = _red_by(d_o, "RED-1")
+_FakeBF.seen.clear()
+_FakeBF.payload = {           # 不一致：总额 2000 ≠ 3000，且周立生分摊 2000 ≠ 3000
+    "invoice_no": "ORIG-9", "invoice_date": "2024-06-01", "buyer": "红字参考购方",
+    "total_amount": 2000.0,
+    "handlers": [{"name": "周立生", "billing": 2000.0,
+                  "received": 0.0, "date": "", "date_raw": ""}],
+}
+_select(d_o, r_o)
+d_o._open_backfill()
+_seen_o = _FakeBF.seen[-1]
+check("P：复核页行内补录 → **票号锁定**", _seen_o["locked_no"] is True, str(_seen_o["locked_no"]))
+check("P：且挂了红蓝一致性软校验（soft_check）", callable(_seen_o["soft_check"]),
+      str(_seen_o["soft_check"]))
+check("P：软提示文案含「不一致」与红蓝实际值",
+      "不一致" in (_seen_o["soft_check"](_FakeBF.payload) or "")
+      and "3,000.00" in (_seen_o["soft_check"](_FakeBF.payload) or ""),
+      str(_seen_o["soft_check"](_FakeBF.payload)))
+check("P：软校验对本行红字**一致**的补录 → None（不误报）",
+      _seen_o["soft_check"]({"total_amount": 3000.0,
+                             "handlers": [{"name": "周立生", "billing": 3000.0}]}) is None)
+r_o2 = _red_by(d_o, "RED-1")
+check("O：补录后**不直接高置信** → 落「待确认」", r_o2["status"] == "待确认", r_o2["status"])
+check("O：对照来源标为「本次补录」", r_o2.get("red_diff_src") == "本次补录",
+      str(r_o2.get("red_diff_src")))
+check("O：另一张红字仍在「待补录」（互不影响）",
+      _red_by(d_o, "RED-2")["status"] == "待补录", _red_by(d_o, "RED-2")["status"])
+_rsn_o = d_o._row_field(r_o2, "reason")
+check("O：原因列写明不一致 + 对照本次补录",
+      _rsn_o.startswith("红字与蓝字原票不一致（") and "本次补录" in _rsn_o, _rsn_o)
+check("O：底部汇总报出不一致 1 张",
+      "红字与蓝字原票不一致 1 张" in d_o.lbl_summary.text(), d_o.lbl_summary.text())
+
+_MB.calls.clear()
+_MB.answer = None
+d_o.accept()
+check("O：入库预警列出「红字与蓝字原票不一致」1 行",
+      any(c[0] == "question" and "「红字与蓝字原票不一致」1 行" in c[2] for c in _MB.calls),
+      str([c for c in _MB.calls if c[0] == "question"]))
+check("O：预警文案同时仍提醒「待补录」行数（两类互不遮挡）",
+      any(c[0] == "question" and "「待补录」1 行" in c[2] for c in _MB.calls),
+      str([c for c in _MB.calls if c[0] == "question"]))
+
+# 一致的话就不会被判待确认（回到 evaluate 的自然判定）
+d_o2 = mk_dlg([mk_red("RED-1", orig_total=-3000.0)], red_map={"RED-1": "ORIG-9"})
+r_o3 = _red_by(d_o2, "RED-1")
+_FakeBF.payload = {"invoice_no": "ORIG-9", "invoice_date": "2024-06-01", "buyer": "甲",
+                   "total_amount": 3000.0,
+                   "handlers": [{"name": "周立生", "billing": 3000.0,
+                                 "received": 0.0, "date": "", "date_raw": ""}]}
+_select(d_o2, r_o3)
+d_o2._open_backfill()
+check("O：补录与红字**一致** → 直接回高置信（不落待确认）",
+      _red_by(d_o2, "RED-1")["status"] == "高置信", _red_by(d_o2, "RED-1")["status"])
+check("O：一致 → 不产生 red_diff",
+      _red_by(d_o2, "RED-1").get("red_diff") is None,
+      str(_red_by(d_o2, "RED-1").get("red_diff")))
 
 bad = [n for n, ok, _ in results if not ok]
 print(f"\n{len(results) - len(bad)}/{len(results)} passed")

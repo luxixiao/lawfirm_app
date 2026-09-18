@@ -800,8 +800,8 @@ U.load_invoice_detail = lambda no: {
     "total_amount": 900.0, "handlers": [{"name": "周立生", "billing": 900.0}]}
 U.prefill_red_original = lambda conn, no: {
     "invoice_no": no, "invoice_date": "", "buyer": "红字参考购方",
-    "total_amount": 3000.0,
-    "handlers": [{"name": "周立生", "billing": 3000.0, "received": 0.0, "date": ""}]}
+    "total_amount": 7777.0,
+    "handlers": [{"name": "库中某人", "billing": 7777.0, "received": 0.0, "date": ""}]}
 
 
 class _FakeBF:
@@ -813,9 +813,11 @@ class _FakeBF:
     seen: list = []
 
     def __init__(self, prefill=None, *, title="", locked_no=False,
-                 readonly=False, validator=None, parent=None):
+                 readonly=False, validator=None, soft_check=None, parent=None):
         type(self).seen.append({"title": title, "readonly": readonly,
-                                "prefill": dict(prefill or {}), "validator": validator})
+                                "locked_no": locked_no, "validator": validator,
+                                "soft_check": soft_check,
+                                "prefill": dict(prefill or {})})
 
     def exec(self):
         return (U.QDialog.DialogCode.Accepted
@@ -1022,9 +1024,16 @@ b4._open_backfill()
 check("B2c：红字行补录收集的是「引用原票」号（不是红字票号）",
       "ORIG-9" in b4._backfills and "RED-1" not in b4._backfills,
       str(list(b4._backfills)))
-check("B2g：红字行预填走 prefill_red_original（票号=原票）",
-      _FakeBF.seen and _FakeBF.seen[-1]["prefill"].get("invoice_no") == "ORIG-9",
+check("B2g：红字行预填取**本行红字**（票号=原票；金额/经办人取绝对值，不查库）",
+      _FakeBF.seen
+      and _FakeBF.seen[-1]["prefill"].get("invoice_no") == "ORIG-9"
+      and _FakeBF.seen[-1]["prefill"].get("total_amount") == 3000.0
+      and [(h.get("name"), h.get("billing"))
+           for h in (_FakeBF.seen[-1]["prefill"].get("handlers") or [])] == [("周立生", 3000.0)],
       str(_FakeBF.seen[-1:]))
+check("B2g：复核页行内补录锁定票号 + 挂红蓝一致性软校验",
+      _FakeBF.seen and _FakeBF.seen[-1]["locked_no"] is True
+      and callable(_FakeBF.seen[-1].get("soft_check")), str(_FakeBF.seen[-1:]))
 # 原票已在库 → 红字行只读查看
 _set_in_lib("ORIG-9", True)
 b5 = UnifiedImportDialog(mk_red_data(), "2025-01", STAFF)
