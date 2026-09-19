@@ -872,3 +872,79 @@ ref + `pack-refs` → `push_commit.py` API 推送 → `VERIFY_REMOTE MATCH True`
 - ⚠️ **测试契约收紧**：12-9b / 12-10 的断言写成 `"台账⇄库不一致（金额）"`（**全等**），
   因此它们同时锁住「只比金额」—— 反向探针 B 命中它们是**预期**行为，不是脆弱断言。
   
+
+---
+
+## 19. 批 3-2c：导入后（post）页丢「已确认 / 已补录」标签（2026-09-19，用户报障）
+
+提交：`daa285b`（代码 + 测试）；本节为配套文档提交。
+
+### 19.1 现象（用户原话）
+
+> 入库后，再次查看导入复核页面，之前的已确认、已补录中，没有记录了。只有在高置信中有。
+> 也就是说没有了之前的状态。
+
+即：**两个叠加视图筛选点开是空表**，处理过的行全沉进「高置信」。
+
+### 19.2 🔴 根因：**状态是现算的，标签是内存的**
+
+post 页与 pre **共用**同一张表、同一套四态判定，但数据来源不同：
+
+| 项 | pre（导入前） | post（导入后） |
+| --- | --- | --- |
+| 数据 | 源文件解析 | `review_rebuild.rebuild_period_data` 从 `raw_ledger` 镜像**反向重建** |
+| **状态**（待补录/待确认/高置信） | `evaluate` 现算 | **同样现算** ⇒ 一致 ✓ |
+| **标签**（`is_confirmed` / `is_backfilled`） | 导入会话的**内存集合**（`_confirmed` / `_deferred_confirmed` / `_inv_edits` / `_deferred_edits` / `_backfills`） | 这些集合**全空**（`load_data` 每次清空重建）⇒ ✗ |
+
+⇒ **同一个用户动作（点确认 / 改字段 / 填补录），在 pre 有标签、到 post 就没了。**
+批 3-1 / 3-2b 已经给**两小类**落了留痕，其余三个断点没落：
+
+| # | 断点 | 位置 |
+| --- | --- | --- |
+| 1 | sheet3「确认收款」不留痕 —— `_merged_data` 收集 `import_confirm` 时 `if r["kind"] != "invoice" … continue` | `unified_import_dialog.py:1915`（旧） |
+| 2 | 靠「保存修改」解决的行不留痕迹 —— `_inv_edits` / `_deferred_edits` 仅内存；post 只有 `import_edit` 留痕（3-2b，**只标注原因列**），`is_confirmed` 仍 False | `_rebuild` 标签循环 |
+| 3 | **「已补录」post 恒空表** —— `rebuild_period_data` 刻意 `backfills=[]`（内容已写进 `invoice(source='manual')`），而 `_row_backfilled` 只看 `self._backfills` | `review_rebuild.py:189-190,206` / `unified_import_dialog.py:1398-1404`（旧） |
+
+### 19.3 落点（三条修法，三个独立 dim，均**只在 post 读**）
+
+| 代号 | 修法 | 落点 |
+| --- | --- | --- |
+| **甲** | sheet3「确认收款」与发票行「确认」**同性质** → 也落 `import_confirm`；post 原因列同款追加〔导入时已确认〕 | `import_confirm`（既有 dim）+ `_merged_data` 收 deferred 行 + `_row_field` 的 deferred 分支 |
+| **乙** | post 把「导入时已修改」计入「已确认」——与 pre 同口径（pre 的 `_inv_edits`/`_deferred_edits` **本就计进** `is_confirmed`）；**只补 `is_confirmed`，不动状态**（沿用 3-2b「只标注不改状态」的定论） | `_rebuild` 标签循环 2 行 |
+| **丙** | 本批补录票号落**新 dim `import_backfill`** → `_row_backfilled` 在 post 读留痕 | `import_confirm.py`（+3 函数）/ `_merged_data["backfilled"]` / `commit_ledger_import` / `review_rebuild` / `_row_backfilled` |
+
+| 文件 | 改动 |
+| --- | --- |
+| `app/engine/import_confirm.py` | 新增第三只 dim `BACKFILL_DIM = "import_backfill"` + `clear_/save_/load_backfill_hints`（与 `import_edit` 同构；载荷**只有票号**，故 `load` 返回 `set`）。模块 docstring 补「三只 dim 同源动机」 |
+| `app/engine/review_rebuild.py` | `out["backfilled"] = load_backfill_hints(period, conn)`（骨架 + 有批次两处）；`backfills` 仍恒空（**内容 vs 判据**分离），docstring 说明 |
+| `app/importer/importer.py` | commit 同事务 `clear_backfill_hints` + `save_backfill_hints`，返回 `backfill_hint_count`；**`rollback_batch` 改为一并清三类留痕**（原先只清 `import_confirm` —— 批 3-2b 上线时漏了 `import_edit`，本批收口） |
+| `app/ui/unified_import_dialog.py` | 甲（`_merged_data` 收 deferred + 原因列标注）、乙（`is_confirmed`）、丙（`merged["backfilled"]` + `_import_backfilled_nos()` + `_row_backfilled` 双模式互补）；模块 docstring 新增「导入时留痕三类」 |
+| `tests/test_import_confirm.py` | 新增 E 节 13 条（载荷/幂等/三 dim 并存/clear 各清自己/commit 计数/rebuild 带出/覆盖式重导失效/空骨架）+ B4b/B5 改判**三类留痕一起清**（**32 → 48 条**） |
+| `tests/_smoke_review_rebuild.py` | 新增 F 节：post 端到端（含**真按筛选按钮 + 真读表**）+ pre 写侧收集（**+16 条 → 110 条**） |
+
+### 19.4 验证
+
+| 项 | 结果 |
+| --- | --- |
+| 全量回归 | **35/35 全绿**（58.2s / 58.9s 两次：改后与 rev_check 还原后） |
+| 单文件 | `test_import_confirm.py` **48 / 0 FAIL**；`_smoke_review_rebuild.py` **110 / 0 FAIL** |
+| 反向校验（7 条探针） | **全部如实变红、无「0 条变红」**：A 甲·写侧（F5）红 1；B 甲·读侧标注（F2）红 1；C 乙（F4）红 1；D 丙·读侧（F3 判定 + F3 筛选）红 2；E 丙·写侧（F6）红 1；F 丙·落库（E6/E7/E8）红 3；G 撤销清三类（B5）红 1 |
+| 还原核验 | `git diff --stat` 恰为本批 **6 文件 / 403 插入 / 29 删除** |
+
+### 19.5 影响与边界
+
+- **写入端只增不改语义**：`confirmations` 由「只收发票行」扩为「发票行 + sheet3 确认收款行」；
+  新增 `backfilled` 键（**与 `backfills` 内容分离**：内容随本事务入 `invoice`/`charge_detail`/
+  `collection`，判据靠留痕）。
+- **pre 行为一字不变**：`_import_confirmation` / `_import_edit_hint` / `_import_backfilled_nos`
+  三个读口都 `if self._mode != "post": return 空` ⇒ 覆盖式重导同一账期时，上一批的旧留痕
+  **不会**提前吞掉本批的疑问/补录（与批 3-1 的既定约束同款）。
+- **三类留痕同生共死**：`rollback_batch` 一并清；`commit_ledger_import` 各自先清后写 ⇒
+  覆盖式重导与撤销都不会留下失效痕迹。
+- 仍**不恢复**的部分（已知、不属本批）：
+  · 「已修正的问题行」(`_fix`) —— post 的 `problems` 恒空（问题行不入镜表，见 §7 / `review_rebuild`
+    模块 docstring），修正后的行已随 `invoices` 落库 ⇒ 该类别在 post 本就不存在，无需留痕；
+  · `_ov`（已收覆盖值）走的是历史弹窗路径，现已停用。
+- ⚠️ **一处口径取舍（乙）**：post 里「导入时已修改」的行会同时是 `is_confirmed=True` **和**
+  「待确认」（若还有改不掉的硬疑问）—— 这与 **pre 完全一致**（pre 的 `_inv_edits` 也是只置
+  `is_confirmed`、不改状态），不是新引入的矛盾。
