@@ -76,6 +76,19 @@
   · 「待补录」**仍是有效待办**（去「发票补录」页处理），故保留该状态与原因文案；
     而 sheet3「已在库」行在导入后**没有待办**（收款已于入库时按 A10 处理完毕）→
     归入「高置信」而非「待确认」（见 `_deferred_status`）。
+- **「导入时留痕」三类**（批 3-1 / 3-2b / 3-2c，落 `anomaly_note` 三个独立 dim）：
+  post 的**状态**是「读库重建 + 重跑 `evaluate`」现算的，而「已确认 / 已补录」两个
+  **叠加视图**原本依赖只在导入会话内存里的集合（`_confirmed` / `_deferred_confirmed` /
+  `_inv_edits` / `_deferred_edits` / `_backfills`）—— `load_data` 每次把它们清空重建
+  ⇒ 关掉导入页再从「导入复核」进来，这些集合全空，用户当时处理过的行**只剩「高置信」
+  一档**。故三件事各落一条留痕，且**只在 post 读**（pre 的确认/修改/补录都是实时的，
+  读留痕会让「覆盖式重导同账期」时上一批的旧痕迹冒充本批的）：
+  1. **点了「确认」**（发票行 / sheet3 确认收款）→ `import_confirm` → post 里
+     不再重报「待确认」并计入「已确认」（批 3-1 + 甲）；
+  2. **就地改过字段** → `import_edit` → post 原因列标注「导入时已修改：字段…」，
+     并计入「已确认」（批 3-2b + 乙 —— 与 pre 同口径：pre 的 `_inv_edits`/
+     `_deferred_edits` 本就计进 `is_confirmed`）；
+  3. **填过补录** → `import_backfill` → post 里「已补录」筛选不再是空表（批 3-2c）。
 编辑回写属批 3（`review_writeback.apply_edit`），本批不实现。
 """
 from __future__ import annotations
@@ -211,6 +224,9 @@ class UnifiedImportDialog(QWidget):
         self._batch_nos_cache: set | None = None
         # 阶段 6：库中蓝字原票的取数缓存（`_rebuild` 每轮重置；键 = 原票号）
         self._blue_cache: dict | None = None
+        # 批 3-2c：本账期「导入时填过补录」的票号集合缓存（`_rebuild` 每轮重置；
+        # 只在 post 模式有值 —— pre 用实时集合 `_backfills`，不读历史留痕）
+        self._imp_bf_nos_cache: set | None = None
         self.fix_panel = None
 
         self.setWindowTitle(f"发票台账导入确认 — {period}")
@@ -710,6 +726,8 @@ class UnifiedImportDialog(QWidget):
         self._batch_nos_cache = None
         # 阶段 6：同轮内「库中蓝字原票」取数只查一次（`_lib_blue_amounts` 的缓存）
         self._blue_cache = None
+        # 批 3-2c：同上 —— 「导入时填过补录」票号集合（`_import_backfilled_nos` 的缓存）
+        self._imp_bf_nos_cache = None
         # 批 2：「台账 ⇄ 库」比对只在导入前模式启用（lib=None → evaluate 完全跳过）
         evs = evaluate(self._work, self._staff_set, self._confirmed, self._period,
                        lib=(self._lib_ctx if self._mode == "pre" else None))
@@ -790,6 +808,14 @@ class UnifiedImportDialog(QWidget):
             if note:
                 if r["status"] == "待确认":
                     r["status"] = "高置信"
+                confirmed = True
+            # 批 3-2c（乙）：post 里「导入时已修改」也算「已确认」，与 pre 同口径。
+            # pre 的修改实时记在 `_inv_edits` / `_deferred_edits` 两个内存集合里，而它们
+            # **已计入 `is_confirmed`**（上面第二个 `elif`）⇒ 同一个用户动作（改完这行）
+            # 在 pre 是「已确认」，到 post 却只剩「高置信」，筛选点开是空表。
+            # 只补 `is_confirmed`，**不动状态**（与 3-2b「只标注不改状态」的定论一致）：
+            # 已修改的行仍可能是「待确认」（还有改不掉的硬疑问），这与 pre 完全一样。
+            if r.get("import_edit_hint"):
                 confirmed = True
             r["is_confirmed"] = confirmed
             r["is_backfilled"] = self._row_backfilled(r)
@@ -882,6 +908,10 @@ class UnifiedImportDialog(QWidget):
                 else:
                     # 批 1b：导入后「已在库」行无待办（收款已于入库时按 A10 处理）→ 无疑问
                     text = REASON_NO_DOUBT if self._mode == "post" else REASON_IN_LIBRARY
+                # 批 3-2c（甲）：该行的收款在导入那一刻已由人点「确认」→ 与发票行同款标注
+                # （留痕见 `_merged_data` 的 deferred 分支；绝不动状态文案本身）
+                if r.get("is_import_confirmed"):
+                    text += f"〔{REASON_IMPORT_CONFIRMED}〕"
                 # 批 3-2b：导入时就地修改过字段（库内零落点）→ 标注改了哪些。
                 # 「待补录」行的修改随补录条目落库（bf["handlers"]/buyer/…），生成端已
                 # 过滤不掉它们；这里对拿得到的提示照常标注。
@@ -1387,20 +1417,46 @@ class UnifiedImportDialog(QWidget):
             return ""
         return no
 
-    def _row_backfilled(self, r: Dict) -> bool:
-        """该行**本次是否填过补录**（「已补录」叠加视图的判据，与状态无关）。
+    def _import_backfilled_nos(self) -> set:
+        """post：本账期**导入时填过补录**的票号集合（批 3-2c 留痕）；pre 恒空集。
 
-        · 应收账款(deferred)行：行上票号即要补的票 → 看它在不在本次 `_backfills`；
-        · 红字(invoice)行：要补的是**它引用的蓝字原票** → 看原票号在不在 `_backfills`
+        与 `_import_confirmation` / `_import_edit_hint` 同为「只在 post 生效」：
+        pre 的补录是**实时**的（`self._backfills`），若也读留痕，「覆盖式重导同一账期」
+        时上一批的旧补录会冒充本批的（同款约束见那两个方法）。按轮缓存
+        （`_rebuild` 每轮重置；集合来自 `review_rebuild` 已读好的 `data["backfilled"]`，
+        本方法不查库）。
+        """
+        if self._mode != "post":
+            return set()
+        if self._imp_bf_nos_cache is None:
+            self._imp_bf_nos_cache = set(self._data.get("backfilled") or ())
+        return self._imp_bf_nos_cache
+
+    def _row_backfilled(self, r: Dict) -> bool:
+        """该行**是否填过补录**（「已补录」叠加视图的判据，与状态无关）。
+
+        · 应收账款(deferred)行：行上票号即要补的票 → 看它有没有被补过；
+        · 红字(invoice)行：要补的是**它引用的蓝字原票** → 看原票号有没有被补过
           （补录完成那刻 `status` 已回落，故不能只看 `bf_orig`，必须现算一次）；
         · 其余行：否。
+
+        **pre 看本批**（`self._backfills` = 用户刚刚填的）；**post 看留痕**
+        （`_import_backfilled_nos()`，批 3-2c）—— post 的 `backfills` 恒空
+        （内容已入 `invoice`/`charge_detail`/`collection`），不读留痕的话「已补录」
+        筛选点开**永远是空表**（用户以为自己上次白补了）。两模式互补，绝不同时生效。
         """
+        hist = self._import_backfilled_nos()
         if r["kind"] == "deferred":
             no = ((r.get("deferred") or {}).get("invoice_no") or "").strip()
-            return bool(no) and no in self._backfills
+            return bool(no) and (no in self._backfills or no in hist)
         if r["kind"] == "invoice":
             tgt = self._row_backfill_target(r)
-            return bool(tgt) and tgt[0] in self._backfills
+            if tgt and tgt[0] in self._backfills:
+                return True
+            if not hist:
+                return False      # pre：不查库、不反查原票号（留痕恒空 → 直接 False）
+            orig = self._red_orig_no((r.get("ev") or {}).get("invoice_no") or "")
+            return bool(orig) and orig in hist
         return False
 
     def _row_backfill_target(self, r: Dict) -> tuple | None:
@@ -1912,20 +1968,38 @@ class UnifiedImportDialog(QWidget):
         # 四态时会把这些疑问重新报成「待确认」，而 post 隐藏了「确认」按钮 ⇒ 点不掉的假待办。
         confs: List[Dict] = []
         for r in self._rows:
-            if r["kind"] != "invoice" or r.get("work_idx") not in self._confirmed:
-                continue
-            ev = r.get("ev") or {}
-            _no = str(ev.get("invoice_no") or "").strip()
-            if not _no:
-                continue
-            parts = list(ev.get("reasons") or [])
-            if r.get("red_diff"):
-                parts.insert(0, "红字与蓝字原票不一致（"
-                             + "、".join(r["red_diff"].get("fields") or []) + "）")
-            confs.append({
-                "invoice_no": _no,
-                "note": "；".join(parts) or "兜底判定（系统口径不确定，已人工过目）",
-            })
+            if r["kind"] == "invoice" and r.get("work_idx") in self._confirmed:
+                ev = r.get("ev") or {}
+                _no = str(ev.get("invoice_no") or "").strip()
+                if not _no:
+                    continue
+                parts = list(ev.get("reasons") or [])
+                if r.get("red_diff"):
+                    parts.insert(0, "红字与蓝字原票不一致（"
+                                 + "、".join(r["red_diff"].get("fields") or []) + "）")
+                confs.append({
+                    "invoice_no": _no,
+                    "note": "；".join(parts) or "兜底判定（系统口径不确定，已人工过目）",
+                })
+            elif r["kind"] == "deferred" and r.get("d_index") in self._deferred_confirmed:
+                # 批 3-2c（甲）：sheet3「确认收款」与发票行的「确认」**同性质** —— 都只
+                # 活在内存集合（`_deferred_confirmed` / `_confirmed`）里，库里零痕迹。
+                # 不落留痕 ⇒ post 里 `is_confirmed` 恒 False，而状态又被 `_deferred_status`
+                # 一律降成「高置信」⇒ 全部沉进「高置信」，用户看不到自己确认过哪些行。
+                # 状态为「待补录」的行进不来（`_confirm_row` 直接 return）；但
+                # `need_backfill=True` 而**本批已补录**、随后又点了确认的行**会**进来 ——
+                # 它的收款由补录条目写（A10 里对补录票号跳过），本留痕只回答
+                # 「这一行人工过目过吗」，与收款怎么写的无关。
+                d = r.get("deferred") or {}
+                _no = str(d.get("invoice_no") or "").strip()
+                if not _no:
+                    continue
+                confs.append({
+                    "invoice_no": _no,
+                    "note": ("已确认收款口径（应收账款：本次已补录原票）"
+                             if d.get("need_backfill")
+                             else "已确认收款口径（应收账款：已在库，采纳台账收款）"),
+                })
         merged["confirmations"] = confs
 
         # 批 3-2b：本次就地修改过字段的行 → 随台账**同一事务**落「修改字段」留痕
@@ -2009,6 +2083,13 @@ class UnifiedImportDialog(QWidget):
             if d.get("total_amount"):
                 bf["total_amount"] = float(d["total_amount"])
         merged["backfills"] = list(bf_map.values())
+        # 批 3-2c：本批**补过哪些票号** → 随台账同一事务落一条独立留痕
+        # （`anomaly_note` dim=import_backfill，由 `commit_ledger_import` 写）。
+        # 与上面 `backfills` 的**内容**分开：内容随本事务写进
+        # `invoice`/`charge_detail`/`collection`，入库后就不再需要；
+        # 但「已补录」筛选（`_row_backfilled`）在 post 里需要知道**本批补过哪几张票**
+        # —— 不落痕，那个筛选按钮点开永远是空表。
+        merged["backfilled"] = [no for no in bf_map if no]
 
         # 已收覆盖值按「原始解析下标」回写（历史弹窗路径，现已停用，保留兼容）
         invoices = merged.get("invoices", [])

@@ -83,13 +83,19 @@ def rollback_batch(conn, batch_id: int) -> None:
     conn.execute("DELETE FROM expense_ledger WHERE import_batch_id=?", (batch_id,))
     conn.execute("DELETE FROM invoice WHERE import_batch_id=?", (batch_id,))
     conn.execute("DELETE FROM staff WHERE import_batch_id=?", (batch_id,))
-    # 批 3-1：本批的「导入时确认」留痕随之失效（只清本模块的 dim='import_confirm'，
-    # 旧「导入后」页写的人工备注 'merged' 等**不动**）。留痕按账期存放，故先取批次账期。
+    # 批 3-1 / 3-2b / 3-2c：本批的三类「导入时留痕」随之失效（只清本模块自己的三个 dim，
+    # 旧「导入后」页写的人工备注 'merged'/'handler'/'received' **不动**）。
+    # 三类同生共死：撤销台账批次后，复核页 post 模式既看不到「已确认」，也不该再看到
+    # 「导入时已修改」「已补录」—— 那些都是这一次导入的产物。留痕按账期存放，故先取账期。
     _b = conn.execute("SELECT batch_type, period FROM import_batch WHERE id=?",
                       (batch_id,)).fetchone()
     if _b and _b[0] == "ledger" and _b[1]:
-        from app.engine.import_confirm import CONFIRM_DIM
-        conn.execute("DELETE FROM anomaly_note WHERE period=? AND dim=?", (_b[1], CONFIRM_DIM))
+        from app.engine.import_confirm import (
+            BACKFILL_DIM, CONFIRM_DIM, EDIT_DIM,
+        )
+        conn.execute(
+            "DELETE FROM anomaly_note WHERE period=? AND dim IN (?,?,?)",
+            (_b[1], CONFIRM_DIM, EDIT_DIM, BACKFILL_DIM))
     conn.execute("UPDATE import_batch SET status='rolled_back' WHERE id=?", (batch_id,))
 
 
@@ -969,6 +975,7 @@ def commit_ledger_import(data: Dict, period: str, path: str,
         from app.engine.import_confirm import (
             clear_confirmations, save_confirmations,
             clear_edit_hints, save_edit_hints,
+            clear_backfill_hints, save_backfill_hints,
         )
         clear_confirmations(conn, period)
         confirm_n = save_confirmations(conn, period, data.get("confirmations"))
@@ -979,6 +986,14 @@ def commit_ledger_import(data: Dict, period: str, path: str,
         # 事务：与确认留痕同款 —— 同一事务；先清本账期本 dim，覆盖式重导时旧提示整体失效。
         clear_edit_hints(conn, period)
         edit_hint_n = save_edit_hints(conn, period, data.get("edit_hints"))
+        # 批 3-2c：本批**填过补录**的票号同事务落留痕（dim=import_backfill）。
+        # 为什么写：复核页「已补录」筛选的判据 `_row_backfilled` 只看内存集合 `_backfills`，
+        #   而 `rebuild_period_data` 刻意 `backfills=[]`（补录条目已写进
+        #   `invoice(source='manual')` 并随本事务落库）⇒「导入后」模式点「已补录」永远空表，
+        #   用户会以为上次补的票白补了。留痕只记票号（内容在 invoice/charge_detail/collection）。
+        # 事务：同款 —— 同一事务；先清本账期本 dim，覆盖式重导时旧留痕整体失效。
+        clear_backfill_hints(conn, period)
+        backfill_n = save_backfill_hints(conn, period, data.get("backfilled"))
 
         conn.commit()
     except Exception:
@@ -1000,6 +1015,8 @@ def commit_ledger_import(data: Dict, period: str, path: str,
         "confirmation_count": confirm_n,
         # 批 3-2b：随本批同一事务写入的「导入时修改」留痕条数（anomaly_note/dim=import_edit）
         "edit_hint_count": edit_hint_n,
+        # 批 3-2c：随本批同一事务写入的「已补录」留痕条数（dim=import_backfill）
+        "backfill_hint_count": backfill_n,
         # A10：确认收款时会「超额收款」的已在库票（台账信息错误，未写入收款）。
         # 供调用方提示用户核对台账（复核页在阶段 2-2 把它标成问题行）。
         "over_collected": over_collected,

@@ -28,6 +28,13 @@
 - 读取：`load_confirmations(period)` 优先本 dim，再回退旧页 `merged` 与更老的
   `handler`/`received` 维度（与 `review_compare.load_confirmed_notes` 同口径，
   批 4 删旧页时正好收口到本模块）。
+
+本模块共管**三个**各占一个 dim 的留痕（互不覆盖，清各自的）：
+`import_confirm`（批 3-1，上面这套）/ `import_edit`（批 3-2b，改了哪些字段）/
+`import_backfill`（批 3-2c，本批补录了哪些票号）。
+三者动机同源：**导入会话内存里的状态（`_confirmed` / `_inv_edits` / `_backfills` …）
+一旦关窗就没了**，而「导入后」模式是**重新读库算**的 ⇒ 不落库，用户就看不到自己当时
+做过的处理，页面上只剩「高置信」一档。
 """
 from __future__ import annotations
 
@@ -47,6 +54,15 @@ CONFIRM_DIM = "import_confirm"
 # 留痕只记「改了哪些字段」，不记新值 —— 镜表=原文的铁律不破坏，回写仍走
 # `review_writeback.apply_edit`（批 3 落点）。
 EDIT_DIM = "import_edit"
+
+# 批 3-2c：本批**填过补录**的票号留痕（第三个独立 dim，与上两个互不覆盖）。
+# 为什么需要：「已补录」筛选的判据 `_row_backfilled` 只看导入会话的内存集合
+# `self._backfills`，而 `rebuild_period_data` 刻意 `backfills=[]`（补录条目入库后
+# 已写进 `invoice(source='manual')`，不再随台账流转）⇒ post 页点「已补录」**永远空表**，
+# 用户看不到自己上次补过哪些票。留痕**只记票号**，不记内容 —— 内容已在
+# `invoice` / `charge_detail` / `collection` 里，本 dim 只回答「这票是本批补录出来的吗」。
+BACKFILL_DIM = "import_backfill"
+BACKFILL_NOTE = "本次导入已补录原票"
 
 # 旧页写入的维度（读取时作为回退来源，批 4 删旧页后仍保留兼容历史数据）
 _LEGACY_DIMS = ("merged", "handler", "received")
@@ -175,3 +191,63 @@ def load_edit_hints(period: str, conn=None) -> Dict[str, str]:
             conn.close()
     return {(r["invoice_no"] or "").strip(): (r["note"] or "")
             for r in rows if (r["invoice_no"] or "").strip()}
+
+
+# ---------------------------------------------------------------------------
+# 批 3-2c：本批填过补录的票号留痕（dim=import_backfill）
+# 结构与「修改留痕」同构，但**载荷只有一个票号**：补录的内容（新票 + 分摊 + 收款）
+# 入库后已经在 invoice / charge_detail / collection 里，留痕只回答
+# 「这一票是本批补录出来的吗」—— 供 post 页重建「已补录」叠加视图。
+# 无 legacy 维度 —— 本 dim 是全新引入，不需要回退。
+# ---------------------------------------------------------------------------
+
+def clear_backfill_hints(conn, period: str) -> int:
+    """清掉该账期 `import_backfill` 维度的补录留痕；返回删除条数。
+
+    只删自己的 dim —— 确认留痕（`import_confirm`）、修改留痕（`import_edit`）
+    与旧页人工备注（`merged` 等）**绝不动**。
+    """
+    cur = conn.execute(
+        "DELETE FROM anomaly_note WHERE period=? AND dim=?", (period, BACKFILL_DIM))
+    return cur.rowcount or 0
+
+
+def save_backfill_hints(conn, period: str, invoice_nos: Optional[Iterable]) -> int:
+    """把本批**填过补录**的票号写进 `anomaly_note`（调用方保证同一事务）。
+
+    invoice_nos: 票号的可迭代对象（字符串；空串 / 纯空白跳过，非字符串会 `str()`）。
+    同票同账期靠主键 `INSERT OR REPLACE` 幂等。返回写入条数。
+    """
+    n = 0
+    for raw in invoice_nos or ():
+        no = str(raw or "").strip()
+        if not no:
+            continue
+        conn.execute(
+            "INSERT OR REPLACE INTO anomaly_note "
+            "(invoice_no, dim, period, note, confirmed_at) "
+            "VALUES (?,?,?,?, datetime('now','localtime'))",
+            (no, BACKFILL_DIM, period, BACKFILL_NOTE),
+        )
+        n += 1
+    return n
+
+
+def load_backfill_hints(period: str, conn=None) -> set:
+    """某账期「本批填过补录」的票号集合（`dim=import_backfill`）。
+
+    返回 `set`（不是 dict）—— 本 dim 的载荷就是票号本身，没有备注可读。
+    """
+    own = conn is None
+    if own:
+        conn = get_conn()
+    try:
+        rows = conn.execute(
+            "SELECT invoice_no FROM anomaly_note WHERE period=? AND dim=?",
+            (period, BACKFILL_DIM),
+        ).fetchall()
+    finally:
+        if own:
+            conn.close()
+    return {str(r["invoice_no"]).strip() for r in rows
+            if (r["invoice_no"] or "").strip()}

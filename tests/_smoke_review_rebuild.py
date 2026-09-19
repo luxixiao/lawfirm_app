@@ -28,6 +28,12 @@ E. 批 3-2「经办人分摊」取**库侧真值**：`raw_ledger` 只存台账�
    重解析会在 post 退回旧值/空值。真值在 `charge_detail`，且**只认本台账批次**（可证明是
    本次导入写入的），并要求与行金额勾稽才采用。含 4 条反向探针：非本批次不取 / 不勾稽不取 /
    sheet3 行不取别的批次 / 无库值完整回退原文。**顺序依赖**：E 节必须在 B2 往返等价之后。
+F. 批 3-2c 留痕 → post 页「已确认 / 已补录」不再丢（用户 2026-09-19 报障）：post 的
+   **状态**读库现算，而两个**叠加视图**原本只依赖导入会话的内存集合 ⇒ 关掉导入页再进来，
+   处理过的行只剩「高置信」。三条修法各占一个独立 dim、均**只在 post 读**：
+   甲 sheet3「确认收款」也落 `import_confirm`；乙「导入时已修改」计入「已确认」
+   （与 pre 同口径）；丙 本批补录票号落 `import_backfill` →「已补录」筛选不再是空表。
+   含两端验证：post 端到端（含**筛选按钮真能筛出行**）+ pre 写侧收集。
 
 运行：python tests/_smoke_review_rebuild.py   （需 QT_QPA_PLATFORM=offscreen）
 """
@@ -52,7 +58,7 @@ from app.importer.ledger_import import (  # noqa: E402
 )
 from app.importer.parse_remark import parse_remark  # noqa: E402
 from app.ui.unified_import_dialog import (  # noqa: E402
-    FILTER_ALL, REASON_BACKFILL, REASON_IMPORT_CONFIRMED, REASON_IMPORT_EDIT,
+    FILTER_ALL, FILTERS, REASON_BACKFILL, REASON_IMPORT_CONFIRMED, REASON_IMPORT_EDIT,
     REASON_NO_DOUBT, UnifiedImportDialog,
 )
 
@@ -677,6 +683,99 @@ check("E6 反向：无库值 → 完全按原文解析（P2 不受本节影响�
       _by_no(_d5["invoices"])["P2"]["handlers"] == [("陈娟", -2000.0)]
       and _by_no(_d5["invoices"])["P2"].get("handlers_from_lib") is False,
       f"{_by_no(_d5['invoices'])['P2']['handlers']}")
+
+# ==================================================================== F) 批 3-2c 留痕 → post 页「已确认 / 已补录」不再丢
+# 背景（用户报障 2026-09-19）：入库后再从「导入复核」进来看，之前处理过的行**只剩
+# 「高置信」一档**，「已确认」「已补录」筛选点开是空的。根因：post 的**状态**是读库重建
+# 现算的，而这两个**叠加视图**（`is_confirmed` / `is_backfilled`）原本只依赖导入会话的
+# 内存集合（`_confirmed` / `_deferred_confirmed` / `_inv_edits` / `_deferred_edits` /
+# `_backfills`）——`load_data` 每次都把它们清空重建。
+# 三条断点与三条修法（三个独立 dim，均**只在 post 读**）：
+#   甲 sheet3「确认收款」不落痕 → `_merged_data` 也收 deferred 行 → dim=import_confirm
+#   乙 「导入时已修改」不算已确认 → post 与 pre 同口径（pre 的 `_inv_edits` 本就计入）
+#   丙 「本批补过哪些票」不落痕 → dim=import_backfill →「已补录」筛选恢复
+_conn4 = _db.get_conn()
+# 把 P5 补成「已在库」：真实场景里补录随台账**同一事务**写进了 invoice(source='manual')
+_conn4.execute("INSERT INTO invoice (invoice_no, invoice_date, total_amount, source) "
+               "VALUES ('P5','2024-11-05',3000.0,'manual')")
+# 导入时的留痕：P6 确认收款（甲）/ P5 本批补录（丙）；Q2 的修改留痕由 D+ 节写（乙）
+_IC.save_confirmations(_conn4, "2025-01", [
+    {"invoice_no": "P6", "note": "已确认收款口径（应收账款：已在库，采纳台账收款）"}])
+_IC.save_backfill_hints(_conn4, "2025-01", ["P5", "", "   "])
+_conn4.commit()
+_conn4.close()
+
+_d6 = RB.rebuild_period_data("2025-01")
+check("F1 读侧：confirmations 随 rebuild 带出（含 sheet3 确认收款行）",
+      _d6["confirmations"].get("P6") == "已确认收款口径（应收账款：已在库，采纳台账收款）",
+      f"{_d6['confirmations']}")
+check("F1 读侧：backfilled 带出本批补录票号集合（空/空白票号跳过）",
+      _d6["backfilled"] == {"P5"}, f"{_d6['backfilled']!r}")
+check("F1 读侧：backfills 仍恒空（内容已入 invoice，不随台账流转）",
+      _d6["backfills"] == [], f"{_d6['backfills']}")
+
+# --- post 端到端：两个叠加视图都恢复
+_dlgF = UnifiedImportDialog(mode="post")
+_dlgF.load_period("2025-01")
+_dlgF._grp.button(FILTER_ALL).setChecked(True)
+_dlgF._render()
+_rowF = {_row_no_of(r): r for r in _dlgF._rows}
+check("F2 甲：post 里 sheet3 确认收款行计入「已确认」（原本全沉进「高置信」）",
+      _rowF["P6"]["is_confirmed"] is True
+      and _rowF["P6"]["is_import_confirmed"] is True,
+      f"{_rowF['P6']['is_confirmed']}/{_rowF['P6'].get('is_import_confirmed')}")
+check("F2 甲：原因列追加「导入时已确认」（状态文案本身不动）",
+      REASON_IMPORT_CONFIRMED in _dlgF._row_field(_rowF["P6"], "reason"),
+      _dlgF._row_field(_rowF["P6"], "reason"))
+check("F2 甲：未确认的 sheet3 行不受影响（逐行判定，不一刀切）",
+      _rowF["P5"]["is_confirmed"] is False, f"{_rowF['P5']['is_confirmed']}")
+
+check("F3 丙：post 里本批补过的票计入「已补录」（原本恒空表）",
+      _rowF["P5"]["is_backfilled"] is True, f"{_rowF['P5']['is_backfilled']}")
+check("F3 丙：没补过的行不进「已补录」",
+      _rowF["P6"]["is_backfilled"] is False, f"{_rowF['P6']['is_backfilled']}")
+
+# 筛选**端到端**（真按按钮 && 真读表）：「已确认」「已补录」都真的能筛出行。
+# ⚠️ `self._rows` 恒含全部行，筛选只作用在 `table` 上 → 必须读**表**（COL_NO 列）。
+for _filt, _want in (("已确认", "P6"), ("已补录", "P5")):
+    _dlgF._grp.button(FILTERS.index(_filt)).setChecked(True)
+    _dlgF._render()
+    _nos = {_dlgF.table.item(i, U.COL_NO).text() for i in range(_dlgF.table.rowCount())}
+    check(f"F3 「{_filt}」筛选非空且含 {_want}（用户报障的入口本身）",
+          _want in _nos and _dlgF.table.rowCount() < len(_dlgF._rows),
+          f"{sorted(_nos)} (全部 {len(_dlgF._rows)} 行)")
+_dlgF._grp.button(FILTER_ALL).setChecked(True)
+_dlgF._render()
+
+# --- 乙：post 把「导入时已修改」也算「已确认」（与 pre 同口径）
+_dlgG = UnifiedImportDialog(mode="post")
+_dlgG.load_period("2025-02")
+_rowG = {_row_no_of(r): r for r in _dlgG._rows}
+check("F4 乙：post 里「导入时已修改」的行计入「已确认」（留痕来自 D+ 节）",
+      _rowG["Q2"]["import_edit_hint"] == "购方、案号"
+      and _rowG["Q2"]["is_confirmed"] is True,
+      f"{_rowG['Q2']['import_edit_hint']!r}/{_rowG['Q2']['is_confirmed']}")
+check("F4 乙：既没改过也没确认的行仍不算「已确认」",
+      _rowG["Q4"]["is_confirmed"] is False
+      and not _rowG["Q4"]["import_edit_hint"], f"{_rowG['Q4']['is_confirmed']}")
+
+# --- 写侧（pre）：_merged_data 收集 deferred 确认 + 记录本批补录票号
+_preF = UnifiedImportDialog(_d6, "2025-01", STAFF)
+_p6r2 = next(r for r in _preF._rows if _row_no_of(r) == "P6")
+check("F5 前置：pre 模式不读留痕（is_import_confirmed / is_backfilled 均为假）",
+      _p6r2["is_import_confirmed"] is False and _p6r2["is_backfilled"] is False)
+_preF._deferred_confirmed.add(_p6r2["d_index"])          # 模拟点了「确认收款」
+_mdF = _preF._merged_data()
+check("F5 甲（写侧）：sheet3 确认收款行 → confirmations 一条",
+      any(c["invoice_no"] == "P6" and "已确认收款口径" in c["note"]
+          for c in _mdF["confirmations"]), f"{_mdF['confirmations']}")
+check("F5 甲（写侧）：未确认的 sheet3 行不进留痕",
+      all(c["invoice_no"] != "P5" for c in _mdF["confirmations"]))
+check("F6 丙（写侧）：本批没填过补录 → backfilled 为空",
+      _mdF["backfilled"] == [], f"{_mdF['backfilled']}")
+_preF._backfills["P5"] = {"invoice_no": "P5", "create": True}
+check("F6 丙（写侧）：填过补录 → merged['backfilled'] 列出该票号",
+      _preF._merged_data()["backfilled"] == ["P5"], f"{_preF._merged_data()['backfilled']}")
 
 # 恢复真实库路径
 _db.DB_PATH = _real_db

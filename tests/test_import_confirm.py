@@ -29,6 +29,12 @@ D) 批 3-2b：修改字段留痕（dim=`import_edit`，与确认留痕同构）
    - 与 `import_confirm` dim 并存互不覆盖；`clear_edit_hints` 只清自己
    - `commit_ledger_import` 同事务写 + 覆盖式重导先清后写；返回 `edit_hint_count`
    - `rebuild_period_data` 带出 `edit_hints`
+E) 批 3-2c：补录票号留痕（dim=`import_backfill`，第三只同族 dim）
+   - save/load 往返（载荷只有票号 → 返回 `set`）；空/空白票号跳过；幂等
+   - 三个 dim 并存互不覆盖；`clear_backfill_hints` 只清自己
+   - `commit_ledger_import` 同事务写 + 覆盖式重导先清后写；返回 `backfill_hint_count`
+   - `rebuild_period_data` 带出 `backfilled`
+   - `rollback_batch` **三个 dim 一起清**（批 3-2b 曾漏了 `import_edit`，本批一并收口）
 """
 import sqlite3
 import sys
@@ -205,16 +211,31 @@ def main() -> int:
     check("B4 覆盖式重导：confirmation_count 反映本次条数",
           r2.get("confirmation_count") == 1, str(r2.get("confirmation_count")))
 
-    # rollback_batch：本批账期留痕被清，但不动旧页人工备注
+    # rollback_batch：本批账期的**三类**留痕一起清，但不动旧页人工备注。
+    # ⚠️ 批 3-2b 上线时漏了 `import_edit`（只清了 `import_confirm`）—— 同一族的 dim
+    #    必须同生共死：撤销台账批次后，post 页不该再看到「导入时已修改」。本批收口。
     bid = _active_batch(P2)
+    IC.save_edit_hints(proxy, P2, [{"invoice_no": "C1", "note": "购方"}])
+    IC.save_backfill_hints(proxy, P2, ["C9"])
     conn.execute("INSERT INTO anomaly_note (invoice_no, dim, period, note, confirmed_at) "
                  "VALUES ('KEEP','merged',?, '人工备注', datetime('now'))", (P2,))
     conn.commit()
+    # ⚠️ `_dims` 是 {票号: dim} 字典，同票多 dim 会互相顶掉（C1 同时有
+    #    import_confirm 与 import_edit）→ 这里必须用 (票号, dim) 二元组。
+    _pre2 = {(r["invoice_no"], r["dim"]) for r in conn.execute(
+        "SELECT invoice_no, dim FROM anomaly_note WHERE period=?", (P2,))}
+    check("B4b 前置：撤销前三类留痕都在（import_confirm / import_edit / import_backfill）",
+          {d for _, d in _pre2} == {IC.CONFIRM_DIM, IC.EDIT_DIM, IC.BACKFILL_DIM,
+                                    "merged"},
+          str(sorted(_pre2)))
     imp.rollback_batch(proxy, bid)
     conn.commit()
     left2 = _dims(P2)
     check("B5 rollback_batch：本批账期的 import_confirm 留痕被清",
           IC.CONFIRM_DIM not in left2.values(), str(left2))
+    check("B5 rollback_batch：import_edit / import_backfill 留痕**同样**被清",
+          IC.EDIT_DIM not in left2.values() and IC.BACKFILL_DIM not in left2.values(),
+          str(left2))
     check("B6 rollback_batch：旧页人工备注 dim='merged' **不动**",
           left2.get("KEEP") == "merged", str(left2))
     check("B6 rollback_batch：批次标记 rolled_back",
@@ -246,6 +267,8 @@ def main() -> int:
           all(k in rd0 for k in ("invoices", "deferred", "prepayments", "problems",
                                  "sheet_totals", "sheet12_total", "backfills",
                                  "confirmations")))
+    check("C2 rebuild：无 active 批次 → backfilled 为空集合（批 3-2c）",
+          rd0.get("backfilled") == set(), f"{rd0.get('backfilled')!r}")
 
     # ============================================================ D) 批 3-2b：修改字段留痕
     P4 = "2025-06"
@@ -309,6 +332,72 @@ def main() -> int:
     check("D10 rebuild：无 active 批次 → edit_hints 空字典（骨架字段齐全）",
           rd0b.get("edit_hints") == {} and "edit_hints" in rd0b,
           str(rd0b.get("edit_hints")))
+
+    # ============================================================ E) 批 3-2c：补录票号留痕
+    P5 = "2025-07"
+    conn.execute("INSERT INTO invoice (invoice_no, invoice_date, buyer, total_amount, source) "
+                 "VALUES ('S7', '2025-07-10', '销项丁', 100.0, 'import')")
+    conn.commit()
+    n = IC.save_backfill_hints(proxy, P5, ["B1", "", "   ", None, "B2"])
+    check("E1 save_backfill_hints：写入 2 条（空/空白/None 跳过）", n == 2, str(n))
+    check("E2 load_backfill_hints：返回**票号集合**（不是 dict）",
+          IC.load_backfill_hints(P5, proxy) == {"B1", "B2"},
+          f"{IC.load_backfill_hints(P5, proxy)!r}")
+    check("E3 save_backfill_hints：同票幂等（INSERT OR REPLACE）",
+          IC.save_backfill_hints(proxy, P5, ["B1"]) == 1
+          and IC.load_backfill_hints(P5, proxy) == {"B1", "B2"}
+          and len([1 for r in conn.execute(
+              "SELECT 1 FROM anomaly_note WHERE period=? AND invoice_no='B1'", (P5,))]) == 1)
+    check("E3 save_backfill_hints：items=None 不炸且返回 0",
+          IC.save_backfill_hints(proxy, P5, None) == 0)
+
+    # 三只 dim 并存、互不覆盖；clear 各自只清自己
+    IC.save_confirmations(proxy, P5, [{"invoice_no": "B1", "note": "无经办人"}])
+    IC.save_edit_hints(proxy, P5, [{"invoice_no": "B1", "note": "购方"}])
+    _rows5 = {(r["invoice_no"], r["dim"]) for r in conn.execute(
+        "SELECT invoice_no, dim FROM anomaly_note WHERE period=?", (P5,))}
+    check("E4 三 dim 并存：同一票号同时有三类留痕，互不覆盖",
+          {d for _, d in _rows5} == {IC.CONFIRM_DIM, IC.EDIT_DIM, IC.BACKFILL_DIM}
+          and all(("B1", d) in _rows5 for d in (IC.CONFIRM_DIM, IC.EDIT_DIM,
+                                                IC.BACKFILL_DIM)),
+          str(sorted(_rows5)))
+    IC.clear_backfill_hints(proxy, P5)
+    check("E5 clear_backfill_hints：只清 import_backfill",
+          IC.load_backfill_hints(P5, proxy) == set()
+          and IC.load_confirmations(P5, proxy).get("B1") == "无经办人"
+          and IC.load_edit_hints(P5, proxy).get("B1") == "购方",
+          str(sorted({(r["invoice_no"], r["dim"]) for r in conn.execute(
+              "SELECT invoice_no, dim FROM anomaly_note WHERE period=?", (P5,))})))
+
+    # commit 同事务写 + 读侧带出 + 覆盖式重导先清后写
+    d5 = {
+        "invoices": [], "deferred": [], "prepayments": [], "problems": [],
+        "sheet_totals": {"sheet1": 100.0}, "sheet12_total": 100.0,
+        "backfilled": ["BF1", "BF2"],
+    }
+    r5 = imp.commit_ledger_import(d5, P5, "2025.7台账.xlsx")
+    check("E6 commit：返回 backfill_hint_count",
+          r5.get("backfill_hint_count") == 2, str(r5.get("backfill_hint_count")))
+    check("E7 commit：留痕落库（票号集合）",
+          IC.load_backfill_hints(P5, proxy) == {"BF1", "BF2"},
+          f"{IC.load_backfill_hints(P5, proxy)!r}")
+    check("E7 commit：dim 精确 = import_backfill（不污染前两只 dim）",
+          all(d == IC.BACKFILL_DIM for d in _dims(P5).values()), str(_dims(P5)))
+    rd5 = RB.rebuild_period_data(P5, proxy)
+    check("E8 rebuild：backfilled 随 data 带出",
+          rd5.get("backfilled") == {"BF1", "BF2"}, f"{rd5.get('backfilled')!r}")
+
+    r5b = imp.commit_ledger_import({**d5, "backfilled": []}, P5, "2025.7台账.xlsx")
+    check("E9 覆盖式重导：先清后写（旧留痕失效）",
+          IC.load_backfill_hints(P5, proxy) == set(),
+          f"{IC.load_backfill_hints(P5, proxy)!r}")
+    check("E9 覆盖式重导：backfill_hint_count = 0",
+          r5b.get("backfill_hint_count") == 0, str(r5b.get("backfill_hint_count")))
+
+    rd0c = RB.rebuild_period_data("2099-03", proxy)
+    check("E10 rebuild：无 active 批次 → backfilled 空集合（骨架字段齐全）",
+          rd0c.get("backfilled") == set() and "backfilled" in rd0c,
+          f"{rd0c.get('backfilled')!r}")
 
     # ============================================================ 汇总
     print(f"\n{OK}/{OK + len(FAILS)} passed")

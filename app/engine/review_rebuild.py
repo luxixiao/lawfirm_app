@@ -52,7 +52,9 @@ from __future__ import annotations
 from typing import Dict, List, Optional, Tuple
 
 from app.db import get_conn
-from app.engine.import_confirm import load_confirmations, load_edit_hints
+from app.engine.import_confirm import (
+    load_backfill_hints, load_confirmations, load_edit_hints,
+)
 from app.importer.archive_helper import read_archive_row
 from app.importer.date_utils import normalize_date
 from app.importer.excel_reader import ImportError_
@@ -184,14 +186,19 @@ def rebuild_period_data(period: str, conn=None, in_library: set | None = None) -
     """某账期的 `raw_ledger` 镜像 → 与 `parse_ledger_file` 同构的 data。
 
     返回：`{invoices, deferred, prepayments, sheet_totals, problems, sheet12_total,
-    backfills, confirmations, period, batch_id, path, file_name}`。
+    backfills, confirmations, edit_hints, backfilled, period, batch_id, path, file_name}`。
     - `problems` 恒为 `[]`（问题行不入镜表，见模块 docstring）；
     - `backfills` 恒为 `[]`（补录条目在入库后已写进 `invoice(source='manual')`，
-      不再需要随台账流转）；
+      不再需要随台账流转）；**「本批补过哪些票」改由 `backfilled` 带出**（见下）；
     - `confirmations`：该账期**导入时点过「确认」**的票号 → 备注（`anomaly_note` 的
       独立 dim，批 3-1），供 post 模式避免重报已处理的疑问；
     - `edit_hints`：该账期**导入时就地修改过字段**的票号 → 字段列表（独立 dim，
       批 3-2b），供 post 模式原因列标注「导入时已修改」；
+    - `backfilled`：该账期**本批填过补录**的票号集合（独立 dim，批 3-2c）。
+      为什么不是 `backfills`：补录**内容**入库后已在 `invoice`/`charge_detail`/
+      `collection`，重建不需要它；但「已补录」**叠加视图**（`_row_backfilled`）判据
+      原本只看导入会话的内存集合 `_backfills` ⇒ post 页点「已补录」永远空表。
+      本集合只回答「这票是本批补录出来的吗」，不含任何内容。
     - `path` / `file_name` = 该批次存档路径与文件名，供复核页「查看原始台账行」用。
 
     账期无 active 台账批次（库被清空 / 该期没导过）→ 返回空骨架（各桶为空、批次为空），
@@ -204,7 +211,7 @@ def rebuild_period_data(period: str, conn=None, in_library: set | None = None) -
         out: Dict = {
             "invoices": [], "deferred": [], "prepayments": [],
             "sheet_totals": {}, "problems": [], "sheet12_total": 0.0,
-            "backfills": [], "confirmations": {}, "edit_hints": {},
+            "backfills": [], "confirmations": {}, "edit_hints": {}, "backfilled": set(),
             "period": period, "batch_id": None, "path": "", "file_name": "",
         }
         batch = active_ledger_batch(period, conn)
@@ -222,6 +229,11 @@ def rebuild_period_data(period: str, conn=None, in_library: set | None = None) -
         # sheet3 在库行的文本字段库内零落点，post 模式从镜表（原文）重建会无声显示旧值；
         # 复核页据此在原因列标注「导入时已修改：字段…」，提示用户改动仍在、可就地回写。
         out["edit_hints"] = load_edit_hints(period, conn)
+        # 批 3-2c：本批**填过补录**的票号集合（anomaly_note 独立 dim）。
+        # `backfills` 恒空（内容已入 invoice/charge_detail/collection），但「已补录」
+        # 叠加视图需要一个判据 —— 否则 post 页点「已补录」永远是空表（用户看不到
+        # 自己上次补过哪些票）。与上两个 dim 同为「只读留痕、不改四态状态」。
+        out["backfilled"] = load_backfill_hints(period, conn)
 
         year = _year_of(period)
         rows = conn.execute(
