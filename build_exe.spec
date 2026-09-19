@@ -1,9 +1,9 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""PyInstaller spec — 律所开票收款统计 v1.1.0
+"""PyInstaller spec — 律所开票收款统计 v1.3.2
 
 构建：在已安装依赖的 venv 中执行
     pyinstaller build_exe.spec --noconfirm --clean
-产物：dist/律所开票收款统计.exe（带 Windows 版本信息，见 version_info.txt）
+产物：dist/lawfirm_app.exe（带 Windows 版本信息，见 version_info.txt）
 
 依赖环境（setup.bat 创建）：PySide6 6.11.1 + PySide6-Fluent-Widgets +
 PySideSix-Frameless-Window + openpyxl + xlrd + darkdetect + pyinstaller
@@ -100,6 +100,6 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    version="version_info.txt",  # 写入 Windows 版本信息（1.3.1-feat）
+    version="version_info.txt",  # 写入 Windows 版本信息（1.3.2）
     icon="app.ico",
 )
