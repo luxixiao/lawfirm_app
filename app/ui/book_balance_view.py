@@ -14,19 +14,37 @@ from __future__ import annotations
 from datetime import datetime
 from typing import List
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QThread, Qt, Signal
 from PySide6.QtWidgets import (
-    QAbstractItemView, QHBoxLayout, QHeaderView, QLabel, QTableWidgetItem,
+    QAbstractItemView, QHBoxLayout, QLabel, QTableWidgetItem,
     QVBoxLayout, QWidget,
 )
 
 from app.db import get_conn
 from app.engine import book_balance as bb
+from app.ui import scale
+from app.ui.column_layout import install_column_layout
 from app.ui.widgets import CaptionLabel, ComboBox, PageHeader, PushButton, TableWidget
 
 
 def _fmt(x: float) -> str:
     return f"{x:,.2f}"
+
+
+class _PivotLoadThread(QThread):
+    """后台加载账面情况透视数据，避免点开页面时 UI 卡顿（load_pivot 含全表 GROUP BY）。"""
+
+    resultReady = Signal(dict)
+
+    def __init__(self, year: str, start: int, end: int) -> None:
+        super().__init__()
+        self._year = year
+        self._start = start
+        self._end = end
+
+    def run(self) -> None:  # noqa: N802
+        res = bb.load_pivot(year=self._year, start=self._start, end=self._end)
+        self.resultReady.emit(res)
 
 
 class BookBalanceView(QWidget):
@@ -48,7 +66,7 @@ class BookBalanceView(QWidget):
         bar.setSpacing(8)
         bar.addWidget(QLabel("年份"))
         self.year_combo = ComboBox()
-        self.year_combo.setMinimumWidth(90)
+        self.year_combo.setMinimumWidth(scale.px(90))
         self.year_combo.currentIndexChanged.connect(lambda _: self._rebuild())
         bar.addWidget(self.year_combo)
 
@@ -57,7 +75,7 @@ class BookBalanceView(QWidget):
         for m in range(1, 13):
             self.start_combo.addItem(f"{m}月", m)
         self.start_combo.setCurrentIndex(0)
-        self.start_combo.setMinimumWidth(72)
+        self.start_combo.setMinimumWidth(scale.px(72))
         self.start_combo.currentIndexChanged.connect(lambda _: self._rebuild())
         bar.addWidget(self.start_combo)
 
@@ -66,7 +84,7 @@ class BookBalanceView(QWidget):
         for m in range(1, 13):
             self.end_combo.addItem(f"{m}月", m)
         self.end_combo.setCurrentIndex(11)
-        self.end_combo.setMinimumWidth(72)
+        self.end_combo.setMinimumWidth(scale.px(72))
         self.end_combo.currentIndexChanged.connect(lambda _: self._rebuild())
         bar.addWidget(self.end_combo)
 
@@ -76,17 +94,19 @@ class BookBalanceView(QWidget):
         bar.addStretch(1)
         lay.addLayout(bar)
 
-        # 表格
+        # 表格（统一列组件：右键表头「列设置…」可显隐/重排/定宽/冻结）
         self.table = TableWidget(self)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.table.verticalHeader().setVisible(False)
+        self._col = install_column_layout(self.table, "book_balance", "main")
         lay.addWidget(self.table, 1)
 
         # 底部提示
         self.hint = CaptionLabel("")
         lay.addWidget(self.hint)
 
+        self._req = 0          # 异步加载请求令牌（仅最新一次渲染）
         self._refresh_years()
         self._rebuild()
 
@@ -118,13 +138,26 @@ class BookBalanceView(QWidget):
 
     # -- 渲染 -----------------------------------------------------------
     def _rebuild(self) -> None:
+        """异步加载：先返回（页面立即显示），数据就绪后由 _on_loaded 填充。"""
         year = self.year_combo.currentData() or str(datetime.now().year)
         start = int(self.start_combo.currentData())
         end = int(self.end_combo.currentData())
         if start > end:
             start, end = end, start
-        res = bb.load_pivot(year=year, start=start, end=end)
-        self._render(res["rows"], res["months"], year, start, end)
+        self._req += 1
+        token = self._req
+        self.hint.setText("加载中…")
+        th = _PivotLoadThread(year, start, end)
+        th.resultReady.connect(lambda res: self._on_loaded(res, token))
+        th.finished.connect(th.deleteLater)
+        self._loader = th
+        th.start()
+
+    def _on_loaded(self, res: dict, token: int) -> None:
+        if token != self._req:
+            return  # 已有更新的请求，丢弃过期结果
+        self._render(res["rows"], res["months"], res["year"], res["start"], res["end"])
+        self._col.apply()
 
     def _render(self, row_specs: List[dict], months, year: str, start: int, end: int) -> None:
         headers = ["科目"] + [f"{m}月" for m in months] + ["总计"]
@@ -154,11 +187,7 @@ class BookBalanceView(QWidget):
                 tot_it.setFont(bold)
             self.table.setItem(ri, len(headers) - 1, tot_it)
 
-        hdr = self.table.horizontalHeader()
-        hdr.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        for c in range(1, len(headers)):
-            hdr.setSectionResizeMode(c, QHeaderView.ResizeMode.ResizeToContents)
-        self.table.resizeColumnsToContents()
+        # 列宽/显隐/重排交给统一列组件（install_column_layout + _col.apply）
 
         n_groups = sum(1 for s in row_specs if s["bold"] and not s.get("grand"))
         if row_specs:

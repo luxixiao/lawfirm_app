@@ -17,11 +17,12 @@ from typing import Dict, List, Tuple
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QAbstractItemView, QDialog, QDialogButtonBox, QFileDialog, QFrame, QGridLayout,
+    QAbstractItemView, QDialog, QDialogButtonBox, QFileDialog, QFrame, QGridLayout, QLayout,
     QHBoxLayout, QInputDialog, QLabel, QListWidget, QListWidgetItem, QMenu, QMessageBox,
     QPushButton, QScrollArea, QSizePolicy, QVBoxLayout, QWidget,
 )
 
+from app.ui import scale
 from app.ui.widgets import CaptionLabel, PageHeader, PushButton
 from app.db import get_conn
 from app.engine.change_log import log_change
@@ -180,9 +181,9 @@ class SubjCard(QFrame):
         b_del1.clicked.connect(self._delete_level1)
         for b in (b_up1, b_down1, b_del1):
             b.setObjectName("cardBtn")
-            b.setFixedHeight(24)
+            b.setFixedHeight(scale.px(24))
             fm = b.fontMetrics()
-            b.setMinimumWidth(fm.horizontalAdvance(b.text()) + 26)
+            b.setMinimumWidth(fm.horizontalAdvance(b.text()) + scale.px(26))
             head.addWidget(b)
         # 双击标题改名一级
         self.title.setToolTip("双击改名一级科目")
@@ -215,10 +216,10 @@ class SubjCard(QFrame):
         b_del.clicked.connect(self._delete_level2)
         for b in (b_add, b_up, b_down, self.b_move, b_del):
             b.setObjectName("cardBtn")
-            b.setFixedHeight(24)
+            b.setFixedHeight(scale.px(24))
             fm = b.fontMetrics()
             extra = 40 if b.menu() is not None else 26
-            b.setMinimumWidth(fm.horizontalAdvance(b.text()) + extra)
+            b.setMinimumWidth(fm.horizontalAdvance(b.text()) + scale.px(extra))
             bar.addWidget(b)
         bar.addStretch(1)
         lay.addLayout(bar)
@@ -357,8 +358,8 @@ class AccountSubjectView(QWidget):
             self._cards = {}
             for i, p in enumerate(tree):
                 card = SubjCard(p["id"], p["name"], self)
-                card.setMinimumWidth(300)
-                card.setMinimumHeight(240)
+                card.setMinimumWidth(scale.px(300))
+                card.setMinimumHeight(scale.px(240))
                 self._cards[p["id"]] = card
                 self.grid.addWidget(card, i // 3, i % 3)
             for col in range(3):
