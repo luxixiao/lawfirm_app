@@ -49,6 +49,8 @@ from app.ui.settlement_view import SettlementView
 from app.ui.snapshot_view import SnapshotView
 from app.ui.staff_view import StaffView
 from app.ui.expense_cat_view import ExpenseCatView
+from app.ui.account_subject_view import AccountSubjectView
+from app.ui.book_balance_view import BookBalanceView
 from app.ui.data_clear_view import DataClearView
 from app.ui.audit_view import AuditView
 
@@ -84,10 +86,12 @@ NAV_GROUPS = [
     ]),
     ("各类报表", [
         ("settlement", "各类报表"),
+        ("book_balance", "账面情况"),
     ]),
     ("数据维护", [
         ("staff", "员工管理"),
         ("expense_cat", "费用类型"),
+        ("subject", "会计科目"),
         ("data_clear", "数据情况"),
         ("snapshot", "快照"),
     ]),
@@ -223,6 +227,8 @@ class MainWindow(FramelessWindow):
             "invoice_ledger": ("page_invoice_ledger", InvoiceLedgerView),
             "ledger_doc": ("page_ledger_doc", InvoiceLedgerDocView),
             "expense_cat": ("page_expense_cat", ExpenseCatView),
+            "subject": ("page_subject", AccountSubjectView),
+            "book_balance": ("page_book_balance", BookBalanceView),
             "data_clear": ("page_data_clear", DataClearView),
             "audit": ("page_audit", AuditView),
             "calc": ("page_calc", CalcSheetView),

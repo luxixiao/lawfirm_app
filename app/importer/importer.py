@@ -1061,6 +1061,17 @@ def import_expense_file(path: str, period: str) -> Dict:
                 f"请检查经办人：{', '.join(viol)}"
             )
 
+        # 会计科目校验：费用台账里的 (subject1, subject2) 必须都在「会计科目」主表中
+        # （subject1 须是一级科目；subject2 非空时须是该一级下的二级科目）
+        from app.engine import account_subject as asub
+        unknown_subjects = asub.validate_ledger_subjects(items, conn)
+        if unknown_subjects:
+            bad_txt = "；".join(
+                f"{s1 or '∅'} / {s2 or '∅'}" for s1, s2 in unknown_subjects)
+            raise ImportError_(
+                f"会计科目不在维护名单中（请先到「数据维护 → 会计科目」添加）: {bad_txt}"
+            )
+
         _drop_active_batch(conn, "expense", period)
         archive = _archive_file(path, "expense", period)
         batch_id = _new_batch(conn, "expense", period, Path(path).name, archive, "")

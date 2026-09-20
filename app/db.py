@@ -380,6 +380,24 @@ CREATE TABLE IF NOT EXISTS expense_category (
     sort_order  INTEGER NOT NULL DEFAULT 0
 );
 
+-- ============ 会计科目（一级/二级，树形归属；校验费用台账科目）============
+-- level=1 为一级科目（parent_id 为 NULL）；level=2 为二级科目，parent_id 指向所属一级科目 id。
+-- 排序：一级按全局 sort_order；二级按 parent_id + sort_order（即「所属一级内」的顺序）。
+-- 主表从空起步：不自动从费用台账 harvest；旧台账科目不参与校验（仅「账面情况」按账期汇总时如实展示）。
+CREATE TABLE IF NOT EXISTS account_subject (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    level       INTEGER NOT NULL,        -- 1 = 一级科目, 2 = 二级科目
+    parent_id   INTEGER,                -- 一级科目为 NULL；二级科目指向所属一级科目 id
+    name        TEXT NOT NULL,
+    code        TEXT DEFAULT '',        -- 科目编码（可选）
+    sort_order  INTEGER NOT NULL DEFAULT 0,
+    note        TEXT DEFAULT '',
+    created_at  TEXT DEFAULT (datetime('now','localtime'))
+);
+-- 两层「同层级内名称唯一」：一级按 (level=1, name)；二级按 (parent_id, name)
+CREATE UNIQUE INDEX IF NOT EXISTS idx_subject_l1 ON account_subject(level, name) WHERE parent_id IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_subject_l2 ON account_subject(parent_id, name) WHERE level = 2;
+
 -- ============ 分成计算（内嵌类 Excel 引擎，spec: calc_engine_spec.md）============
 -- 表格主表：content 为 JSON 整表（方案甲）
 -- {"version":1,"rows":..,"cols":..,"cells":{"r,c":{"raw":..,"kind":..}},"params":{..},"col_headers":[..]}
