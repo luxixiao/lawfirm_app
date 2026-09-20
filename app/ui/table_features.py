@@ -118,7 +118,7 @@ _HEADER_FROZEN_BG = QColor("#EAEAEA")  # 灰：冻结列
 _HEADER_BORDER = QColor("#E0E0E0")    # 表头分隔线
 _SORT_MARK = QColor("#1F6FEB")        # 排序角标（实心直角三角）
 _SORT_MARK_SIZE = 9                   # 角标直角边长（px）
-# 两行表头默认底色（浅色皮肤 bg_table；深色皮肤需另行适配）
+# 两行表头默认底色（对应调色板 bg_table）
 _HEADER_BG = QColor("#FAFAF9")
 
 

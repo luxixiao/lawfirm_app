@@ -68,6 +68,18 @@ def main() -> int:
     app.setApplicationName("律所开票收款统计")
     app.setApplicationVersion(__version__)
     app.setStyle("Fusion")
+    # 只保留一套浅色皮肤：把 qfluentwidgets 也钉死为浅色。
+    # 现状（qfluentwidgets 本机版本）qconfig._theme 在 QConfig.__init__ 里硬编码 Theme.LIGHT，
+    # 且全库没有任何地方自动 qconfig.load()，所以本来就不会跟随系统深色。这里是**防御性**的：
+    # 一旦将来升级 qfluentwidgets 后它开始读持久化配置（可能被写成 DARK），
+    # InfoBar toast / ToolTipFilter 气泡就会变深色，与本应用的浅色 QSS 打架。
+    # 必须赶在 MainWindow 建控件之前调用——setTheme 只对**已存在**的控件改样式表，
+    # 之后再建的控件是构造时读 isDarkTheme()，所以放在这里最省。
+    try:
+        from qfluentwidgets import setTheme, Theme
+        setTheme(Theme.LIGHT, save=False, lazy=False)
+    except Exception:  # noqa: BLE001 - 主题钉装失败不影响启动
+        pass
     # Qt 内置文案中文化：QMessageBox / QDialogButtonBox 的标准按钮（OK/Cancel/Yes/No/
     # Close/Show Details...）与 QFileDialog 都靠这个翻译表，否则一律英文。
     # 必须在任何窗口/弹窗创建之前装载。

@@ -1,10 +1,16 @@
-"""Notion-like 主题（浅色 / 深色）—— 全局 QSS + 多皮肤注册表
+"""Notion-like 主题（浅色）—— 全局 QSS + 皮肤注册表
 
 设计要点：
 - 视觉基线 = 类似 Notion 的极简风：暖灰侧栏、发丝线、无阴影、留白多、字体克制。
 - 颜色全部参数化到 palette 字典，build_qss() 按 palette 生成 QSS，便于新增皮肤。
 - SKINS 是皮肤注册表；apply_skin() 在运行时切换；当前皮肤持久化到 data/prefs.json。
-- 第二批皮肤（如品牌色、午夜蓝）只需往 PALETTES / SKINS 追加一项，无需改其他代码。
+- ⚠️ 2026-09-20：深色（notion_dark）与侧栏「皮肤」下拉已移除，**只保留一套浅色皮肤**；
+  但皮肤切换的**机制仍完整保留**（SKINS / PALETTES / apply_skin / refresh_qss /
+  load_skin_pref / save_skin_pref / available_skins）。将来要加皮肤只需三步：
+    ① PALETTES 里加一份与 notion_light **同一个 key 集合**的调色板；
+    ② SKINS 里加一项（key + label）；
+    ③ 把侧栏的皮肤下拉恢复（或挪进「设置」页）。
+  取色一律经 palette()，**不要在各视图里硬编码 QColor**，否则加第二个皮肤必漏。
 
 尺寸全部按 app.ui.scale 的档位倍率派生（build_qss 的 s 参数）：字号、内边距、
 圆角、控件最小尺寸一律乘倍率，避免「字号变了框没变」导致文字被裁或溢出。
@@ -45,27 +51,8 @@ def _light() -> dict:
     }
 
 
-def _dark() -> dict:
-    return {
-        "bg": "#1F1F1E", "canvas": "#1F1F1E", "bg_side": "#262625", "bg_hover": "#2E2E2C",
-        "bg_select": "#3A3A37", "bg_table": "#2A2A28", "border": "#343432",
-        "border_2": "#45453F", "text": "#E9E9E7", "text_mute": "#A0A09C",
-        "text_faint": "#6B6B66", "accent": "#E9E9E7", "red": "#E07A6B",
-        "green": "#5CB98C", "white": "#FFFFFF",
-        "btn_bg": "#2E2E2C", "btn_border": "#45453F", "btn_hover": "#3A3A37",
-        "btn_press": "#45453F", "btn_pri_bg": "#E9E9E7", "btn_pri_fg": "#1F1F1E",
-        "btn_pri_hover": "#FFFFFF", "btn_pri_press": "#CFCFCA", "grid": "#33332F",
-        "warn_bg": "#3A2622", "warn_fg": "#E07A6B",
-        # 4 色强调（暗色版）+ 暗底
-        "accent_blue": "#4aa3d4", "accent_blue_bg": "#1e3a44",
-        "accent_blue_hover": "#5cb4e0", "accent_blue_press": "#6cc0ea",
-        "accent_red": "#e07a6b", "accent_red_bg": "#3a2622",
-        "accent_green": "#5cb98c", "accent_green_bg": "#1e3a33",
-        "accent_yellow": "#e0c060", "accent_yellow_bg": "#3a3420",
-    }
-
-
-PALETTES = {"notion_light": _light(), "notion_dark": _dark()}
+PALETTES = {"notion_light": _light()}
+# 新增皮肤：在此追加一项，key 集合必须与 _light() 完全一致（见 _light 的注释与契约测试）
 
 
 # ---------------------------------------------------------------------------
@@ -126,7 +113,7 @@ QLabel#cellTip {{
 #sidebar QPushButton#groupPin:focus {{
     outline: none; background: {p['bg_hover']}; color: {p['text']};
 }}
-#sidebar QLabel#skinLabel {{ color: {p['text_faint']}; font-size: {P(11)}; padding: 0 0 {P(4)} 0; }}
+#sidebar QLabel#prefLabel {{ color: {p['text_faint']}; font-size: {P(11)}; padding: 0 0 {P(4)} 0; }}
 
 /* ===== 方案 A 折叠侧栏（单列分组 + 收起为图标列） ===== */
 /* 大类行由 NavHeaderButton 自绘（图标/文字/chevron/hover/press 全自绘），
@@ -393,8 +380,8 @@ QMessageBox QLabel {{ font-size: {P(13)}; }}
 # qss 不再预生成：字号档位会变，QSS 必须按当前倍率即时生成。
 SKINS = {
     "notion_light": {"label": "Notion 浅色", "palette": "notion_light"},
-    "notion_dark": {"label": "Notion 深色", "palette": "notion_dark"},
 }
+# 当前只有一套皮肤、无切换 UI；此注册表保留是为了「日后加皮肤 = 加一项」
 
 
 def current_skin() -> str:

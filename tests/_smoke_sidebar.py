@@ -90,7 +90,7 @@ check("未知图标回退=数据维护", render_icon("不存在的组") == sig["
 # ===== 2. 侧栏结构 =====
 bottom = QWidget()
 lay = QVBoxLayout(bottom)
-lay.addWidget(QLabel("皮肤"))
+lay.addWidget(QLabel("偏好"))
 w = sb.SidebarWidget(GROUPS, bottom_widget=bottom)
 w._pinned = False      # QSettings 读的是真实注册表，这里强制"未固定"以验证自动展开
 w.resize(240, 700)
@@ -230,11 +230,17 @@ app.processEvents()
 check("关动效后宽度瞬时到位", w.width() == sb._px(sb.BASE_W_EXPAND), f"got={w.width()}")
 style.set_motion_enabled(True)
 
-# ===== 9. 深色皮肤下自绘仍可渲染 =====
-style.apply_skin(app, "notion_dark")
+# ===== 9. 只保留一套皮肤；自绘在皮肤切换前后均可渲染 =====
+# 2026-09-20：深色皮肤（notion_dark）与侧栏皮肤下拉已移除，但切换机制保留。
+# 这里改为验证「注册表只有一项 + 未知皮肤名安全回退到默认」这一契约。
+check("只注册一套皮肤", [k for k, _ in style.available_skins()] == ["notion_light"],
+      f"got={style.available_skins()}")
+style.apply_skin(app, "notion_dark")   # 已删除的皮肤名 → 应回退而非崩溃
 app.processEvents()
-dark_ink = ink_pixels("各类报表")
-check("深色皮肤图标仍绘制", dark_ink > 60, f"ink={dark_ink}")
+check("未知皮肤名回退到默认", style.current_skin() == "notion_light",
+      f"got={style.current_skin()}")
+light_ink = ink_pixels("各类报表")
+check("默认皮肤图标仍绘制", light_ink > 60, f"ink={light_ink}")
 style.apply_skin(app, "notion_light")
 
 # ===== 10. 布局回归：宽表格页面不应把主窗口最小宽度撑爆 =====

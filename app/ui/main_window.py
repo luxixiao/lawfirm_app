@@ -1,4 +1,4 @@
-"""主窗口：无边框 FramelessWindow + 自绘 Notion 分组侧栏 + 页面栈（多皮肤框架）
+"""主窗口：无边框 FramelessWindow + 自绘 Notion 分组侧栏 + 页面栈（皮肤可扩展）
 
 - 窗口框架改为 qframelesswindow.FramelessWindow（无系统标题栏），自建一条 Notion 风
   细标题栏（AppTitleBar，继承库的 TitleBar 以获得拖拽/双击最大化/最小最大关闭按钮），
@@ -7,7 +7,8 @@
   单列 6 大类（数据导入 / 台账查看 / 业务数据 / 工资个税 / 各类报表 / 数据维护），
   标题行（图标+组名）点击可独立折叠子项；整体可收起为 60px 图标列。
 - 内容区用 QStackedWidget 承载全部业务视图，逻辑零改动。
-- 侧栏底部「皮肤」下拉切换并持久化到 data/prefs.json；皮肤切换同步刷新标题栏配色。
+- 侧栏底部「偏好」区（动效开关 + 全局字号 5 档）持久化到 data/prefs.json。
+  2026-09-20 起只保留一套浅色皮肤，原「皮肤」下拉已移除；切换机制留在 app/ui/style.py。
 - 保留 go_to_page / show_info / staff_ready / showEvent / closeEvent 等接口，
   以保证 refund_view 等视图里的 window().go_to_page(...) 继续可用。
 """
@@ -94,12 +95,16 @@ NAV_GROUPS = [
 
 
 def _titlebar_btn_hover_bg(p: dict) -> QColor:
-    """窗口按钮 hover 背景：浅色用淡黑、深色用淡白（库默认 hover 黑在深色下几乎不可见）。"""
-    return QColor(0, 0, 0, 26) if p.get("bg", "#fff").lower() != "#1f1f1e" else QColor(255, 255, 255, 26)
+    """窗口按钮 hover 背景。
+
+    浅底上用半透明淡黑（库自带的 hover 底色与我们的浅色标题栏区分度不足）。
+    形参 p 保留：将来加第二套皮肤时，在这里按 palette 分支即可。
+    """
+    return QColor(0, 0, 0, 26)
 
 
 def _titlebar_btn_press_bg(p: dict) -> QColor:
-    return QColor(0, 0, 0, 51) if p.get("bg", "#fff").lower() != "#1f1f1e" else QColor(255, 255, 255, 51)
+    return QColor(0, 0, 0, 51)
 
 
 class AppTitleBar(TitleBar):
@@ -151,7 +156,8 @@ class AppTitleBar(TitleBar):
             f"padding-left:{scale.px(12)}px;"
         )
         # 三按钮为自定义绘制（paintEvent），用属性设色而非 QSS。
-        # 图标色用文字色：修复深色皮肤下默认纯黑图标不可见的问题；hover/按下态按皮肤给可见底色。
+        # 图标色跟随 palette 的 text，避免落在浅底上不可见；
+        # hover/按下态用半透明淡黑（见 _titlebar_btn_hover_bg）。
         hover = _titlebar_btn_hover_bg(p)
         press = _titlebar_btn_press_bg(p)
         for btn in (self.minBtn, self.maxBtn):
@@ -182,7 +188,6 @@ class MainWindow(FramelessWindow):
 
         self._build_pages()
         self._build_layout()
-        self._apply_current_skin_to_combo()
         self._install_font_shortcuts()
 
         # 默认选中导入页
@@ -292,8 +297,8 @@ class MainWindow(FramelessWindow):
 
         self._key_to_group = {k: t for t, items in NAV_GROUPS for k, _ in items}
         self._key_to_title = {k: name for _, items in NAV_GROUPS for k, name in items}
-        self.skin_box = self._build_skin_box()
-        self.sidebar = SidebarWidget(NAV_GROUPS, bottom_widget=self.skin_box)
+        self.pref_box = self._build_pref_box()
+        self.sidebar = SidebarWidget(NAV_GROUPS, bottom_widget=self.pref_box)
         self.sidebar.itemSelected.connect(self.select)
 
         root.addWidget(self.sidebar)
@@ -308,29 +313,26 @@ class MainWindow(FramelessWindow):
     # ------------------------------------------------------------------ #
     # 侧栏（方案 C 双栏，见 app/ui/sidebar.py）
     # ------------------------------------------------------------------ #
-    def _build_skin_box(self) -> QWidget:
-        """原侧栏底部的皮肤切换挂件，现挂到双栏侧栏右栏底部。"""
-        skin_box = QWidget()
-        skin_layout = QVBoxLayout(skin_box)
-        skin_layout.setContentsMargins(16, 8, 16, 16)
-        skin_layout.setSpacing(4)
-        skin_label = QLabel("皮肤")
-        skin_label.setObjectName("skinLabel")
-        self.skin_combo = QComboBox()
-        for key, label in style.available_skins():
-            self.skin_combo.addItem(label, key)
-        self.skin_combo.currentIndexChanged.connect(self._on_skin_changed)
-        skin_layout.addWidget(skin_label)
-        skin_layout.addWidget(self.skin_combo)
+    def _build_pref_box(self) -> QWidget:
+        """侧栏右栏底部的「偏好」区：动效 + 全局字号。
+
+        这里原本还有「皮肤」下拉（notion_light / notion_dark 二选一）。
+        2026-09-20 起只保留一套浅色皮肤，切换 UI 随之移除；
+        但皮肤切换的**机制**仍在 app/ui/style.py 里（日后加皮肤把下拉恢复即可）。
+        """
+        box = QWidget()
+        lay = QVBoxLayout(box)
+        lay.setContentsMargins(16, 8, 16, 16)
+        lay.setSpacing(4)
 
         self.motion_box = QCheckBox("动效")
         self.motion_box.setChecked(style.motion_enabled())
         self.motion_box.setToolTip("关闭可减少画面移动，适合前庭敏感用户")
         self.motion_box.toggled.connect(self._on_motion_toggled)
-        skin_layout.addWidget(self.motion_box)
+        lay.addWidget(self.motion_box)
 
         font_label = QLabel("字号")
-        font_label.setObjectName("skinLabel")
+        font_label.setObjectName("prefLabel")
         self.font_combo = QComboBox()
         for i, size, label in scale.steps():
             self.font_combo.addItem(f"{label}（{size}px）", i)
@@ -338,26 +340,9 @@ class MainWindow(FramelessWindow):
         self.font_combo.setToolTip(
             "全局字号 5 档，即时生效；快捷键 Ctrl+= 放大 / Ctrl+- 缩小 / Ctrl+0 复位")
         self.font_combo.currentIndexChanged.connect(self._on_font_changed)
-        skin_layout.addWidget(font_label)
-        skin_layout.addWidget(self.font_combo)
-        return skin_box
-
-    def _apply_current_skin_to_combo(self) -> None:
-        current = style.load_skin_pref()
-        idx = self.skin_combo.findData(current)
-        if idx >= 0:
-            self.skin_combo.setCurrentIndex(idx)
-
-    def _on_skin_changed(self, index: int) -> None:
-        name = self.skin_combo.itemData(index)
-        if not name:
-            return
-        app = QApplication.instance()
-        if app is not None:
-            style.apply_skin(app, name)
-        style.save_skin_pref(name)
-        if getattr(self, "titleBar", None) is not None:
-            self.titleBar.apply_skin()
+        lay.addWidget(font_label)
+        lay.addWidget(self.font_combo)
+        return box
 
     def _on_motion_toggled(self, enabled: bool) -> None:
         style.set_motion_enabled(enabled)

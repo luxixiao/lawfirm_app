@@ -53,22 +53,25 @@ tb.set_page_title("")
 check("空标题显示空", tb.titleLabel.text() == "")
 
 # 5) P1：按钮配色被设置（非默认纯黑图标），关闭按钮 hover 红底
+# 2026-09-20：深色皮肤已移除，只保留 notion_light。原先的「深色段」改为
+# 验证「未知皮肤名 → palette() 回退到默认浅色」的契约。
 light = style.PALETTES["notion_light"]
-dark = style.PALETTES["notion_dark"]
 
-# 浅色：图标色应等于浅色 text，关闭 hover 红底
 style._current_skin = "notion_light"
 tb.apply_skin()
-check("浅色图标色=text", tb.minBtn.getNormalColor().name() == QColor(light["text"]).name(),
+check("图标色=text", tb.minBtn.getNormalColor().name() == QColor(light["text"]).name(),
       f"got={tb.minBtn.getNormalColor().name()}")
-check("浅色关闭hover红底", tb.closeBtn.getHoverBackgroundColor().name() == "#e81123",
+check("关闭hover红底", tb.closeBtn.getHoverBackgroundColor().name() == "#e81123",
       f"got={tb.closeBtn.getHoverBackgroundColor().name()}")
-check("浅色关闭hover白图标", tb.closeBtn.getHoverColor() == QColor(255, 255, 255))
+check("关闭hover白图标", tb.closeBtn.getHoverColor() == QColor(255, 255, 255))
 
-# 深色：图标色应等于深色 text（不再是纯黑不可见）
+# 未知/已删除的皮肤名：palette() 回退默认浅色，图标不应变成纯黑
 style._current_skin = "notion_dark"
 tb.apply_skin()
-check("深色图标色=text(可见)", tb.minBtn.getNormalColor().name() == QColor(dark["text"]).name(),
+check("未知皮肤回退默认调色板", style.palette()["text"] == light["text"],
+      f"got={style.palette()['text']}")
+check("回退后图标色仍=text(可见)",
+      tb.minBtn.getNormalColor().name() == QColor(light["text"]).name(),
       f"got={tb.minBtn.getNormalColor().name()}")
 style._current_skin = "notion_light"
 
