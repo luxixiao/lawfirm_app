@@ -17,7 +17,7 @@ import os
 import re
 
 from PySide6.QtCore import Qt, Signal, QStringListModel
-from PySide6.QtGui import QBrush, QColor
+from PySide6.QtGui import QBrush
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QCompleter, QDialog, QFileDialog, QHBoxLayout,
     QInputDialog, QLabel, QLineEdit, QListWidget, QMessageBox,
@@ -30,12 +30,11 @@ from app.engine.calc_eval import CalcEvaluator
 from app.engine.calc_formula import ErrVal, classify_cell
 from app.exporter.calc_export import export_sheet, suggest_filename
 from app.ui.calc_dialogs import DataRefDialog, IndicatorManagerDialog, ParamDialog
-from app.ui import scale
+from app.ui import scale, style
 from app.ui.scale import PREFS_PATH
 from app.ui.widgets import CaptionLabel, PageHeader
 
-_ERR_RED = QColor("#C0392B")
-_FORMULA_GREEN = QColor("#1E7B34")
+# 公式错误值 / 文本结果的前景色见 style.PALETTES：neg_fg / pos_fg（「用时」取）。
 
 # 缩放范围与步进（Ctrl+滚轮，按表记忆到本机 prefs，不写库）
 _ZOOM_MIN, _ZOOM_MAX, _ZOOM_STEP = 0.6, 2.0, 1.1
@@ -539,12 +538,12 @@ class CalcSheetView(QWidget):
             item.setText(_fmt(v))
             item.setToolTip(str(raw))
             if isinstance(v, ErrVal):
-                item.setForeground(QBrush(_ERR_RED))
+                item.setForeground(QBrush(style.qcolor("neg_fg")))
             elif isinstance(v, (int, float)):
                 item.setTextAlignment(Qt.AlignmentFlag.AlignRight
                                       | Qt.AlignmentFlag.AlignVCenter)
             else:
-                item.setForeground(QBrush(_FORMULA_GREEN))  # 公式结果为文本
+                item.setForeground(QBrush(style.qcolor("pos_fg")))  # 公式结果为文本
         else:
             item.setText(_fmt(raw) if kind == "number" else str(raw or ""))
             if kind == "number":

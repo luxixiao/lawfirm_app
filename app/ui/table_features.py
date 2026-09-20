@@ -29,11 +29,11 @@ from PySide6.QtWidgets import (
     QStyledItemDelegate, QStyleOptionViewItem, QTableWidget, QVBoxLayout,
 )
 
-from app.ui import scale
+from app.ui import scale, style
 
 
-# 冻结列底色（偏灰），用于与常规列可视区分
-_FROZEN_BG = QColor("#EAEAEA")
+# 冻结列底色（偏灰）与表头各色号统一从调色板取 —— 全在「用时」调 style.qcolor()，
+# 不要在模块级缓存成常量（否则将来切换皮肤时会停在旧色）。
 
 
 def set_frozen_columns(table: "QTableWidget", frozen_logical) -> None:
@@ -63,7 +63,7 @@ class TableBehaviorDelegate(QStyledItemDelegate):
         if index.column() in self.frozen_cols:
             painter.save()
             painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(_FROZEN_BG)
+            painter.setBrush(style.qcolor("frozen_bg"))
             painter.drawRect(option.rect)
             painter.restore()
         super().paint(painter, option, index)
@@ -112,14 +112,9 @@ def install_common_features(table: QTableWidget) -> None:
         table.setItemDelegate(TableBehaviorDelegate(table))
 
 
-# 排序列 / 冻结列 的表头强调色（与 style.py 主题色保持一致）
-_HEADER_SORT_BG = QColor("#E3F2FD")   # 浅蓝：当前排序列
-_HEADER_FROZEN_BG = QColor("#EAEAEA")  # 灰：冻结列
-_HEADER_BORDER = QColor("#E0E0E0")    # 表头分隔线
-_SORT_MARK = QColor("#1F6FEB")        # 排序角标（实心直角三角）
+# 排序列 / 冻结列 / 两行表头的色号见 style.PALETTES：
+#   header_sort_bg / frozen_bg / header_border / mark_blue / bg_table
 _SORT_MARK_SIZE = 9                   # 角标直角边长（px）
-# 两行表头默认底色（对应调色板 bg_table）
-_HEADER_BG = QColor("#FAFAF9")
 
 
 class AccentHeaderView(QHeaderView):
@@ -170,7 +165,7 @@ class AccentHeaderView(QHeaderView):
             # 1) 背景底色（排序列强调色 / 冻结列灰底）
             painter.fillRect(rect, color)
             # 2) 分隔线（复刻 style.py 的 border-bottom / border-right）
-            pen = QPen(_HEADER_BORDER)
+            pen = QPen(style.qcolor("header_border"))
             pen.setWidth(1)
             painter.setPen(pen)
             painter.drawLine(rect.bottomLeft(), rect.bottomRight())
@@ -217,7 +212,7 @@ class AccentHeaderView(QHeaderView):
         s = scale.px(_SORT_MARK_SIZE) + 1      # 直角边长
         right = rect.right() + 1
         painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(_SORT_MARK)
+        painter.setBrush(style.qcolor("mark_blue"))
         if order == Qt.SortOrder.DescendingOrder:
             bottom = rect.bottom() + 1
             pts = [QPoint(right, bottom), QPoint(right - s, bottom), QPoint(right, bottom - s)]
@@ -276,10 +271,10 @@ class TwoTierHeaderView(AccentHeaderView):
         # 1) 背景底色（排序列强调色 / 冻结列灰底 / 默认表头色）
         color = self._section_colors.get(logicalIndex)
         if color is None:
-            color = _HEADER_BG
+            color = style.qcolor("bg_table")
         painter.fillRect(rect, color)
         # 2) 分隔线
-        pen = QPen(_HEADER_BORDER)
+        pen = QPen(style.qcolor("header_border"))
         pen.setWidth(1)
         painter.setPen(pen)
         half = rect.height() // 2
@@ -362,22 +357,27 @@ FUNNEL_MARK = " ▾"  # 兼容常量（保留，实际改用图标标记，避�
 
 
 def _funnel_icon() -> QIcon:
-    """预生成漏斗图标（蓝色下三角），用于标记已设筛选的列；缓存复用。"""
-    global _FUNNEL_ICON
-    if _FUNNEL_ICON is None:
+    """预生成漏斗图标（蓝色下三角），用于标记已设筛选的列。
+
+    缓存**按皮肤键控**：图标里编了颜色，若不随皮肤失效，将来换皮肤后漏斗会停在旧色。
+    """
+    global _FUNNEL_ICON, _FUNNEL_ICON_SKIN
+    if _FUNNEL_ICON is None or _FUNNEL_ICON_SKIN != style.current_skin():
         pm = QPixmap(14, 14)
         pm.fill(QColor(0, 0, 0, 0))
         p = QPainter(pm)
         p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(QColor("#2D7DD2"))
+        p.setBrush(style.qcolor("mark_blue"))
         from PySide6.QtCore import QPoint
         p.drawPolygon([QPoint(2, 3), QPoint(12, 3), QPoint(7, 11)])
         p.end()
         _FUNNEL_ICON = QIcon(pm)
+        _FUNNEL_ICON_SKIN = style.current_skin()
     return _FUNNEL_ICON
 
 
 _FUNNEL_ICON = None
+_FUNNEL_ICON_SKIN = None
 
 
 def _cell_key(v) -> str:

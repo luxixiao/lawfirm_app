@@ -9,7 +9,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QPoint, QRect, Qt
-from PySide6.QtGui import QColor, QPainter, QPen, QPalette
+from PySide6.QtGui import QPainter, QPalette
 from PySide6.QtWidgets import (
     QToolTip,
     QLabel,
@@ -24,7 +24,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from app.ui import scale as _scale
+from app.ui import scale as _scale, style
 from qfluentwidgets import ToolTipFilter, ToolTipPosition
 
 
@@ -237,7 +237,7 @@ class FrozenTableWidget(QTableWidget):
         if self.horizontalScrollBar().value() == 0:
             if self._frozen_divider:
                 painter = QPainter(self.viewport())
-                painter.setPen(QColor("#DADAD7"))
+                painter.setPen(style.qcolor("border_2"))
                 painter.drawLine(fw, 0, fw, self.viewport().height())
             return
         # 发生横向滚动：主视图把冻结列左侧部分（及相邻列左缘）滚到了冻结区之外，
@@ -270,7 +270,7 @@ class FrozenTableWidget(QTableWidget):
         painter.restore()
         # 冻结列分隔线
         if self._frozen_divider:
-            painter.setPen(QColor("#DADAD7"))
+            painter.setPen(style.qcolor("border_2"))
             painter.drawLine(fw, 0, fw, self.viewport().height())
 
     def mousePressEvent(self, event) -> None:  # noqa: N802

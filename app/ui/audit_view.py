@@ -9,7 +9,6 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QAbstractItemView, QComboBox, QHBoxLayout, QHeaderView, QLabel,
     QLineEdit, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
@@ -18,6 +17,7 @@ from PySide6.QtWidgets import (
 from app.engine.change_log import (
     INVOICE_RELATED, TABLE_OPTIONS, build_friendly_table, fetch_log,
 )
+from app.ui import style
 from app.ui.column_layout import install_column_layout
 from app.ui.table_features import install_accent_header
 from app.ui.widgets import CaptionLabel, PageHeader, PushButton
@@ -162,7 +162,7 @@ class AuditView(QWidget):
                                           | Qt.AlignmentFlag.AlignVCenter)
                 # 事件类字段（(导入修正)/(同步)/(新增)/(删除)…）淡蓝底纹，与真字段编辑分层
                 if key == "field" and str(v or "").startswith("("):
-                    item.setBackground(QColor("#EAF2FB"))
+                    item.setBackground(style.qcolor("accent_blue_bg"))
                 self.table.setItem(r, c, item)
         self._col.apply()
         # 重新叠加右键「按列筛选」（与搜索/刷新 AND 组合）：_fill 重建表格会清除 setRowHidden 状态

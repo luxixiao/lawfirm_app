@@ -4,10 +4,10 @@ from __future__ import annotations
 from typing import Callable, List, Tuple
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor, QIcon
+from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QFileDialog, QHBoxLayout, QLabel, QLineEdit, QMenu, QMessageBox, QVBoxLayout, QWidget
 
-from app.ui import scale
+from app.ui import scale, style
 from app.ui.widgets import ComboBox, LineEdit, PrimaryPushButton, PushButton, TableWidget
 from app.ui.column_layout import ColumnLayoutManager
 from app.ui.table_features import (
@@ -15,8 +15,8 @@ from app.ui.table_features import (
     install_common_features, add_sort_actions, populate_filter_menu,
 )
 
-RED = QColor("#C0392B")    # 红字/负数
-GREEN = QColor("#1E8449")  # 已收
+# 红字 / 绿字不再在模块级缓存成常量：色号一律「用时」取
+# （style.qcolor("neg_fg") / style.qcolor("pos_fg")），否则换皮肤会停在旧色。
 
 
 def auto_fit_columns(table, max_width: int = 300, min_width: int = 70) -> None:
@@ -290,18 +290,18 @@ class BaseTableView(QWidget):
         # 合计行
         if total_cols:
             tr = len(self._rows)
-            from PySide6.QtGui import QColor, QFont
+            from PySide6.QtGui import QFont
             from PySide6.QtWidgets import QTableWidgetItem
             total_item = QTableWidgetItem("合计")
             total_item.setFont(QFont(total_item.font().family(), total_item.font().pointSize(), QFont.Weight.Bold))
-            total_item.setBackground(QColor("#F2F2F0"))
+            total_item.setBackground(style.qcolor("row_sum_bg"))
             self.table.setItem(tr, 0, total_item)
             for c in total_cols:
                 t = sum(row[c] for row in self._rows if isinstance(row[c], (int, float)))
                 item = QTableWidgetItem(f"{t:,.2f}")
                 item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
                 item.setFont(QFont(item.font().family(), item.font().pointSize(), QFont.Weight.Bold))
-                item.setBackground(QColor("#F2F2F0"))
+                item.setBackground(style.qcolor("row_sum_bg"))
                 self.table.setItem(tr, c, item)
             self.table.setRowHeight(tr, scale.px(34))
         # 列布局：测量内容宽（封顶发票号宽）→ 应用（重排/显隐/定宽/严格填充）
@@ -333,12 +333,12 @@ class BaseTableView(QWidget):
         if isinstance(val, (int, float)):
             item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             if val < 0:
-                item.setForeground(RED)
+                item.setForeground(style.qcolor("neg_fg"))
             elif val > 0 and c in self._green_cols():
-                item.setForeground(GREEN)
+                item.setForeground(style.qcolor("pos_fg"))
         if row_red:
             # 正数发票被红冲 / 红字发票：整行字体标红（委托保证选中仍红）
-            item.setForeground(RED)
+            item.setForeground(style.qcolor("neg_fg"))
         item.setData(Qt.ItemDataRole.UserRole, meta)
         return item
 

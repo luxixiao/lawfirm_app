@@ -15,7 +15,7 @@ from __future__ import annotations
 from typing import Dict, List
 
 from PySide6.QtCore import Qt, QTimer, QPoint
-from PySide6.QtGui import QColor, QCursor
+from PySide6.QtGui import QCursor
 from PySide6.QtWidgets import (
     QAbstractItemView, QCheckBox, QDialog, QDialogButtonBox, QHBoxLayout, QLabel,
     QMessageBox, QStyledItemDelegate, QTableWidgetItem, QVBoxLayout, QWidget,
@@ -23,16 +23,13 @@ from PySide6.QtWidgets import (
 
 from app.db import get_conn
 from app.engine.import_confidence import evaluate
-from app.ui import scale
+from app.ui import scale, style
 from app.ui.ledger_source import show_ledger_source
 from app.diag import get_logger
 from app.ui.table_view import auto_fit_columns
 from app.ui.widgets import CaptionLabel, PrimaryPushButton, PushButton, TableWidget
 
-RED = QColor("#C0392B")     # 差异/疑问强调
-AMBER = QColor("#B7791F")   # 疑问提示
-GREEN = QColor("#1E8449")   # 高置信一致
-DIFF_BG = QColor("#FDF1F0")  # 疑点行浅红背景
+# 红/黄/绿与疑点行底色一律「用时」取 style.qcolor(...)，见 app/ui/style.py 的调色板。
 
 
 def _fmt_money(v) -> str:
@@ -254,7 +251,7 @@ class PreviewDialog(QDialog):
             for c, v in enumerate(vals):
                 item = self._make_item(v, c, ev)
                 if ev["conf"] == "low":
-                    item.setBackground(DIFF_BG)
+                    item.setBackground(style.qcolor("accent_red_bg"))
                 self.table.setItem(r, c, item)
             self.table.setRowHeight(r, scale.px(34))
             self.table.item(r, 0).setData(Qt.ItemDataRole.UserRole, ev["_idx_global"])
@@ -349,11 +346,11 @@ class PreviewDialog(QDialog):
         if c == 8:
             t = str(v)
             if t.startswith("✓"):
-                item.setForeground(GREEN)
+                item.setForeground(style.qcolor("pos_fg"))
             else:
-                item.setForeground(AMBER)
+                item.setForeground(style.qcolor("amber_fg"))
         if c == 3 and isinstance(v, (int, float)) and v < 0:
-            item.setForeground(RED)
+            item.setForeground(style.qcolor("neg_fg"))
         return item
 
     # ------------------------------------------------------------------ #

@@ -144,9 +144,9 @@ class AppTitleBar(TitleBar):
         p = style.palette()
         # 标题栏底色取侧栏色：它在侧栏正上方，用 bg_side 与左侧侧栏无缝衔接；
         # 右侧落在内容区(bg)之上，有 1px 分隔线过渡，比纯白 bg 更协调。
-        bar_bg = p.get("bg_side", "#F7F7F5")
-        text = p.get("text", "#1f1f1f")
-        border = p.get("border", "#E9E9E7")
+        bar_bg = p["bg_side"]
+        text = p["text"]
+        border = p["border"]
         # border-bottom 与内容区分层；分隔线色取中性描边
         self.setStyleSheet(
             f"background:{bar_bg}; border:none; border-bottom:1px solid {border};"
@@ -167,7 +167,10 @@ class AppTitleBar(TitleBar):
             btn.setNormalBackgroundColor(QColor(0, 0, 0, 0))
             btn.setHoverBackgroundColor(hover)
             btn.setPressedBackgroundColor(press)
-        # 关闭按钮保留 Windows 风红底 + 白图标
+        # 关闭按钮保留 Windows 风红底 + 白图标。
+        # 这两个红（#E81123 / #F1707A）是 **Windows 系统语义色**，不属于皮肤调色板：
+        # 换皮肤也不该变，故它们是「视图里允许出现硬编码色」的白名单项
+        # （见 tests/test_skin_contract.py 的 ALLOWLIST）。
         self.closeBtn.setNormalColor(QColor(text))
         self.closeBtn.setHoverColor(Qt.white)
         self.closeBtn.setPressedColor(Qt.white)

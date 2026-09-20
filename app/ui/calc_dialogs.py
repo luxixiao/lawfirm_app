@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.db import get_conn
+from app.ui import style
 from app.engine.calc_data import builtin_names
 from app.engine.calc_formula import ParseError, Parser
 
@@ -224,7 +225,7 @@ class DataRefDialog(QDialog):
     def _preview(self) -> None:
         f = self._current_formula()
         self.lbl_preview.setText(f"将插入：{f}" if f else "请选择 职工/指标/年份")
-        self.lbl_preview.setStyleSheet("color:#666;")
+        self.lbl_preview.setStyleSheet(f"color:{style.palette()['text_mute']};")
 
     def _accept(self) -> None:
         f = self._current_formula()
@@ -262,7 +263,7 @@ class ParamDialog(QDialog):
         lbl_help = QLabel(help_html)
         lbl_help.setWordWrap(True)
         lbl_help.setTextInteractionFlags(Qt.TextInteractionFlag.NoTextInteraction)
-        lbl_help.setStyleSheet("color:#555;")
+        lbl_help.setStyleSheet(f"color:{style.palette()['text_mute']};")
         lay.addWidget(lbl_help)
 
         self.table = QTableWidget(0, 2)

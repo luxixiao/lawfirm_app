@@ -26,7 +26,6 @@ import re
 from collections import Counter, defaultdict
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QComboBox, QFrame, QGridLayout, QHBoxLayout, QHeaderView, QLabel,
     QMessageBox, QSizePolicy, QVBoxLayout, QWidget,
@@ -35,7 +34,7 @@ from PySide6.QtWidgets import (
 from app.importer.date_utils import normalize_date
 from app.importer.excel_reader import ImportError_
 from app.importer.parse_handler import parse_handler_column
-from app.ui import scale
+from app.ui import scale, style
 from app.ui.widgets import (
     CaptionLabel, ComboBox, LineEdit, PushButton, TableWidget,
 )
@@ -343,7 +342,7 @@ class ProblemFixPanel(QWidget):
                 for c in range(4):
                     item = self.htable.item(i, c)
                     if item is not None:
-                        item.setBackground(QColor("#FFF3CD"))
+                        item.setBackground(style.qcolor("amber_bg"))
         self.htable.blockSignals(False)
         self._update_summary()
 

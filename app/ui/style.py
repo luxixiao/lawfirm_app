@@ -21,6 +21,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from PySide6.QtGui import QColor
+
 from app.ui import scale
 
 PREFS_PATH = Path(__file__).resolve().parent.parent.parent / "data" / "prefs.json"
@@ -36,11 +38,9 @@ def _light() -> dict:
         "bg": "#FFFFFF", "canvas": "#f7f6f3", "bg_side": "#f7f6f3", "bg_hover": "#efedea",
         "bg_select": "#e3e1db", "bg_table": "#fbfbfa", "border": "#e9e9e7",
         "border_2": "#DADAD7", "text": "#37352F", "text_mute": "#787774",
-        "text_faint": "#9b9a97", "accent": "#37352F", "red": "#eb5757",
-        "green": "#0f7b6c", "white": "#FFFFFF",
+        "text_faint": "#9b9a97", "white": "#FFFFFF",
         "btn_bg": "#FFFFFF", "btn_border": "#DADAD7", "btn_hover": "#efedea",
-        "btn_press": "#e3e1db", "btn_pri_bg": "#37352F", "btn_pri_fg": "#FFFFFF",
-        "btn_pri_hover": "#4F4D49", "btn_pri_press": "#2A2823", "grid": "#F1F1EF",
+        "btn_press": "#e3e1db", "grid": "#F1F1EF",
         "warn_bg": "#fdeced", "warn_fg": "#eb5757",
         # 4 色强调（蓝/红/绿/黄）+ 浅底 —— Notion Style 升级（Batch 1b 起使用）
         "accent_blue": "#2eaadc", "accent_blue_bg": "#e8f4fb",
@@ -48,7 +48,34 @@ def _light() -> dict:
         "accent_red": "#eb5757", "accent_red_bg": "#fdeced",
         "accent_green": "#0f7b6c", "accent_green_bg": "#e6f4f0",
         "accent_yellow": "#dfab01", "accent_yellow_bg": "#fbf3db",
+        # --- 语义色 / 结构色（2026-09-20：把散落在 18 个视图里的硬编码色收口）---
+        # 为什么需要它们：accent_* 四色是「状态胶囊 / 高亮」用的鲜艳色，而表格正文里的
+        # 红字/绿字要更沉、更像纸张上的墨——两套色号不同，不能混用。以前各视图直接写
+        # 十六进制，结果「加第二个皮肤」时必然漏掉一批（实测 72 行）。
+        # 语义前景（setForeground，表格正文）
+        "neg_fg": "#C0392B",           # 负数 / 差异 / 缺失 / 错误
+        "pos_fg": "#1E8449",           # 已收 / 校验一致
+        "amber_fg": "#B7791F",         # 疑问 / 待核对
+        "info_fg": "#2C6FBB",          # 信息性强调（非判定结果）
+        # 语义浅底
+        "amber_bg": "#FFF3CD",         # 疑问行底色（问题行列表 / 修正面板）
+        "row_sum_bg": "#F2F2F0",       # 合计 / 汇总行底色
+        # 提示条（「待补录」横幅那一组淡黄）
+        "notice_bg": "#FFF8E6",
+        "notice_border": "#F0DFA8",
+        "notice_fg": "#7A5C00",
+        "notice_fg_hover": "#8F6D00",
+        # 表头（自绘 AccentHeaderView，与 QSS 的 QHeaderView::section 是两套绘制路径）
+        "header_sort_bg": "#E3F2FD",   # 当前排序列底色
+        "header_border": "#E0E0E0",    # 表头分隔线（比 border 深一档）
+        "frozen_bg": "#EAEAEA",        # 冻结列高亮底色（表头与列体共用）
+        "mark_blue": "#2D7DD2",        # 排序角标（实心直角三角）
     }
+
+
+# 视图里**不允许**出现十六进制颜色字面量（style.py 之外），否则加皮肤必漏。
+# 契约测试 tests/test_skin_contract.py 会强制这条；确需例外时把 (文件, 片段) 加进那里
+# 的 ALLOWLIST 并写明理由。
 
 
 PALETTES = {"notion_light": _light()}
@@ -391,6 +418,18 @@ def current_skin() -> str:
 def palette() -> dict:
     """当前皮肤的调色板（自绘控件按状态取色用）。"""
     return PALETTES.get(_current_skin, PALETTES[DEFAULT_SKIN])
+
+
+def qcolor(name: str) -> QColor:
+    """取当前皮肤的某个色号，返回 QColor。
+
+    **必须在「用时」调用，不要提到模块导入期**（模块级 `RED = style.qcolor(...)` 会在
+    apply_skin() 之前就把颜色定死；将来加皮肤切换时会停在旧色）。
+
+    名字拼错会 **KeyError 直接炸**（而不是静默变黑）——见 tests/test_skin_contract.py
+    会把源码里所有 qcolor("x") 的字面量扫出来，断言每个调色板都有 x。
+    """
+    return QColor(palette()[name])
 
 
 def qss_for(name: str) -> str:

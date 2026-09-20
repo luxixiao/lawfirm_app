@@ -1,6 +1,7 @@
 """导入记录页：批次列表 + 撤销 / 重新导入"""
 from __future__ import annotations
 
+from app.ui import style
 from app.ui.column_layout import install_column_layout
 from PySide6.QtWidgets import (
     QHBoxLayout, QLabel, QMessageBox, QPushButton, QTableWidget,
@@ -69,7 +70,7 @@ class BatchView(QWidget):
             for c, v in enumerate(vals):
                 item = QTableWidgetItem("" if v is None else str(v))
                 if row["status"] != "active" and c == 4:
-                    item.setForeground(__import__("PySide6.QtGui", fromlist=["QColor"]).QColor("#787774"))
+                    item.setForeground(style.qcolor("text_mute"))
                 self.table.setItem(r, c, item)
             self._meta[r] = row["id"]
 

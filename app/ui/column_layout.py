@@ -16,11 +16,12 @@ import json
 from typing import Dict, List, Optional
 
 from PySide6.QtCore import QEvent, QObject, QPoint, QSettings, Qt, QTimer
-from PySide6.QtGui import QBrush, QFontMetrics
+from PySide6.QtGui import QFontMetrics
 from PySide6.QtWidgets import QHeaderView, QMenu, QTableWidget
+from app.ui import style
 from app.ui.table_features import (
-    populate_filter_menu, set_frozen_columns, _FROZEN_BG,
-    add_sort_actions, AccentHeaderView, _HEADER_SORT_BG, _HEADER_FROZEN_BG,
+    populate_filter_menu, set_frozen_columns,
+    add_sort_actions, AccentHeaderView,
 )
 
 _ORG = "lawfirm_app"
@@ -171,9 +172,9 @@ class ColumnLayoutManager:
         for c in range(table.columnCount()):
             logical = hdr.logicalIndex(c)
             if sort_l is not None and logical == sort_l:
-                hdr.set_section_color(logical, _HEADER_SORT_BG)
+                hdr.set_section_color(logical, style.qcolor("header_sort_bg"))
             elif logical in frozen_logical:
-                hdr.set_section_color(logical, _HEADER_FROZEN_BG)
+                hdr.set_section_color(logical, style.qcolor("frozen_bg"))
 
     def measure_content_widths(self, table: QTableWidget, keys: List[str]) -> List[int]:
         """临时按内容撑开（屏蔽信号），返回每逻辑列的内容宽（封顶 INVOICE_W）。

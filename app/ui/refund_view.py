@@ -8,12 +8,12 @@ from __future__ import annotations
 
 from app.ui.column_layout import install_column_layout
 from PySide6.QtCore import QDate, Qt
-from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QDialog, QDialogButtonBox, QDoubleSpinBox, QFormLayout, QHBoxLayout,
     QLabel, QMenu, QMessageBox, QPushButton, QTabWidget, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
+from app.ui import style
 from app.ui.date_input import DateInput
 from app.ui.widgets import (CaptionLabel, PrimaryPushButton, PushButton, tab_help_corner)
 from app.db import get_conn
@@ -27,9 +27,7 @@ STATUS_TEXT = {
     "need_refund": "需退款",
 }
 
-WARN_BG = QColor("#FFF8E6")   # 待补录行底色（淡黄）
-WARN_BG_SEL = QColor("#FDF1D1")
-
+# 待补录行底色 / 提示条色号见 style.PALETTES：notice_bg / accent_yellow_bg（选中态）
 PENDING_HEADERS = ["红字发票", "红字金额", "原票号码", "原票日期", "判定", "已退金额", "剩余应退"]
 DONE_HEADERS = ["红字发票日期", "红字发票号码", "原票日期", "原票号码", "经办人", "退款金额", "退款日期"]
 
@@ -40,14 +38,18 @@ class RefundView(QWidget):
         lay = QVBoxLayout(self)
         lay.setContentsMargins(24, 20, 24, 20)
         lay.setSpacing(10)
+        _p = style.palette()   # 提示条内联 QSS 需要色号；一律从调色板取
 
         # ---- 待补录警告横幅 ----
         self.banner = QWidget()
         self.banner.setStyleSheet(
-            "QWidget#banner { background:#FFF8E6; border:1px solid #F0DFA8; border-radius:8px; }"
-            "QLabel { color:#7A5C00; font-weight:600; }"
-            "QPushButton { background:#7A5C00; color:white; border:none; border-radius:6px; padding:5px 14px; }"
-            "QPushButton:hover { background:#8F6D00; }"
+            "QWidget#banner {{ background:{bg}; border:1px solid {bd}; border-radius:8px; }}"
+            "QLabel {{ color:{fg}; font-weight:600; }}"
+            "QPushButton {{ background:{fg}; color:{on}; border:none;"
+            " border-radius:6px; padding:5px 14px; }}"
+            "QPushButton:hover {{ background:{hover}; }}".format(
+                bg=_p["notice_bg"], bd=_p["notice_border"], fg=_p["notice_fg"],
+                hover=_p["notice_fg_hover"], on=_p["white"])
         )
         self.banner.setObjectName("banner")
         b_lay = QHBoxLayout(self.banner)
@@ -143,7 +145,7 @@ class RefundView(QWidget):
                 cell = QTableWidgetItem(
                     "" if v is None else (f"{v:,.2f}" if isinstance(v, float) else str(v)))
                 if isinstance(v, float) and v < 0:
-                    cell.setForeground(QColor("#C0392B"))
+                    cell.setForeground(style.qcolor("neg_fg"))
                 self.tab_pending.setItem(r, c, cell)
             item["_remain"] = remain
             self._meta[r] = item
@@ -172,7 +174,7 @@ class RefundView(QWidget):
                 cell = QTableWidgetItem(
                     "" if v is None else (f"{v:,.2f}" if isinstance(v, float) else str(v)))
                 if c == 5 and isinstance(v, float):  # 退款金额
-                    cell.setForeground(QColor("#C0392B"))
+                    cell.setForeground(style.qcolor("neg_fg"))
                 self.tab_done.setItem(r, c, cell)
         self.tab_done._col.apply()
 
@@ -187,10 +189,13 @@ class RefundView(QWidget):
         dlg.setWindowTitle("待补录历史数据")
         dlg.resize(720, 380)
         lay = QVBoxLayout(dlg)
+        _p = style.palette()
         tip = QLabel("以下红字发票的原正数发票不在已导入数据中（跨年/无期初文档）。\n"
                      "请在「手动补录」中添加原正数发票（及收款情况），补录后回到本页自动更新判定。")
-        tip.setStyleSheet("color:#7A5C00; background:#FFF8E6; border:1px solid #F0DFA8;"
-                          "border-radius:8px; padding:10px;")
+        tip.setStyleSheet(
+            "color:{fg}; background:{bg}; border:1px solid {bd};"
+            "border-radius:8px; padding:10px;".format(
+                fg=_p["notice_fg"], bg=_p["notice_bg"], bd=_p["notice_border"]))
         tip.setWordWrap(True)
         lay.addWidget(tip)
         tbl = QTableWidget(len(pending), 5)
@@ -204,7 +209,7 @@ class RefundView(QWidget):
             for c, v in enumerate(vals):
                 cell = QTableWidgetItem("" if v is None else (f"{v:,.2f}" if isinstance(v, float) else str(v)))
                 if c == 2:
-                    cell.setForeground(QColor("#C0392B"))  # 缺失的原票号标红
+                    cell.setForeground(style.qcolor("neg_fg"))  # 缺失的原票号标红
                 tbl.setItem(r, c, cell)
         lay.addWidget(tbl)
         # 按钮（用普通 PushButton + clicked 信号，不用 QDialogButtonBox 自动映射）
@@ -350,8 +355,11 @@ class RefundView(QWidget):
         )
         lbl = QLabel(info)
         lbl.setWordWrap(True)
-        lbl.setStyleSheet("color:#555; background:#F6F6F4; border:1px solid #E0E0DE;"
-                          "border-radius:8px; padding:8px;")
+        _p = style.palette()
+        lbl.setStyleSheet(
+            "color:{fg}; background:{bg}; border:1px solid {bd};"
+            "border-radius:8px; padding:8px;".format(
+                fg=_p["text_mute"], bg=_p["canvas"], bd=_p["border"]))
         form.addRow(lbl)
 
         amt = QDoubleSpinBox()

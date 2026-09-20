@@ -8,9 +8,10 @@ from PySide6.QtWidgets import (
 
 from app.db import get_conn
 from app.engine.collection import handler_rows
+from app.ui import style
 from app.ui.dialogs import show_invoice_handlers, show_red_relation
 from app.ui.table_features import TableBehaviorDelegate
-from app.ui.table_view import BaseTableView, make_filter_widgets, RED, build_period
+from app.ui.table_view import BaseTableView, make_filter_widgets, build_period
 
 
 class _TypeDelegate(TableBehaviorDelegate):
@@ -114,7 +115,7 @@ class HandlerCollectView(BaseTableView):
         if c == 9:
             meta = self._meta.get(r)
             if meta and meta.get("is_refunded"):
-                item.setForeground(RED)
+                item.setForeground(style.qcolor("neg_fg"))
         return item
 
     def _set_handler_type(self, invoice_no: str, person_name: str, combo) -> None:

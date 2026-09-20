@@ -98,7 +98,7 @@ from collections import defaultdict
 from typing import Dict, List
 
 from PySide6.QtCore import Qt, QPoint, QTimer, Signal
-from PySide6.QtGui import QColor, QCursor
+from PySide6.QtGui import QCursor
 from PySide6.QtWidgets import (
     QAbstractItemView, QButtonGroup, QDialog, QFrame,
     QGridLayout, QHBoxLayout, QLabel, QMessageBox, QPushButton, QSplitter,
@@ -113,7 +113,7 @@ from app.engine.import_confidence import (  # noqa: F401  （REASON_LIB_DIFF 供
 )
 from app.engine.raw_ledger import expand_receipts
 from app.importer.excel_reader import ImportError_
-from app.ui import scale
+from app.ui import scale, style
 from app.ui.backfill_dialog import BackfillDialog, backfill_validator, red_mismatch_notice
 from app.ui.ledger_source import show_ledger_source
 from app.ui.preview_dialog import _fmt_money
@@ -123,12 +123,8 @@ from app.ui.table_view import auto_fit_columns
 from app.ui.widgets import CaptionLabel, PrimaryPushButton, PushButton, TableWidget
 from app.ui.writeback_dialog import WritebackDialog
 
-RED = QColor("#C0392B")
-AMBER = QColor("#B7791F")
-GREEN = QColor("#1E8449")
-BLUE = QColor("#2C6FBB")
-GRAY = QColor("#8A8A85")
-DIFF_BG = QColor("#FDF1F0")
+# 状态列的语义色一律「用时」取 style.qcolor(...)：neg_fg（待补录）/ amber_fg（待确认）
+# / pos_fg（高置信）/ info_fg（信息性）/ text_mute（其它）/ accent_red_bg（待处理行底色）。
 
 # A2：应收账款(sheet3)行的「原因 / 疑问」三态文案（阶段 4-2 起）
 REASON_BACKFILL = "需补录原票"
@@ -967,28 +963,32 @@ class UnifiedImportDialog(QWidget):
                     item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
                 if c == COL_STATUS:
                     # 阶段 4-2：待补录（要去补录）用红，待确认用琥珀，高置信用绿
-                    fg = {"待补录": RED, "待确认": AMBER,
-                          "高置信": GREEN}.get(r["status"], GRAY)
+                    fg = {"待补录": style.qcolor("neg_fg"),
+                          "待确认": style.qcolor("amber_fg"),
+                          "高置信": style.qcolor("pos_fg")}.get(
+                              r["status"], style.qcolor("text_mute"))
                     item.setForeground(fg)
                 if c == COL_REASON and r["kind"] == "invoice":
                     # 阶段 5：待补录（红字引用缺原票）与 deferred 的「需补录原票」同色（琥珀）
                     item.setForeground(
-                        AMBER if (r["status"] == "待补录" or r["ev"]["reasons"]) else GREEN)
+                        style.qcolor("amber_fg")
+                        if (r["status"] == "待补录" or r["ev"]["reasons"])
+                        else style.qcolor("pos_fg"))
                 if c == COL_REASON and r["kind"] == "deferred":
                     # 需补录原票（要去补录）用琥珀；「请确认收款」两类用蓝；
                     # 批 1b：导入后「已在库」行无待办 → 用绿（与 REASON_NO_DOUBT 同色）
                     _dno = ((r["deferred"] or {}).get("invoice_no") or "").strip()
                     _need_bf = bool((r["deferred"] or {}).get("need_backfill"))
                     if _dno in self._backfills:
-                        item.setForeground(BLUE)
+                        item.setForeground(style.qcolor("info_fg"))
                     elif _need_bf:
-                        item.setForeground(AMBER)
+                        item.setForeground(style.qcolor("amber_fg"))
                     elif self._mode == "post":
-                        item.setForeground(GREEN)
+                        item.setForeground(style.qcolor("pos_fg"))
                     else:
-                        item.setForeground(BLUE)
+                        item.setForeground(style.qcolor("info_fg"))
                 if r["status"] in ("待补录", "待确认"):
-                    item.setBackground(DIFF_BG)
+                    item.setBackground(style.qcolor("accent_red_bg"))
                 self.table.setItem(r_i, c, item)
             self.table.setRowHeight(r_i, scale.px(34))
             self.table.item(r_i, 0).setData(Qt.ItemDataRole.UserRole, id(r))

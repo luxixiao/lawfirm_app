@@ -26,7 +26,7 @@ from app.db import get_conn
 from app.importer.importer import (
     _refresh_snapshot_actual, merge_collection_for_invoice,
 )
-from app.ui import scale
+from app.ui import scale, style
 
 
 def _money(v) -> str:
@@ -184,7 +184,8 @@ class CollectionFixDialog(QDialog):
                 total += float(it.data(Qt.ItemDataRole.UserRole) or 0.0)
         self.lbl_actual.setText(f"实际合计：{_money(total)}")
         self.lbl_actual.setStyleSheet(
-            "color:#C0392B;" if abs(total - self.expected_total) > 0.01 else "")
+            f"color:{style.palette()['neg_fg']};"
+            if abs(total - self.expected_total) > 0.01 else "")
 
     # ---------------------------------------------------------------- #
     def _collect(self) -> List[Dict]:

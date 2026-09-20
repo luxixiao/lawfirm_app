@@ -5,8 +5,9 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QMenu
 
 from app.engine.collection import invoice_rows
+from app.ui import style
 from app.ui.dialogs import show_red_relation
-from app.ui.table_view import BaseTableView, make_filter_widgets, RED, build_period
+from app.ui.table_view import BaseTableView, make_filter_widgets, build_period
 
 
 class InvoiceCollectView(BaseTableView):
@@ -55,7 +56,7 @@ class InvoiceCollectView(BaseTableView):
         if c == 7:
             meta = self._meta.get(r)
             if meta and meta.get("is_refunded"):
-                item.setForeground(RED)
+                item.setForeground(style.qcolor("neg_fg"))
         return item
 
     def _ctx_menu(self, pos) -> None:

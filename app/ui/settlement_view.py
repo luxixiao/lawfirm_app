@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
     QTabWidget, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
+from app.ui import style
 from app.ui.column_layout import install_column_layout
 from app.ui.table_features import install_two_tier_header
 from app.ui.widgets import (
@@ -24,6 +25,28 @@ MONTH_LABELS = ["1月", "2月", "3月", "4月", "5月", "6月",
                 "7月", "8月", "9月", "10月", "11月", "12月"]
 
 _CN_NUM = ("一", "二", "三", "四", "五", "六", "七", "八", "九", "十")
+
+
+def _combo_qss(full: bool = False) -> str:
+    """筛选栏下拉的显式样式（跟随调色板）。
+
+    原先本文件把同一段硬编码 QSS 复制了 4 份（各自带十六进制色号），
+    加第二个皮肤时必漏——现收口到这里，色号全部来自 style.palette()。
+    full=True 时额外带 drop-down / popup item 两条（筛选栏那组用）。
+    """
+    p = style.palette()
+    css = (
+        "QComboBox { background: %(bg)s; border: 1px solid %(bd)s; border-radius: 6px;"
+        " padding: 5px 10px; min-height: 18px; }"
+        "QComboBox QAbstractItemView { background: %(bg)s; color: %(tx)s;"
+        " selection-background-color: %(sel)s; selection-color: %(tx)s;"
+        " border: 1px solid %(bd)s; outline: none; }"
+    )
+    if full:
+        css += ("QComboBox::drop-down { border: none; width: 22px; }"
+                "QComboBox QAbstractItemView::item { padding: 6px 10px; min-height: 22px; }")
+    return css % {"bg": p["btn_bg"], "bd": p["border_2"],
+                  "tx": p["text"], "sel": p["border"]}
 
 
 def _merge_seq_name(seq, name) -> str:
@@ -90,17 +113,7 @@ class SettlementView(QWidget):
         bar.addStretch()
         lay.addLayout(bar)
         # 下拉列表显式样式：白底黑字 + 选中高亮（避免 qfluentwidgets 主题影响不可见）
-        COMBO_QSS = """
-        QComboBox { background: #FFFFFF; border: 1px solid #DADAD7; border-radius: 6px;
-                    padding: 5px 10px; min-height: 18px; }
-        QComboBox::drop-down { border: none; width: 22px; }
-        QComboBox QAbstractItemView {
-            background: #FFFFFF; color: #37352F;
-            selection-background-color: #E9E9E7; selection-color: #37352F;
-            border: 1px solid #DADAD7; outline: none;
-        }
-        QComboBox QAbstractItemView::item { padding: 6px 10px; min-height: 22px; }
-        """
+        COMBO_QSS = _combo_qss(full=True)
         for c in (self.year, self.person, self.month, self.person_type):
             c.setStyleSheet(COMBO_QSS)
             v = c.view()
@@ -556,15 +569,7 @@ class SettlementView(QWidget):
         bar.addStretch()
         v.addLayout(bar)
         self._reload_persons()  # 填充 r_person（r_year 已设默认）
-        COMBO_QSS = """
-        QComboBox { background: #FFFFFF; border: 1px solid #DADAD7; border-radius: 6px;
-                    padding: 5px 10px; min-height: 18px; }
-        QComboBox QAbstractItemView {
-            background: #FFFFFF; color: #37352F;
-            selection-background-color: #E9E9E7; selection-color: #37352F;
-            border: 1px solid #DADAD7; outline: none;
-        }
-        """
+        COMBO_QSS = _combo_qss()
         for c in (self.r_year, self.r_month, self.r_person, self.r_type):
             c.setStyleSheet(COMBO_QSS)
         # 4 列：项目(序号+项目合并，对齐个人结算总表写法) / 本期 / 本年累计 / 备注
@@ -691,15 +696,7 @@ class SettlementView(QWidget):
         bar.addWidget(self.si_month)
         bar.addStretch()
         v.addLayout(bar)
-        COMBO_QSS = """
-        QComboBox { background: #FFFFFF; border: 1px solid #DADAD7; border-radius: 6px;
-                    padding: 5px 10px; min-height: 18px; }
-        QComboBox QAbstractItemView {
-            background: #FFFFFF; color: #37352F;
-            selection-background-color: #E9E9E7; selection-color: #37352F;
-            border: 1px solid #DADAD7; outline: none;
-        }
-        """
+        COMBO_QSS = _combo_qss()
         for c in (self.si_year, self.si_month):
             c.setStyleSheet(COMBO_QSS)
         # 12 列：序号/姓名/5 组(本月/累计)；表头两行（第一行大类跨列合并，第二行本月/累计）
@@ -840,15 +837,7 @@ class SettlementView(QWidget):
         bar.addWidget(self.ii_month)
         bar.addStretch()
         v.addLayout(bar)
-        COMBO_QSS = """
-        QComboBox { background: #FFFFFF; border: 1px solid #DADAD7; border-radius: 6px;
-                    padding: 5px 10px; min-height: 18px; }
-        QComboBox QAbstractItemView {
-            background: #FFFFFF; color: #37352F;
-            selection-background-color: #E9E9E7; selection-color: #37352F;
-            border: 1px solid #DADAD7; outline: none;
-        }
-        """
+        COMBO_QSS = _combo_qss()
         for c in (self.ii_year, self.ii_month):
             c.setStyleSheet(COMBO_QSS)
         # 8 列：序号/姓名/收入本月/收入累计/期末未收/开票已收/收回以前/合计收款

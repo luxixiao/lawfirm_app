@@ -11,12 +11,12 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QAbstractItemView, QComboBox, QHBoxLayout, QLineEdit,
     QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
+from app.ui import style
 from app.ui.widgets import CaptionLabel, PageHeader
 from app.ui.column_layout import install_column_layout
 from app.ui.table_features import install_accent_header
@@ -257,6 +257,6 @@ class InvoiceLedgerView(QWidget):
                     item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
                 if is_red:
                     # 负数 / 已红冲：整行所有字体标红（委托保证选中仍红）
-                    item.setForeground(QColor("#C0392B"))
+                    item.setForeground(style.qcolor("neg_fg"))
                 self.table.setItem(r, c, item)
         self._col.apply()

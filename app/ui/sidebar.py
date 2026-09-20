@@ -296,7 +296,7 @@ class NavItemButton(QPushButton):
         f.setPointSizeF(max(8.0, 9.0 * scale.ratio()))
         f.setWeight(QFont.Weight.DemiBold)
         p.setFont(f)
-        p.setPen(QColor("#FFFFFF"))
+        p.setPen(style.qcolor("white"))
         p.drawText(rect, Qt.AlignmentFlag.AlignCenter, self._badge)
         p.end()
 

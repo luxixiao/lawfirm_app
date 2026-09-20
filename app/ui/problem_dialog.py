@@ -14,7 +14,7 @@ import re
 from collections import Counter, defaultdict
 
 from PySide6.QtCore import Qt, QSettings, QTimer, QPoint
-from PySide6.QtGui import QColor, QCursor
+from PySide6.QtGui import QCursor
 from PySide6.QtWidgets import (
     QComboBox, QDialog, QFrame, QGridLayout, QHBoxLayout, QHeaderView,
     QLabel, QLineEdit, QMessageBox, QSizePolicy, QSplitter, QTableWidget,
@@ -24,7 +24,7 @@ from PySide6.QtWidgets import (
 from app.importer.date_utils import normalize_date
 from app.importer.excel_reader import ImportError_
 from app.importer.parse_handler import parse_handler_column
-from app.ui import scale
+from app.ui import scale, style
 from app.diag import get_logger
 from app.ui.widgets import (
     CaptionLabel, ComboBox, LineEdit, PrimaryPushButton, PushButton,
@@ -339,7 +339,7 @@ class ProblemDialog(QDialog):
                 for c in range(4):
                     item = self.htable.item(i, c)
                     if item is not None:
-                        item.setBackground(QColor("#FFF3CD"))
+                        item.setBackground(style.qcolor("amber_bg"))
         self.htable.blockSignals(False)
         self._update_summary()
 
