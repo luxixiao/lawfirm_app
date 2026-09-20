@@ -343,7 +343,7 @@ CREATE INDEX IF NOT EXISTS idx_recv_snap_inv ON received_snapshot(invoice_no);
 -- 费用类型维护（全集 + 归类：报酬发放/住房公积金/保险费/汽油费/其他）
 CREATE TABLE IF NOT EXISTS expense_cat (
     expense_type TEXT PRIMARY KEY,
-    category     TEXT NOT NULL DEFAULT '其他',
+    category     TEXT NOT NULL DEFAULT '报销摊销等',
     sort_order   INTEGER NOT NULL DEFAULT 0,   -- 全局顺序 = 分类顺序 + 类内顺序
     created_at   TEXT DEFAULT (datetime('now','localtime'))
 );
@@ -373,7 +373,7 @@ CREATE TABLE IF NOT EXISTS staff_type_def (
     created_at  TEXT DEFAULT (datetime('now','localtime'))
 );
 
--- 费用分类说明（分类固定 5 类，说明可自定义填写，供费用类型页分组展示）
+-- 费用分类说明（分类固定 6 类：报酬发放/住房公积金/保险费/汽油费/报销摊销等/公共专属费用；说明可自定义填写，供费用类型页分组展示）
 CREATE TABLE IF NOT EXISTS expense_category (
     name        TEXT PRIMARY KEY,
     note        TEXT DEFAULT '',
@@ -421,6 +421,16 @@ def get_conn() -> sqlite3.Connection:
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("PRAGMA journal_mode = WAL")
     return conn
+
+
+def _migrate_expense_category_rename(conn) -> None:
+    """迁移：费用分类「其他」改名为「报销摊销等」（报销/摊销等兜底分类）。幂等。
+
+    仅影响历史库：把已存在的「其他」分类名与归到「其他」的类型一并改名；
+    新库由 `ensure_categories` 直接建出「报销摊销等」，本迁移无行可改。
+    """
+    conn.execute("UPDATE expense_category SET name='报销摊销等' WHERE name='其他'")
+    conn.execute("UPDATE expense_cat SET category='报销摊销等' WHERE category='其他'")
 
 
 def init_db(backfill: bool = True) -> None:
@@ -472,6 +482,10 @@ def init_db(backfill: bool = True) -> None:
         # 属口径错误（会连带把其所有年份的结算身份判成「其他」→ 业务收入 0）。
         # 历史停用记录统一恢复为在职；is_active 列保留但不再出现 0 值。
         conn.execute("UPDATE staff SET is_active = 1 WHERE is_active != 1")
+        # 迁移：费用分类「其他」改名为「报销摊销等」（新增第 6 类「公共专属费用」由 ensure_categories 补齐）
+        _migrate_expense_category_rename(conn)
+        from app.engine.expense_cat import ensure_categories
+        ensure_categories(conn)
         # 迁移：收款认定快照（方案E）全量回溯——对尚无快照的 active 批次重解析存档源，
         # 还原「导入时源声称收款」(expected) 与「按账期窗口过滤的累计库」(actual)。
         # 幂等：仅补齐缺快照批次；单批次失败跳过，不阻断启动。

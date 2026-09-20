@@ -1045,12 +1045,20 @@ def import_expense_file(path: str, period: str) -> Dict:
             )
 
         # 费用类型校验：不在维护名单（费用归类）中的类型 → 报错
-        from app.engine.expense_cat import check_unknown
+        from app.engine.expense_cat import check_unknown, validate_public_exclusive, PUBLIC_EXCLUSIVE_CATEGORY
         etypes = [it["expense_type"] for it in items if it.get("expense_type")]
         unknown = check_unknown(conn, etypes)
         if unknown:
             raise ImportError_(
                 f"费用类型不在维护名单中（请先到「数据维护 → 费用类型」添加或归类）: {', '.join(sorted(set(unknown)))}"
+            )
+
+        # 公共专属费用校验：合伙/聘用/兼职 员工不可承担「公共专属费用」分类的支出
+        viol = validate_public_exclusive(conn, items)
+        if viol:
+            raise ImportError_(
+                f"费用分类「{PUBLIC_EXCLUSIVE_CATEGORY}」的支出不应由合伙/聘用/兼职员工承担，"
+                f"请检查经办人：{', '.join(viol)}"
             )
 
         _drop_active_batch(conn, "expense", period)

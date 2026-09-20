@@ -1,4 +1,4 @@
-"""费用类型维护：5 个分类 × 类内类型，顺序与归类影响结算表分组。
+"""费用类型维护：6 个分类 × 类内类型，顺序与归类影响结算表分组。
 
 数据模型
 - `expense_cat`（类型全集）：expense_type / category / sort_order（全局顺序）
@@ -7,17 +7,25 @@
 顺序口径
 - **全局顺序 = 分类顺序 + 类型在类内的顺序**（save_layout 一次性写回 sort_order）。
 - `ordered_types()` 供结算/年度聘用结算表取数，因此改动顺序即改导出列序。
-- 分类固定 5 类（`CATEGORIES`），不可增删；说明文字可自定义填写。
+- 分类固定 6 类（`CATEGORIES`），不可增删；说明文字可自定义填写。
+- 「报销摊销等」为兜底分类（原「其他」改名），脏数据（分类不在 CATEGORIES 里）一律并入。
+- 「公共专属费用」为公共专属支出分类：合伙/聘用/兼职 员工不可承担（导入校验，见 `validate_public_exclusive`）。
 """
 from __future__ import annotations
 
 from typing import Dict, List, Optional
 
 from app.db import get_conn
+from app.engine.staff_type import BUILTIN_TYPES  # 合伙/聘用/兼职（参与业务收入计算）
 
-CATEGORIES = ["报酬发放", "住房公积金", "保险费", "汽油费", "其他"]
+# 固定 6 类（顺序即展示顺序；不可增删，改动须同步 db.py 迁移与测试）
+CATEGORIES = ["报酬发放", "住房公积金", "保险费", "汽油费", "报销摊销等", "公共专属费用"]
 # 兜底分类：脏数据（分类不在 CATEGORIES 里）一律并入
-FALLBACK_CATEGORY = "其他"
+FALLBACK_CATEGORY = "报销摊销等"
+
+# 公共专属费用分类：合伙/聘用/兼职 这三类员工不可承担该分类下的支出
+PUBLIC_EXCLUSIVE_CATEGORY = "公共专属费用"
+_FORBIDDEN_STAFF_TYPES = set(BUILTIN_TYPES)  # {"合伙", "聘用", "兼职"}
 
 # 预置默认归类规则（按类型名包含关键词，顺序敏感）
 _DEFAULT_RULE = [
@@ -55,7 +63,7 @@ def _close(own: bool, conn) -> None:
 # ---------------------------------------------------------------------------
 
 def ensure_categories(conn=None) -> None:
-    """建库/升级后补齐 5 个分类（缺哪个补哪个）。"""
+    """建库/升级后补齐 6 个分类（缺哪个补哪个）。"""
     own, conn = _own_conn(conn)
     try:
         for i, name in enumerate(CATEGORIES):
@@ -149,6 +157,33 @@ def check_unknown(conn, types: list) -> list:
     """返回不在 expense_cat 名单中的费用类型（用于导入报错）"""
     known = {r["expense_type"] for r in conn.execute("SELECT expense_type FROM expense_cat")}
     return [t for t in types if t and t not in known]
+
+
+def validate_public_exclusive(conn, items: list) -> list:
+    """导入前校验：落入「公共专属费用」分类的支出，禁止由 合伙/聘用/兼职 员工承担。
+
+    items：解析后的费用台账行（需含 `expense_type` / `actual_handler`）。
+    返回违例人员清单（姓名(类型)，已去重升序）；为空表示通过。
+
+    判定口径：
+    - 费用类型本身 == PUBLIC_EXCLUSIVE_CATEGORY，或该类型归类 == PUBLIC_EXCLUSIVE_CATEGORY；
+    - 且承担人（actual_handler）的结算身份 ∈ {合伙, 聘用, 兼职}（取自 staff 花名册）；
+    - 「公共」「行政」等非花名册经办人（白名单）及未登记人员（落为「其他」）一律放行。
+    """
+    from app.engine.backfill import norm_type, staff_type_of
+    cat_map = get_map(conn)
+    viol = set()
+    for it in items:
+        et = (it.get("expense_type") or "").strip()
+        handler = (it.get("actual_handler") or "").strip()
+        if not et or not handler:
+            continue
+        cat = cat_map.get(et, FALLBACK_CATEGORY)
+        if et == PUBLIC_EXCLUSIVE_CATEGORY or cat == PUBLIC_EXCLUSIVE_CATEGORY:
+            pt = norm_type(staff_type_of(conn, handler))
+            if pt in _FORBIDDEN_STAFF_TYPES:
+                viol.add(f"{handler}({pt})")
+    return sorted(viol)
 
 
 def get_map(conn=None) -> dict:

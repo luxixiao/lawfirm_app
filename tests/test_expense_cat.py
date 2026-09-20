@@ -51,7 +51,7 @@ def main() -> int:
     check("分类计数默认 0", all(c["count"] == 0 for c in cats))
     # 幂等
     ec.ensure_categories(conn)
-    check("ensure_categories 幂等", len(ec.list_categories(conn)) == 5)
+    check("ensure_categories 幂等", len(ec.list_categories(conn)) == 6)
 
     # ===== 2. 分类说明读写 =====
     ec.set_category_note("汽油费", "车辆相关：加油/过路/停车", conn)
@@ -70,28 +70,28 @@ def main() -> int:
     ec.set_category("保险费", "保险费", conn)
     ec.set_category("汽油费", "汽油费", conn)
     ec.set_category("停车费", "汽油费", conn)
-    # 办公用品留在"其他"
+    # 办公用品留在"报销摊销等"
 
     by = ec.types_by_category(conn)
     check("报酬发放 2 项", by["报酬发放"] == ["分成（报酬发放）", "工资"], f"got={by['报酬发放']}")
     check("住房公积金 1 项", by["住房公积金"] == ["公积金"])
     check("保险费 2 项", by["保险费"] == ["社保", "保险费"])
     check("汽油费 2 项", by["汽油费"] == ["汽油费", "停车费"])
-    check("其他 1 项", by["其他"] == ["办公用品"])
+    check("其他 1 项", by["报销摊销等"] == ["办公用品"])
 
     # 分类计数
     counts = {c["name"]: c["count"] for c in ec.list_categories(conn)}
     check("计数 报酬发放=2", counts["报酬发放"] == 2, f"got={counts}")
-    check("计数 其他=1", counts["其他"] == 1)
+    check("计数 其他=1", counts["报销摊销等"] == 1)
 
     # ===== 4. 重名 / 空名 校验 =====
-    expect_err("重名新增", lambda: ec.add_type("工资", "其他", conn))
-    expect_err("空名新增", lambda: ec.add_type("", "其他", conn))
-    expect_err("超长名新增", lambda: ec.add_type("x" * 31, "其他", conn))
+    expect_err("重名新增", lambda: ec.add_type("工资", "报销摊销等", conn))
+    expect_err("空名新增", lambda: ec.add_type("", "报销摊销等", conn))
+    expect_err("超长名新增", lambda: ec.add_type("x" * 31, "报销摊销等", conn))
 
     # ===== 5. 非法归类并入兜底 =====
     ec.set_category("办公用品", "不存在的分类", conn)
-    check("非法归类并入其他", ec.types_by_category(conn)["其他"] == ["办公用品"],
+    check("非法归类并入其他", ec.types_by_category(conn)["报销摊销等"] == ["办公用品"],
           f"got={ec.types_by_category(conn)}")
 
     # ===== 6. 改名（同步台账） =====
@@ -132,7 +132,7 @@ def main() -> int:
         "住房公积金": ["公积金"],
         "保险费": ["保险费", "社保"],
         "汽油费": ["停车及过路费", "汽油费"],
-        "其他": [],
+        "报销摊销等": [],
     }, conn)
     want = ["工资", "分成（报酬发放）", "公积金", "保险费", "社保",
             "停车及过路费", "汽油费"]
@@ -142,13 +142,13 @@ def main() -> int:
           f"got={ec.get_by_category('保险费', conn)}")
 
     # ===== 10. save_layout 漏网类型排到末尾 =====
-    ec.add_type("临时杂项", "其他", conn)
+    ec.add_type("临时杂项", "报销摊销等", conn)
     ec.save_layout({
         "报酬发放": ["工资", "分成（报酬发放）"],
         "住房公积金": ["公积金"],
         "保险费": ["保险费", "社保"],
         "汽油费": ["停车及过路费", "汽油费"],
-        "其他": [],
+        "报销摊销等": [],
     }, conn)
     allt = ec.ordered_types(conn)
     check("漏网类型排末尾", allt == want + ["临时杂项"], f"got={allt}")
@@ -156,15 +156,15 @@ def main() -> int:
     # ===== 11. 跨类搬运（改归类） =====
     ec.set_category("临时杂项", "报酬发放", conn)
     check("搬运后归类", ec.get_map(conn)["临时杂项"] == "报酬发放")
-    check("搬运后其他类为空", ec.types_by_category(conn)["其他"] == [])
+    check("搬运后其他类为空", ec.types_by_category(conn)["报销摊销等"] == [])
 
     # ===== 12. 脏数据归类（DB 里出现未知分类） =====
     conn.execute("UPDATE expense_cat SET category='历史遗留' WHERE expense_type='临时杂项'")
     conn.commit()
-    check("脏数据并入其他", ec.types_by_category(conn)["其他"] == ["临时杂项"],
+    check("脏数据并入其他", ec.types_by_category(conn)["报销摊销等"] == ["临时杂项"],
           f"got={ec.types_by_category(conn)}")
     check("脏数据也计入计数",
-          {c["name"]: c["count"] for c in ec.list_categories(conn)}["其他"] == 1)
+          {c["name"]: c["count"] for c in ec.list_categories(conn)}["报销摊销等"] == 1)
 
     # ===== 13. 台账同步（默认规则自动归类） =====
     conn2 = make_conn()
@@ -178,7 +178,7 @@ def main() -> int:
     check("同步 公积金→住房公积金", m2.get("公积金") == "住房公积金", f"got={m2}")
     check("同步 社保→保险费", m2.get("社保") == "保险费")
     check("同步 汽油→汽油费", m2.get("汽油") == "汽油费")
-    check("同步 未知→其他", m2.get("打字复印") == "其他")
+    check("同步 未知→其他", m2.get("打字复印") == "报销摊销等")
     check("同步后 4 类齐全", len(ec.ordered_types(conn2)) == 4)
     check("check_unknown 为空", ec.check_unknown(conn2, ["公积金", "社保"]) == [])
     check("check_unknown 命中", ec.check_unknown(conn2, ["冥王星费"]) == ["冥王星费"])
