@@ -190,11 +190,13 @@ class StaffView(QWidget):
             s_item.setData(Qt.ItemDataRole.UserRole, name)
             self.type_table.setItem(r, 1, s_item)
 
-            # 净额口径：参与时可下拉选择，不参与时灰显
-            basis = row.get("net_basis") or "收款净额"
+            # 净额口径：参与时可下拉选择，不参与时灰显且留空
             combo = QComboBox()
             combo.addItems(["开票净额", "收款净额"])
-            combo.setCurrentText(basis)
+            if settle:
+                combo.setCurrentText(row.get("net_basis") or "收款净额")
+            else:
+                combo.setCurrentIndex(-1)   # 不参与结算 → 显示空白
             combo.setEnabled(settle)
             combo.currentTextChanged.connect(
                 lambda txt, n=name: self._on_basis_changed(n, txt))

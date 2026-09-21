@@ -109,6 +109,33 @@ def main() -> int:
     ]
     check("规则③ 公共/行政 参与→通过", ev.validate_expense_edit(rows_pub, conn) == [])
 
+    # 规则③（真实路径回归）：actual_handler 传「经办人姓名」，需经 staff.staff_type 解析类型
+    # 修复前 is_settle_participant 误把姓名当类型名查 staff_type_def，导致 聘用 类经办人(如方国兴)
+    # 在详情页保存时被误判「未参与结算」而拦截。
+    conn.execute(
+        "INSERT INTO staff (name, staff_type, is_active, source) VALUES (?,?,1,'manual')",
+        ("方国兴", "聘用"))
+    conn.execute(
+        "INSERT INTO staff (name, staff_type, is_active, source) VALUES (?,?,1,'manual')",
+        ("李挂靠", "挂靠"))
+    conn.commit()
+
+    rows_person_settle = [
+        {"id": 10, "expense_amount": 10.0, "tax_amount": 0.0, "book_amount": 10.0,
+         "subject1": "资产类", "subject2": "办公费", "actual_handler": "方国兴"},
+    ]
+    check("规则③ 经办人姓名(聘用)→参与→通过",
+          ev.validate_expense_edit(rows_person_settle, conn) == [],
+          f"got={ev.validate_expense_edit(rows_person_settle, conn)}")
+
+    rows_person_nonsettle = [
+        {"id": 11, "expense_amount": 10.0, "tax_amount": 0.0, "book_amount": 10.0,
+         "subject1": "资产类", "subject2": "办公费", "actual_handler": "李挂靠"},
+    ]
+    v = ev.validate_expense_edit(rows_person_nonsettle, conn)
+    check("规则③ 经办人姓名(挂靠)→未参与→Violation",
+          any(x.field == "actual_handler" for x in v), f"got={v}")
+
     # 多规则同时触发（一条行可多字段）
     rows_multi = [
         {"id": 9, "expense_amount": 100.0, "tax_amount": 10.0, "book_amount": 80.0,

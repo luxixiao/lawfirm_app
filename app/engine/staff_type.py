@@ -130,15 +130,29 @@ def is_settle_participant(name: str, conn=None) -> bool:
     """经办人是否参与结算（规则③，导入与详情保存共用）。
 
     - 空名 → False；
-    - 查 staff_type_def.is_settle，True=参与；类型缺失/未参与 → False。
+    - 若 name 直接命中 staff_type_def（类型名调用路径，如 staff_view 的 is_computable）
+      → 取该类型 is_settle；
+    - 否则按经办人姓名解析其员工类型（staff.staff_type）→ 再查 staff_type_def.is_settle；
+    - 类型缺失/未参与 → False。
+    （修复：详情保存/导入传入的是「经办人姓名」，旧实现误把姓名当类型名查 staff_type_def，
+      导致方国兴=聘用这类理应参与结算的经办人被判为「未参与」。）
     """
     n = (name or "").strip()
     if not n:
         return False
     own, c = _own_conn(conn)
     try:
+        # 1) 类型名直接命中（staff_type_def.name）
         r = c.execute("SELECT is_settle FROM staff_type_def WHERE name=?", (n,)).fetchone()
-        return bool(r["is_settle"]) if r else False
+        if r is not None:
+            return bool(r["is_settle"])
+        # 2) 经办人姓名 → 解析其员工类型 → 再查类型表
+        t = c.execute("SELECT staff_type FROM staff WHERE name=?", (n,)).fetchone()
+        if t and (t["staff_type"] or "").strip():
+            r = c.execute("SELECT is_settle FROM staff_type_def WHERE name=?",
+                          (t["staff_type"].strip(),)).fetchone()
+            return bool(r["is_settle"]) if r else False
+        return False
     finally:
         _close(own, c)
 

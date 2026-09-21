@@ -110,6 +110,7 @@ class ExpenseDetailView(QWidget):
         self._dirty: set = set()
         self._editing = False
         self._loading = False
+        self._totals_row = -1        # 底部合计行索引（<0 表示尚未建）
         self._s1 = self._s2 = self._kind = self._year = ""
         self._months = []
 
@@ -208,6 +209,7 @@ class ExpenseDetailView(QWidget):
                     item.setForeground(style.qcolor("text_mute"))
                 self.table.setItem(r, c, item)
         self._loading = False
+        self._update_totals()
 
         # 标题：按 kind 拼可读标签
         if kind == "grand":
@@ -266,6 +268,50 @@ class ExpenseDetailView(QWidget):
         item.setData(Qt.ItemDataRole.EditRole, book)
         item.setText(f"{book:,.2f}")
 
+    def _update_totals(self) -> None:
+        """底部合计行：对 费用金额/税额/账面费用金额 求和（只读、加粗、row_sum_bg 底）。
+
+        合计行置于数据行之后，不占 _row_ids（_on_cell_changed / _save 自然跳过）；
+        改费用金额/税额或重新载入时都会重算。
+        """
+        n = len(self._rows)
+        if n == 0:
+            return
+        exp = tax = book = 0.0
+        for r in range(n):
+            exp += self._money_raw(r, _EXP_COL)
+            tax += self._money_raw(r, _TAX_COL)
+            book += self._money_raw(r, _BOOK_COL)
+        row = n  # 合计行位于数据行之后
+        if self.table.rowCount() < row + 1:
+            self.table.setRowCount(row + 1)
+        self._totals_row = row
+        was = self._loading
+        self._loading = True  # 写合计行不触发 _on_cell_changed 的编辑逻辑
+        try:
+            for c, key in enumerate(_DETAIL_KEYS):
+                item = QTableWidgetItem()
+                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                if c == 0:
+                    item.setText("合计")
+                    item.setTextAlignment(
+                        Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+                elif key in _MONEY_KEYS:
+                    val = exp if c == _EXP_COL else tax if c == _TAX_COL else book
+                    item.setText(f"{val:,.2f}")
+                    item.setTextAlignment(
+                        Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                else:
+                    item.setText("")
+                fnt = item.font()
+                fnt.setBold(True)
+                item.setFont(fnt)
+                item.setForeground(style.qcolor("text"))
+                item.setBackground(style.qcolor("row_sum_bg"))
+                self.table.setItem(row, c, item)
+        finally:
+            self._loading = was
+
     def _on_cell_changed(self, r: int, c: int) -> None:
         if self._loading:
             return
@@ -278,6 +324,7 @@ class ExpenseDetailView(QWidget):
         self._dirty.add(rid)
         if key in ("expense_amount", "tax_amount"):
             self._recompute_book(r)
+        self._update_totals()
 
     # -- 保存 -----------------------------------------------------------
     def _save(self) -> None:
@@ -332,6 +379,8 @@ class ExpenseDetailView(QWidget):
     # -- 校验失败高亮 ---------------------------------------------------
     def _clear_highlights(self) -> None:
         for r in range(self.table.rowCount()):
+            if r == self._totals_row:
+                continue
             for c, key in enumerate(_DETAIL_KEYS):
                 item = self.table.item(r, c)
                 if item is None:

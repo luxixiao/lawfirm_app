@@ -300,15 +300,34 @@ class _DrillPopup(QDialog):
                         Qt.AlignRight | Qt.AlignVCenter if money
                         else Qt.AlignLeft | Qt.AlignVCenter)
                     table.setItem(r, c, it)
-            table.horizontalHeader().setStretchLastSection(True)
-            lay.addWidget(table, 1)
+            # 自适应：列/行按内容收紧并关掉滚动条，让弹窗正好包住内容
+            table.horizontalHeader().setStretchLastSection(False)
+            table.resizeColumnsToContents()
+            table.resizeRowsToContents()
+            table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            # 表格锁定为内容尺寸（无内部滚动条）；内容过多时限制高度并退回纵向滚动
+            cw = table.verticalHeader().width() + table.horizontalHeader().length()
+            ch = table.horizontalHeader().height() + table.verticalHeader().length()
+            fw = table.frameWidth()
+            content = (cw + 2 * fw, ch + 2 * fw)
+            max_h = scale.px(520)
+            if self.screen() is not None:
+                max_h = int(self.screen().availableGeometry().height() * 0.7)
+            if content[1] <= max_h:
+                table.setFixedSize(*content)
+            else:
+                table.setFixedWidth(content[0])
+                table.setFixedHeight(max_h)
+                table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+            lay.addWidget(table)
 
         btn = PushButton("查看详情")
         btn.setFixedHeight(scale.px(34))
         btn.clicked.connect(
             lambda _checked=False: (on_detail(s1, s2, kind, months, year), self.close()))
         lay.addWidget(btn)
-        self.setMinimumWidth(scale.px(440))
+        self.adjustSize()
 
     @staticmethod
     def _title(kind: str, s1: str, s2: str, year, rows: list) -> str:
