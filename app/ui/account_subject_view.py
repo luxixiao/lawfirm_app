@@ -13,9 +13,9 @@
 from __future__ import annotations
 
 import openpyxl
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QItemSelectionModel, Qt
 from PySide6.QtWidgets import (
     QAbstractItemView, QDialog, QDialogButtonBox, QFileDialog, QFrame, QGridLayout, QLayout,
     QHBoxLayout, QInputDialog, QLabel, QListWidget, QListWidgetItem, QMenu, QMessageBox,
@@ -62,12 +62,31 @@ class SubjectListWidget(QListWidget):
         self._items = [(it["id"], it["name"]) for it in items]
         self._render()
 
-    def _render(self) -> None:
+    def _render(self, keep: Optional[List[int]] = None) -> None:
+        """重建列表项；保留滚动位置与选中项（拖拽/上移下移后视图不跳顶、选中不丢）。
+
+        clear() 会把滚动条归零，故先记下位置，重排并 doItemsLayout() 结算布局后再恢复。
+        keep=None 时保留当前选中；传入 id 列表则改为选中这些 id（用于跨卡片搬运后选中被搬运项）。
+        """
+        if keep is None:
+            keep = self.selected_ids()
+        keep_set = set(keep)
+        scroll = self.verticalScrollBar().value()
         self.clear()
+        current = None
         for sid, name in self._items:
             item = QListWidgetItem(name)
             item.setData(Qt.ItemDataRole.UserRole, sid)
             self.addItem(item)
+            if sid in keep_set:
+                item.setSelected(True)
+                if current is None:
+                    current = item
+        self.doItemsLayout()          # 立即结算布局，滚动范围才更新
+        if current is not None:
+            self.setCurrentItem(current, QItemSelectionModel.SelectionFlag.NoUpdate)
+        bar = self.verticalScrollBar()
+        bar.setValue(min(scroll, bar.maximum()))
 
     def subject_ids(self) -> List[int]:
         return [i for i, _ in self._items]
@@ -125,15 +144,16 @@ class SubjectListWidget(QListWidget):
                 remaining.insert(insert_at + k, (mid, name))
             self._items = remaining
         else:
+            # 先取出被拖走的 (id, name) 再移除；否则移除后按 id 查名字会 KeyError
+            dropped = {i: n for i, n in src._items if i in moving}
             src._items = [(i, n) for i, n in src._items if i not in moving]
             src._render()
             current = list(self._items)
             insert_at = max(0, min(drop_row, len(current)))
-            name_map = dict(src._items)
             for k, mid in enumerate(ids):
-                current.insert(insert_at + k, (mid, name_map[mid]))
+                current.insert(insert_at + k, (mid, dropped[mid]))
             self._items = current
-        self._render()
+        self._render(keep=ids)
         self._view.persist()
 
     def _on_rename(self, item: QListWidgetItem) -> None:
@@ -225,9 +245,12 @@ class SubjCard(QFrame):
         lay.addLayout(bar)
 
     # -- 数据 -----------------------------------------------------------
+    def set_name(self, name: str) -> None:
+        """从引擎数据同步一级科目标题（与引擎保持一致，改名后由 refresh 回填）。"""
+        self.title.setText(name)
+
     def set_subjects(self, items: List[Dict]) -> None:
         self.list.set_subjects(items)
-        self.title.setText(self._name())
 
     def _name(self) -> str:
         return self.title.text()
@@ -348,8 +371,8 @@ class AccountSubjectView(QWidget):
     # -- 渲染 -----------------------------------------------------------
     def refresh(self) -> None:
         tree = asub.get_tree()
-        # 一级集合变化时重建卡片
-        if {p["id"] for p in tree} != set(self._cards):
+        # 一级科目的「有序 id 列表」变化时重建卡片（顺序变化也要重排，故比较列表而非集合）
+        if [p["id"] for p in tree] != list(self._cards):
             while self.grid.count():
                 item = self.grid.takeAt(0)
                 w = item.widget()
@@ -369,6 +392,7 @@ class AccountSubjectView(QWidget):
             card = self._cards.get(p["id"])
             if card is None:
                 continue
+            card.set_name(p["name"])
             card.set_subjects(p["children"])
         total = sum(len(p["children"]) for p in tree)
         self.hint.setText(f"共 {total} 个二级科目，{len(tree)} 个一级科目")
