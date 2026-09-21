@@ -339,8 +339,7 @@ class BookBalanceView(QWidget):
 
         self._stack = QStackedWidget()
         self._pivot = _PivotPage()
-        self._detail = ExpenseDetailView(
-            on_back=lambda: self._stack.setCurrentWidget(self._pivot))
+        self._detail = ExpenseDetailView(on_back=self._back_to_pivot)
         self._stack.addWidget(self._pivot)
         self._stack.addWidget(self._detail)
         lay.addWidget(self._stack, 1)
@@ -349,6 +348,10 @@ class BookBalanceView(QWidget):
         self._pivot.drillDetailRequested.connect(self._route_detail)
 
     # -- 下钻路由 -------------------------------------------------------
+    def _back_to_pivot(self) -> None:
+        self._pivot.refresh()
+        self._stack.setCurrentWidget(self._pivot)
+
     def _route_detail(self, s1: str, s2: str, kind: str) -> None:
         self._open_detail(s1, s2, kind,
                           self._pivot.current_months(), self._pivot.current_year())

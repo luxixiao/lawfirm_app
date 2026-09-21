@@ -33,6 +33,7 @@ EXPECTED_FILES = [
     "tests/test_expense_public_exclusive.py",
     "tests/test_expense_reimport.py",      # T2 新增（同账期重导字段级 diff）
     "tests/test_expense_validation.py",   # T1 新增
+    "tests/test_expense_edit.py",          # T4 新增（详情页保存内核）
     "tests/test_header_norm.py",
     "tests/test_import_confirm.py",
     "tests/test_import_fix_log.py",
