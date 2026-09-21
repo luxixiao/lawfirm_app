@@ -21,16 +21,25 @@ from app.engine.calc_data import (  # noqa: E402
     CalcData, AmbiguousPersonError, UnknownIndicatorError, builtin_names,
 )
 from app.engine import person_settlement as ps  # noqa: E402
+from app.engine import staff_type as st  # noqa: E402
 
 
 def make_conn() -> sqlite3.Connection:
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
     conn.executescript(SCHEMA)
-    # 复刻 init_db 的关键迁移列（引擎依赖 person_type / received_override）
+    # 复刻 init_db 的关键迁移列（引擎依赖 person_type / received_override / is_settle / net_basis）
     for tbl in ("charge_detail", "expense_ledger"):
         conn.execute(f"ALTER TABLE {tbl} ADD COLUMN person_type TEXT DEFAULT ''")
     conn.execute("ALTER TABLE charge_detail ADD COLUMN received_override REAL DEFAULT NULL")
+    # 员工类型参与结算开关（staff_type_def.is_settle / net_basis）—— 复刻 init_db 迁移
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(staff_type_def)")]
+    if "is_settle" not in cols:
+        conn.execute("ALTER TABLE staff_type_def ADD COLUMN is_settle INTEGER NOT NULL DEFAULT 0")
+    if "net_basis" not in cols:
+        conn.execute("ALTER TABLE staff_type_def ADD COLUMN net_basis TEXT NOT NULL DEFAULT '收款净额'")
+    # 注入内置员工类型（合伙/聘用/兼职/公共/行政/…），使结算口径与真实库一致
+    st.ensure_defaults(conn)
     return conn
 
 
