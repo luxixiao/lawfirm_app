@@ -8,6 +8,8 @@
 - 主表「会计科目」未配置、但台账里出现的科目（旧数据/孤儿科目）也如实展示，置于末尾、按名称排序，
   保证「账面情况」不漏数据。
 - 只读：表不可编辑，仅用于查看与核对。
+- 下钻（T3）：双击单元 = 弹只读 5 列小表（Qt.Popup）；右键单元「查看详情」= 整页跳转到
+  组成该单元的全部费用台账行（ExpenseDetailView，内部 QStackedWidget 承载，不在 main_window 注册新页）。
 """
 from __future__ import annotations
 
@@ -15,16 +17,18 @@ from datetime import datetime
 from typing import List
 
 from PySide6.QtCore import QThread, Qt, Signal
+from PySide6.QtGui import QCursor
 from PySide6.QtWidgets import (
-    QAbstractItemView, QHBoxLayout, QLabel, QTableWidgetItem,
-    QVBoxLayout, QWidget,
+    QAbstractItemView, QDialog, QHBoxLayout, QLabel, QMenu,
+    QStackedWidget, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
 from app.db import get_conn
 from app.engine import book_balance as bb
 from app.ui import scale
 from app.ui.column_layout import install_column_layout
-from app.ui.widgets import CaptionLabel, ComboBox, PageHeader, PushButton, TableWidget
+from app.ui.expense_detail_view import ExpenseDetailView
+from app.ui.widgets import CaptionLabel, ComboBox, DialogTitleLabel, PageHeader, PushButton, TableWidget
 
 
 def _fmt(x: float) -> str:
@@ -47,10 +51,19 @@ class _PivotLoadThread(QThread):
         self.resultReady.emit(res)
 
 
-class BookBalanceView(QWidget):
+class _PivotPage(QWidget):
+    """账面情况透视页（T3：被 BookBalanceView 内部 QStackedWidget 承载的 page0）。
+
+    持有年份/月份/刷新工具条 + 透视表 + 底部提示，并负责把「双击/右键单元」转成下钻信号：
+    - drillPopupRequested(s1, s2, kind) → 双击 → 父级弹只读 5 列小表；
+    - drillDetailRequested(s1, s2, kind) → 右键「查看详情」→ 父级整页跳转详情。
+    """
+
+    drillPopupRequested = Signal(str, str, str)   # s1, s2, kind
+    drillDetailRequested = Signal(str, str, str)  # s1, s2, kind
+
     def __init__(self) -> None:
         super().__init__()
-
         lay = QVBoxLayout(self)
         lay.setContentsMargins(28, 24, 28, 20)
         lay.setSpacing(12)
@@ -58,7 +71,8 @@ class BookBalanceView(QWidget):
         lay.addWidget(PageHeader(
             "账面情况",
             "按账期汇总各「会计科目」的账面费用金额（账面费用金额 = 费用金额 - 税额）。"
-            "行顺序与「数据维护 → 会计科目」一致；未配置的旧科目也会如实列出。只读，用于核对。",
+            "行顺序与「数据维护 → 会计科目」一致；未配置的旧科目也会如实列出。只读，用于核对。"
+            "双击单元或右键「查看详情」可下钻到组成该单元的费用台账行。",
         ))
 
         # 工具栏：年份 / 起始月 / 终止月 / 刷新
@@ -99,6 +113,9 @@ class BookBalanceView(QWidget):
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.table.verticalHeader().setVisible(False)
+        self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.table.cellDoubleClicked.connect(self._on_cell_double)
+        self.table.customContextMenuRequested.connect(self._on_context_menu)
         self._col = install_column_layout(self.table, "book_balance", "main")
         lay.addWidget(self.table, 1)
 
@@ -106,12 +123,12 @@ class BookBalanceView(QWidget):
         self.hint = CaptionLabel("")
         lay.addWidget(self.hint)
 
+        # 下钻所需的当前选择（双击/右键时取用）
+        self._year = str(datetime.now().year)
+        self._months: List[int] = list(range(1, 13))
+        self._row_specs: List[dict] = []
         self._req = 0          # 异步加载请求令牌（仅最新一次渲染）
-        self._refresh_years()
-        self._rebuild()
-
-    def showEvent(self, event) -> None:  # noqa: N802
-        super().showEvent(event)
+        self._loader = None
         self._refresh_years()
         self._rebuild()
 
@@ -144,6 +161,8 @@ class BookBalanceView(QWidget):
         end = int(self.end_combo.currentData())
         if start > end:
             start, end = end, start
+        self._year = year
+        self._months = list(range(start, end + 1))
         self._req += 1
         token = self._req
         self.hint.setText("加载中…")
@@ -160,6 +179,7 @@ class BookBalanceView(QWidget):
         self._col.apply()
 
     def _render(self, row_specs: List[dict], months, year: str, start: int, end: int) -> None:
+        self._row_specs = row_specs
         headers = ["科目"] + [f"{m}月" for m in months] + ["总计"]
         self.table.setColumnCount(len(headers))
         self.table.setRowCount(len(row_specs))
@@ -198,6 +218,155 @@ class BookBalanceView(QWidget):
         else:
             self.hint.setText(f"（{year}年 {start}月 ~ {end}月 区间内暂无费用台账数据）")
 
+    # -- 下钻入口 -------------------------------------------------------
+    def _spec_at(self, row: int) -> dict | None:
+        if 0 <= row < len(self._row_specs):
+            return self._row_specs[row]
+        return None
+
+    def _on_cell_double(self, row: int, _col: int) -> None:
+        spec = self._spec_at(row)
+        if spec is None:
+            return
+        self.drillPopupRequested.emit(spec["s1"], spec["s2"], spec["kind"])
+
+    def _on_context_menu(self, pos) -> None:
+        row = self.table.rowAt(pos.y())
+        spec = self._spec_at(row)
+        if spec is None:
+            return
+        menu = QMenu(self)
+        act = menu.addAction("查看详情")
+        s1, s2, kind = spec["s1"], spec["s2"], spec["kind"]
+        act.triggered.connect(
+            lambda _checked=False, s1=s1, s2=s2, kind=kind:
+            self.drillDetailRequested.emit(s1, s2, kind))
+        menu.exec(self.table.mapToGlobal(pos))
+
+    # -- 当前选择（供父级下钻取用） -------------------------------------
+    def current_year(self) -> str:
+        return self._year
+
+    def current_months(self) -> List[int]:
+        return list(self._months)
+
     def refresh(self) -> None:
         self._refresh_years()
         self._rebuild()
+
+
+class _DrillPopup(QDialog):
+    """双击单元弹出的只读 5 列小表（Qt.Popup：点空白自动关闭，内部按钮可用）。
+
+    5 列 = 名称 / 费用金额 / 税额 / 账面费用金额 / 费用类型（逐行展示组成该单元的全部行）。
+    底部「查看详情」→ 整页跳转到 ExpenseDetailView。
+    """
+
+    _COLS = [("名称", "name", False), ("费用金额", "expense_amount", True),
+             ("税额", "tax_amount", True), ("账面费用金额", "book_amount", True),
+             ("费用类型", "expense_type", False)]
+
+    def __init__(self, s1: str, s2: str, kind: str, months, year,
+                 on_detail, parent=None) -> None:
+        super().__init__(parent, Qt.WindowType.Popup)
+        self.setObjectName("drillPopup")
+        rows = bb.expense_rows_for_cell(str(year), months, s1, s2, kind, get_conn())
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(scale.px(14), scale.px(12), scale.px(14), scale.px(12))
+        lay.setSpacing(scale.px(8))
+
+        title = DialogTitleLabel(self._title(kind, s1, s2, year, rows))
+        lay.addWidget(title)
+
+        if not rows:
+            lay.addWidget(CaptionLabel("（该单元暂无明细行）"))
+        else:
+            table = QTableWidget(len(rows), len(self._COLS))
+            table.setHorizontalHeaderLabels([c[0] for c in self._COLS])
+            table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+            table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+            table.verticalHeader().setVisible(False)
+            table.setWordWrap(False)
+            for r, row in enumerate(rows):
+                for c, (_hdr, key, money) in enumerate(self._COLS):
+                    v = row.get(key)
+                    if money and isinstance(v, (int, float)) and not isinstance(v, bool):
+                        txt = f"{v:,.2f}"
+                    else:
+                        txt = "" if v is None else str(v)
+                    it = QTableWidgetItem(txt)
+                    it.setTextAlignment(
+                        Qt.AlignRight | Qt.AlignVCenter if money
+                        else Qt.AlignLeft | Qt.AlignVCenter)
+                    table.setItem(r, c, it)
+            table.horizontalHeader().setStretchLastSection(True)
+            lay.addWidget(table, 1)
+
+        btn = PushButton("查看详情")
+        btn.setFixedHeight(scale.px(34))
+        btn.clicked.connect(
+            lambda _checked=False: (on_detail(s1, s2, kind, months, year), self.close()))
+        lay.addWidget(btn)
+        self.setMinimumWidth(scale.px(440))
+
+    @staticmethod
+    def _title(kind: str, s1: str, s2: str, year, rows: list) -> str:
+        if kind == "grand":
+            label = "全部费用"
+        elif kind == "uncat":
+            label = f"{s1}（未分类）"
+        elif kind == "l2":
+            label = f"{s1} / {s2}"
+        else:  # l1
+            label = s1 or "全部费用"
+        return f"{year} {label}：{len(rows)} 行明细"
+
+
+class BookBalanceView(QWidget):
+    """账面情况页容器：内部 QStackedWidget 在「透视页」与「费用台账详情页」之间切换。
+
+    - page0 = _PivotPage（只读透视表 + 下钻入口）
+    - page1 = ExpenseDetailView（下钻详情，T3 只读骨架；编辑留 T4）
+    详情页占满本页内容区（等效整页跳转），但**不**在 main_window 导航注册新页。
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(0)
+
+        self._stack = QStackedWidget()
+        self._pivot = _PivotPage()
+        self._detail = ExpenseDetailView(
+            on_back=lambda: self._stack.setCurrentWidget(self._pivot))
+        self._stack.addWidget(self._pivot)
+        self._stack.addWidget(self._detail)
+        lay.addWidget(self._stack, 1)
+
+        self._pivot.drillPopupRequested.connect(self._show_drill_popup)
+        self._pivot.drillDetailRequested.connect(self._route_detail)
+
+    # -- 下钻路由 -------------------------------------------------------
+    def _route_detail(self, s1: str, s2: str, kind: str) -> None:
+        self._open_detail(s1, s2, kind,
+                          self._pivot.current_months(), self._pivot.current_year())
+
+    def _show_drill_popup(self, s1: str, s2: str, kind: str) -> None:
+        popup = _DrillPopup(s1, s2, kind,
+                            self._pivot.current_months(), self._pivot.current_year(),
+                            self._open_detail, self)
+        popup.move(QCursor.pos())
+        popup.exec()
+
+    def _open_detail(self, s1: str, s2: str, kind: str, months, year) -> None:
+        self._detail.load(s1, s2, kind, months, year)
+        self._stack.setCurrentWidget(self._detail)
+
+    def refresh(self) -> None:
+        self._pivot.refresh()
+
+    def showEvent(self, event) -> None:  # noqa: N802
+        super().showEvent(event)
+        self._pivot.refresh()
