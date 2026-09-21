@@ -13,120 +13,132 @@ from __future__ import annotations
 import openpyxl
 from typing import Dict, List
 
-from PySide6.QtCore import QPoint, QRect, QSize, Qt
+from PySide6.QtCore import QRect, Qt
+from PySide6.QtGui import QFont, QFontMetrics
 from PySide6.QtWidgets import (
     QAbstractItemView, QComboBox, QDialog, QDialogButtonBox, QFrame, QLayout,
     QGridLayout, QHBoxLayout, QInputDialog, QFileDialog, QLabel, QLineEdit, QListWidget,
-    QListWidgetItem, QMenu, QMessageBox, QScrollArea, QSizePolicy, QTextEdit, QVBoxLayout, QWidget,
+    QListWidgetItem, QMenu, QMessageBox, QScrollArea, QSizePolicy, QStyledItemDelegate,
+    QStyle, QTextEdit, QVBoxLayout, QWidget,
 )
 
+from app.ui import style
 from app.ui.widgets import CaptionLabel, PageHeader, PushButton
 from app.db import get_conn
 from app.engine.change_log import log_change
 from app.engine import expense_cat as ec
 
-
-# ---------------------------------------------------------------------------
-# 流式布局（chips 自动换行；PySide6 未内置，移植 Qt 官方 FlowLayout 示例）
-# ---------------------------------------------------------------------------
-
-class FlowLayout(QLayout):
-    """水平流式布局：子项从左到右排列，超出宽度自动换行。"""
-
-    def __init__(self, parent=None, margin=0, spacing=-1) -> None:
-        super().__init__(parent)
-        if parent is not None:
-            self.setContentsMargins(margin, margin, margin, margin)
-        self.setSpacing(spacing if spacing >= 0 else 4)
-        self._items = []
-
-    def addItem(self, item) -> None:  # noqa: N802
-        self._items.append(item)
-
-    def itemAt(self, index):  # noqa: N802
-        if 0 <= index < len(self._items):
-            return self._items[index]
-        return None
-
-    def takeAt(self, index):  # noqa: N802
-        if 0 <= index < len(self._items):
-            return self._items.pop(index)
-        return None
-
-    def count(self) -> int:  # noqa: N802
-        return len(self._items)
-
-    def expandingDirections(self):  # noqa: N802
-        return Qt.Orientation(0)
-
-    def hasHeightForWidth(self) -> bool:  # noqa: N802
-        return True
-
-    def heightForWidth(self, width: int) -> int:  # noqa: N802
-        return self._do_layout(QRect(0, 0, width, 0), True)
-
-    def setGeometry(self, rect: QRect) -> None:  # noqa: N802
-        super().setGeometry(rect)
-        self._do_layout(rect, False)
-
-    def sizeHint(self) -> QSize:  # noqa: N802
-        return self.minimumSize()
-
-    def minimumSize(self) -> QSize:  # noqa: N802
-        size = QSize()
-        for item in self._items:
-            size = size.expandedTo(item.minimumSize())
-        m = self.contentsMargins()
-        size += QSize(2 * m.left(), 2 * m.top())
-        return size
-
-    def _do_layout(self, rect: QRect, test_only: bool) -> int:
-        m = self.contentsMargins()
-        x = rect.x() + m.left()
-        y = rect.y() + m.top()
-        line_height = 0
-        spacing = self.spacing()
-        for item in self._items:
-            wid = item.widget()
-            next_x = x + item.sizeHint().width() + spacing
-            if next_x - spacing > rect.right() and line_height > 0:
-                x = rect.x() + m.left()
-                y = y + line_height + spacing
-                next_x = x + item.sizeHint().width() + spacing
-                line_height = 0
-            if not test_only:
-                item.setGeometry(QRect(QPoint(x, y), item.sizeHint()))
-            x = next_x
-            line_height = max(line_height, item.sizeHint().height())
-        return y + line_height - rect.y()
+# 列表项上承载「别名列表」的自定义 role（类型名仍存 DisplayRole，保持纯数据）
+ALIAS_ROLE = int(Qt.ItemDataRole.UserRole) + 1
 
 
 # ---------------------------------------------------------------------------
-# 别名 chip
+# 列表项委托：类型名 + 灰色内联别名后缀（选中/悬停行才浮出 × 删与 ＋ 新增）
 # ---------------------------------------------------------------------------
+# B+C 折中：别名始终以灰字内联在类型名后，形如「住房公积金（别名：公积金、社保）」；
+# 仅当该行「选中或悬停」时，才在别名后浮出小 ×（点删）、并在行尾浮出 ＋（新增）。
+# 绘制与命中共用同一套几何（controls），保证「看到哪就点到哪」。
 
-class AliasChip(QFrame):
-    """单个别名 chip：展示「别名」并附 × 删除按钮。
+class TypeAliasDelegate(QStyledItemDelegate):
+    PAD_L = 8
+    PAD_R = 8
 
-    canonical 仅用于 tooltip，删除只需 alias（落库按 alias 唯一删除）。
-    """
+    def __init__(self, list_widget: "TypeListWidget") -> None:
+        super().__init__(list_widget)
+        self._lw = list_widget
 
-    def __init__(self, alias: str, canonical: str, on_delete, parent=None) -> None:
-        super().__init__(parent)
-        self.alias = alias
-        self.setObjectName("chip")
-        lay = QHBoxLayout(self)
-        lay.setContentsMargins(6, 1, 2, 1)
-        lay.setSpacing(2)
-        text = QLabel(alias)
-        text.setToolTip(f"别名 → 规范类型：{canonical}")
-        text.setObjectName("chipText")
-        lay.addWidget(text)
-        x = PushButton("×")
-        x.setObjectName("chipX")
-        x.setFixedSize(18, 18)
-        x.clicked.connect(lambda: on_delete(alias))
-        lay.addWidget(x)
+    # -- 字体 -----------------------------------------------------------
+    def _alias_font(self) -> QFont:
+        """别名后缀用小一号字（兼容 QSS 的 px 字号与 pt 字号两种设定）。"""
+        f = QFont(self._lw.font())
+        ps = f.pointSizeF()
+        if ps > 0:
+            f.setPointSizeF(max(6.0, ps - 1.0))
+        else:
+            px = f.pixelSize()
+            if px > 0:
+                f.setPixelSize(max(9, px - 1))
+        return f
+
+    # -- 几何（绘制 / 命中单一真源） -------------------------------------
+    def controls(self, rect: QRect, type_text: str, aliases: List[str],
+                 interactive: bool) -> Dict:
+        fm_t = QFontMetrics(self._lw.font())
+        fm_a = QFontMetrics(self._alias_font())
+        h = rect.height()
+        x = rect.left() + self.PAD_L
+        type_w = fm_t.horizontalAdvance(type_text)
+        out: Dict = {"type_x": x, "type_w": type_w, "items": [],
+                     "alias_hits": [], "plus_rect": None}
+        x += type_w
+        if aliases:
+            prefix = "（别名："
+            pw = fm_a.horizontalAdvance(prefix)
+            out["items"].append({"text": prefix, "x": x, "w": pw})
+            x += pw
+            gap = 2
+            for i, a in enumerate(aliases):
+                aw = fm_a.horizontalAdvance(a)
+                out["items"].append({"text": a, "x": x, "w": aw})
+                x += aw
+                if interactive:
+                    bw = max(12, fm_a.height() - 4)
+                    xr = QRect(x + gap, rect.top() + (h - bw) // 2, bw, bw)
+                    out["alias_hits"].append({"alias": a, "rect": xr})
+                    x = xr.right() + gap
+                if i != len(aliases) - 1:
+                    sw = fm_a.horizontalAdvance("、")
+                    out["items"].append({"text": "、", "x": x, "w": sw})
+                    x += sw
+            out["items"].append({"text": "）", "x": x,
+                                 "w": fm_a.horizontalAdvance("）")})
+        if interactive:
+            pw = max(18, fm_a.horizontalAdvance("＋别名") + 10)
+            out["plus_rect"] = QRect(rect.right() - self.PAD_R - pw,
+                                     rect.top() + 3, pw, h - 6)
+        return out
+
+    # -- 绘制 -----------------------------------------------------------
+    def paint(self, painter, option, index) -> None:  # noqa: N802
+        rect = option.rect
+        type_text = index.data(Qt.ItemDataRole.DisplayRole) or ""
+        aliases = index.data(ALIAS_ROLE) or []
+        selected = bool(option.state & QStyle.StateFlag.State_Selected)
+        hovered = (index.row() == self._lw.hover_row())
+        interactive = selected or hovered
+
+        painter.save()
+        if selected:
+            bg = style.qcolor("bg_select")
+        elif hovered:
+            bg = style.qcolor("bg_hover")
+        else:
+            bg = None
+        if bg is not None:
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(bg)
+            painter.drawRoundedRect(rect.adjusted(0, 1, -1, -1), 5, 5)
+
+        c = self.controls(rect, type_text, aliases, interactive)
+        painter.setFont(self._lw.font())
+        painter.setPen(style.qcolor("text"))
+        painter.drawText(QRect(c["type_x"], rect.top(), max(1, c["type_w"]), rect.height()),
+                         Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, type_text)
+        if aliases:
+            painter.setFont(self._alias_font())
+            painter.setPen(style.qcolor("text_faint"))
+            for it in c["items"]:
+                painter.drawText(QRect(it["x"], rect.top(), max(1, it["w"]), rect.height()),
+                                 Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+                                 it["text"])
+            if interactive:
+                painter.setPen(style.qcolor("text_mute"))
+                for hit in c["alias_hits"]:
+                    painter.drawText(hit["rect"], Qt.AlignmentFlag.AlignCenter, "×")
+        if interactive and c["plus_rect"] is not None:
+            painter.setPen(style.qcolor("text_mute"))
+            painter.drawText(c["plus_rect"], Qt.AlignmentFlag.AlignCenter, "＋")
+        painter.restore()
 
 
 # ---------------------------------------------------------------------------
@@ -145,6 +157,7 @@ class TypeListWidget(QListWidget):
         self.category = category
         self._view = view
         self._dragging: List[str] = []
+        self._hover_row = -1
         self.setDragEnabled(True)
         self.setAcceptDrops(True)
         self.setDropIndicatorShown(True)
@@ -154,17 +167,71 @@ class TypeListWidget(QListWidget):
         self.setSpacing(1)
         self.setUniformItemSizes(True)
         self.itemDoubleClicked.connect(self._on_rename)
+        self.setItemDelegate(TypeAliasDelegate(self))
+        self.viewport().setMouseTracking(True)   # 悬停行才浮出 ×/＋
 
     # -- 取值 -----------------------------------------------------------
     def type_names(self) -> List[str]:
         return [self.item(i).text() for i in range(self.count())]
 
-    def set_types(self, names: List[str]) -> None:
+    def alias_map(self) -> Dict[str, List[str]]:
+        """{类型名: [别名...]}（拖拽重建列表时用于保留别名显示）。"""
+        return {self.item(i).text(): list(self.item(i).data(ALIAS_ROLE) or [])
+                for i in range(self.count())}
+
+    def hover_row(self) -> int:
+        return self._hover_row
+
+    def set_types(self, names: List[str], aliases_by_type: Dict[str, List[str]] = None) -> None:
+        aliases_by_type = aliases_by_type or {}
         self.blockSignals(True)
         self.clear()
+        self._hover_row = -1
         for n in names:
-            self.addItem(QListWidgetItem(n))
+            it = QListWidgetItem(n)                       # DisplayRole=纯类型名（数据不污染）
+            it.setData(ALIAS_ROLE, list(aliases_by_type.get(n, [])))
+            self.addItem(it)
         self.blockSignals(False)
+
+    # -- 悬停追踪 -------------------------------------------------------
+    def mouseMoveEvent(self, event) -> None:  # noqa: N802
+        idx = self.indexAt(event.position().toPoint())
+        row = idx.row() if idx.isValid() else -1
+        if row != self._hover_row:
+            self._hover_row = row
+            self.viewport().update()
+        super().mouseMoveEvent(event)
+
+    def leaveEvent(self, event) -> None:  # noqa: N802
+        if self._hover_row != -1:
+            self._hover_row = -1
+            self.viewport().update()
+        super().leaveEvent(event)
+
+    # -- 点击命中：别名后的 × 删 / 行尾 ＋ 新增 --------------------------
+    def mousePressEvent(self, event) -> None:  # noqa: N802
+        if event.button() == Qt.MouseButton.LeftButton and self._view is not None:
+            pos = event.position().toPoint()
+            idx = self.indexAt(pos)
+            if idx.isValid():
+                row = idx.row()
+                item = self.item(row)
+                interactive = (row == self._hover_row) or (item is not None and item.isSelected())
+                if interactive:
+                    type_text = idx.data(Qt.ItemDataRole.DisplayRole) or ""
+                    aliases = idx.data(ALIAS_ROLE) or []
+                    c = self.itemDelegate().controls(
+                        self.visualRect(idx), type_text, aliases, True)
+                    for hit in c["alias_hits"]:
+                        if hit["rect"].contains(pos):
+                            self._view.delete_alias(hit["alias"], confirm=False)
+                            event.accept()
+                            return
+                    if c["plus_rect"] is not None and c["plus_rect"].contains(pos):
+                        self._view.add_alias_dialog(type_text)
+                        event.accept()
+                        return
+        super().mousePressEvent(event)
 
     # -- 拖拽 -----------------------------------------------------------
     def startDrag(self, supportedActions) -> None:  # noqa: N802
@@ -198,6 +265,11 @@ class TypeListWidget(QListWidget):
         if not names:
             return
         moving = set(names)
+        # 拖拽会重建列表 → 先留存别名，重建时按类型名回填，避免别名显示丢失
+        src_map = src.alias_map()
+        self_map = src_map if src is self else self.alias_map()
+        combined = dict(self_map)
+        combined.update(src_map)
 
         if src is self:
             current = self.type_names()
@@ -208,14 +280,14 @@ class TypeListWidget(QListWidget):
             insert_at = max(0, min(drop_row - removed_before, len(remaining)))
             for k, n in enumerate(names):
                 remaining.insert(insert_at + k, n)
-            self.set_types(remaining)
+            self.set_types(remaining, combined)
         else:
-            src.set_types([t for t in src.type_names() if t not in moving])
+            src.set_types([t for t in src.type_names() if t not in moving], src_map)
             current = self.type_names()
             insert_at = max(0, min(drop_row, len(current)))
             for k, n in enumerate(names):
                 current.insert(insert_at + k, n)
-            self.set_types(current)
+            self.set_types(current, combined)
         for n in names:
             self._select(n)
         self._view.persist()
@@ -280,14 +352,6 @@ class CategoryCard(QFrame):
         self.list.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         lay.addWidget(self.list, 1)
 
-        # 别名区：按规范类型分组展示别名 chips（导入时自动归一到规范名）
-        self.alias_area = QVBoxLayout()
-        self.alias_area.setContentsMargins(0, 0, 0, 0)
-        self.alias_area.setSpacing(4)
-        self._alias_host = QWidget()
-        self._alias_host.setLayout(self.alias_area)
-        lay.addWidget(self._alias_host)
-
         bar = QHBoxLayout()
         bar.setSpacing(4)
         b_add = PushButton("新增")
@@ -321,8 +385,9 @@ class CategoryCard(QFrame):
         lay.addLayout(bar)
 
     # -- 数据 -----------------------------------------------------------
-    def set_types(self, names: List[str]) -> None:
-        self.list.set_types(names)
+    def set_types(self, names: List[str],
+                  aliases_by_type: Dict[str, List[str]] = None) -> None:
+        self.list.set_types(names, aliases_by_type)
         self.count.setText(f"{len(names)} 项")
 
     def set_note(self, note: str) -> None:
@@ -333,57 +398,6 @@ class CategoryCard(QFrame):
     def selected(self) -> List[str]:
         return [self.list.item(i).text() for i in range(self.list.count())
                 if self.list.item(i).isSelected()]
-
-    # -- 别名 -----------------------------------------------------------
-    def set_aliases(self, aliases_by_canonical: Dict[str, List[str]]) -> None:
-        """按本卡片的类型分组渲染别名 chips；无别名时给操作提示。"""
-        while self.alias_area.count():
-            item = self.alias_area.takeAt(0)
-            w = item.widget()
-            if w is not None:
-                w.deleteLater()
-        types = self.list.type_names()
-        any_alias = False
-        for t in types:
-            al = aliases_by_canonical.get(t, [])
-            if not al:
-                continue
-            any_alias = True
-            row = QWidget()
-            rlay = QHBoxLayout(row)
-            rlay.setContentsMargins(0, 0, 0, 0)
-            rlay.setSpacing(4)
-            lbl = QLabel(t)
-            lbl.setObjectName("chipType")
-            rlay.addWidget(lbl)
-            flow_host = QWidget()
-            FlowLayout(flow_host, margin=0, spacing=4)
-            for a in al:
-                flow_host.layout().addWidget(AliasChip(a, t, self._view.delete_alias))
-            rlay.addWidget(flow_host, 1)
-            self.alias_area.addWidget(row)
-        if not any_alias:
-            hint = CaptionLabel(
-                "别名：同义写法（如「公积金」→「住房公积金」），导入时自动归一到规范名；"
-                "点下方「＋别名」添加。")
-            hint.setWordWrap(True)
-            self.alias_area.addWidget(hint)
-        b_add = PushButton("＋别名")
-        b_add.setObjectName("cardBtn")
-        b_add.setFixedHeight(24)
-        b_add.clicked.connect(self._add_alias)
-        self.alias_area.addWidget(b_add)
-
-    def _add_alias(self) -> None:
-        types = self.list.type_names()
-        if not types:
-            QMessageBox.information(self, "提示", "请先在卡片中新增一个规范类型，再为它添加别名")
-            return
-        dlg = AliasAddDialog(types, self)
-        if dlg.exec() == QDialog.DialogCode.Accepted:
-            canonical, alias = dlg.value()
-            if alias:
-                self._view.add_alias(canonical, alias)
 
     # -- 操作 -----------------------------------------------------------
     def _edit_note(self) -> None:
@@ -555,9 +569,8 @@ class ExpenseCatView(QWidget):
             card = self._cards.get(c["name"])
             if card is None:
                 continue
-            card.set_types(by_cat.get(c["name"], []))
+            card.set_types(by_cat.get(c["name"], []), aliases_by_canonical)
             card.set_note(c["note"])
-            card.set_aliases(aliases_by_canonical)
         total = sum(len(v) for v in by_cat.values())
         self.hint.setText(f"共 {total} 个费用类型，{len(cats)} 个分类")
 
@@ -682,8 +695,18 @@ class ExpenseCatView(QWidget):
             conn.close()
         self.refresh()
 
-    def delete_alias(self, alias: str) -> None:
-        if QMessageBox.question(
+    def add_alias_dialog(self, canonical: str) -> None:
+        """列表项行尾「＋」入口：为指定规范类型新增别名。"""
+        if not canonical:
+            return
+        dlg = AliasAddDialog([canonical], self)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            c, a = dlg.value()
+            if a:
+                self.add_alias(c, a)
+
+    def delete_alias(self, alias: str, confirm: bool = True) -> None:
+        if confirm and QMessageBox.question(
                 self, "删除别名",
                 f"确定删除别名「{alias}」？\n删除后费用台账里若再出现该写法，将重新按「未知类型」报错。"
         ) != QMessageBox.StandardButton.Yes:
