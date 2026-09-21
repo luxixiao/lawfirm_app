@@ -381,6 +381,25 @@ QLabel#sourceVal {{
 }}
 QLabel#sourceEmpty {{ color: {p['text_faint']}; font-style: italic; }}
 
+/* ===== 费用类型卡片内的别名 chip ===== */
+/* 别名是「同义写法 → 规范类型」的可删除小标签，浅底胶囊 + × 表达 */
+QFrame#chip {{
+    background: {p['bg']}; border: 1px solid {p['border']};
+    border-radius: {P(12)}; padding: {P(2)} {P(4)};
+}}
+QFrame#chip QLabel#chipText {{
+    color: {p['text']}; font-size: {P(12)}; padding: 0 {P(2)};
+}}
+QLabel#chipType {{
+    color: {p['text_mute']}; font-size: {P(12)}; font-weight: 600;
+}}
+QPushButton#chipX {{
+    background: transparent; border: none; border-radius: {P(8)};
+    color: {p['text_faint']}; font-size: {P(12)}; padding: 0; min-width: {P(16)}; max-width: {P(16)};
+}}
+QPushButton#chipX:hover {{ background: {p['bg_hover']}; color: {p['text']}; }}
+QPushButton#chipX:pressed {{ background: {p['btn_press']}; }}
+
 /* ===== 费用类型分类卡片（费用类型页） ===== */
 QFrame#card {{
     background: {p['bg_table']}; border: 1px solid {p['border']};

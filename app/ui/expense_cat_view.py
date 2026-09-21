@@ -13,17 +13,120 @@ from __future__ import annotations
 import openpyxl
 from typing import Dict, List
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QPoint, QRect, QSize, Qt
 from PySide6.QtWidgets import (
-    QAbstractItemView, QDialog, QDialogButtonBox, QFrame, QLayout,
-    QGridLayout, QHBoxLayout, QInputDialog, QFileDialog, QLabel, QListWidget, QListWidgetItem,
-    QMenu, QMessageBox, QScrollArea, QSizePolicy, QTextEdit, QVBoxLayout, QWidget,
+    QAbstractItemView, QComboBox, QDialog, QDialogButtonBox, QFrame, QLayout,
+    QGridLayout, QHBoxLayout, QInputDialog, QFileDialog, QLabel, QLineEdit, QListWidget,
+    QListWidgetItem, QMenu, QMessageBox, QScrollArea, QSizePolicy, QTextEdit, QVBoxLayout, QWidget,
 )
 
 from app.ui.widgets import CaptionLabel, PageHeader, PushButton
 from app.db import get_conn
 from app.engine.change_log import log_change
 from app.engine import expense_cat as ec
+
+
+# ---------------------------------------------------------------------------
+# 流式布局（chips 自动换行；PySide6 未内置，移植 Qt 官方 FlowLayout 示例）
+# ---------------------------------------------------------------------------
+
+class FlowLayout(QLayout):
+    """水平流式布局：子项从左到右排列，超出宽度自动换行。"""
+
+    def __init__(self, parent=None, margin=0, spacing=-1) -> None:
+        super().__init__(parent)
+        if parent is not None:
+            self.setContentsMargins(margin, margin, margin, margin)
+        self.setSpacing(spacing if spacing >= 0 else 4)
+        self._items = []
+
+    def addItem(self, item) -> None:  # noqa: N802
+        self._items.append(item)
+
+    def itemAt(self, index):  # noqa: N802
+        if 0 <= index < len(self._items):
+            return self._items[index]
+        return None
+
+    def takeAt(self, index):  # noqa: N802
+        if 0 <= index < len(self._items):
+            return self._items.pop(index)
+        return None
+
+    def count(self) -> int:  # noqa: N802
+        return len(self._items)
+
+    def expandingDirections(self):  # noqa: N802
+        return Qt.Orientation(0)
+
+    def hasHeightForWidth(self) -> bool:  # noqa: N802
+        return True
+
+    def heightForWidth(self, width: int) -> int:  # noqa: N802
+        return self._do_layout(QRect(0, 0, width, 0), True)
+
+    def setGeometry(self, rect: QRect) -> None:  # noqa: N802
+        super().setGeometry(rect)
+        self._do_layout(rect, False)
+
+    def sizeHint(self) -> QSize:  # noqa: N802
+        return self.minimumSize()
+
+    def minimumSize(self) -> QSize:  # noqa: N802
+        size = QSize()
+        for item in self._items:
+            size = size.expandedTo(item.minimumSize())
+        m = self.contentsMargins()
+        size += QSize(2 * m.left(), 2 * m.top())
+        return size
+
+    def _do_layout(self, rect: QRect, test_only: bool) -> int:
+        m = self.contentsMargins()
+        x = rect.x() + m.left()
+        y = rect.y() + m.top()
+        line_height = 0
+        spacing = self.spacing()
+        for item in self._items:
+            wid = item.widget()
+            next_x = x + item.sizeHint().width() + spacing
+            if next_x - spacing > rect.right() and line_height > 0:
+                x = rect.x() + m.left()
+                y = y + line_height + spacing
+                next_x = x + item.sizeHint().width() + spacing
+                line_height = 0
+            if not test_only:
+                item.setGeometry(QRect(QPoint(x, y), item.sizeHint()))
+            x = next_x
+            line_height = max(line_height, item.sizeHint().height())
+        return y + line_height - rect.y()
+
+
+# ---------------------------------------------------------------------------
+# 别名 chip
+# ---------------------------------------------------------------------------
+
+class AliasChip(QFrame):
+    """单个别名 chip：展示「别名」并附 × 删除按钮。
+
+    canonical 仅用于 tooltip，删除只需 alias（落库按 alias 唯一删除）。
+    """
+
+    def __init__(self, alias: str, canonical: str, on_delete, parent=None) -> None:
+        super().__init__(parent)
+        self.alias = alias
+        self.setObjectName("chip")
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(6, 1, 2, 1)
+        lay.setSpacing(2)
+        text = QLabel(alias)
+        text.setToolTip(f"别名 → 规范类型：{canonical}")
+        text.setObjectName("chipText")
+        lay.addWidget(text)
+        x = PushButton("×")
+        x.setObjectName("chipX")
+        x.setFixedSize(18, 18)
+        x.clicked.connect(lambda: on_delete(alias))
+        lay.addWidget(x)
 
 
 # ---------------------------------------------------------------------------
@@ -177,6 +280,14 @@ class CategoryCard(QFrame):
         self.list.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         lay.addWidget(self.list, 1)
 
+        # 别名区：按规范类型分组展示别名 chips（导入时自动归一到规范名）
+        self.alias_area = QVBoxLayout()
+        self.alias_area.setContentsMargins(0, 0, 0, 0)
+        self.alias_area.setSpacing(4)
+        self._alias_host = QWidget()
+        self._alias_host.setLayout(self.alias_area)
+        lay.addWidget(self._alias_host)
+
         bar = QHBoxLayout()
         bar.setSpacing(4)
         b_add = PushButton("新增")
@@ -222,6 +333,57 @@ class CategoryCard(QFrame):
     def selected(self) -> List[str]:
         return [self.list.item(i).text() for i in range(self.list.count())
                 if self.list.item(i).isSelected()]
+
+    # -- 别名 -----------------------------------------------------------
+    def set_aliases(self, aliases_by_canonical: Dict[str, List[str]]) -> None:
+        """按本卡片的类型分组渲染别名 chips；无别名时给操作提示。"""
+        while self.alias_area.count():
+            item = self.alias_area.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.deleteLater()
+        types = self.list.type_names()
+        any_alias = False
+        for t in types:
+            al = aliases_by_canonical.get(t, [])
+            if not al:
+                continue
+            any_alias = True
+            row = QWidget()
+            rlay = QHBoxLayout(row)
+            rlay.setContentsMargins(0, 0, 0, 0)
+            rlay.setSpacing(4)
+            lbl = QLabel(t)
+            lbl.setObjectName("chipType")
+            rlay.addWidget(lbl)
+            flow_host = QWidget()
+            FlowLayout(flow_host, margin=0, spacing=4)
+            for a in al:
+                flow_host.layout().addWidget(AliasChip(a, t, self._view.delete_alias))
+            rlay.addWidget(flow_host, 1)
+            self.alias_area.addWidget(row)
+        if not any_alias:
+            hint = CaptionLabel(
+                "别名：同义写法（如「公积金」→「住房公积金」），导入时自动归一到规范名；"
+                "点下方「＋别名」添加。")
+            hint.setWordWrap(True)
+            self.alias_area.addWidget(hint)
+        b_add = PushButton("＋别名")
+        b_add.setObjectName("cardBtn")
+        b_add.setFixedHeight(24)
+        b_add.clicked.connect(self._add_alias)
+        self.alias_area.addWidget(b_add)
+
+    def _add_alias(self) -> None:
+        types = self.list.type_names()
+        if not types:
+            QMessageBox.information(self, "提示", "请先在卡片中新增一个规范类型，再为它添加别名")
+            return
+        dlg = AliasAddDialog(types, self)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            canonical, alias = dlg.value()
+            if alias:
+                self._view.add_alias(canonical, alias)
 
     # -- 操作 -----------------------------------------------------------
     def _edit_note(self) -> None:
@@ -282,6 +444,33 @@ class NoteDialog(QDialog):
 
     def value(self) -> str:
         return self.edit.toPlainText().strip()
+
+
+class AliasAddDialog(QDialog):
+    """新增别名：选择规范类型 + 输入同义写法。"""
+
+    def __init__(self, types: List[str], parent=None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("新增别名")
+        self.resize(420, 180)
+        lay = QVBoxLayout(self)
+        lay.addWidget(CaptionLabel("为以下规范类型添加一个同义别名（导入时自动归一到它）："))
+        self.combo = QComboBox()
+        self.combo.addItems(types)
+        lay.addWidget(self.combo)
+        lay.addWidget(CaptionLabel("别名（费用台账里可能出现的写法，如「公积金」）："))
+        self.edit = QLineEdit()
+        lay.addWidget(self.edit, 1)
+        box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok
+                               | QDialogButtonBox.StandardButton.Cancel)
+        box.button(QDialogButtonBox.StandardButton.Ok).setText("确定")
+        box.button(QDialogButtonBox.StandardButton.Cancel).setText("取消")
+        box.accepted.connect(self.accept)
+        box.rejected.connect(self.reject)
+        lay.addWidget(box)
+
+    def value(self) -> tuple:
+        return (self.combo.currentText(), self.edit.text().strip())
 
 
 # ---------------------------------------------------------------------------
@@ -361,12 +550,14 @@ class ExpenseCatView(QWidget):
                 self.grid.setColumnStretch(col, 1)
             self.grid.setRowStretch(len(cats) // 3 + 1, 1)
         by_cat = ec.types_by_category()
+        aliases_by_canonical = ec.aliases_by_canonical()
         for c in cats:
             card = self._cards.get(c["name"])
             if card is None:
                 continue
             card.set_types(by_cat.get(c["name"], []))
             card.set_note(c["note"])
+            card.set_aliases(aliases_by_canonical)
         total = sum(len(v) for v in by_cat.values())
         self.hint.setText(f"共 {total} 个费用类型，{len(cats)} 个分类")
 
@@ -476,6 +667,41 @@ class ExpenseCatView(QWidget):
                 conn.close()
         self.refresh()
 
+    def add_alias(self, canonical: str, alias: str) -> None:
+        try:
+            ec.add_alias(canonical, alias)
+        except ec.ExpenseCatError as exc:
+            QMessageBox.warning(self, "无法新增别名", str(exc))
+            return
+        conn = get_conn()
+        try:
+            log_change(conn, "expense_type_alias", alias, "alias", "", alias,
+                       f"费用类型别名→{canonical}")
+            conn.commit()
+        finally:
+            conn.close()
+        self.refresh()
+
+    def delete_alias(self, alias: str) -> None:
+        if QMessageBox.question(
+                self, "删除别名",
+                f"确定删除别名「{alias}」？\n删除后费用台账里若再出现该写法，将重新按「未知类型」报错。"
+        ) != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            ec.delete_alias(alias)
+        except ec.ExpenseCatError as exc:
+            QMessageBox.warning(self, "无法删除别名", str(exc))
+            return
+        conn = get_conn()
+        try:
+            log_change(conn, "expense_type_alias", alias, "alias", alias, "",
+                       "费用类型别名删除")
+            conn.commit()
+        finally:
+            conn.close()
+        self.refresh()
+
     def move_in_category(self, name: str, direction: int) -> None:
         if not ec.move_in_category(name, direction):
             return
@@ -514,7 +740,7 @@ class ExpenseCatView(QWidget):
 # ---------------------------------------------------------------------------
 
 def _export_excel(path: str, data: Dict) -> None:
-    """把费用类型配置写成双 sheet Excel：分类 / 类型。"""
+    """把费用类型配置写成三 sheet Excel：分类 / 类型 / 别名。"""
     wb = openpyxl.Workbook()
     ws_cat = wb.active
     ws_cat.title = "分类"
@@ -525,13 +751,17 @@ def _export_excel(path: str, data: Dict) -> None:
     ws_type.append(["类型", "分类", "顺序"])
     for t in data["types"]:
         ws_type.append([t["expense_type"], t["category"], t.get("sort_order", 0)])
+    ws_alias = wb.create_sheet("别名")
+    ws_alias.append(["别名", "规范类型"])
+    for a in data.get("aliases", []):
+        ws_alias.append([a["alias"], a["canonical"]])
     wb.save(path)
 
 
 def _import_excel(path: str) -> Dict:
-    """读取双 sheet Excel，还原为 {categories, types}（兼容单 sheet 旧格式）。"""
+    """读取 Excel，还原为 {categories, types, aliases}（兼容旧格式无别名 sheet）。"""
     wb = openpyxl.load_workbook(path, data_only=True)
-    cats, types = [], []
+    cats, types, aliases = [], [], []
     if "分类" in wb.sheetnames:
         for row in wb["分类"].iter_rows(min_row=2, values_only=True):
             if row and row[0] not in (None, ""):
@@ -548,6 +778,13 @@ def _import_excel(path: str) -> Dict:
                     "category": str(row[1]).strip() if len(row) > 1 and row[1] else ec.FALLBACK_CATEGORY,
                     "sort_order": int(row[2]) if len(row) > 2 and row[2] is not None else 0,
                 })
+    if "别名" in wb.sheetnames:
+        for row in wb["别名"].iter_rows(min_row=2, values_only=True):
+            if row and row[0] not in (None, ""):
+                aliases.append({
+                    "alias": str(row[0]).strip(),
+                    "canonical": str(row[1]).strip() if len(row) > 1 and row[1] is not None else "",
+                })
     if not cats and not types and wb.sheetnames:
         ws = wb[wb.sheetnames[0]]
         for row in ws.iter_rows(min_row=2, values_only=True):
@@ -558,4 +795,4 @@ def _import_excel(path: str) -> Dict:
                 types.append({"expense_type": str(row[1]).strip(),
                               "category": str(row[0]).strip(),
                               "sort_order": int(row[2]) if len(row) > 2 and row[2] is not None else 0})
-    return {"categories": cats, "types": types}
+    return {"categories": cats, "types": types, "aliases": aliases}

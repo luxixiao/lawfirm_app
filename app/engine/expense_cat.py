@@ -275,6 +275,8 @@ def rename_type(old: str, new: str, conn=None) -> None:
             raise ExpenseCatError(f"费用类型已存在：{new}")
         conn.execute("UPDATE expense_cat SET expense_type=? WHERE expense_type=?", (new, old))
         conn.execute("UPDATE expense_ledger SET expense_type=? WHERE expense_type=?", (new, old))
+        # 别名的 canonical 跟随改名，避免 dangling 别名
+        conn.execute("UPDATE expense_type_alias SET canonical=? WHERE canonical=?", (new, old))
         conn.commit()
     finally:
         _close(own, conn)
@@ -303,15 +305,101 @@ def type_reference_count(expense_type: str, conn=None) -> int:
 
 
 def delete_type(expense_type: str, conn=None) -> None:
-    """删除类型（仅删配置，不动历史台账；调用方应先提示引用条数）。"""
+    """删除类型（仅删配置，不动历史台账；调用方应先提示引用条数）。
+
+    同时删除指向该类型的全部别名（避免出现 dangling 别名）。
+    """
     own, conn = _own_conn(conn)
     try:
         cur = conn.execute("DELETE FROM expense_cat WHERE expense_type=?", (expense_type,))
         if cur.rowcount == 0:
             raise ExpenseCatError(f"费用类型不存在：{expense_type}")
+        conn.execute("DELETE FROM expense_type_alias WHERE canonical=?", (expense_type,))
         conn.commit()
     finally:
         _close(own, conn)
+
+
+# ---------------------------------------------------------------------------
+# 别名（同义归一）：台账写法 → 规范类型
+# ---------------------------------------------------------------------------
+
+def resolve_type(name: str, conn=None) -> Optional[str]:
+    """把费用类型名解析为规范类型名。
+
+    - 已是规范类型（在 expense_cat 中）→ 原样返回；
+    - 是某别名的写法 → 返回其 canonical；
+    - 两者都不是 → 返回 None（真正的未知类型）。
+    导入门禁据此把「公积金」归一成「住房公积金」再校验/写库。
+    """
+    name = (name or "").strip()
+    if not name:
+        return None
+    own, conn = _own_conn(conn)
+    try:
+        if conn.execute("SELECT 1 FROM expense_cat WHERE expense_type=?", (name,)).fetchone():
+            return name
+        r = conn.execute("SELECT canonical FROM expense_type_alias WHERE alias=?", (name,)).fetchone()
+        if r:
+            return r["canonical"]
+        return None
+    finally:
+        _close(own, conn)
+
+
+def add_alias(canonical: str, alias: str, conn=None) -> None:
+    """为规范类型新增一个同义别名（如 canonical='住房公积金', alias='公积金'）。"""
+    canonical = (canonical or "").strip()
+    alias = (alias or "").strip()
+    if not alias:
+        raise ExpenseCatError("别名不能为空")
+    if len(alias) > 30:
+        raise ExpenseCatError("别名过长（≤30 字符）")
+    own, conn = _own_conn(conn)
+    try:
+        if not conn.execute("SELECT 1 FROM expense_cat WHERE expense_type=?", (canonical,)).fetchone():
+            raise ExpenseCatError(f"规范类型不存在：{canonical}")
+        # 别名不能与已有规范类型重名（否则归一会歧义）
+        if conn.execute("SELECT 1 FROM expense_cat WHERE expense_type=?", (alias,)).fetchone():
+            raise ExpenseCatError(f"别名与已有费用类型重名：{alias}")
+        if conn.execute("SELECT 1 FROM expense_type_alias WHERE alias=?", (alias,)).fetchone():
+            raise ExpenseCatError(f"别名已存在：{alias}")
+        conn.execute("INSERT INTO expense_type_alias(alias, canonical) VALUES(?,?)", (alias, canonical))
+        conn.commit()
+    finally:
+        _close(own, conn)
+
+
+def delete_alias(alias: str, conn=None) -> None:
+    """删除一个别名。"""
+    alias = (alias or "").strip()
+    own, conn = _own_conn(conn)
+    try:
+        cur = conn.execute("DELETE FROM expense_type_alias WHERE alias=?", (alias,))
+        if cur.rowcount == 0:
+            raise ExpenseCatError(f"别名不存在：{alias}")
+        conn.commit()
+    finally:
+        _close(own, conn)
+
+
+def list_aliases(conn=None) -> List[Dict]:
+    """全部别名：[{alias, canonical}]（按 canonical, alias 排序）。"""
+    own, conn = _own_conn(conn)
+    try:
+        return [{"alias": r["alias"], "canonical": r["canonical"]}
+                for r in conn.execute(
+                    "SELECT alias, canonical FROM expense_type_alias ORDER BY canonical, alias")]
+    finally:
+        _close(own, conn)
+
+
+def aliases_by_canonical(conn=None) -> Dict[str, List[str]]:
+    """{规范类型: [别名...]}，供 UI 在类型卡内按类型分组展示。"""
+    out: Dict[str, List[str]] = {}
+    for r in list_aliases(conn):
+        out.setdefault(r["canonical"], []).append(r["alias"])
+    return out
 
 
 def sync_from_ledger(conn=None) -> None:
@@ -390,7 +478,7 @@ def save_layout(layout: Dict[str, List[str]], conn=None) -> None:
 # ---------------------------------------------------------------------------
 
 def export_all(conn=None) -> Dict:
-    """导出全部费用类型配置：分类说明 + 类型归类 + 全局顺序。"""
+    """导出全部费用类型配置：分类说明 + 类型归类 + 全局顺序 + 别名。"""
     own, conn = _own_conn(conn)
     try:
         cats = [{"name": c["name"], "note": c["note"] or "", "sort_order": c["sort_order"]}
@@ -399,7 +487,8 @@ def export_all(conn=None) -> Dict:
                   "sort_order": r["sort_order"]}
                  for r in conn.execute(
                      "SELECT expense_type, category, sort_order FROM expense_cat ORDER BY sort_order")]
-        return {"categories": cats, "types": types}
+        aliases = list_aliases(conn)
+        return {"categories": cats, "types": types, "aliases": aliases}
     finally:
         _close(own, conn)
 
@@ -429,15 +518,30 @@ def import_all(data: Dict, conn=None) -> None:
     try:
         conn.execute("DELETE FROM expense_cat")
         conn.execute("DELETE FROM expense_category")
+        conn.execute("DELETE FROM expense_type_alias")
         for c in data.get("categories", []):
             conn.execute("INSERT INTO expense_category(name, note, sort_order) VALUES(?,?,?)",
                          (str(c["name"]), str(c.get("note", "") or ""), int(c.get("sort_order", 0) or 0)))
+        known_types: set = set()
         for t in data.get("types", []):
+            name = str(t["expense_type"])
+            known_types.add(name)
             conn.execute("INSERT INTO expense_cat(expense_type, category, sort_order) VALUES(?,?,?)",
-                         (str(t["expense_type"]),
+                         (name,
                           str(t.get("category", FALLBACK_CATEGORY) or FALLBACK_CATEGORY),
                           int(t.get("sort_order", 0) or 0)))
         ensure_categories(conn)   # 兜底：保证 5 个固定分类存在
+        # 别名：canonical 必须是刚写入的规范类型，否则报错拦截（避免 dangling 别名）
+        for a in data.get("aliases", []):
+            alias = str(a.get("alias", "")).strip()
+            canonical = str(a.get("canonical", "")).strip()
+            if not alias or not canonical:
+                continue
+            if canonical not in known_types:
+                raise ExpenseCatError(
+                    f"别名「{alias}」指向的规范类型不存在：{canonical}（请先在该类型所在分类添加）")
+            conn.execute("INSERT INTO expense_type_alias(alias, canonical) VALUES(?,?)",
+                         (alias, canonical))
         conn.commit()
     finally:
         _close(own, conn)

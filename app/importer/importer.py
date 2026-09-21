@@ -1067,13 +1067,22 @@ def import_expense_file(path: str, period: str, on_reimport_diff=None) -> Dict:
                 f"经办人不在职工花名册中（请先在员工管理中添加）: {', '.join(sorted(set(missing)))}"
             )
 
-        # 费用类型校验：不在维护名单（费用归类）中的类型 → 报错
-        from app.engine.expense_cat import check_unknown, validate_public_exclusive, PUBLIC_EXCLUSIVE_CATEGORY
+        # 费用类型归一（别名 → 规范名）：导入前先把台账里的别名写法写回规范名，
+        # 这样「公积金」与「住房公积金」视为同一类型，不再因「类型不在维护名单」报错。
+        from app.engine.expense_cat import (
+            check_unknown, validate_public_exclusive, PUBLIC_EXCLUSIVE_CATEGORY, resolve_type)
+        for it in items:
+            raw = it.get("expense_type")
+            if raw:
+                canon = resolve_type(raw, conn)
+                if canon is not None:
+                    it["expense_type"] = canon
         etypes = [it["expense_type"] for it in items if it.get("expense_type")]
         unknown = check_unknown(conn, etypes)
         if unknown:
             raise ImportError_(
-                f"费用类型不在维护名单中（请先到「数据维护 → 费用类型」添加或归类）: {', '.join(sorted(set(unknown)))}"
+                f"费用类型不在维护名单中（请先到「数据维护 → 费用类型」添加或归类，"
+                f"或用「别名」归一到已有类型）: {', '.join(sorted(set(unknown)))}"
             )
 
         # 公共专属费用校验：合伙/聘用/兼职 员工不可承担「公共专属费用」分类的支出

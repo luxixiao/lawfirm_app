@@ -381,6 +381,15 @@ CREATE TABLE IF NOT EXISTS expense_category (
     sort_order  INTEGER NOT NULL DEFAULT 0
 );
 
+-- ============ 费用类型别名（同义归一）============
+-- 台账里可能出现的写法（如「公积金」）与规范类型（如「住房公积金」）是同一东西，
+-- 登记别名后导入时自动归一到 canonical，不再因「类型不在维护名单」报错。
+-- 别名全局唯一（PRIMARY KEY）；canonical 必须已存在于 expense_cat。
+CREATE TABLE IF NOT EXISTS expense_type_alias (
+    alias      TEXT PRIMARY KEY,
+    canonical  TEXT NOT NULL
+);
+
 -- ============ 会计科目（一级/二级，树形归属；校验费用台账科目）============
 -- level=1 为一级科目（parent_id 为 NULL）；level=2 为二级科目，parent_id 指向所属一级科目 id。
 -- 排序：一级按全局 sort_order；二级按 parent_id + sort_order（即「所属一级内」的顺序）。
