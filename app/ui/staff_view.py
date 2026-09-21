@@ -33,6 +33,7 @@ from app.ui.widgets import (
 class StaffView(QWidget):
     def __init__(self) -> None:
         super().__init__()
+        self._loading = False
         lay = QVBoxLayout(self)
         lay.setContentsMargins(24, 20, 24, 20)
         lay.setSpacing(12)
@@ -118,14 +119,17 @@ class StaffView(QWidget):
         btns.addStretch()
         lay.addLayout(btns)
 
-        self.type_table = QTableWidget(0, 4)
-        self.type_table.setHorizontalHeaderLabels(["类型", "参与结算", "说明", "人数"])
+        self.type_table = QTableWidget(0, 5)
+        self.type_table.setHorizontalHeaderLabels(
+            ["类型", "参与结算", "净额口径", "说明", "人数"])
         self.type_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.type_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.type_table.verticalHeader().setVisible(False)
         self.type_table.setColumnWidth(0, scale.px(120))
         self.type_table.setColumnWidth(1, scale.px(80))
-        self.type_table.setColumnWidth(3, scale.px(60))
+        self.type_table.setColumnWidth(2, scale.px(100))
+        self.type_table.setColumnWidth(4, scale.px(60))
+        self.type_table.itemChanged.connect(self._on_settle_changed)
         install_common_features(self.type_table)
         self._type_col = install_column_layout(self.type_table, "staff_type", "main")
         lay.addWidget(self.type_table, 1)
@@ -163,26 +167,65 @@ class StaffView(QWidget):
     # ---- 员工类型 ----
     def _refresh_types(self) -> None:
         rows = st.list_types()
+        self._loading = True
         self.type_table.setRowCount(len(rows))
         for r, row in enumerate(rows):
-            name_item = QTableWidgetItem(row["name"])
-            name_item.setData(Qt.ItemDataRole.UserRole, row["name"])
+            name = row["name"]
+            name_item = QTableWidgetItem(name)
+            name_item.setData(Qt.ItemDataRole.UserRole, name)
             if row["is_builtin"]:
                 f = name_item.font()
                 f.setBold(True)
                 name_item.setFont(f)
             self.type_table.setItem(r, 0, name_item)
-            calc = "是" if st.is_computable(row["name"]) else "—"
-            c_item = QTableWidgetItem(calc)
-            c_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter
+
+            # 参与结算：可点击开关（checkable item，点击即写库）
+            settle = bool(row["is_settle"])
+            s_item = QTableWidgetItem()
+            s_item.setFlags(s_item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            s_item.setCheckState(Qt.CheckState.Checked if settle
+                                 else Qt.CheckState.Unchecked)
+            s_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter
                                     | Qt.AlignmentFlag.AlignVCenter)
-            self.type_table.setItem(r, 1, c_item)
-            self.type_table.setItem(r, 2, QTableWidgetItem(row["note"] or ""))
+            s_item.setData(Qt.ItemDataRole.UserRole, name)
+            self.type_table.setItem(r, 1, s_item)
+
+            # 净额口径：参与时可下拉选择，不参与时灰显
+            basis = row.get("net_basis") or "收款净额"
+            combo = QComboBox()
+            combo.addItems(["开票净额", "收款净额"])
+            combo.setCurrentText(basis)
+            combo.setEnabled(settle)
+            combo.currentTextChanged.connect(
+                lambda txt, n=name: self._on_basis_changed(n, txt))
+            self.type_table.setCellWidget(r, 2, combo)
+
+            self.type_table.setItem(r, 3, QTableWidgetItem(row["note"] or ""))
             n_item = QTableWidgetItem(str(row["staff_count"]))
             n_item.setTextAlignment(Qt.AlignmentFlag.AlignRight
                                     | Qt.AlignmentFlag.AlignVCenter)
-            self.type_table.setItem(r, 3, n_item)
+            self.type_table.setItem(r, 4, n_item)
+        self._loading = False
         self._type_col.apply()
+
+    def _on_settle_changed(self, item: QTableWidgetItem) -> None:
+        """参与结算开关被点选 → 写库 + 同步本行净额口径下拉可用态。"""
+        if self._loading or item.column() != 1:
+            return
+        name = item.data(Qt.ItemDataRole.UserRole)
+        if not name:
+            return
+        flag = item.checkState() == Qt.CheckState.Checked
+        st.set_settle(name, flag)
+        combo = self.type_table.cellWidget(item.row(), 2)
+        if isinstance(combo, QComboBox):
+            combo.setEnabled(flag)
+
+    def _on_basis_changed(self, name: str, basis: str) -> None:
+        """净额口径下拉变更 → 写库。"""
+        if self._loading:
+            return
+        st.set_net_basis(name, basis)
 
     def _current_type(self):
         r = self.type_table.currentRow()

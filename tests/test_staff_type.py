@@ -66,6 +66,11 @@ def main() -> int:
     check("合伙 is_settle=1 且 开票净额",
           st.get_type("合伙", conn)["is_settle"] == 1 and st.get_type("合伙", conn)["net_basis"] == "开票净额")
     check("公共 is_settle=1", st.get_type("公共", conn)["is_settle"] == 1)
+    # list_types 现在透出 is_settle / net_basis（T5 UI 直接读，不再派生）
+    lt = {t["name"]: t for t in st.list_types(conn)}
+    check("list_types 透出 is_settle", "is_settle" in lt["合伙"])
+    check("list_types 透出 net_basis", "net_basis" in lt["合伙"])
+    check("list_types 合伙 is_settle=1", lt["合伙"]["is_settle"] == 1)
 
     # ===== 2. 参与结算口径（is_computable 改为读 is_settle）=====
     # 注：单参 is_computable(name) 仅用于生产（staff_view.py:175），其内部走真实库；

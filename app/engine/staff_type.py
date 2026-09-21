@@ -107,7 +107,8 @@ def list_types(conn=None) -> List[Dict]:
         ensure_defaults(conn)
         rows = conn.execute(
             """SELECT t.name AS name, t.is_builtin AS is_builtin, t.note AS note,
-                      t.sort_order AS sort_order,
+                      t.sort_order AS sort_order, t.is_settle AS is_settle,
+                      t.net_basis AS net_basis,
                       (SELECT COUNT(*) FROM staff s WHERE s.staff_type = t.name) AS staff_count
                FROM staff_type_def t
                ORDER BY t.sort_order, t.name""").fetchall()
