@@ -31,6 +31,7 @@ EXPECTED_FILES = [
     "tests/test_deferred_sheet3.py",
     "tests/test_expense_cat.py",
     "tests/test_expense_public_exclusive.py",
+    "tests/test_expense_reimport.py",      # T2 新增（同账期重导字段级 diff）
     "tests/test_expense_validation.py",   # T1 新增
     "tests/test_header_norm.py",
     "tests/test_import_confirm.py",
@@ -57,7 +58,10 @@ def main() -> int:
             print("  -", f)
 
     # 2) 实际 tests/test_*.py 必须与 EXPECTED_FILES 一致（防止漏登/多登）
-    actual = sorted(str(p.relative_to(ROOT)) for p in TESTS.glob("test_*.py"))
+    # Windows 下 relative_to 返回反斜杠路径，与 EXPECTED_FILES 的正斜杠不一致，
+    # 需统一为正斜杠再做集合比较，否则会把所有文件误判为「未登记」。
+    actual = sorted(str(p.relative_to(ROOT)).replace("\\", "/")
+                    for p in TESTS.glob("test_*.py"))
     expected_set = set(EXPECTED_FILES)
     actual_set = set(actual)
     not_registered = sorted(actual_set - expected_set)

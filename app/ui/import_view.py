@@ -403,7 +403,9 @@ class ImportView(QWidget):
                     msg = (f"✓ 工资表 {period}: {r['count']} 行"
                            f"（{r['sheet_count']} 个工作表）")
                 else:
-                    r = import_expense_file(path, period)
+                    # 同账期重导：传入确认回调，由弹窗决定覆盖 / 取消（feature 3）。
+                    # 非 UI 调用方（脚本 / 单测）不传回调 → 静默覆盖，零回归。
+                    r = import_expense_file(path, period, on_reimport_diff=self._confirm_reimport)
                     msg = f"✓ 费用台账 {period}: {r['count']} 条费用"
         except Exception as e:  # noqa: BLE001
             self._log(f"✗ {fname}: {e}", ok=False, file_name=fname,
@@ -446,3 +448,15 @@ class ImportView(QWidget):
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return None
         return data
+
+    def _confirm_reimport(self, diff) -> str:
+        """同账期重导确认回调（feature 3）。
+
+        由 ``import_expense_file(on_reimport_diff=...)`` 在「检测到差异」时调用：
+        弹 ``ExpenseReimportDialog`` 展示字段级差异，用户「覆盖」返回 "overwrite"、
+        「取消导入」返回 "cancel"（importer 据此保留原账期数据）。
+        """
+        from PySide6.QtWidgets import QDialog
+        from app.ui.expense_reimport_dialog import ExpenseReimportDialog
+        dlg = ExpenseReimportDialog(diff, self)
+        return "overwrite" if dlg.exec() == QDialog.Accepted else "cancel"

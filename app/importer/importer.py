@@ -24,6 +24,7 @@ from app.engine.collection import over_collection_message
 from app.engine.raw_ledger import SHEET_LABELS
 from app.importer.excel_reader import col_index
 from app.importer.expense_import import parse_expense_file
+from app.engine.expense_validation import ReimportDiff, diff_expense_reimport
 from app.importer.invoice_import import parse_invoice_file, parse_invoice_workbook
 from app.importer.ledger_import import (
     is_deferred_invoice, is_sheet3_row, parse_ledger_file, split_deferred,
@@ -1027,7 +1028,29 @@ def commit_ledger_import(data: Dict, period: str, path: str,
 # ---------------------------------------------------------------------------
 # 费用台账
 # ---------------------------------------------------------------------------
-def import_expense_file(path: str, period: str) -> Dict:
+def _compute_reimport_diff(conn, period: str, parsed_rows: list) -> "ReimportDiff | None":
+    """同账期重导前，比对「本次解析行」与「库里 active 批次」的字段级差异。
+
+    必须在 ``_drop_active_batch`` 之前调用：它内部会再查一次 active 批次并删其
+    expense_ledger 行，若在此之后读 db_rows 就读不到旧数据，比对会失真。
+
+    返回 ``ReimportDiff``（有任一差异：字段变更 / 新增 / 删除）或 ``None``
+    （首导 / 与库里完全一致）。
+    """
+    old = conn.execute(
+        "SELECT id FROM import_batch WHERE batch_type='expense' "
+        "AND period=? AND status='active'",
+        (period,),
+    ).fetchall()
+    if not old:
+        return None
+    db_rows = [dict(r) for r in conn.execute(
+        "SELECT * FROM expense_ledger WHERE import_batch_id=?", (old[0]["id"],))]
+    diff = diff_expense_reimport(parsed_rows, db_rows)
+    return diff if diff.changed else None
+
+
+def import_expense_file(path: str, period: str, on_reimport_diff=None) -> Dict:
     _auto_snapshot()
     items = parse_expense_file(path, period)
     conn = get_conn()
@@ -1071,6 +1094,15 @@ def import_expense_file(path: str, period: str) -> Dict:
             raise ImportError_(
                 f"会计科目不在维护名单中（请先到「数据维护 → 会计科目」添加）: {bad_txt}"
             )
+
+        # 同账期重导：在删除旧批次之前比对字段级差异，交回调决定是否覆盖。
+        # 非 UI 调用方（脚本 / 单测）不传 on_reimport_diff → 跳过，行为回退为既有
+        # 「静默覆盖」，零回归。回调返回非 "overwrite"（如用户取消）则中止导入，
+        # 旧账期数据原样保留。
+        if on_reimport_diff is not None:
+            rd = _compute_reimport_diff(conn, period, items)
+            if rd is not None and on_reimport_diff(rd) != "overwrite":
+                raise ImportError_("已取消导入（保留原账期数据）")
 
         _drop_active_batch(conn, "expense", period)
         archive = _archive_file(path, "expense", period)
