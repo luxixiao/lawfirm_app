@@ -21,6 +21,12 @@ def make_conn():
     conn.row_factory = sqlite3.Row
     conn.executescript(SCHEMA)
     conn.execute("ALTER TABLE staff ADD COLUMN hire_month TEXT DEFAULT ''")   # init_db 迁移列
+    # 员工类型参与结算开关迁移（与 db.init_db 迁移块一致，幂等）
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(staff_type_def)")]
+    if "is_settle" not in cols:
+        conn.execute("ALTER TABLE staff_type_def ADD COLUMN is_settle INTEGER NOT NULL DEFAULT 0")
+    if "net_basis" not in cols:
+        conn.execute("ALTER TABLE staff_type_def ADD COLUMN net_basis TEXT NOT NULL DEFAULT '收款净额'")
     conn.commit()
     return conn
 
@@ -48,23 +54,64 @@ def main() -> int:
     # ===== 1. 内置类型初始化 =====
     st.ensure_defaults(conn)
     names = [t["name"] for t in st.list_types(conn)]
-    check("预置 5 类", names == ["合伙", "聘用", "兼职", "挂靠", "其他"], f"got={names}")
+    check("预置 7 类(含公共/行政)", names == ["合伙", "聘用", "兼职", "公共", "行政", "挂靠", "其他"],
+          f"got={names}")
     builtin = {t["name"]: t["is_builtin"] for t in st.list_types(conn)}
     check("合伙是内置", builtin["合伙"] == 1)
     check("兼职是内置", builtin["兼职"] == 1)
+    check("公共是内置", builtin["公共"] == 1)
+    check("行政是内置", builtin["行政"] == 1)
     check("挂靠非内置", builtin["挂靠"] == 0)
+    # 内置三类参与结算且净额口径正确（迁移/默认值保证）
+    check("合伙 is_settle=1 且 开票净额",
+          st.get_type("合伙", conn)["is_settle"] == 1 and st.get_type("合伙", conn)["net_basis"] == "开票净额")
+    check("公共 is_settle=1", st.get_type("公共", conn)["is_settle"] == 1)
 
-    # ===== 2. 参与结算口径 =====
-    check("合伙参与计算", st.is_computable("合伙") is True)
-    check("聘用参与计算", st.is_computable("聘用") is True)
-    check("兼职参与计算", st.is_computable("兼职") is True)
-    check("顾问不参与", st.is_computable("顾问") is False)
-    check("其他不参与", st.is_computable("其他") is False)
-    check("含'合伙'字样的自定义名参与", st.is_computable("外部合伙") is True)
+    # ===== 2. 参与结算口径（is_computable 改为读 is_settle）=====
+    # 注：单参 is_computable(name) 仅用于生产（staff_view.py:175），其内部走真实库；
+    # 此处内存库测试须显式传 conn，避免落到未迁移的真实库文件。
+    check("合伙参与计算", st.is_computable("合伙", conn) is True)
+    check("聘用参与计算", st.is_computable("聘用", conn) is True)
+    check("兼职参与计算", st.is_computable("兼职", conn) is True)
+    check("顾问不参与", st.is_computable("顾问", conn) is False)
+    check("其他不参与", st.is_computable("其他", conn) is False)
+    # 旧启发式（含"合伙"字样即参与）已退休：自定义名未开启参与结算 → False
+    check("含'合伙'字样的自定义名不参与（未开启）", st.is_computable("外部合伙", conn) is False)
+
+    # ===== 2.1 settle_flags_of / is_settle_participant =====
+    check("合伙 settle=(1,开票净额)", st.settle_flags_of("合伙", conn) == (True, "开票净额"))
+    check("聘用 settle=(1,收款净额)", st.settle_flags_of("聘用", conn) == (True, "收款净额"))
+    check("兼职 settle=(1,收款净额)", st.settle_flags_of("兼职", conn) == (True, "收款净额"))
+    check("公共 settle=(1,收款净额)", st.settle_flags_of("公共", conn) == (True, "收款净额"))
+    check("行政 settle=(1,收款净额)", st.settle_flags_of("行政", conn) == (True, "收款净额"))
+    check("挂靠 settle=(0,收款净额)", st.settle_flags_of("挂靠", conn) == (False, "收款净额"))
+    check("其他 settle=(0,收款净额)", st.settle_flags_of("其他", conn) == (False, "收款净额"))
+    check("未知类型 settle=(0,收款净额)", st.settle_flags_of("不存在的类型", conn) == (False, "收款净额"))
+
+    check("空名非参与", st.is_settle_participant("", conn) is False)
+    check("空名(None)非参与", st.is_settle_participant(None, conn) is False)
+    check("合伙参与", st.is_settle_participant("合伙", conn) is True)
+    check("公共参与", st.is_settle_participant("公共", conn) is True)
+    check("行政参与", st.is_settle_participant("行政", conn) is True)
+    check("挂靠不参与", st.is_settle_participant("挂靠", conn) is False)
+
+    # ===== 2.2 自定义类型开启参与结算 + 切换净额口径 =====
+    st.add_type("自定义甲", conn=conn)
+    check("自定义甲默认非参与", st.is_settle_participant("自定义甲", conn) is False)
+    st.set_settle("自定义甲", True, conn=conn)
+    st.set_net_basis("自定义甲", "开票净额", conn=conn)
+    check("自定义甲开启后参与", st.is_settle_participant("自定义甲", conn) is True)
+    check("自定义甲净额口径=开票净额", st.settle_flags_of("自定义甲", conn) == (True, "开票净额"))
+    st.set_settle("自定义甲", False, conn=conn)
+    check("自定义甲关闭后非参与", st.is_settle_participant("自定义甲", conn) is False)
+    st.set_settle("自定义甲", True, conn=conn)
+    st.set_net_basis("自定义甲", "收款净额", conn=conn)
+    check("自定义甲切回收款净额", st.settle_flags_of("自定义甲", conn) == (True, "收款净额"))
 
     # ===== 3. 新增 / 改名 / 说明 / 排序 =====
     st.add_type("顾问", "外部顾问律师", conn=conn)
-    check("新增后 6 类", len(st.list_types(conn)) == 6)
+    # 预置 7 类 + 自定义甲(§2.2 已加) + 顾问(本行) = 9
+    check("新增后 9 类", len(st.list_types(conn)) == 9)
     expect_err("重名拒绝", lambda: st.add_type("顾问", conn=conn))
     expect_err("空名拒绝", lambda: st.add_type("  ", conn=conn))
 

@@ -95,13 +95,16 @@ def load_pivot(conn=None, year: str = "", start: int = 1, end: int = 12) -> Dict
             has_empty = (s1, "") in pivot
 
             l1_vals, l1_tot = _group_total(pivot, s1, display_s2, has_empty, months, year)
-            rows.append({"name": s1, "bold": True, "vals": l1_vals, "total": l1_tot})
+            rows.append({"name": s1, "bold": True, "vals": l1_vals, "total": l1_tot,
+                         "s1": s1, "s2": "", "kind": "l1"})
             for s2 in display_s2:
                 v, t = _pair_vals(pivot, s1, s2, months, year)
-                rows.append({"name": "    " + s2, "bold": False, "vals": v, "total": t})
+                rows.append({"name": "    " + s2, "bold": False, "vals": v, "total": t,
+                             "s1": s1, "s2": s2, "kind": "l2"})
             if has_empty:
                 v, t = _pair_vals(pivot, s1, "", months, year)
-                rows.append({"name": "    (未分类)", "bold": False, "vals": v, "total": t})
+                rows.append({"name": "    (未分类)", "bold": False, "vals": v, "total": t,
+                             "s1": s1, "s2": "", "kind": "uncat"})
 
         gt_vals = [0.0] * len(months)
         gt = 0.0
@@ -111,10 +114,43 @@ def load_pivot(conn=None, year: str = "", start: int = 1, end: int = 12) -> Dict
                     gt_vals[i] += x
                 gt += s["total"]
         if rows:
-            rows.append({"name": "合计", "bold": True, "vals": gt_vals, "total": gt, "grand": True})
+            rows.append({"name": "合计", "bold": True, "vals": gt_vals, "total": gt,
+                         "grand": True, "s1": "", "s2": "", "kind": "grand"})
 
         n_groups = sum(1 for s in rows if s["bold"] and not s.get("grand"))
         return {"year": year, "start": start, "end": end, "months": months,
                 "rows": rows, "n_groups": n_groups}
     finally:
         _close(own, conn)
+
+
+def expense_rows_for_cell(period: str, months: List[int], s1: str, s2: str,
+                          kind: str, conn=None) -> List[dict]:
+    """下钻：返回组成某透视单元格的全部 expense_ledger 行（全列，供详情页展示/编辑）。
+
+    kind 分派（见 design plan §4.2 / C-2）：
+    - 'l2'   → WHERE subject1=s1 AND subject2=s2 AND period IN months
+    - 'uncat'→ WHERE subject1=s1 AND (subject2 IS NULL OR subject2='') AND period IN months
+    - 'l1'   → WHERE subject1=s1 AND period IN months
+    - 'grand'→ WHERE period IN months（其余 kind 同 grand）
+
+    period 形如 '2025'，months 如 [1..12] 或 [1,2]；行取全部列。
+    """
+    own, c = _own_conn(conn)
+    try:
+        ym = [f"{period}-{m:02d}" for m in months]
+        ph = ",".join("?" for _ in ym)
+        if kind == "l2":
+            sql, args = ("SELECT * FROM expense_ledger WHERE subject1=? AND subject2=? "
+                         "AND period IN (" + ph + ")"), [s1, s2]
+        elif kind == "uncat":
+            sql, args = ("SELECT * FROM expense_ledger WHERE subject1=? "
+                         "AND (subject2 IS NULL OR subject2='') AND period IN (" + ph + ")"), [s1]
+        elif kind == "l1":
+            sql, args = ("SELECT * FROM expense_ledger WHERE subject1=? "
+                         "AND period IN (" + ph + ")"), [s1]
+        else:  # grand
+            sql, args = ("SELECT * FROM expense_ledger WHERE period IN (" + ph + ")"), []
+        return [dict(r) for r in c.execute(sql, args + ym).fetchall()]
+    finally:
+        _close(own, c)

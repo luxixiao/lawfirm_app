@@ -23,6 +23,7 @@ from __future__ import annotations
 from typing import Dict, List
 
 from app.db import get_conn
+from app.engine import staff_type
 from app.engine.split import allocate_receipt
 
 MONTHS = list(range(1, 13))
@@ -310,10 +311,11 @@ def _compute(conn, year: int, person: str | None, person_type: str | None = None
                        + m["rec_refund_cur"] + m["rec_refund_prev"])   # 二小计（净）
             inv_net = (m["inv_open_received"] + m["inv_open_uncollected"]
                        + m["inv_red_cur"] + m["inv_red_prev"])          # 三小计（净）
-            if st["staff_type"] == "合伙":
-                m["income"] = round(m["inv_total"], 2)   # 本月开票净额（含预收票）
-            elif st["staff_type"] in ("聘用", "兼职"):
-                m["income"] = round(rec_net, 2)
+            # 业务收入口径：参与结算由 staff_type_def.is_settle 控制，
+            # 净额口径由 net_basis 控制（合伙=开票净额，聘用/兼职=收款净额，其余=0）。
+            is_settle, net_basis = staff_type.settle_flags_of(st["staff_type"], conn)
+            if is_settle:
+                m["income"] = round(m["inv_total"], 2) if net_basis == "开票净额" else round(rec_net, 2)
             else:
                 m["income"] = 0.0
         # 本年累计未收 = 本年开票净额 − 本年收款净额（模板口径）

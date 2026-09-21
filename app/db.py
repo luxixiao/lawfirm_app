@@ -361,10 +361,11 @@ CREATE TABLE IF NOT EXISTS anomaly_note (
 CREATE INDEX IF NOT EXISTS idx_anomaly_note_period ON anomaly_note(period, dim);
 
 -- ============ 员工类型定义（可自定义，员工管理页「员工类型」Tab 维护）============
--- 结算口径：只有 合伙 / 聘用 / 兼职 三类参与业务收入计算
--- （person_settlement 按类型名判断：合伙=开票净额，聘用/兼职=收款净额，其余=0）。
--- 故这三个为 is_builtin=1：禁止删除与改名（改名会断结算口径），说明可改。
--- 自定义类型（如"顾问""实习"）仅作身份标签，不参与业务收入计算。
+-- 参与结算由 staff_type_def.is_settle 控制（内置三类 + 公共/行政 默认参与），
+-- 净额口径由 net_basis 控制（'开票净额' | '收款净额'）；person_settlement 改用
+-- staff_type.settle_flags_of 读取，不再按类型名硬编码。
+-- 内置三类 is_builtin=1：禁止删除与改名（改名会断结算口径），说明可改。
+-- 自定义类型（如"顾问""实习"）默认不参与，可在员工类型页自行开启参与结算。
 CREATE TABLE IF NOT EXISTS staff_type_def (
     name        TEXT PRIMARY KEY,
     is_builtin  INTEGER NOT NULL DEFAULT 0,
@@ -465,6 +466,12 @@ def init_db(backfill: bool = True) -> None:
             cols = [r[1] for r in conn.execute(f"PRAGMA table_info({tbl})")]
             if "person_type" not in cols:
                 conn.execute(f"ALTER TABLE {tbl} ADD COLUMN person_type TEXT DEFAULT ''")
+        # 迁移：员工类型参与结算开关（staff_type_def.is_settle / net_basis）
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(staff_type_def)")]
+        if "is_settle" not in cols:
+            conn.execute("ALTER TABLE staff_type_def ADD COLUMN is_settle INTEGER NOT NULL DEFAULT 0")
+        if "net_basis" not in cols:
+            conn.execute("ALTER TABLE staff_type_def ADD COLUMN net_basis TEXT NOT NULL DEFAULT '收款净额'")
         # 迁移：费用类型维护顺序
         cols = [r[1] for r in conn.execute("PRAGMA table_info(expense_cat)")]
         if "sort_order" not in cols:
