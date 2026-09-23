@@ -81,6 +81,8 @@ def over_collection_message(conn, invoice_no: str, incoming: float,
 
     - 累计口径取**全来源合计**（import + manual）：只算 import 会漏掉跨来源重复计
       （补录留下的 manual 收款与台账新写的 import 收款并存）。
+    - 判定线按**净额** = 票面 − 已红冲额（2026-09-23 决策点 7）：红冲掉的部分不再应收。
+      只冲减应收侧、**不冲减已收侧**（历史收款行照实保留），故判定比改前更严。
     - exclude_batch_id：覆盖式导入时本批次会"先删后插"，排除它可避免拿自己比自己。
     - exclude_sources：排除指定来源（如 ("import",) / ("manual",)）的既有收款，
       用于覆盖式重写路径——被删掉重写的旧行不算入"既有"，避免重复计入误报。
@@ -93,6 +95,19 @@ def over_collection_message(conn, invoice_no: str, incoming: float,
     total = float(inv["total_amount"] or 0.0)
     if total <= 0:
         return None
+    # 决策点 7：已红冲部分不再应收 ⇒ 判定线按**净额**（票面 − 红冲额），不是票面。
+    # 口径与本文件 `invoice_rows`/`handler_rows` 的红冲关联（:126-134）逐字一致：
+    #   红票 = invoice.total_amount < 0 AND orig_invoice_no = 本票号，取面值绝对值合计。
+    # ⚠️ 只冲减**应收侧**，不冲减「已收」侧：红冲只减少该收多少，历史收款行照实保留
+    #    （铁律：收款只追加、绝不删历史）。故效果是判定**更严**：票面 1000、已红冲 300
+    #    时，判定线由 1000 降为 700 —— 红冲后重复登记收款会被拦（改前会漏判），
+    #    但已红冲票的导入行会比改前更容易进 over_collected 问题行。
+    red_abs = float(conn.execute(
+        "SELECT COALESCE(SUM(ABS(total_amount)),0) FROM invoice "
+        "WHERE orig_invoice_no=? AND total_amount<0", (invoice_no,)).fetchone()[0] or 0.0)
+    allowed = round(total - red_abs, 2)
+    if allowed < 0:
+        allowed = 0.0
     sql = "SELECT receipt_date, amount FROM collection WHERE invoice_no=?"
     params: List = [invoice_no]
     if exclude_batch_id is not None:
@@ -105,11 +120,13 @@ def over_collection_message(conn, invoice_no: str, incoming: float,
     rows = conn.execute(sql + " ORDER BY receipt_date", params).fetchall()
     got = round(sum(float(r["amount"] or 0.0) for r in rows), 2)
     incoming = float(incoming or 0.0)
-    if got + incoming <= total + 0.01:
+    if got + incoming <= allowed + 0.01:
         return None
     dates = [str(r["receipt_date"]) for r in rows if r["receipt_date"]]
     when = "、".join(dates) if dates else "此前"
-    return (f"该发票金额 {total:,.2f} 元，已于 {when} 收款 {got:,.2f} 元，"
+    face = (f"该发票金额 {total:,.2f} 元（已红冲 {red_abs:,.2f} 元，净额 {allowed:,.2f} 元）"
+            if red_abs else f"该发票金额 {total:,.2f} 元")
+    return (f"{face}，已于 {when} 收款 {got:,.2f} 元，"
             f"本次台账再登记 {incoming:,.2f} 元后将累计 {got + incoming:,.2f} 元，"
             f"剩余应收 0 元，已收款完成。")
 

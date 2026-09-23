@@ -210,6 +210,41 @@ def main():
     check("12) 无 exclude 全来源 → 正确报超收", m2 is not None, f"m2={m2!r}")
     c.close()
 
+    # --- 决策点 7：判定线按净额（票面 − 红冲额），只冲减应收侧 ---
+    # 13) 部分红冲后重复登记 → 必须拦（改前按票面判定会漏判）
+    c = build_conn()
+    add_invoice(c, "RD1", 1000.0)
+    add_invoice(c, "RD1-R", -400.0, orig="RD1")     # 红冲 400 ⇒ 净额 600
+    add_collection(c, "RD1", 600.0)
+    m = over_collection_message(c, "RD1", 100.0)     # 600+100=700 > 600
+    check("13) 部分红冲按净额判定（红冲后重复登记被拦）", m is not None, f"m={m!r}")
+    c.close()
+
+    # 14) 红冲后未超净额 → 不报（净额 600，已收 500 + 本次 100 = 600）
+    c = build_conn()
+    add_invoice(c, "RD2", 1000.0)
+    add_invoice(c, "RD2-R", -400.0, orig="RD2")
+    add_collection(c, "RD2", 500.0)
+    m = over_collection_message(c, "RD2", 100.0)
+    check("14) 红冲后未超净额 → 不报", m is None, f"m={m!r}")
+    c.close()
+
+    # 15) 全额红冲 ⇒ 净额 0，任何收款都是超额
+    c = build_conn()
+    add_invoice(c, "RD3", 1000.0)
+    add_invoice(c, "RD3-R", -1000.0, orig="RD3")
+    m = over_collection_message(c, "RD3", 100.0)
+    check("15) 全额红冲后任何收款都报超收", m is not None, f"m={m!r}")
+    c.close()
+
+    # 16) 无红冲时判定线仍是票面（行为不变，防改坏）
+    c = build_conn()
+    add_invoice(c, "RD4", 1000.0)
+    add_collection(c, "RD4", 600.0)
+    m = over_collection_message(c, "RD4", 400.0)     # 1000 ≤ 1000
+    check("16) 无红冲时判定线仍是票面（行为不变）", m is None, f"m={m!r}")
+    c.close()
+
     print(f"\n{OK}/{OK + len(FAILS)} passed")
     if FAILS:
         print("FAILED: " + ", ".join(FAILS))
