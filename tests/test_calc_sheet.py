@@ -2,8 +2,10 @@
 
 运行：python tests/test_calc_sheet.py
 """
+import os
 import sqlite3
 import sys
+import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -100,6 +102,42 @@ def main() -> int:
     check("删除生效", cs.get_sheet(id2, conn) is None)
     expect_error("重复删除", lambda: cs.delete_sheet(id2, conn=conn))
     check("删除后剩两张", len(cs.list_sheets(conn)) == 2)
+
+    # ===== P0-4：content 损坏不得静默落空表，也不得被空表覆盖写回 =====
+    _tmp = tempfile.mkdtemp(prefix="lawfirm_anchor_")
+    _old_root = os.environ.get("LAWFIRM_ANCHOR_ROOT")
+    os.environ["LAWFIRM_ANCHOR_ROOT"] = _tmp          # 备份落临时目录，不污染本机
+    try:
+        id4 = cs.create_sheet("损坏表", conn=conn)
+        good = cs.get_sheet(id4, conn)["content"]
+        good["cells"]["0,0"] = {"raw": "重要数据", "kind": "text"}
+        cs.save_content(id4, good, conn=conn)
+        # 模拟 Seafile 同步截断 / 半写入：把 content 写坏
+        bad = '{"version":1,"cells":{"0,0":{"raw":"重要数据"'
+        conn.execute("UPDATE calc_sheet SET content=? WHERE id=?", (bad, id4))
+        conn.commit()
+
+        d = cs.get_sheet(id4, conn)
+        check("P0-4 损坏表带 content_corrupt 标记（不再静默空表）",
+              d.get("content_corrupt") is True)
+        check("P0-4 损坏表原串已落库外备份", bool(d.get("content_backup")))
+        check("P0-4 备份文件真实存在",
+              bool(d.get("content_backup")) and os.path.exists(d["content_backup"]))
+
+        expect_error("P0-4 默认拒绝覆盖损坏内容",
+                     lambda: cs.save_content(id4, cs.default_content(), conn=conn))
+        raw_after = conn.execute(
+            "SELECT content FROM calc_sheet WHERE id=?", (id4,)).fetchone()["content"]
+        check("P0-4 拒绝保存后库内原串未被改写", raw_after == bad)
+
+        cs.save_content(id4, cs.default_content(), conn=conn, allow_overwrite_broken=True)
+        check("P0-4 显式强制保存可写",
+              cs.get_sheet(id4, conn).get("content_corrupt") is None)
+    finally:
+        if _old_root is None:
+            os.environ.pop("LAWFIRM_ANCHOR_ROOT", None)
+        else:
+            os.environ["LAWFIRM_ANCHOR_ROOT"] = _old_root
 
     conn.close()
     print(f"PASS {OK} checks" if not FAILS else "FAILED:\n" + "\n".join(FAILS))

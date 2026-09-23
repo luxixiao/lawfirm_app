@@ -13,8 +13,11 @@
 """
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 import re
+from pathlib import Path
 from typing import Dict, List, Optional
 
 from app.db import get_conn
@@ -99,7 +102,38 @@ def list_sheets(conn=None) -> List[Dict]:
             conn.close()
 
 
+def _broken_backup_dir() -> Path:
+    """损坏 content 的库外备份目录 —— **必须在 Seafile 同步范围之外**。
+
+    DB 本身随 Seafile 跨 3 台 PC 同步（有覆盖写风险），把备份写回 data/ 会被同步
+    再覆盖/再损坏，所以放本机库外：
+    `LAWFIRM_ANCHOR_ROOT` ＞ `%LOCALAPPDATA%\\lawfirm_app` ＞ `~/.lawfirm_app`。
+    """
+    root = (os.environ.get("LAWFIRM_ANCHOR_ROOT") or "").strip()
+    if not root:
+        base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+        root = os.path.join(base, "lawfirm_app")
+    return Path(root) / "calc_sheet_broken"
+
+
+def backup_broken_content(sheet_id: int, raw: str) -> str:
+    """把无法解析的原始 content 落库外备份（同内容只留一份）。返回路径字符串。"""
+    d = _broken_backup_dir()
+    d.mkdir(parents=True, exist_ok=True)
+    digest = hashlib.sha1((raw or "").encode("utf-8", "replace")).hexdigest()[:8]
+    fp = d / f"calc_sheet_{sheet_id}_{digest}.json"
+    if not fp.exists():
+        fp.write_text(raw or "", encoding="utf-8")
+    return str(fp)
+
+
 def get_sheet(sheet_id: int, conn=None) -> Optional[Dict]:
+    """读取单表。content 无法解析时**不再静默落空表**：
+
+    - 原始串先落库外备份（`backup_broken_content`）；
+    - 返回字典带 `content_corrupt=True` 与 `content_backup=<路径>`，由 UI 提示并拒绝编辑；
+    - `save_content` 另有一道守卫（双保险），单凭 UI 漏判也不会覆盖原数据。
+    """
     own = conn is None
     conn = conn or get_conn()
     try:
@@ -109,10 +143,16 @@ def get_sheet(sheet_id: int, conn=None) -> Optional[Dict]:
         if not r:
             return None
         d = dict(r)
+        raw = d["content"] or ""
         try:
-            d["content"] = json.loads(d["content"] or "{}")
+            d["content"] = json.loads(raw or "{}")
         except json.JSONDecodeError:
             d["content"] = default_content()
+            d["content_corrupt"] = True
+            try:
+                d["content_backup"] = backup_broken_content(sheet_id, raw)
+            except OSError:
+                d["content_backup"] = ""
         return d
     finally:
         if own:
@@ -144,11 +184,34 @@ def create_sheet(name: str, updated_by: str = "", rows: int = DEFAULT_ROWS,
             conn.close()
 
 
-def save_content(sheet_id: int, content: Dict, updated_by: str = "", conn=None) -> None:
-    """整表保存（编辑即存）；同时刷新 updated_by/updated_at。"""
+def save_content(sheet_id: int, content: Dict, updated_by: str = "", conn=None,
+                 allow_overwrite_broken: bool = False) -> None:
+    """整表保存（编辑即存）；同时刷新 updated_by/updated_at。
+
+    P0-4 守卫：库中现有 content **非空且无法解析**时，**默认拒绝保存**。
+    原因：`get_sheet` 遇损坏会返回空表（已带 content_corrupt 标记），若仍允许保存，
+    用户以为"打开错了表"随手改一格就会把空表写回 → 原内容永久丢失且无痕迹。
+    确需放弃原内容时显式传 `allow_overwrite_broken=True`（UI 走「强制保存」）。
+    """
     own = conn is None
     conn = conn or get_conn()
     try:
+        row = conn.execute("SELECT content FROM calc_sheet WHERE id=?", (sheet_id,)).fetchone()
+        if row is None:
+            raise CalcSheetError(f"表不存在：id={sheet_id}")
+        raw = row["content"] or ""
+        if raw.strip() and not allow_overwrite_broken:
+            try:
+                json.loads(raw)
+            except json.JSONDecodeError:
+                try:
+                    path = backup_broken_content(sheet_id, raw)
+                except OSError:
+                    path = ""
+                raise CalcSheetError(
+                    "该表在库中的内容已损坏（无法解析 JSON），为避免覆盖原始数据已拒绝保存。"
+                    + (f"\n原始内容已备份至：{path}" if path else "")
+                    + "\n请先从备份恢复；确认放弃原内容时请走「强制保存」。")
         normalize_content(content)
         cur = conn.execute(
             """UPDATE calc_sheet

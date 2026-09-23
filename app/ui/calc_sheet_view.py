@@ -374,6 +374,9 @@ class CalcSheetView(QWidget):
     def _load_sheet(self) -> None:
         self.fx.clear()
         self.lbl_cell.clear()
+        self._corrupt = False
+        self.btn_edit_mode.setEnabled(True)
+        self.btn_view_mode.setEnabled(True)
         if self.sheet_id is None:
             self.content = {}
             self._refresh_completer()
@@ -387,10 +390,29 @@ class CalcSheetView(QWidget):
             self._load_sheet()
             return
         self.content = rec["content"] or {}
+        # P0-4：库内 content 无法解析（Seafile 半写入 / 手工改动 / 跨版本结构）时，
+        # get_sheet 已把原始串备份到库外并打 content_corrupt 标记。此处必须**锁只读** ——
+        # 否则用户看到的是空表，若以为"打开错了表"随手改一格，空表就会被"编辑即存"写回，
+        # 原内容永久丢失（改前连痕迹都不留）。
+        self._corrupt = bool(rec.get("content_corrupt"))
+        self.btn_edit_mode.setEnabled(not self._corrupt)
+        self.btn_view_mode.setEnabled(not self._corrupt)
         self._refresh_completer()
-        self.lbl_hint.setText(
-            f"最后编辑：{rec.get('updated_by') or '—'}  {rec.get('updated_at') or ''}"
-            "　（数据库经 Seafile 多机同步：编辑前请确认其他电脑未同时编辑本表，后保存者会覆盖）")
+        if self._corrupt:
+            self._set_mode(False)
+            self.lbl_hint.setText(
+                "⚠️ 本表在库中的内容已损坏（无法解析），当前显示为空表，已锁定只读以防止覆盖。"
+                f"原始内容备份：{rec.get('content_backup') or '（备份失败）'}"
+                "　请先从备份恢复，再回来编辑。")
+            QMessageBox.critical(
+                self, "计算表内容损坏",
+                f"表「{rec.get('name') or ''}」在库中的内容无法解析，已锁定为只读。\n\n"
+                f"原始内容已备份至：\n{rec.get('content_backup') or '（备份失败）'}\n\n"
+                "请勿在恢复前强行保存，否则会覆盖原始数据。")
+        else:
+            self.lbl_hint.setText(
+                f"最后编辑：{rec.get('updated_by') or '—'}  {rec.get('updated_at') or ''}"
+                "　（数据库经 Seafile 多机同步：编辑前请确认其他电脑未同时编辑本表，后保存者会覆盖）")
         # 缩放按表记忆（仅本机 prefs，不写库）：先套字号/行高再填，
         # 列宽自适应用缩放后的字体测量，宽度自然带缩放
         self._zoom = 1.0
@@ -487,7 +509,17 @@ class CalcSheetView(QWidget):
         """改动后：先保存，再重算并刷新显示（保持当前格）。"""
         if self.sheet_id is None:
             return
-        cs.save_content(self.sheet_id, self.content, updated_by=_user())
+        if getattr(self, "_corrupt", False):
+            # P0-4：损坏表一律不写库（引擎侧还有 save_content 守卫兜底）
+            QMessageBox.warning(
+                self, "未保存",
+                "本表内容已损坏且处于只读状态，本次改动未保存。请先从备份恢复后再编辑。")
+            return
+        try:
+            cs.save_content(self.sheet_id, self.content, updated_by=_user())
+        except cs.CalcSheetError as e:
+            QMessageBox.warning(self, "保存失败", str(e))
+            return
         r, c = self.table.currentRow(), self.table.currentColumn()
         self._fill()
         if r >= 0 and c >= 0 and r < self.table.rowCount() and c < self.table.columnCount():

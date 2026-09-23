@@ -119,6 +119,22 @@ def main() -> int:
     from app.engine.calc_formula import classify_cell
     check("classify=公式", classify_cell('=DATA("x","y",1)'), "formula")
 
+    # ===== 8. P0-4：content 损坏不再静默算成 0/空 =====
+    # 改前：_load_sheets 静默取 {} ⇒ 跨表引用拿到空 ⇒ 算成 0 且不报错（分成算错还看不出来）。
+    conn.execute("UPDATE calc_sheet SET content=? WHERE name=?",
+                 ('{"version":1,"cells":{', "辅助表"))
+    conn.commit()
+    ev4 = CalcEvaluator(conn, mid)
+    got = ev4.cell_value("辅助表", 0, 0)
+    if got == "#CORRUPT!":
+        OK += 1
+    else:
+        FAILS.append(f"P0-4 损坏表求值应可见地给出 #CORRUPT!，实际 {got!r}")
+    if "辅助表" in ev4.broken_sheets:
+        OK += 1
+    else:
+        FAILS.append(f"P0-4 broken_sheets 未记录损坏表：{sorted(ev4.broken_sheets)}")
+
     conn.close()
     print(f"PASS {OK} checks" if not FAILS else "FAILED:\n" + "\n".join(FAILS))
     return 0 if not FAILS else 1

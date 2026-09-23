@@ -47,11 +47,16 @@ class CalcEvaluator:
     # ---------- 载入 ----------
     def _load_sheets(self) -> Dict[str, dict]:
         out = {}
+        broken: set = set()
         for r in self.conn.execute("SELECT name, content FROM calc_sheet"):
             try:
                 out[r["name"]] = json.loads(r["content"] or "{}")
             except json.JSONDecodeError:
+                # P0-4：不再静默当空表 —— 记入 broken_sheets，引用该表的公式会取到
+                # #CORRUPT! 而不是 0/空，避免分成计算「静默算错还不报错」。
                 out[r["name"]] = {}
+                broken.add(r["name"])
+        self.broken_sheets = broken
         return out
 
     def _sheet_name(self, sheet_id: Optional[int]) -> str:
@@ -144,6 +149,9 @@ class _GridProvider(CellProvider):
 
     # ---- 网格 ----
     def raw_cell(self, sheet: str, row0: int, col0: int):
+        # 损坏表：不要冒充空格（会被算成 0），显式给出 #CORRUPT! 让结果可见地错。
+        if sheet in getattr(self.owner, "broken_sheets", ()):
+            return "#CORRUPT!", "text"
         content = self.owner.sheets.get(sheet)
         if not content:
             return "", "blank"
