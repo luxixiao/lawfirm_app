@@ -73,10 +73,10 @@ def rollback_batch(conn, batch_id: int) -> None:
         if conn.execute("SELECT 1 FROM prepayment_offset WHERE invoice_no=?", (no,)).fetchone():
             raise ImportError_(f"发票 {no} 存在预收款核销记录，无法撤销导入。请先删除核销记录。")
 
-    # 本批次创建的发票：级联删除其全部引用数据（不限批次）
+    # 本批次创建的发票：级联删除其【本批次】引用数据（按批限定，不动他批/history）
     for no in invs:
-        conn.execute("DELETE FROM collection WHERE invoice_no=?", (no,))
-        conn.execute("DELETE FROM charge_detail WHERE invoice_no=?", (no,))
+        conn.execute("DELETE FROM collection WHERE invoice_no=? AND import_batch_id=?", (no, batch_id))
+        conn.execute("DELETE FROM charge_detail WHERE invoice_no=? AND import_batch_id=?", (no, batch_id))
     # 本批次对其他批次发票创建的数据：按批次删除
     conn.execute("DELETE FROM collection WHERE import_batch_id=?", (batch_id,))
     conn.execute("DELETE FROM charge_detail WHERE import_batch_id=?", (batch_id,))
@@ -209,6 +209,15 @@ def _incoming_collection_for_invoice(inv: Dict) -> float:
         return round(sum(float(inv.get("total_amount") if a == 0 else a)
                          for _ym, a in (rem.get("receipts") or [])), 2)
     return 0.0  # 红字不写 collection
+
+
+def _has_collection_not_in_batch(conn, invoice_no: str, batch_id: int) -> bool:
+    """该发票是否存在【不属于本批】的 import 收款（止血守卫用，避免整票 DELETE 抹历史）。"""
+    return conn.execute(
+        "SELECT 1 FROM collection WHERE invoice_no=? AND source='import' "
+        "AND (import_batch_id IS NULL OR import_batch_id<>?) LIMIT 1",
+        (invoice_no, batch_id),
+    ).fetchone() is not None
 
 
 def _write_collection_for_invoice(conn, inv: Dict, batch_id: int) -> str | None:
@@ -933,6 +942,10 @@ def commit_ledger_import(data: Dict, period: str, path: str,
                         "UPDATE charge_detail SET received_override=? WHERE id=?", (ov, r["id"])
                     )
             # 收款明细：先删该发票 import 旧记录（以最新台账为准），再插入
+            # 止血（方案 B）：本次台账该票无收款、但库内已有他批 import 收款 → 整票不动，
+            # 避免 _write_collection_for_invoice 的整票 DELETE 抹掉历史收款（反例 E）。
+            if _incoming_collection_for_invoice(inv) <= 0 and _has_collection_not_in_batch(conn, no, batch_id):
+                continue
             msg = _write_collection_for_invoice(conn, inv, batch_id)
             if msg:
                 over_collected.append({"invoice_no": no, "period": period, "message": msg})
