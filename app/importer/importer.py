@@ -82,7 +82,28 @@ def rollback_batch(conn, batch_id: int) -> None:
     conn.execute("DELETE FROM charge_detail WHERE import_batch_id=?", (batch_id,))
     conn.execute("DELETE FROM prepayment WHERE import_batch_id=?", (batch_id,))
     conn.execute("DELETE FROM expense_ledger WHERE import_batch_id=?", (batch_id,))
-    conn.execute("DELETE FROM invoice WHERE import_batch_id=?", (batch_id,))
+    # ---- G4：本批建的票若**仍带非本批引用**，留票解绑而不是连票一起删 ----
+    # 他批 import 收款 / manual 补录收款 / 他批 charge_detail 分摊都挂在 invoice_no 上；
+    # 直接 `DELETE FROM invoice` 会让它们变成孤儿（发票从台账消失、按票号 join 的报表全丢）。
+    # 按设计 §2.2 方案 A 选项①「宁可留，不可删」：保留 invoice 行，只**解绑**批次
+    # （import_batch_id=NULL）；该票下次出现在台账时由 commit_ledger_import 绑回新批。
+    orphan = [
+        no for no in invs
+        if conn.execute(
+            "SELECT 1 FROM collection WHERE invoice_no=? AND "
+            "(import_batch_id IS NULL OR import_batch_id<>?) LIMIT 1", (no, batch_id)).fetchone()
+        or conn.execute(
+            "SELECT 1 FROM charge_detail WHERE invoice_no=? AND "
+            "(import_batch_id IS NULL OR import_batch_id<>?) LIMIT 1", (no, batch_id)).fetchone()
+    ]
+    if orphan:
+        ph = ",".join("?" for _ in orphan)
+        conn.execute(
+            f"DELETE FROM invoice WHERE import_batch_id=? AND invoice_no NOT IN ({ph})",
+            (batch_id, *orphan))
+        conn.execute(f"UPDATE invoice SET import_batch_id=NULL WHERE invoice_no IN ({ph})", orphan)
+    else:
+        conn.execute("DELETE FROM invoice WHERE import_batch_id=?", (batch_id,))
     conn.execute("DELETE FROM staff WHERE import_batch_id=?", (batch_id,))
     # 批 3-1 / 3-2b / 3-2c：本批的三类「导入时留痕」随之失效（只清本模块自己的三个 dim，
     # 旧「导入后」页写的人工备注 'merged'/'handler'/'received' **不动**）。
@@ -321,7 +342,11 @@ def merge_collection_for_invoice(conn, invoice_no: str, batch_id: int,
     - rowid=None  → 新增行
     - 有 rowid    → 编辑既有行（仅值变化才 UPDATE）
     - 既有行未出现在 target 中 → 删除
-    写入范围限定在 invoice_no + source='import'，不影响其它发票，更不会误删后续月份收款。
+    写入范围：`existing` 取该票**全部** import 行（**未按批次限定**），target 中未出现的行
+    按 id 删除 —— 即若调用方只喂「本批行」，他批 import 行会被一并删掉，与「收款只追加、
+    绝不删历史」铁律冲突（与 P0-3 同类）。当前 `CollectionFixDialog` 无活调用方（全仓未
+    实例化），故暂不改行为；若日后接线，`existing` 须补 `AND import_batch_id=?`
+    （用本函数已有的 batch_id）。manual 收款始终不受影响（source='import' 限定）。
     """
     existing = {
         r["id"]: r
@@ -954,6 +979,13 @@ def commit_ledger_import(data: Dict, period: str, path: str,
             if exist:
                 if inv.get("case_no") and not exist["case_no"]:
                     conn.execute("UPDATE invoice SET case_no=? WHERE invoice_no=?", (inv["case_no"], no))
+                # G4 收口：被 rollback_batch 解绑（import_batch_id=NULL）的票，本次台账又出现
+                # → 绑回本批，保持批次归属一致。两个限定都不能去掉：
+                #   IS NULL    —— 属**其它批次**的票不抢（否则抢走他批所有权）；
+                #   source='import' —— manual/补录票不碰（否则撤销台账会删掉用户手工建的票）。
+                conn.execute(
+                    "UPDATE invoice SET import_batch_id=? WHERE invoice_no=? "
+                    "AND import_batch_id IS NULL AND source='import'", (batch_id, no))
             else:
                 conn.execute(
                     """INSERT INTO invoice (invoice_no, invoice_date, buyer, total_amount, case_no,

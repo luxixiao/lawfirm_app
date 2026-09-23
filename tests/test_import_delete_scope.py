@@ -351,6 +351,30 @@ def main():
     check("9b) 他批计入后真超收 → 正确报错", m2 is not None, f"m2={m2!r}")
     c.close()
 
+    # 10) G4：撤销本批时，本批建的票若仍带他批引用 → 留票并解绑（import_batch_id=NULL）
+    c = build_conn()
+    add_invoice(c, "OR1", 1000.0, batch=5)          # 本批建的票
+    add_collection(c, "OR1", 300.0, batch=5)        # 本批 → 删
+    add_collection(c, "OR1", 200.0, batch=6)        # 他批 → 保留（故 invoice 必须留）
+    rollback_batch(c, 5)
+    row = c.execute("SELECT import_batch_id FROM invoice WHERE invoice_no='OR1'").fetchone()
+    check("10) G4 撤销保留带他批引用的 invoice（解绑为 NULL）",
+          row is not None and row["import_batch_id"] is None
+          and near(coll_sum(c, "OR1"), 200.0),
+          f"row={dict(row) if row else None} sum={coll_sum(c, 'OR1')}")
+    c.close()
+
+    # 10b) 无他批/manual 引用 → 恢复原行为：invoice 随批一起删
+    c = build_conn()
+    add_invoice(c, "OR2", 1000.0, batch=5)
+    add_collection(c, "OR2", 300.0, batch=5)
+    rollback_batch(c, 5)
+    gone2 = c.execute("SELECT 1 FROM invoice WHERE invoice_no='OR2'").fetchone() is None
+    check("10b) 无他批引用时 invoice 照旧随批删除",
+          gone2 and near(coll_sum(c, "OR2"), 0.0),
+          f"gone={gone2} sum={coll_sum(c, 'OR2')}")
+    c.close()
+
     print(f"\n{OK}/{OK + len(FAILS)} passed")
     if FAILS:
         print("FAILED: " + ", ".join(FAILS))
