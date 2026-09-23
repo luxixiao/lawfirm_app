@@ -46,6 +46,7 @@ class ExpenseReimportDialog(QDialog):
         n_match = len(diff.matched)
         n_add = len(diff.added)
         n_del = len(diff.removed)
+        n_unpaired = len(getattr(diff, "unpaired", []))
         total = n_match + n_add + n_del
 
         self.setWindowTitle("同账期重导确认")
@@ -57,8 +58,12 @@ class ExpenseReimportDialog(QDialog):
         lay.setSpacing(scale.px(12))
 
         # ---- 顶部摘要 ----
-        title = DialogTitleLabel(
-            f"同账期重导，检测到 {total} 处差异：新增 {n_add} / 删除 {n_del} / 修改 {n_match}")
+        title_txt = (f"同账期重导，检测到 {total} 处差异："
+                     f"新增 {n_add} / 删除 {n_del} / 修改 {n_match}")
+        if n_unpaired:
+            # P1-4：无有效序号的行不参与自动配对，显式计数提示（不静默）
+            title_txt += f"；另有 {n_unpaired} 行无有效序号"
+        title = DialogTitleLabel(title_txt)
         lay.addWidget(title)
         sub = CaptionLabel(
             f"账期 {period}：覆盖将以本次导入文件为准替换原账期全部费用数据；"
@@ -88,8 +93,18 @@ class ExpenseReimportDialog(QDialog):
         lay.addWidget(self.table, 1)
 
         # 解析行 / 库行按 seq 索引，便于取出名称（added 取新文件，removed 取旧库）
-        parsed_by_seq = {int(r.get("seq")): r for r in diff.parsed}
-        db_by_seq = {int(r.get("seq")): r for r in diff.db}
+        # P1-4：序号容错——无/坏序号行跳过索引（统一由下方 unpaired 区展示）
+        def _safe_map(rows):
+            m = {}
+            for r in rows:
+                try:
+                    m[int(r.get("seq"))] = r
+                except (TypeError, ValueError):
+                    continue
+            return m
+
+        parsed_by_seq = _safe_map(diff.parsed)
+        db_by_seq = _safe_map(diff.db)
 
         # 修改（matched）：每个 field_diff 一行
         for seq, fds in diff.matched:
@@ -105,6 +120,9 @@ class ExpenseReimportDialog(QDialog):
         for seq in diff.removed:
             name = (db_by_seq.get(seq) or {}).get("name", "")
             self._add_row("删除", seq, name, "—", "原行", None)
+        # P1-4：无有效序号的行——既不算新增/删除也不静默消失，显式列出
+        for desc in getattr(diff, "unpaired", []):
+            self._add_row("无序号", "—", desc, "—", None, "按无序号处理")
 
         # ---- 底部按钮 ----
         btns = QHBoxLayout()

@@ -22,6 +22,20 @@ def _clean_name(s: str) -> str:
     return _TYPE_SUFFIX.sub("", s) if s else s
 
 
+def _safe_seq(txt) -> int | None:
+    """序号容错解析（P1-4）：空/None → None；非整数文本（"3.0"/"3月"）→ None。
+
+    旧实现 ``int(txt) if txt else None`` 对文本序号直接 ValueError 崩溃；
+    现改为按无序号处理，原始文本保留在行的 ``seq_raw`` 字段供导入结果警告。
+    """
+    if not txt:
+        return None
+    try:
+        return int(txt)
+    except ValueError:
+        return None
+
+
 def parse_expense_file(path: str, period: str) -> List[Dict]:
     rows = read_sheet(path, sheet_index=0)
     hr = find_header_row(rows, ["名称", "费用金额"])
@@ -74,7 +88,8 @@ def parse_expense_file(path: str, period: str) -> List[Dict]:
 
         items.append({
             "period": period,
-            "seq": int(g(idx_seq)) if g(idx_seq) else None,
+            "seq": _safe_seq(g(idx_seq)),
+            "seq_raw": g(idx_seq),
             "exp_date": normalize_date(g(idx_time), default_year=int(period.split("-")[0])),
             "name": name,
             "ticket_no": g(idx_ticket),

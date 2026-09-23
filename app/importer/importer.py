@@ -1177,6 +1177,11 @@ def _compute_reimport_diff(conn, period: str, parsed_rows: list) -> "ReimportDif
 def import_expense_file(path: str, period: str, on_reimport_diff=None) -> Dict:
     _auto_snapshot()
     items = parse_expense_file(path, period)
+    # P1-4：非整数文本序号（"3.0"/"3月"）从「崩溃」改为按无序号处理 + 显式警告
+    warnings = [
+        f"行「{it.get('name') or '?'}」序号无法解析：「{it.get('seq_raw')}」，已按无序号处理"
+        for it in items if it.get("seq") is None and (it.get("seq_raw") or "").strip()
+    ]
     conn = get_conn()
     try:
         # 费用台账导入：经手人(真实发生/字段 handler)不校验花名册；
@@ -1257,7 +1262,10 @@ def import_expense_file(path: str, period: str, on_reimport_diff=None) -> Dict:
         raise
     finally:
         conn.close()
-    return {"type": "expense", "period": period, "count": len(items)}
+    result = {"type": "expense", "period": period, "count": len(items)}
+    if warnings:
+        result["warnings"] = warnings
+    return result
 
 
 def import_salary_file(path: str, period: str) -> Dict:

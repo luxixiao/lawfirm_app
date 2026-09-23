@@ -293,6 +293,34 @@ def main() -> int:
     finally:
         _restore(saved)
 
+    # ===== P1-4：无序号/脏序号行不崩，且显式进入 unpaired（不静默）=====
+    from app.engine.expense_validation import diff_expense_reimport  # noqa: E402
+    from app.importer.expense_import import _safe_seq  # noqa: E402
+
+    check("P1-4 _safe_seq('3')", _safe_seq("3") == 3)
+    check("P1-4 _safe_seq(' 3 ')", _safe_seq(" 3 ") == 3)
+    check("P1-4 _safe_seq('')", _safe_seq("") is None)
+    check("P1-4 _safe_seq('3.0')", _safe_seq("3.0") is None)
+    check("P1-4 _safe_seq('3月')", _safe_seq("3月") is None)
+    check("P1-4 _safe_seq(None)", _safe_seq(None) is None)
+
+    # 空序号（parse 侧合法产出 seq=None）→ diff 不崩，行进 unpaired
+    d = diff_expense_reimport(
+        [{"seq": None, "seq_raw": "", "name": "张三", "period": "2025-01"}],
+        [{"seq": 1, "name": "张三", "period": "2025-01"}])
+    check("P1-4 空序号 diff 不崩", True)
+    check("P1-4 空序号行进 unpaired", len(d.unpaired) == 1, str(d.unpaired))
+    check("P1-4 unpaired 计入 changed", d.changed)
+    check("P1-4 未配对库行按 removed 报告", d.removed == [1], str(d.removed))
+
+    # 文本序号（parse 侧不再崩，seq=None + seq_raw 保留原文）→ 同样进 unpaired
+    d2 = diff_expense_reimport(
+        [{"seq": None, "seq_raw": "3月", "name": "李四", "period": "2025-01"}],
+        [{"seq": 2, "name": "王五", "period": "2025-01"}])
+    check("P1-4 文本序号 diff 不崩", True)
+    check("P1-4 文本序号入 unpaired 且含原文", len(d2.unpaired) == 1 and "3月" in d2.unpaired[0],
+          str(d2.unpaired))
+
     conn.close()
     print(f"\n{OK} passed, {len(FAILS)} failed")
     return 1 if FAILS else 0

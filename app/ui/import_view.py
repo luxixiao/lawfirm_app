@@ -407,6 +407,9 @@ class ImportView(QWidget):
                     # 非 UI 调用方（脚本 / 单测）不传回调 → 静默覆盖，零回归。
                     r = import_expense_file(path, period, on_reimport_diff=self._confirm_reimport)
                     msg = f"✓ 费用台账 {period}: {r['count']} 条费用"
+                    # P1-4：无/坏序号行已按无序号处理，显式告知（不静默）
+                    for w in r.get("warnings") or []:
+                        msg += f"\n⚠ {w}"
         except Exception as e:  # noqa: BLE001
             self._log(f"✗ {fname}: {e}", ok=False, file_name=fname,
                       batch_type=ftype, period=period or "")

@@ -48,11 +48,12 @@ class ReimportDiff:
     matched: List[Tuple[int, List[dict]]] = field(default_factory=list)   # (seq, [field_diff...])
     added: List[int] = field(default_factory=list)                        # 仅新文件有（按 seq）
     removed: List[int] = field(default_factory=list)                     # 仅旧库有（按 seq）
+    unpaired: List[str] = field(default_factory=list)                    # P1-4：无/坏序号行（显式报告，不静默）
 
     @property
     def changed(self) -> bool:
-        """有任一差异（字段变更 / 新增 / 删除）即为 changed。"""
-        return bool(self.matched or self.added or self.removed)
+        """有任一差异（字段变更 / 新增 / 删除 / 无法配对）即为 changed。"""
+        return bool(self.matched or self.added or self.removed or self.unpaired)
 
 
 def validate_expense_edit(rows: List[dict], conn=None) -> List[Violation]:
@@ -111,6 +112,8 @@ def diff_expense_reimport(parsed_rows: List[dict], db_rows: List[dict]) -> Reimp
     仅比较 EDIT_FIELDS（金额/科目/经办人/名称/类型…），忽略 id/import_batch_id/source。
     matched = 两表都有且字段有差异的 (seq, [field_diff...])；
     added   = 仅新文件有（按 seq）；removed = 仅旧库有（按 seq）。
+    unpaired = 无有效序号的行描述（P1-4：旧代码 int(None)/int("3月") 直接崩溃，
+               现按无法配对显式报告，随 diff 一并展示给用户，不静默）。
     """
     period = ""
     if parsed_rows:
@@ -118,8 +121,29 @@ def diff_expense_reimport(parsed_rows: List[dict], db_rows: List[dict]) -> Reimp
     elif db_rows:
         period = db_rows[0].get("period", "") or period
 
-    parsed_by_seq = {int(r.get("seq")): r for r in parsed_rows}
-    db_by_seq = {int(r.get("seq")): r for r in db_rows}
+    def _key(r: dict):
+        try:
+            return int(r.get("seq"))
+        except (TypeError, ValueError):
+            return None
+
+    parsed_by_seq: dict = {}
+    unpaired: List[str] = []
+    for r in parsed_rows:
+        s = _key(r)
+        if s is None:
+            raw = r.get("seq_raw")
+            unpaired.append(f"新文件「{r.get('name') or '?'}」序号无法解析："
+                            f"「{raw if raw else '空'}」")
+            continue
+        parsed_by_seq[s] = r
+    db_by_seq: dict = {}
+    for r in db_rows:
+        s = _key(r)
+        if s is None:
+            unpaired.append(f"库内 id={r.get('id')}「{r.get('name') or '?'}」无有效序号")
+            continue
+        db_by_seq[s] = r
 
     matched: List[Tuple[int, List[dict]]] = []
     added: List[int] = []
@@ -149,4 +173,4 @@ def diff_expense_reimport(parsed_rows: List[dict], db_rows: List[dict]) -> Reimp
 
     return ReimportDiff(
         period=period, parsed=parsed_rows, db=db_rows,
-        matched=matched, added=added, removed=removed)
+        matched=matched, added=added, removed=removed, unpaired=unpaired)
