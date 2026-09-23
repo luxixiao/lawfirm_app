@@ -16,7 +16,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import List
 
-from PySide6.QtCore import QThread, Qt, Signal
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QCursor
 from PySide6.QtWidgets import (
     QAbstractItemView, QDialog, QHBoxLayout, QLabel, QMenu,
@@ -33,22 +33,6 @@ from app.ui.widgets import CaptionLabel, ComboBox, DialogTitleLabel, PageHeader,
 
 def _fmt(x: float) -> str:
     return f"{x:,.2f}"
-
-
-class _PivotLoadThread(QThread):
-    """后台加载账面情况透视数据，避免点开页面时 UI 卡顿（load_pivot 含全表 GROUP BY）。"""
-
-    resultReady = Signal(dict)
-
-    def __init__(self, year: str, start: int, end: int) -> None:
-        super().__init__()
-        self._year = year
-        self._start = start
-        self._end = end
-
-    def run(self) -> None:  # noqa: N802
-        res = bb.load_pivot(year=self._year, start=self._start, end=self._end)
-        self.resultReady.emit(res)
 
 
 class _PivotPage(QWidget):
@@ -127,8 +111,6 @@ class _PivotPage(QWidget):
         self._year = str(datetime.now().year)
         self._months: List[int] = list(range(1, 13))
         self._row_specs: List[dict] = []
-        self._req = 0          # 异步加载请求令牌（仅最新一次渲染）
-        self._loader = None
         self._refresh_years()
         self._rebuild()
 
@@ -154,8 +136,15 @@ class _PivotPage(QWidget):
         self.year_combo.blockSignals(False)
 
     # -- 渲染 -----------------------------------------------------------
+    def _fetch(self, year: str, start: int, end: int) -> dict:
+        """取数 seam（P1-3）：测试用方法覆写注入异常/数据。
+
+        expense_ledger > 5 万行时再考虑改回异步加载（当前量级 GROUP BY 毫秒级）。
+        """
+        return bb.load_pivot(year=year, start=start, end=end)
+
     def _rebuild(self) -> None:
-        """异步加载：先返回（页面立即显示），数据就绪后由 _on_loaded 填充。"""
+        """同步加载并渲染；失败在 hint 上显式报错（P1-3：不再永久停在「加载中…」）。"""
         year = self.year_combo.currentData() or str(datetime.now().year)
         start = int(self.start_combo.currentData())
         end = int(self.end_combo.currentData())
@@ -163,18 +152,14 @@ class _PivotPage(QWidget):
             start, end = end, start
         self._year = year
         self._months = list(range(start, end + 1))
-        self._req += 1
-        token = self._req
-        self.hint.setText("加载中…")
-        th = _PivotLoadThread(year, start, end)
-        th.resultReady.connect(lambda res: self._on_loaded(res, token))
-        th.finished.connect(th.deleteLater)
-        self._loader = th
-        th.start()
-
-    def _on_loaded(self, res: dict, token: int) -> None:
-        if token != self._req:
-            return  # 已有更新的请求，丢弃过期结果
+        try:
+            res = self._fetch(year, start, end)
+        except Exception as e:  # noqa: BLE001  任何取数失败都必须可见
+            self.hint.setText(f"加载失败：{e}；可点「刷新」重试")
+            return
+        if not isinstance(res, dict) or "rows" not in res:
+            self.hint.setText("加载失败：返回数据结构异常；可点「刷新」重试")
+            return
         self._render(res["rows"], res["months"], res["year"], res["start"], res["end"])
         self._col.apply()
 
@@ -270,7 +255,7 @@ class _DrillPopup(QDialog):
                  on_detail, parent=None) -> None:
         super().__init__(parent, Qt.WindowType.Popup)
         self.setObjectName("drillPopup")
-        rows = bb.expense_rows_for_cell(str(year), months, s1, s2, kind, get_conn())
+        rows = bb.expense_rows_for_cell(str(year), months, s1, s2, kind)
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(scale.px(14), scale.px(12), scale.px(14), scale.px(12))

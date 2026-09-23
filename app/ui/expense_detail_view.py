@@ -179,7 +179,7 @@ class ExpenseDetailView(QWidget):
     def load(self, s1: str, s2: str, kind: str, months, year) -> None:
         self._s1, self._s2, self._kind = s1, s2, kind
         self._months, self._year = list(months), str(year)
-        rows = bb.expense_rows_for_cell(self._year, months, s1, s2, kind, get_conn())
+        rows = bb.expense_rows_for_cell(self._year, months, s1, s2, kind)
         self._rows = rows
         self._orig_by_rid = {r["id"]: r for r in rows}
         self._dirty = set()

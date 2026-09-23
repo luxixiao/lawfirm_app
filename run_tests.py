@@ -24,6 +24,7 @@ EXPECTED_FILES = [
     "tests/test_account_subject.py",
     "tests/test_backfill_pending.py",
     "tests/test_book_balance.py",
+    "tests/test_book_balance_load.py",     # P1-3：账面情况去线程化（异常显式化 + _fetch seam）
     "tests/test_calc_data.py",
     "tests/test_calc_eval.py",
     "tests/test_calc_formula.py",
