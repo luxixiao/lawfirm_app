@@ -131,7 +131,7 @@ def test_multi_row():
     check(row_by_id(conn, 2)["expense_type"] == "B", "T4 行2 类型更新")
 
 
-if __name__ == "__main__":
+def main() -> int:
     test_single_field()
     test_amount_tax_recompute()
     test_noop_skipped()
@@ -139,3 +139,8 @@ if __name__ == "__main__":
     print(f"通过 {OK} 项，失败 {len(FAILS)} 项")
     for f in FAILS:
         print("  FAIL:", f)
+    return 1 if FAILS else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
