@@ -42,6 +42,7 @@ EXPECTED_FILES = [
     "tests/test_header_norm.py",
     "tests/test_column_layout_resize.py",  # P2-2：列布局 Resize 120ms 防抖
     "tests/test_snapshot_policy.py",       # P2-3：导入前快照策略 + 孤儿清扫
+    "tests/test_review_refresh_idempotent.py",  # P2-4：复核页 refresh 脏签名短路
     "tests/test_import_confirm.py",
     "tests/test_import_delete_scope.py",  # P0-3：导入/撤销 DELETE 作用域（方案 A/B + G2）
     "tests/test_import_fix_log.py",

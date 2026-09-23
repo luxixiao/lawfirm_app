@@ -113,7 +113,7 @@ def main() -> int:
     for mod in (rl, rc, bm, imp, bf):
         mod.get_conn = lambda: proxy
 
-    imp._auto_snapshot = lambda: None
+    imp._auto_snapshot = lambda *a, **k: None  # P2-3 起新签名 (batch_type, period)
     imp._archive_file = lambda src, bt, period: ""
 
     # ------------------------------------------------------------ A) 历史口径（仅 A4 仍用）

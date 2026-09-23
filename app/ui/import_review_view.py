@@ -137,6 +137,8 @@ class ImportReviewView(QWidget):
         self._fix_skipped = 0           # 累计未能定位镜表行的人工修改条数
         self._fix_log_failed = False    # 修改留痕写入是否失败过
         self._leave_no_prompt = False   # A6：用户勾过「本次不再提示」
+        self._last_sig = None           # P2-4：上次全量重建时的库脏签名（None=从未建过）
+        self._last_period = None        # P2-4：上次实际载入的账期
         self._set_mode("post")
 
     # ------------------------------------------------------------------ #
@@ -175,6 +177,30 @@ class ImportReviewView(QWidget):
     def _on_period_changed(self, *_):
         if self.stack.currentWidget() is self.page_post:
             self.page_post.load_period(self.combo_period.currentData() or "")
+            # 手动切换也视为「已按此账期重建过」，供 refresh() 的签名短路判定
+            self._last_period = self.combo_period.currentData() or ""
+
+    @staticmethod
+    def _db_signature() -> tuple:
+        """库脏签名（P2-4）：review 页全量重建的数据面是否变过。
+
+        聚合 6 张会被导入/清空/回写触碰的表的 COUNT + MAX(rowid)：
+        import_batch（账期列表与批次态）、raw_ledger（post 重建的主源）、
+        invoice / collection / charge_detail（比对与收款回写）、change_log（修改留痕）。
+        任一表增删改都会让签名变化 → 短路失效、走全量重建；反之 showEvent 触发的
+        refresh 直接跳过（拖动窗口/切页来回不再每次全库重查+整表重建）。
+        """
+        conn = get_conn()
+        try:
+            sig = []
+            for t in ("import_batch", "raw_ledger", "invoice",
+                      "collection", "charge_detail", "change_log"):
+                row = conn.execute(
+                    f"SELECT COUNT(*), COALESCE(MAX(rowid), 0) FROM {t}").fetchone()
+                sig.extend((row[0], row[1]))
+            return tuple(sig)
+        finally:
+            conn.close()
 
     # ------------------------------------------------------------------ #
     # 回到本页时的重渲染（清空数据 / 外部改库后必须重读，否则残留旧内容）
@@ -197,11 +223,19 @@ class ImportReviewView(QWidget):
           队列被设计为「离开本页可随时回来继续」，不能因为一次显示就被清掉。
         - 否则：回导入后模式并重拉账期列表，同时**保留当前选中的账期**（若它还在）；
           库已清空 → 账期列表为空 → `load_period("")` 自动载入空骨架清空表格。
+        - P2-4 短路：库脏签名与当前账期都没变 → 数据面不可能变，跳过全量重建
+          （保住 2026-09-17「清空后残留」修复的前提：清空必删批次 → 签名必变；
+          跨 PC Seafile 同步来的改动同样会变签名）。
         """
         if self._queue_active:
             self._refresh_queue_label()
             return
-        self._set_mode("post", self.combo_period.currentData() or "")
+        cur = self.combo_period.currentData() or ""
+        sig = self._db_signature()
+        if sig == self._last_sig and cur == self._last_period:
+            return
+        self._set_mode("post", cur)
+        self._last_sig, self._last_period = sig, cur
 
     def reset_pending(self) -> None:
         """丢弃内存待确认队列，回导入后模式（供「数据情况」清空后调用）。

@@ -180,7 +180,7 @@ def main() -> int:
         saved["vh"] = importer._validate_handler_names
         importer._validate_handler_names = lambda c2, names, ctx: []
         saved["snap"] = importer._auto_snapshot
-        importer._auto_snapshot = lambda: None
+        importer._auto_snapshot = lambda *a, **k: None  # P2-3 起新签名 (batch_type, period)
         saved["arch"] = importer._archive_file
         importer._archive_file = lambda *a, **k: "archive/dummy.xlsx"
         saved["pe"] = ec.validate_public_exclusive

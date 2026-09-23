@@ -100,7 +100,7 @@ def main() -> int:
     for mod in (rl, bm, imp, bf):
         mod.get_conn = lambda: proxy
 
-    imp._auto_snapshot = lambda: None
+    imp._auto_snapshot = lambda *a, **k: None  # P2-3 起新签名 (batch_type, period)
     imp._archive_file = lambda src, bt, period: ""
 
     for nm, t in (("周立生", "聘用"), ("陈娟", "兼职"), ("胡坚", "合伙")):
