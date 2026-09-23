@@ -289,6 +289,12 @@ class TableColumnLayout(QObject):
         self._win = None  # 顶层窗口（用于监听最大化/还原，触发比例重填）
         self._sort_cb = None  # 右键「升序/降序」排序回调（由视图注册）
         self._sort_col = -1   # 当前排序列（逻辑列号，-1=未排序），供表头底色高亮
+        # P2-2：Resize 防抖——拖动窗口边框每帧触发 Resize，原实现每帧都做
+        # QSettings 读 + 全列重排；合并为停止变化 120ms 后一次。
+        self._resize_timer = QTimer(self)
+        self._resize_timer.setSingleShot(True)
+        self._resize_timer.setInterval(120)
+        self._resize_timer.timeout.connect(self._apply_on_resize)
 
     # ---------- 入口 ----------
     def install(self) -> "TableColumnLayout":
@@ -465,6 +471,14 @@ class TableColumnLayout(QObject):
             self._win = win
             win.installEventFilter(self)
 
+    def _apply_on_resize(self) -> None:
+        """P2-2：Resize 防抖到期后按比例重填（与原 Resize 分支同语义，remeasure=False）。"""
+        table = getattr(self, "table", None)
+        if table is None or self._applying:
+            return
+        if getattr(self, "content_w", None) is not None and table.columnCount():
+            self.apply(remeasure=False)
+
     def eventFilter(self, obj, event) -> bool:
         # 与 _ensure_win 同因的兜底：shiboken 重包装导致 __init__ 未跑时，
         # self.table 可能缺失，裸访问会在每次事件里刷 AttributeError。
@@ -474,7 +488,7 @@ class TableColumnLayout(QObject):
         self._ensure_win()  # 视图构造早于入窗，事件触发时再补绑窗口
         if obj is table and event.type() == QEvent.Type.Resize:
             if getattr(self, "content_w", None) is not None and table.columnCount():
-                self.apply(remeasure=False)
+                self._resize_timer.start()  # P2-2：防抖合并（原实现每帧全量重算）
         elif obj is getattr(self, "_win", None) and event.type() == QEvent.Type.WindowStateChange:
             # 最大化/还原：延迟一帧，等布局稳定后再按比例重填（已显全列除外）
             if getattr(self, "content_w", None) is not None and table.columnCount():
