@@ -1,7 +1,7 @@
 """导入复核 — 导入后回写引擎（单事务，spec §5/§12/§13.3）
 
 apply_edit：改 raw_ledger 镜表行（复用 update_row 的逐字段审计 L1 与
-invoice/charge_detail 同步）→ 涉及收款口径时经 _write_collection_for_invoice
+invoice/charge_detail 同步）→ 涉及收款口径时经 _rewrite_collection_for_invoice
 删+重写 collection（含 received_snapshot 快照）→ synced=0 → 补 L2「(同步)」
 汇总审计。任一步失败整体回滚。
 
@@ -15,7 +15,7 @@ from typing import Dict, List, Optional
 from app.db import get_conn
 from app.engine import raw_ledger as rl
 from app.engine.change_log import build_friendly_table, log_change
-from app.importer.importer import _write_collection_for_invoice
+from app.importer.importer import _rewrite_collection_for_invoice
 from app.importer.parse_handler import parse_handler_column
 from app.importer.parse_remark import parse_remark
 
@@ -41,7 +41,7 @@ def _validated_handlers(text: str, total: float, invoice_no: str) -> None:
 
 
 def _rebuild_inv(row: Dict, period: str, receipts: Optional[List[tuple]] = None) -> Dict:
-    """按编辑后的镜表行重建结构化发票（供 _write_collection_for_invoice）。"""
+    """按编辑后的镜表行重建结构化发票（供 _rewrite_collection_for_invoice）。"""
     total = _parse_total(row.get("amount_raw"))
     no = (row.get("invoice_no") or "").strip()
     try:
@@ -131,7 +131,7 @@ def apply_edit(period: str, raw_id: int, patch: Dict, note: str,
             fresh["invoice_no"] = new_no or fresh["invoice_no"]
             inv = _rebuild_inv(fresh, period, receipts)
             batch_id = old.get("import_batch_id") or 0
-            msg = _write_collection_for_invoice(conn, inv, batch_id)
+            msg = _rewrite_collection_for_invoice(conn, inv, batch_id)
             if msg:
                 raise ValueError(msg)
             if receipts is not None:

@@ -230,17 +230,16 @@ def _write_collection_for_invoice(conn, inv: Dict, batch_id: int) -> str | None:
     未写入，由调用方记入 over_collected / 抛错。
     """
     no = inv["invoice_no"]
-    # 超收校验（覆盖式写：旧的 import 收款本就会被删，故 exclude_sources=("import",)
-    # 只算 manual 既有，再叠加本次即将写入的 import 收款；避免把"将被替换的旧 import"
-    # 与新 import 重复计入造成误报）。
+    # 超收校验：本批收款按 import_batch_id 追加写，故用 exclude_batch_id 排除即将重插的
+    # 本批行，全来源（其它批 import + manual）累计计数不漏；超额则不写、历史一行不删（铁律）。
     incoming = _incoming_collection_for_invoice(inv)
     if incoming > 0.001:
-        msg = over_collection_message(conn, no, incoming, exclude_sources=("import",))
+        msg = over_collection_message(conn, no, incoming, exclude_batch_id=batch_id)
         if msg:
             return msg
     sheet = inv.get("sheet_name") or ""
     row = inv.get("row_no") or 0
-    conn.execute("DELETE FROM collection WHERE invoice_no=? AND source='import'", (no,))
+    conn.execute("DELETE FROM collection WHERE invoice_no=? AND source='import' AND import_batch_id=?", (no, batch_id))
     if "split_receipts" in inv:
         # 问题行修正：逐经办人写入收款（person_name 归因；空列表 = 无收款）
         for name, amt, ym in inv["split_receipts"]:
@@ -265,6 +264,51 @@ def _write_collection_for_invoice(conn, inv: Dict, batch_id: int) -> str | None:
                         (no, amt, ym, "import", batch_id, sheet, row),
                     )
     # 方案E：落/更新收款认定快照，保证与本次写入一致
+    _upsert_received_snapshot(conn, inv, batch_id)
+    return None
+
+
+def _rewrite_collection_for_invoice(conn, inv: Dict, batch_id: int) -> str | None:
+    """复核页回写专用：按发票号**整票重写**该票 import 收款（无 batch 限定）。
+
+    ⚠️ 与 _write_collection_for_invoice（主路径，按批追加）语义不同：复核回写是人工显式
+    编辑某票 import 收款，须整体替换该票所有 import 行（含其它批次遗留在同票上的 import 行，
+    避免重复收款漏出，见设计文档 G6）。manual 收款与历史来源不受影响（source='import' 限定）。
+    返回 None = 已写入；返回文案 = 超收被拦（未写入）。
+    """
+    no = inv["invoice_no"]
+    incoming = _incoming_collection_for_invoice(inv)
+    if incoming > 0.001:
+        # 覆盖式重写：旧 import 行即将被删，exclude_sources=("import",) 避免重复计入误报
+        msg = over_collection_message(conn, no, incoming, exclude_sources=("import",))
+        if msg:
+            return msg
+    sheet = inv.get("sheet_name") or ""
+    row = inv.get("row_no") or 0
+    conn.execute("DELETE FROM collection WHERE invoice_no=? AND source='import'", (no,))
+    if "split_receipts" in inv:
+        # 问题行修正：逐经办人写入收款（person_name 归因；空列表 = 无收款）
+        for name, amt, ym in inv["split_receipts"]:
+            conn.execute(
+                "INSERT INTO collection (invoice_no, amount, receipt_date, person_name, source, import_batch_id, src_sheet, src_row) VALUES (?,?,?,?,?,?,?,?)",
+                (no, amt, ym, name, "import", batch_id, sheet, row),
+            )
+    else:
+        rem = inv["remark"]
+        if not inv["is_red"]:
+            if rem["pure_date"]:
+                conn.execute(
+                    "INSERT INTO collection (invoice_no, amount, receipt_date, source, import_batch_id, src_sheet, src_row) VALUES (?,?,?,?,?,?,?,?)",
+                    (no, inv["total_amount"], rem["pure_date"], "import", batch_id, sheet, row),
+                )
+            else:
+                for ym, amt in rem["receipts"]:
+                    if amt == 0:
+                        amt = inv["total_amount"]
+                    conn.execute(
+                        "INSERT INTO collection (invoice_no, amount, receipt_date, source, import_batch_id, src_sheet, src_row) VALUES (?,?,?,?,?,?,?,?)",
+                        (no, amt, ym, "import", batch_id, sheet, row),
+                    )
     _upsert_received_snapshot(conn, inv, batch_id)
     return None
 
