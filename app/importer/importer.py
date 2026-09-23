@@ -454,6 +454,12 @@ def import_invoice_file(path: str, period: str) -> Dict:
     raw_rows, raw_warnings = parse_invoice_workbook(path, period)
     conn = get_conn()
     try:
+        # 红字发票硬规则（用户铁律）：红字必须先保证原蓝字发票已入库，否则红字不能入库
+        from app.engine.collection import assert_red_has_orig, RedOriginalMissing
+        try:
+            assert_red_has_orig(invoices, conn)
+        except RedOriginalMissing as e:
+            raise ImportError_(str(e))
         # 清旧批次的 raw_invoice 镜像（在 rollback 之前，否则 active 标记已变）
         old = conn.execute(
             "SELECT id FROM import_batch WHERE batch_type='invoice' AND period=? AND status='active'",

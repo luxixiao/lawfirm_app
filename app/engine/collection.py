@@ -15,6 +15,41 @@ from app.db import get_conn
 from app.engine.split import allocate_invoice
 
 
+class RedOriginalMissing(Exception):
+    """红字发票缺少已入库的原蓝字发票（用户铁律拦截）。"""
+
+
+def assert_red_has_orig(invoices, conn) -> None:
+    """红字发票硬规则（用户铁律）：红字必须先保证原蓝字发票已入库，否则红字不能入库。
+
+    落点：销项文档导入 `import_invoice_file`（app/importer/importer.py）在写库前调用，
+    由 importer 层把 `RedOriginalMissing` 转成 `ImportError_` 透出给用户。
+
+    判定：
+    - 非红字（is_red 为假）→ 不拦截；
+    - 红字但原票号为空 → 非法（红字必填原票号）；
+    - 原票号在同批发票列表内（同一销项文档）→ 合法（随本批一起入库）；
+    - 否则必须已在 invoice 表（任意账期）→ 否则抛 `RedOriginalMissing`。
+    """
+    batch_nos = {inv.get("invoice_no") for inv in invoices if inv.get("invoice_no")}
+    for inv in invoices:
+        if not inv.get("is_red"):
+            continue
+        orig = (inv.get("orig_invoice_no") or "").strip()
+        no = inv.get("invoice_no")
+        if not orig:
+            raise RedOriginalMissing(
+                f"红字发票 {no} 缺少原蓝字发票号码，无法入库；请先补录原票或填妥原票号。"
+            )
+        if orig in batch_nos:
+            continue
+        if not conn.execute("SELECT 1 FROM invoice WHERE invoice_no=?", (orig,)).fetchone():
+            raise RedOriginalMissing(
+                f"红字发票 {no} 的原蓝字发票 {orig} 尚未入库，"
+                f"请先补录原票再导入红字（跨期红冲合法，但原票必须已入库）。"
+            )
+
+
 def _collected_by_invoice(conn) -> Dict[str, float]:
     """{发票号: 已收金额}（正数发票 = Σcollection）"""
     return {

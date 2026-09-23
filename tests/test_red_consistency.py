@@ -27,6 +27,7 @@ sys.path.insert(0, str(ROOT))
 from app.db import SCHEMA  # noqa: E402
 from app.engine import backfill_module as bm  # noqa: E402
 from app.engine.import_confidence import _handler_amounts, red_orig_diff  # noqa: E402
+from app.engine.collection import assert_red_has_orig, RedOriginalMissing  # noqa: E402
 
 OK, FAILS = 0, []
 
@@ -226,6 +227,57 @@ def main() -> int:
     check("D12：prefill 出来的蓝字信息与红字比对 → 一致（无差异）", same is None, str(same))
 
     conn.close()
+
+    # ==================================================================== #
+    # E) assert_red_has_orig —— 红字必须先有已入库的原蓝字发票（用户铁律）
+    # ==================================================================== #
+    c2 = build_conn()
+    add_invoice(c2, "BLUE-DB", 1000.0, handlers=[("张三", 1000.0)])  # 原蓝字发票已在库
+
+    ok_e1 = True
+    try:
+        assert_red_has_orig(
+            [{"invoice_no": "RED-OK", "is_red": True, "orig_invoice_no": "BLUE-DB"}], c2)
+    except RedOriginalMissing:
+        ok_e1 = False
+    check("E1：红字原票已在库 → 不拦截", ok_e1)
+
+    ok_e2 = True
+    try:
+        # 红字原票在同批（同一销项文档）→ 随本批一起入库，合法
+        assert_red_has_orig([
+            {"invoice_no": "BLUE-BATCH", "is_red": False, "orig_invoice_no": ""},
+            {"invoice_no": "RED-BATCH", "is_red": True, "orig_invoice_no": "BLUE-BATCH"},
+        ], c2)
+    except RedOriginalMissing:
+        ok_e2 = False
+    check("E2：红字原票在同批 → 不拦截", ok_e2)
+
+    blocked_e3 = False
+    try:
+        assert_red_has_orig(
+            [{"invoice_no": "RED-EMPTY", "is_red": True, "orig_invoice_no": ""}], c2)
+    except RedOriginalMissing:
+        blocked_e3 = True
+    check("E3：红字原票号为空 → 应被阻断", blocked_e3, "未抛异常")
+
+    blocked_e4 = False
+    try:
+        assert_red_has_orig(
+            [{"invoice_no": "RED-ORPHAN", "is_red": True, "orig_invoice_no": "NOPE-999"}], c2)
+    except RedOriginalMissing:
+        blocked_e4 = True
+    check("E4：红字原票既不在库也不在同批 → 应被阻断", blocked_e4, "未抛异常")
+
+    ok_e5 = True
+    try:
+        # 非红字（蓝字）无原票 → 不拦截
+        assert_red_has_orig(
+            [{"invoice_no": "BLUE-PLAIN", "is_red": False, "orig_invoice_no": ""}], c2)
+    except RedOriginalMissing:
+        ok_e5 = False
+    check("E5：蓝字无原票 → 不拦截", ok_e5)
+    c2.close()
 
     print(f"\n{OK}/{OK + len(FAILS)} passed")
     if FAILS:

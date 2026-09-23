@@ -104,7 +104,8 @@ def parse_invoice_file(path: str, period: str) -> List[Dict]:
                     f"红冲校验失败: 原票 {orig}({pos['total_amount']:g}) + 红字合计({s:g}) < 0"
                 )
         else:
-            # 原票不在本月销项（跨期红冲，合法）
+            # 原票不在本月销项（跨期红冲，合法）—— 但原票必须已入库，
+            # 由 import_invoice_file 的 assert_red_has_orig 强制（任意账期）。
             pass
 
     return invoices

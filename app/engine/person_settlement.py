@@ -148,16 +148,8 @@ def _compute(conn, year: int, person: str | None, person_type: str | None = None
             FROM invoice i WHERE i.total_amount < 0 AND {_rd_where}
             ORDER BY i.invoice_date""", _rd_params
     ).fetchall()
-    red_by_orig: Dict[str, Dict[str, float]] = {}
-    for red in reds:
-        if _year_of(red["invoice_date"]) != year or not red["orig_invoice_no"]:
-            continue
-        cds_r = conn.execute(
-            "SELECT person_name, billing_amount FROM charge_detail WHERE invoice_no=?" + pt_filter + " ORDER BY id",
-            (red["invoice_no"],) + ((person_type,) if person_type else ()),
-        ).fetchall()
-        for cd_r in cds_r:
-            red_by_orig.setdefault(red["orig_invoice_no"], {})[cd_r["person_name"]] = abs(cd_r["billing_amount"])
+    # P0-1 修复：红冲单一出口 —— 蓝票侧不再建 red_by_orig 映射去扣减蓝票
+    # （红字统一在下方「红字发票」循环计入 ⑧⑨，消除双重扣减 / 多红字覆盖 / 同月蒸发）。
 
     for inv in invoices:
         receipts_by_inv[inv["invoice_no"]] = conn.execute(
@@ -220,9 +212,8 @@ def _compute(conn, year: int, person: str | None, person_type: str | None = None
             m = st["months"][inv_month]
             # 已收部分（该经办人在此票上的分摊累计已收，含期外预收）
             got_total = sum(_allocated_total(remaining, cds, name, receipts_by_inv.get(no, [])))
-            # 被红冲的原票：按经办人冲减开票金额（红冲后作废，不计开收/未收）
-            red_cut = red_by_orig.get(no, {}).get(name, 0.0)
-            billing_eff = max(billing - red_cut, 0.0)
+            # P0-1 修复：红字唯一出口在下方红票循环；蓝票侧不再扣减红冲
+            billing_eff = billing
             uncollected = round(billing_eff - got_total, 2)
             if uncollected > 0.01:
                 m["inv_open_uncollected"] += uncollected   # ⑦本月未收
@@ -258,11 +249,11 @@ def _compute(conn, year: int, person: str | None, person_type: str | None = None
             st = result.setdefault(name, _new_st(conn, name, person_type))
             m = st["months"][red_month]
             val = cd["billing_amount"]  # 负数
-            m["inv_total"] += val            # 三小计含红冲
+            m["inv_total"] += val            # 三小计含红冲（红字唯一出口）
             if orig_year is not None and orig_year < year:
-                m["inv_red_prev"] += val     # ⑨红冲上年
-            elif orig_year == year and orig_month is not None and orig_month < red_month:
-                m["inv_red_cur"] += val      # ⑧红冲本年（原票本年以前月份，不含同月）
+                m["inv_red_prev"] += val     # ⑨红冲上年（原票跨年）
+            else:
+                m["inv_red_cur"] += val      # ⑧红冲本年（原票本年，含同月；原票缺失也归本年）
 
     # ============ 退款（二④⑤，按红字经办人比例分摊）============
     refunds = conn.execute(
@@ -318,6 +309,14 @@ def _compute(conn, year: int, person: str | None, person_type: str | None = None
                 m["income"] = round(m["inv_total"], 2) if net_basis == "开票净额" else round(rec_net, 2)
             else:
                 m["income"] = 0.0
+            # 方案 D：三小计恒等式硬断言 父(inv_total) == ⑥+⑦+⑧+⑨（P0-1 防回归）
+            _ident = (m["inv_open_received"] + m["inv_open_uncollected"]
+                      + m["inv_red_cur"] + m["inv_red_prev"])
+            if abs(m["inv_total"] - _ident) > 0.02:
+                raise AssertionError(
+                    f"结算恒等式破坏 {name} {year}-{mo:02d}: "
+                    f"inv_total={m['inv_total']:g} 但 ⑥+⑦+⑧+⑨={_ident:g}"
+                )
         # 本年累计未收 = 本年开票净额 − 本年收款净额（模板口径）
         inv_total = sum(st["months"][mo]["inv_open_received"] + st["months"][mo]["inv_open_uncollected"]
                         + st["months"][mo]["inv_red_cur"] + st["months"][mo]["inv_red_prev"] for mo in MONTHS)
