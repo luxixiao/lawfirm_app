@@ -64,6 +64,48 @@ def seed_person(conn, name, staff_type, billing, collected):
     conn.commit()
 
 
+def seed_red_scenario(conn, name):
+    """红冲例（用户确认口径）：1月开 a 1000 未收；2月红冲 a -1000（原票同年1月）。
+    期望：全年累计未收 = 0（红冲抵消）；仅统计到1月时累计 = 1000。
+    """
+    inv = "INV_RED_" + name
+    red = "RED_RED_" + name
+    conn.execute("INSERT INTO invoice(invoice_no, invoice_date, total_amount) VALUES(?,?,?)",
+                 (inv, "2025-01-15", 1000))
+    conn.execute("INSERT INTO charge_detail(invoice_no, person_name, billing_amount) VALUES(?,?,?)",
+                 (inv, name, 1000))
+    # 红字发票：total_amount<0，orig_invoice_no 指原票
+    conn.execute("INSERT INTO invoice(invoice_no, invoice_date, total_amount, orig_invoice_no) "
+                 "VALUES(?,?,?,?)", (red, "2025-02-15", -1000, inv))
+    conn.execute("INSERT INTO charge_detail(invoice_no, person_name, billing_amount) VALUES(?,?,?)",
+                 (red, name, -1000))
+    conn.execute("INSERT INTO staff(name, staff_type) VALUES(?,?)", (name, "合伙"))
+    conn.commit()
+
+
+def seed_refund_scenario(conn, name):
+    """退款例（用户确认口径）：1月开 a 1000 未收；2月红冲 a -1000；3月退款 1000（随红票）。
+    逐月累计：1月=1000（蓝字未收）；2月=0（红冲⑧抵消）；3月=1000（退款④使现金流出→累计回升）；
+    全年累计=1000（红冲与退款跨月，不在同一月抵消）。演示 ④⑤ 进入累计未收。
+    注：系统退款必关联红字发票（refund.red_invoice_no → invoice），无红字直接退款在系统中被忽略。
+    """
+    inv = "INV_REF_" + name
+    red = "RED_REF_" + name
+    conn.execute("INSERT INTO invoice(invoice_no, invoice_date, total_amount) VALUES(?,?,?)",
+                 (inv, "2025-01-15", 1000))
+    conn.execute("INSERT INTO charge_detail(invoice_no, person_name, billing_amount) VALUES(?,?,?)",
+                 (inv, name, 1000))
+    conn.execute("INSERT INTO invoice(invoice_no, invoice_date, total_amount, orig_invoice_no) "
+                 "VALUES(?,?,?,?)", (red, "2025-02-15", -1000, inv))
+    conn.execute("INSERT INTO charge_detail(invoice_no, person_name, billing_amount) VALUES(?,?,?)",
+                 (red, name, -1000))
+    # 退款（退本年④）：refund_date 在 3月
+    conn.execute("INSERT INTO refund(red_invoice_no, refund_amount, refund_date) VALUES(?,?,?)",
+                 (red, 1000, "2025-03-05"))
+    conn.execute("INSERT INTO staff(name, staff_type) VALUES(?,?)", (name, "合伙"))
+    conn.commit()
+
+
 def main() -> int:
     conn = make_conn()
     st.ensure_defaults(conn)
@@ -111,6 +153,35 @@ def main() -> int:
     check("自定义(归其他) 开启参与+开票净额 收入=inv_total",
           res2["赵自由"]["months"][3]["income"] == 800.0,
           f"got={res2['赵自由']['months'][3]['income']}")
+
+    # ===== 4. P0-2 回归：累计未收须含红冲/退款冲减（口径=Σ(三−收款净额)）=====
+    # 红冲例：1月开1000未收，2月红冲-1000（原票同年）
+    seed_red_scenario(conn, "钱红冲")
+    res_r = ps.build_settlement_conn(conn, 2025)
+    sr = res_r["钱红冲"]
+    check("P0-2 红冲 全年累计未收=0", sr["uncollected_total"] == 0.0, f"got={sr['uncollected_total']}")
+    check("P0-2 红冲 仅1月累计=1000", ps.cumulative_uncollected(sr, 1) == 1000.0,
+          f"got={ps.cumulative_uncollected(sr, 1)}")
+    check("P0-2 红冲 2月累计=0", ps.cumulative_uncollected(sr, 2) == 0.0,
+          f"got={ps.cumulative_uncollected(sr, 2)}")
+    # 红冲月(2月) 三小计含⑧=-1000、收款净额=0 → 该月差额=-1000，已冲减累计
+    check("P0-2 红冲 2月 inv_red_cur=-1000", sr["months"][2]["inv_red_cur"] == -1000.0,
+          f"got={sr['months'][2]['inv_red_cur']}")
+
+    # 退款例：1月开1000未收，2月红冲-1000，3月退款1000（④）
+    seed_refund_scenario(conn, "孙退款")
+    res_f = ps.build_settlement_conn(conn, 2025)
+    sf = res_f["孙退款"]
+    check("P0-2 退款 1月累计=1000", ps.cumulative_uncollected(sf, 1) == 1000.0,
+          f"got={ps.cumulative_uncollected(sf, 1)}")
+    check("P0-2 退款 2月累计=0（红冲抵消）", ps.cumulative_uncollected(sf, 2) == 0.0,
+          f"got={ps.cumulative_uncollected(sf, 2)}")
+    check("P0-2 退款 3月累计=1000（退款④回升）", ps.cumulative_uncollected(sf, 3) == 1000.0,
+          f"got={ps.cumulative_uncollected(sf, 3)}")
+    check("P0-2 退款 3月 rec_refund_cur=-1000", sf["months"][3]["rec_refund_cur"] == -1000.0,
+          f"got={sf['months'][3]['rec_refund_cur']}")
+    check("P0-2 退款 全年累计=1000", sf["uncollected_total"] == 1000.0,
+          f"got={sf['uncollected_total']}")
 
     conn.close()
     print(f"PASS {OK} checks" if not FAILS else "FAILED:\n" + "\n".join(FAILS))

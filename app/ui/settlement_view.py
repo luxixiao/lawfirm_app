@@ -18,7 +18,7 @@ from app.ui.widgets import (
     CaptionLabel, FrozenTableWidget, PrimaryPushButton, PushButton, tab_help_corner,
 )
 
-from app.engine.person_settlement import build_settlement
+from app.engine.person_settlement import build_settlement, cumulative_uncollected
 from app.exporter.person_settlement_exporter import export_all, export_one
 
 MONTH_LABELS = ["1月", "2月", "3月", "4月", "5月", "6月",
@@ -335,10 +335,9 @@ class SettlementView(QWidget):
                         [round(sum(exp.get(t, {}).get(mo_, 0.0) for t in exp), 2) for mo_ in range(1, 13)], False))
         for i, etype in enumerate(self._sorted_expense_types(exp), 1):
             rows.append(row(f"{i}.{etype}", [round(exp[etype].get(mo_, 0.0), 2) for mo_ in range(1, 13)], True))
-        # 修正合计列：未收款金额为存量口径（各月本月未收的累计余额）
-        #   全年 → uncollected_total（本年累计未收）；选 mo 月 → 1~mo 月累计未收
-        uncollected_cum = (st["uncollected_total"] if not mo
-                           else round(sum(st["uncollected_month"][x] for x in range(1, mo + 1)), 2))
+        # 修正合计列：累计未收口径（含红冲/退款冲减）
+        #   全年 → uncollected_total（=cumulative_uncollected(st,0)）；选 mo 月 → 1~mo 月累计未收
+        uncollected_cum = cumulative_uncollected(st, mo)
         for rr in rows:
             if rr and rr[0] == "四、未收款金额":
                 rr[-1] = round(uncollected_cum, 2)

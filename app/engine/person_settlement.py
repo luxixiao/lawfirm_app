@@ -97,7 +97,6 @@ def _new_st(conn, name: str, override: str | None = None) -> Dict:
         "months": {m: _empty_month() for m in MONTHS},
         "uncollected_month": {m: 0.0 for m in MONTHS},
         "uncollected_total": 0.0,
-        "_uncollected_acc": 0.0,
         "expenses": {},
     }
 
@@ -108,6 +107,23 @@ def _empty_month() -> Dict[str, float]:
         "inv_open_received", "inv_open_uncollected", "inv_red_cur", "inv_red_prev",
         "inv_total", "income",
     )}
+
+
+def cumulative_uncollected(st: dict, mo: int = 0) -> float:
+    """累计未收（截止 mo 月，mo=0 表示全年）。
+
+    = Σ_{1..mo}(三·本月开具发票金额 − 收款净额)
+    = Σ(⑦本月未收 + ⑧红冲本年 + ⑨红冲上年 − ②收本年 − ③收上年 − ④退本年 − ⑤退上年)
+    其中 ①本月开收 == ⑥本月开收 互相抵消，故不出现。红冲/退款均冲减累计未收。
+    """
+    months = range(1, 13) if not mo else range(1, mo + 1)
+    return round(sum(
+        (st["months"][m]["inv_open_received"] + st["months"][m]["inv_open_uncollected"]
+         + st["months"][m]["inv_red_cur"] + st["months"][m]["inv_red_prev"])
+        - (st["months"][m]["rec_open_cur"] + st["months"][m]["rec_cur_year"]
+           + st["months"][m]["rec_prev_year"] + st["months"][m]["rec_refund_cur"]
+           + st["months"][m]["rec_refund_prev"])
+        for m in months), 2)
 
 
 def _compute(conn, year: int, person: str | None, person_type: str | None = None) -> Dict:
@@ -218,7 +234,6 @@ def _compute(conn, year: int, person: str | None, person_type: str | None = None
             if uncollected > 0.01:
                 m["inv_open_uncollected"] += uncollected   # ⑦本月未收
                 st["uncollected_month"][inv_month] += uncollected  # 四·本月
-                st["_uncollected_acc"] += uncollected            # 四·合计（存量累计）
             # ①/⑥本月开收 = 本月开票且已收款（含当月收款与以前月份预收款）
             received = round(billing_eff - max(uncollected, 0.0), 2)
             m["rec_open_cur"] += received          # ①
@@ -317,13 +332,10 @@ def _compute(conn, year: int, person: str | None, person_type: str | None = None
                     f"结算恒等式破坏 {name} {year}-{mo:02d}: "
                     f"inv_total={m['inv_total']:g} 但 ⑥+⑦+⑧+⑨={_ident:g}"
                 )
-        # 本年累计未收 = 本年开票净额 − 本年收款净额（模板口径）
-        inv_total = sum(st["months"][mo]["inv_open_received"] + st["months"][mo]["inv_open_uncollected"]
-                        + st["months"][mo]["inv_red_cur"] + st["months"][mo]["inv_red_prev"] for mo in MONTHS)
-        rec_total = sum(st["months"][mo]["rec_open_cur"] + st["months"][mo]["rec_cur_year"]
-                        + st["months"][mo]["rec_prev_year"] + st["months"][mo]["rec_refund_cur"]
-                        + st["months"][mo]["rec_refund_prev"] for mo in MONTHS)
-        st["uncollected_total"] = round(st["_uncollected_acc"], 2)
+        # 本年累计未收 = Σ(三·本月开具发票金额 − 收款净额)
+        #   = Σ(⑦本月未收 + ⑧红冲本年 + ⑨红冲上年 − ②收本年 − ③收上年 − ④退本年 − ⑤退上年)
+        #   其中 ①本月开收 == ⑥本月开收 互相抵消，故不出现。红冲/退款均冲减累计未收。
+        st["uncollected_total"] = cumulative_uncollected(st, 0)
 
     # ============ 费用（六，逐类）============
     exp_rows = conn.execute(
