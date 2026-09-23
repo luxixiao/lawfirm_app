@@ -25,6 +25,7 @@ from typing import Dict, List
 
 from app.db import get_conn
 from app.engine.backfill import HANDLER_WHITELIST, missing_handlers, norm_type, staff_type_of
+from app.engine.collection import over_collection_message
 from app.engine.raw_ledger import deferred_sheet3_invoices
 
 
@@ -304,7 +305,7 @@ def build_backfill(conn, data: Dict) -> Dict:
     }
 
 
-def apply_backfill(conn, payload: Dict) -> None:
+def apply_backfill(conn, payload: Dict) -> str | None:
     """用**传入的 conn** 写入一张补录（**不 commit、不 close**，事务归调用方）。
 
     payload = `build_backfill()` 的返回值。写入顺序与旧 `save_backfill` 一致：
@@ -317,8 +318,28 @@ def apply_backfill(conn, payload: Dict) -> None:
        ValueError —— 绝不把销项票静默改成 manual（B2e 的可诊断报错由此产生）。
     3. **不写 `received_snapshot`**、`invoice.import_batch_id` **留空**（B2f）：
        补录票不属任何导入批次，撤销该批台账不应连带删掉补录。
+
+    超收校验（用户铁律：累计收款不得超开票净额）：**只读预校验**放在所有写操作之前，
+    确保"早返"不污染既有数据（不删 manual、不插新行）。
+    - 新票（库内无该票）：直接比 本次补录收款 ≤ 开票净额；
+    - 已在库票：调 `over_collection_message`（exclude_sources=("manual",)，旧 manual
+      即将被删，故只算 import 既有 + 本次 manual）。
+    返回 None = 已写入；返回文案 = 超收被拦（由导入路径记入 problems / 独立页抛 ValueError）。
     """
     no = payload["invoice_no"]
+    exist = conn.execute("SELECT source, total_amount FROM invoice WHERE invoice_no=?", (no,)).fetchone()
+    # ---- 只读超收预校验（不得先于任何写操作）----
+    incoming = round(sum(float(a) for _n, a, _d in payload.get("collections") or []), 2)
+    if incoming > 0.001:
+        if exist is None:
+            face = float(payload.get("total_amount") or 0.0)
+            if incoming > face + 0.01:
+                return (f"该发票金额 {face:,.2f} 元，本次补录收款 {incoming:,.2f} 元，"
+                        f"已超出开票净额，请核对待补录金额。")
+        else:
+            msg = over_collection_message(conn, no, incoming, exclude_sources=("manual",))
+            if msg:
+                return msg
     # 清旧 manual 数据（允许重复保存 / 编辑；import 数据一律不动）
     conn.execute("DELETE FROM charge_detail WHERE invoice_no=? AND source='manual'", (no,))
     conn.execute("DELETE FROM collection WHERE invoice_no=? AND source='manual'", (no,))
@@ -353,6 +374,7 @@ def apply_backfill(conn, payload: Dict) -> None:
             "VALUES (?,?,?,?,?,?)",
             (no, amt, rdate, nm, "manual", "补录"),
         )
+    return None
 
 
 def save_backfill(data: Dict, editing: bool = False) -> None:
@@ -370,7 +392,10 @@ def save_backfill(data: Dict, editing: bool = False) -> None:
     conn = get_conn()
     try:
         payload = build_backfill(conn, data)
-        apply_backfill(conn, payload)
+        msg = apply_backfill(conn, payload)
+        if msg:
+            conn.rollback()
+            raise ValueError(msg)
         conn.commit()
     except Exception:
         conn.rollback()

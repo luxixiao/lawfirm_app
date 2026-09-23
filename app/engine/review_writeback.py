@@ -131,7 +131,9 @@ def apply_edit(period: str, raw_id: int, patch: Dict, note: str,
             fresh["invoice_no"] = new_no or fresh["invoice_no"]
             inv = _rebuild_inv(fresh, period, receipts)
             batch_id = old.get("import_batch_id") or 0
-            _write_collection_for_invoice(conn, inv, batch_id)
+            msg = _write_collection_for_invoice(conn, inv, batch_id)
+            if msg:
+                raise ValueError(msg)
             if receipts is not None:
                 coll_n = len(receipts)
             else:

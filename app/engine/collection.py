@@ -71,7 +71,8 @@ def _refunded_by_invoice(conn) -> Dict[str, float]:
 
 
 def over_collection_message(conn, invoice_no: str, incoming: float,
-                            exclude_batch_id: Optional[int] = None) -> Optional[str]:
+                            exclude_batch_id: Optional[int] = None,
+                            exclude_sources: Optional[Tuple[str, ...]] = None) -> Optional[str]:
     """新增收款后「累计收款 > 开票总额」→ 返回可读报错；未超额返回 None。
 
     口径（2026-09-17 用户拍板）：一张发票**全额收款后不会再收款**，也不应再出现在
@@ -81,6 +82,8 @@ def over_collection_message(conn, invoice_no: str, incoming: float,
     - 累计口径取**全来源合计**（import + manual）：只算 import 会漏掉跨来源重复计
       （补录留下的 manual 收款与台账新写的 import 收款并存）。
     - exclude_batch_id：覆盖式导入时本批次会"先删后插"，排除它可避免拿自己比自己。
+    - exclude_sources：排除指定来源（如 ("import",) / ("manual",)）的既有收款，
+      用于覆盖式重写路径——被删掉重写的旧行不算入"既有"，避免重复计入误报。
     - 票面 ≤ 0（红字/异常）不作判定。
     """
     inv = conn.execute("SELECT total_amount FROM invoice WHERE invoice_no=?",
@@ -95,6 +98,10 @@ def over_collection_message(conn, invoice_no: str, incoming: float,
     if exclude_batch_id is not None:
         sql += " AND (import_batch_id IS NULL OR import_batch_id<>?)"
         params.append(exclude_batch_id)
+    if exclude_sources:
+        placeholders = ",".join("?" for _ in exclude_sources)
+        sql += f" AND source NOT IN ({placeholders})"
+        params.extend(exclude_sources)
     rows = conn.execute(sql + " ORDER BY receipt_date", params).fetchall()
     got = round(sum(float(r["amount"] or 0.0) for r in rows), 2)
     incoming = float(incoming or 0.0)

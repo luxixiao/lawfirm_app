@@ -198,13 +198,37 @@ def _upsert_received_snapshot(conn, inv: Dict, batch_id: int) -> None:
         print(f"[received_snapshot] upsert failed for {inv.get('invoice_no')}: {e}")
 
 
-def _write_collection_for_invoice(conn, inv: Dict, batch_id: int) -> None:
+def _incoming_collection_for_invoice(inv: Dict) -> float:
+    """计算 `_write_collection_for_invoice` 即将写入的 import 收款合计（与 INSERT 口径逐字一致）。"""
+    if "split_receipts" in inv:
+        return round(sum(float(a) for _n, a, _ym in inv["split_receipts"]), 2)
+    rem = inv.get("remark") or {}
+    if not inv.get("is_red"):
+        if rem.get("pure_date"):
+            return round(float(inv.get("total_amount") or 0.0), 2)
+        return round(sum(float(inv.get("total_amount") if a == 0 else a)
+                         for _ym, a in (rem.get("receipts") or [])), 2)
+    return 0.0  # 红字不写 collection
+
+
+def _write_collection_for_invoice(conn, inv: Dict, batch_id: int) -> str | None:
     """按发票写入收款明细（普通导入路径；split_receipts=问题行逐人收款）。
 
     逻辑与原写库主循环一致，抽出供导入与「导入校验-一键修正」复用。
     写库后同步更新 received_snapshot（方案E）。
+
+    返回 None = 已写入；返回文案 = 超收被拦（用户铁律：累计收款不得超开票净额），
+    未写入，由调用方记入 over_collected / 抛错。
     """
     no = inv["invoice_no"]
+    # 超收校验（覆盖式写：旧的 import 收款本就会被删，故 exclude_sources=("import",)
+    # 只算 manual 既有，再叠加本次即将写入的 import 收款；避免把"将被替换的旧 import"
+    # 与新 import 重复计入造成误报）。
+    incoming = _incoming_collection_for_invoice(inv)
+    if incoming > 0.001:
+        msg = over_collection_message(conn, no, incoming, exclude_sources=("import",))
+        if msg:
+            return msg
     sheet = inv.get("sheet_name") or ""
     row = inv.get("row_no") or 0
     conn.execute("DELETE FROM collection WHERE invoice_no=? AND source='import'", (no,))
@@ -233,6 +257,7 @@ def _write_collection_for_invoice(conn, inv: Dict, batch_id: int) -> None:
                     )
     # 方案E：落/更新收款认定快照，保证与本次写入一致
     _upsert_received_snapshot(conn, inv, batch_id)
+    return None
 
 
 def merge_collection_for_invoice(conn, invoice_no: str, batch_id: int,
@@ -645,7 +670,9 @@ def _write_backfills(conn, backfills: List[Dict], batch_id: int) -> List[Dict]:
             continue
         # create=True：校验 → 写入（build 在 accept() 与 validate 已跑过，这里兜第三次）
         payload = build_backfill(conn, bf)
-        apply_backfill(conn, payload)
+        msg = apply_backfill(conn, payload)
+        if msg:
+            problems.append({"invoice_no": no, "reason": msg})
     return problems
 
 
@@ -906,7 +933,9 @@ def commit_ledger_import(data: Dict, period: str, path: str,
                         "UPDATE charge_detail SET received_override=? WHERE id=?", (ov, r["id"])
                     )
             # 收款明细：先删该发票 import 旧记录（以最新台账为准），再插入
-            _write_collection_for_invoice(conn, inv, batch_id)
+            msg = _write_collection_for_invoice(conn, inv, batch_id)
+            if msg:
+                over_collected.append({"invoice_no": no, "period": period, "message": msg})
 
         # ---- B2b：补录票随台账**同一事务**入库（阶段 3）----
         # 放在普通发票循环**之后**：本批 sheet1/2 若已按 import 建同号票，

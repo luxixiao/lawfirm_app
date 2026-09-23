@@ -42,6 +42,7 @@ EXPECTED_FILES = [
     "tests/test_person_settlement.py",     # T1 新增
     "tests/test_raw_ledger_mirror.py",
     "tests/test_red_consistency.py",
+    "tests/test_over_collection_guard.py",  # 超收守卫落点（_write_collection_for_invoice / apply_backfill）
     "tests/test_review_compare.py",
     "tests/test_review_writeback.py",
     "tests/test_skin_contract.py",
