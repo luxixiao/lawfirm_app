@@ -31,6 +31,7 @@ EXPECTED_FILES = [
     "tests/test_calc_sheet.py",
     "tests/test_conn_hygiene.py",          # P1-2：连接卫生 AST 门禁（规则 A/B）
     "tests/test_deferred_sheet3.py",
+    "tests/test_diag_gating.py",           # P2-1：诊断埋点默认关闭（LAWFIRM_DIAG 门控）
     "tests/test_expense_cat.py",
     "tests/test_expense_alias.py",        # 费用类型别名（同义归一）
     "tests/test_expense_alias_ui.py",     # 别名内联显示 UI（delegate/几何/拖拽保别名）

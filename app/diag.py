@@ -25,13 +25,26 @@ _LOG_PATH: str | None = None
 _watchdog_started = False
 
 
+def enabled() -> bool:
+    """P2-1：诊断埋点开关（环境变量 LAWFIRM_DIAG=1 才开启）。
+
+    notify 覆写是 Qt 事件分发最热路径、250ms 看门狗常驻轮询——默认必须关闭，
+    排查「导入后独立弹窗」复发时设 LAWFIRM_DIAG=1 一键复开。
+    """
+    return os.environ.get("LAWFIRM_DIAG") == "1"
+
+
 def _default_log_path() -> str:
-    here = os.path.dirname(os.path.abspath(__file__))          # .../app
-    proj = os.path.dirname(here)                               # .../lawfirm_app
-    for cand in (os.path.join(proj, "data"), proj):
-        if os.path.isdir(cand):
-            return os.path.join(cand, "app_debug.log")
-    return os.path.join(proj, "app_debug.log")
+    """日志落 %LOCALAPPDATA%/lawfirm_app/logs/（P2-1：移出 Seafile 同步目录）。"""
+    base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+    d = os.path.join(base, "lawfirm_app", "logs")
+    try:
+        os.makedirs(d, exist_ok=True)
+        return os.path.join(d, "app_debug.log")
+    except OSError:
+        here = os.path.dirname(os.path.abspath(__file__))          # .../app
+        proj = os.path.dirname(here)                               # .../lawfirm_app
+        return os.path.join(proj, "app_debug.log")
 
 
 def get_logger() -> logging.Logger:
@@ -51,10 +64,15 @@ def setup_logging() -> str:
         logger.removeHandler(h)
 
     try:
-        fh = logging.FileHandler(path, encoding="utf-8", delay=True)
+        # P2-1：RotatingFileHandler（1MB x 3）替代无限追加，杜绝日志无限增长
+        from logging.handlers import RotatingFileHandler
+        fh = RotatingFileHandler(path, encoding="utf-8", delay=True,
+                                 maxBytes=1024 * 1024, backupCount=3)
     except OSError:
-        fh = logging.FileHandler(os.path.join(os.path.dirname(path) or ".", "app_debug.log"),
-                                 encoding="utf-8", delay=True)
+        from logging.handlers import RotatingFileHandler
+        fh = RotatingFileHandler(
+            os.path.join(os.path.dirname(path) or ".", "app_debug.log"),
+            encoding="utf-8", delay=True, maxBytes=1024 * 1024, backupCount=3)
     fh.setLevel(logging.DEBUG)
     fmt = logging.Formatter(
         "%(asctime)s.%(msecs)03d | %(levelname)s | %(message)s",
@@ -130,8 +148,17 @@ class DiagApplication(QApplication):
 
 
 def make_app(argv) -> QApplication:
-    """构造带诊断的 QApplication（供 main.py 使用）。"""
-    return DiagApplication(list(argv))
+    """构造 QApplication（供 main.py 使用）。
+
+    P2-1：默认返回普通 QApplication（不覆写 notify 热路径）；
+    LAWFIRM_DIAG=1 时才启用带诊断的 DiagApplication。
+    """
+    if enabled():
+        return DiagApplication(list(argv))
+    existing = QApplication.instance()
+    if existing is not None:
+        return existing  # 测试/嵌入场景：单例已存在时复用，避免 shiboken 冲突
+    return QApplication(list(argv))
 
 
 class _WindowWatchdog:
@@ -173,6 +200,8 @@ class _WindowWatchdog:
 
 def install_window_filter(app) -> None:
     global _watchdog_started
+    if not enabled():
+        return  # P2-1：默认关闭 250ms 常驻看门狗
     if _watchdog_started:
         return
     logger = get_logger()
