@@ -42,6 +42,7 @@ ERR_NAME = "#NAME?"
 ERR_CIRC = "#CIRC!"
 ERR_VALUE = "#VALUE!"
 ERR_DIV = "#DIV/0!"
+ERR_NUM = "#NUM!"
 ERR_SYNTAX = "#ERROR!"
 
 
@@ -488,6 +489,10 @@ class Engine:
         if op == "^":
             try:
                 return float(l ** r)
+            except TypeError:
+                # P1-1：Py3 负底数 × 非整数指数返回 complex，float() 抛 TypeError
+                # （Excel 语义：非法幂返回 #NUM!，如 =(-8)^0.5）
+                return ErrVal(ERR_NUM, "负数不能开非整数次幂")
             except (OverflowError, ValueError, ZeroDivisionError):
                 return ErrVal(ERR_VALUE, "幂运算溢出/非法")
         return ErrVal(ERR_SYNTAX, f"未知运算符 {op}")

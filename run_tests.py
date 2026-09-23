@@ -28,6 +28,7 @@ EXPECTED_FILES = [
     "tests/test_calc_eval.py",
     "tests/test_calc_formula.py",
     "tests/test_calc_sheet.py",
+    "tests/test_conn_hygiene.py",          # P1-2：连接卫生 AST 门禁（规则 A/B）
     "tests/test_deferred_sheet3.py",
     "tests/test_expense_cat.py",
     "tests/test_expense_alias.py",        # 费用类型别名（同义归一）

@@ -539,11 +539,14 @@ class CalcSheetView(QWidget):
                 self.table.setVerticalHeaderItem(r, QTableWidgetItem(str(r + 1)))
             if self.sheet_id is not None:
                 ev = CalcEvaluator(cur_sheet_id=self.sheet_id)
-                name = ev.cur_sheet()
-                for r in range(rows):
-                    for c in range(cols):
-                        self.table.setItem(r, c, self._make_item(ev, name, r, c))
-                ev.close()
+                try:
+                    name = ev.cur_sheet()
+                    for r in range(rows):
+                        for c in range(cols):
+                            self.table.setItem(r, c, self._make_item(ev, name, r, c))
+                finally:
+                    # P1-2：_make_item/求值抛异常也必须关闭，close 必须在 finally
+                    ev.close()
         finally:
             self._filling = False
         self._update_stats()

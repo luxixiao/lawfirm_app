@@ -171,6 +171,17 @@ def main() -> int:
     check("classify blank", classify_cell(""), "blank")
     check("classify 负数", classify_cell("-5"), "number")
 
+    # ===== 12. 幂运算：负底数 × 非整数指数（P1-1，Excel 语义 #NUM!）=====
+    check("负底数开平方→#NUM!", run("=(-8)^0.5"), "#NUM!")
+    check("负底数负指数→#NUM!", run("=(-8)^-0.5"), "#NUM!")
+    check("负底数1.5次幂→#NUM!", run("=(-8)^1.5"), "#NUM!")
+    check("负底数整数幂正常", run("=(-8)^2"), 64.0)
+    check("负底数整数幂-3次方", run("=(-2)^-3"), -0.125)
+    check("正底数开方正常", run("=8^0.5"), 2.8284271247461903)
+    check("溢出→#VALUE!", run("=2^10000"), "#VALUE!")
+    check("0^-1→#VALUE!", run("=0^-1"), "#VALUE!")
+    check("单元格负值开方→#NUM!", run("=A1^0.5", cells={("Sheet1", 0, 0): "-8"}), "#NUM!")
+
     print(f"PASS {OK} checks" if not FAILS else "FAILED:\n" + "\n".join(FAILS))
     return 0 if not FAILS else 1
 

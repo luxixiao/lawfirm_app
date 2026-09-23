@@ -36,34 +36,37 @@ def export_sheet(sheet_id: int, path: str, with_formula: bool = True,
     from openpyxl import Workbook   # 延迟导入：无 openpyxl 时纯逻辑仍可用
 
     ev = CalcEvaluator(conn, sheet_id)
-    sheet_name = ev.cur_sheet()
-    content = ev.sheets.get(sheet_name) or {}
-    cells = content.get("cells") or {}
+    try:
+        sheet_name = ev.cur_sheet()
+        content = ev.sheets.get(sheet_name) or {}
+        cells = content.get("cells") or {}
 
-    wb = Workbook()
-    ws = wb.active
-    ws.title = _safe_title(sheet_name)
+        wb = Workbook()
+        ws = wb.active
+        ws.title = _safe_title(sheet_name)
 
-    for key, cell in cells.items():
-        try:
-            r, c = (int(x) for x in key.split(","))
-        except (ValueError, AttributeError):
-            continue
-        raw = cell.get("raw")
-        kind = cell.get("kind") or classify_cell(raw)
-        cellref = ws.cell(row=r + 1, column=c + 1)
+        for key, cell in cells.items():
+            try:
+                r, c = (int(x) for x in key.split(","))
+            except (ValueError, AttributeError):
+                continue
+            raw = cell.get("raw")
+            kind = cell.get("kind") or classify_cell(raw)
+            cellref = ws.cell(row=r + 1, column=c + 1)
 
-        if kind == "formula" and with_formula and should_keep_formula(str(raw)):
-            cellref.value = str(raw)
-            continue
-        v = ev.cell_value(sheet_name, r, c)
-        if isinstance(v, ErrVal):
-            cellref.value = v.code
-        elif isinstance(v, str) and v == "":
-            continue
-        else:
-            cellref.value = v
-    ev.close()
+            if kind == "formula" and with_formula and should_keep_formula(str(raw)):
+                cellref.value = str(raw)
+                continue
+            v = ev.cell_value(sheet_name, r, c)
+            if isinstance(v, ErrVal):
+                cellref.value = v.code
+            elif isinstance(v, str) and v == "":
+                continue
+            else:
+                cellref.value = v
+    finally:
+        # P1-2：求值/写格中途抛异常（如公式错误）也必须关闭连接
+        ev.close()
 
     wb.save(path)
     return path
