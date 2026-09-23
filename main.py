@@ -63,6 +63,12 @@ def main() -> int:
 
     # backfill=False：收款认定快照补齐延后到首屏渲染之后，避免阻塞双击启动
     init_db(backfill=False)
+    # P2-3：快照孤儿目录清扫 + 旧同步目录迁移（失败绝不影响启动）
+    try:
+        from app.system.snapshot import sweep_orphans
+        sweep_orphans()
+    except Exception:  # noqa: BLE001
+        pass
     app = make_app(sys.argv)
     app.setWindowIcon(QIcon(resource_path("app.ico")))
     app.setApplicationName("律所开票收款统计")

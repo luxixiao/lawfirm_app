@@ -542,9 +542,20 @@ def _insert_raw_ledger(conn, item: dict, batch_id: int, kind: str) -> None:
 # ---------------------------------------------------------------------------
 # 销项文档
 # ---------------------------------------------------------------------------
-def _auto_snapshot() -> None:
-    """导入前自动快照（防呆）"""
+def _auto_snapshot(batch_type: str, period: str) -> None:
+    """导入前自动快照（防呆）—— P2-3：仅当同 batch_type+period 已有 active 批次
+    （即本次导入真的会覆盖/回滚旧数据）时才做；首导不产生快照，避免每次导入
+    都复制整库进同步目录。"""
     try:
+        conn = get_conn()
+        try:
+            row = conn.execute(
+                "SELECT id FROM import_batch WHERE batch_type=? AND period=? "
+                "AND status='active' LIMIT 1", (batch_type, period)).fetchone()
+        finally:
+            conn.close()
+        if row is None:
+            return
         from app.system.snapshot import save_snapshot
         save_snapshot("导入前自动快照", "自动", auto=True)
     except Exception:  # noqa: BLE001 快照失败不阻塞导入
@@ -552,7 +563,7 @@ def _auto_snapshot() -> None:
 
 
 def import_invoice_file(path: str, period: str) -> Dict:
-    _auto_snapshot()
+    _auto_snapshot("invoice", period)
     invoices = parse_invoice_file(path, period)
     raw_rows, raw_warnings = parse_invoice_workbook(path, period)
     conn = get_conn()
@@ -932,7 +943,7 @@ def commit_ledger_import(data: Dict, period: str, path: str,
     if backfills is None:
         backfills = data.get("backfills") or []
     split_deferred(data, period, in_library)
-    _auto_snapshot()
+    _auto_snapshot("ledger", period)
     conn = get_conn()
     try:
         # ---- 校验兜底（确认对话框已就地校验过，这里再拦一次）----
@@ -1175,7 +1186,7 @@ def _compute_reimport_diff(conn, period: str, parsed_rows: list) -> "ReimportDif
 
 
 def import_expense_file(path: str, period: str, on_reimport_diff=None) -> Dict:
-    _auto_snapshot()
+    _auto_snapshot("expense", period)
     items = parse_expense_file(path, period)
     # P1-4：非整数文本序号（"3.0"/"3月"）从「崩溃」改为按无序号处理 + 显式警告
     warnings = [
@@ -1274,7 +1285,7 @@ def import_salary_file(path: str, period: str) -> Dict:
     账期 period 由调用方从**文件名**解析（如 25.1 -> 2025-01）；
     表内中文年月一律不参与（各 sheet 期间互不相同且与文件名不一致）。
     """
-    _auto_snapshot()
+    _auto_snapshot("salary", period)
     data = parse_salary_file(path, period)
     if not data["items"]:
         raise ImportError_("未能从该文件解析出工资数据行，请确认选择的是工资表文件")

@@ -1,13 +1,24 @@
 """快照：保存 / 恢复 / 删除（手动 + 导入前自动）"""
 from __future__ import annotations
 
+import os
 import shutil
 from datetime import datetime
 from pathlib import Path
 
 from app.db import DB_PATH, checkpoint, get_conn
 
-SNAP_ROOT = Path(__file__).resolve().parent.parent.parent / "data" / "snapshots"
+
+def _snap_root() -> Path:
+    """P2-3：快照根迁到 %LOCALAPPDATA%/lawfirm_app/snapshots（本机防呆用途，
+    无跨机价值，不再进 Seafile 同步目录制造同步风暴）。"""
+    base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+    return Path(base) / "lawfirm_app" / "snapshots"
+
+
+SNAP_ROOT = _snap_root()
+# 旧位置（项目 data/ 内，Seafile 同步目录）——sweep_orphans 时迁移/清理
+LEGACY_ROOT = Path(__file__).resolve().parent.parent.parent / "data" / "snapshots"
 MAX_AUTO = 20  # 自动快照最多保留数量
 
 
@@ -96,3 +107,74 @@ def delete_snapshot(snap_id: int) -> None:
         conn.commit()
     finally:
         conn.close()
+
+
+def sweep_orphans() -> int:
+    """P2-3：清理「snapshot 表未引用」的快照目录（表/盘失同步的孤儿）。
+
+    - 新旧两个根都扫：新根（LOCALAPPDATA）中未引用目录直接删；旧根（data/snapshots，
+      Seafile 同步目录）中未引用目录直接删；
+    - 旧根中**被引用**的目录迁移到新根，并 UPDATE snapshot.db_backup 指向新位置
+      （restore_snapshot 仍可用）；
+    - 返回删除的目录数。任一目录删除/移动失败只跳过不抛错（下次启动再试）。
+    """
+    try:
+        conn = get_conn()
+        try:
+            rows = conn.execute("SELECT id, db_backup FROM snapshot").fetchall()
+        finally:
+            conn.close()
+    except Exception:  # noqa: BLE001 - 清扫失败绝不影响启动/导入
+        return 0
+    referenced: set = set()
+    for r in rows:
+        p = (r["db_backup"] or "").strip()
+        if p:
+            referenced.add(Path(p).parent.name)
+
+    removed = 0
+    for root in (SNAP_ROOT, LEGACY_ROOT):
+        try:
+            if not root.is_dir():
+                continue
+            for d in list(root.iterdir()):
+                if not d.is_dir() or d.name in referenced:
+                    continue
+                shutil.rmtree(d, ignore_errors=True)
+                if not d.exists():
+                    removed += 1
+        except Exception:  # noqa: BLE001
+            continue
+
+    # 迁移旧根中被引用的目录 → 新根，并更新 db_backup
+    try:
+        moved: list = []
+        if LEGACY_ROOT.is_dir():
+            for d in list(LEGACY_ROOT.iterdir()):
+                if not d.is_dir() or d.name not in referenced:
+                    continue
+                dest = SNAP_ROOT / d.name
+                if dest.exists():
+                    continue
+                try:
+                    SNAP_ROOT.mkdir(parents=True, exist_ok=True)
+                    shutil.move(str(d), str(dest))
+                    moved.append((d, dest))
+                except Exception:  # noqa: BLE001 - 文件被占用等，留原位下次再试
+                    continue
+        if moved:
+            conn = get_conn()
+            try:
+                for src, dest in moved:
+                    old_prefix = str(src)
+                    for r in rows:
+                        bp = (r["db_backup"] or "")
+                        if bp.startswith(old_prefix):
+                            conn.execute("UPDATE snapshot SET db_backup=? WHERE id=?",
+                                         (str(dest / Path(bp).name), r["id"]))
+                conn.commit()
+            finally:
+                conn.close()
+    except Exception:  # noqa: BLE001
+        pass
+    return removed
