@@ -144,14 +144,25 @@ def delete_rows(ids: Iterable[int], note: str = "") -> int:
         n = 0
         for rid in ids:
             row = conn.execute(
-                "SELECT invoice_no, synced FROM raw_invoice WHERE id=?", (rid,)).fetchone()
+                "SELECT invoice_no, synced, import_batch_id FROM raw_invoice WHERE id=?", (rid,)).fetchone()
             if row is None:
                 continue
             inv_no = row["invoice_no"]
+            ibid = row["import_batch_id"]
             # 级联：若该原始行已同步过（invoice 中存在此发票号），同时删除 invoice 及关联数据
             if inv_no and conn.execute("SELECT 1 FROM invoice WHERE invoice_no=?", (inv_no,)).fetchone():
-                conn.execute("DELETE FROM charge_detail WHERE invoice_no=?", (inv_no,))
-                conn.execute("DELETE FROM collection WHERE invoice_no=?", (inv_no,))
+                # charge_detail / collection 只删本批 import 数据，保护 manual 与他批
+                # import 收款（P0-3 同类根因：unscoped DELETE 会抹历史）。
+                if ibid is not None:
+                    conn.execute("DELETE FROM charge_detail WHERE invoice_no=? AND import_batch_id=?", (inv_no, ibid))
+                    conn.execute(
+                        "DELETE FROM collection WHERE invoice_no=? AND source='import' AND import_batch_id=?",
+                        (inv_no, ibid))
+                else:
+                    # 该 raw 行无 import_batch_id（手动建）：charge_detail 按 NULL 批限定，
+                    # collection 至少限定 source='import' 保护 manual 收款
+                    conn.execute("DELETE FROM charge_detail WHERE invoice_no=? AND import_batch_id IS NULL", (inv_no,))
+                    conn.execute("DELETE FROM collection WHERE invoice_no=? AND source='import'", (inv_no,))
                 conn.execute("DELETE FROM invoice WHERE invoice_no=?", (inv_no,))
                 log_change(conn, "invoice", inv_no, "delete", inv_no, "",
                            f"删除发票台账原始行 #{rid} 级联删除 {note}".strip())
