@@ -2,10 +2,12 @@
 
 运行：python tests/test_over_collection_guard.py
 
-覆盖两条此前缺失的主路径（2026-09-23 补上）：
+覆盖两条此前缺失的主路径（2026-09-23 补上；同日按 P0-3 方案 A 更新口径）：
 - `importer._write_collection_for_invoice`（主台账导入 sheet1/2 本期发票）：
-  覆盖式写 import 收款，旧 import 行会被删；故守卫用 exclude_sources=("import",)
-  只算 manual 既有 + 本次 incoming，避免把"将被替换的旧 import"重复计入误报。
+  按 import_batch_id **追加**写本批 import 收款 —— 只删本批旧行，他批 import 与 manual
+  均属历史、一行不删（P0-3 铁律）；故守卫用 exclude_batch_id=<本批> 只排除「即将重插的
+  自己」，他批 import + manual **全部计入**累计，真超收必须拦下（不再静默替换历史）。
+  ⚠️ 同账期重导入不会重复计数：旧批行已由 `rollback_batch` 在写库前按批清掉。
 - `backfill_module.apply_backfill`（补录手动写 collection）：只读预校验放在所有写操作之前，
   确保"早返"不污染既有数据；新票直接比 incoming≤face，已在库票走 over_collection_message。
 
@@ -115,13 +117,26 @@ def main():
           f"msg={msg!r} sum={coll_sum(c, 'INV2')}")
     c.close()
 
-    # 3) exclude_sources 避免误报（既有 import 500 即将被替换 + 本次 1000 → 不应误拦）
+    # 3) 他批 import 属历史：必须计入累计、且一行不删（A 方案按批追加，不再整票替换）
+    #    既有他批 500 + 本次 1000 = 1500 > 1000 → 真超收，应拦下并保留历史 500。
     c = build_conn()
     add_invoice(c, "INV3", 1000.0)
     add_collection(c, "INV3", 500.0, source="import", import_batch_id=99)
     msg = _write_collection_for_invoice(c, _inv_pure("INV3", 1000.0), 1)
-    check("3) 旧 import 被替换不误报（exclude_sources）", msg is None and coll_sum(c, "INV3") == 1000.0,
+    check("3) 他批 import 计入且受保护（真超收被拦、历史不删）",
+          msg is not None and coll_sum(c, "INV3") == 500.0,
           f"msg={msg!r} sum={coll_sum(c, 'INV3')}")
+    c.close()
+
+    # 3b) 同批覆盖：本批既有行「先删后插」，exclude_batch_id 排除自己 → 不误报
+    #     （同账期重导入的真实形态：旧批行已由 rollback_batch 清掉，此处等价「同批重跑」）
+    c = build_conn()
+    add_invoice(c, "INV3B", 1000.0)
+    add_collection(c, "INV3B", 500.0, source="import", import_batch_id=1)
+    msg = _write_collection_for_invoice(c, _inv_pure("INV3B", 1000.0), 1)
+    check("3b) 同批先删后插不误报（exclude_batch_id 排自己）",
+          msg is None and coll_sum(c, "INV3B") == 1000.0,
+          f"msg={msg!r} sum={coll_sum(c, 'INV3B')}")
     c.close()
 
     # 4) 分月超收被拦（600+600 > 1000）
@@ -198,7 +213,9 @@ def main():
     print(f"\n{OK}/{OK + len(FAILS)} passed")
     if FAILS:
         print("FAILED: " + ", ".join(FAILS))
+    # 门禁（run_tests.py）按退出码判定成败：不返回非 0 的话失败会被静默放过。
+    return 1 if FAILS else 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

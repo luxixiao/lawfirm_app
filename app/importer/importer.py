@@ -298,7 +298,7 @@ def _rewrite_collection_for_invoice(conn, inv: Dict, batch_id: int) -> str | Non
         if not inv["is_red"]:
             if rem["pure_date"]:
                 conn.execute(
-                    "INSERT INTO collection (invoice_no, amount, receipt_date, source, import_batch_id, src_sheet, src_row) VALUES (?,?,?,?,?,?,?,?)",
+                    "INSERT INTO collection (invoice_no, amount, receipt_date, source, import_batch_id, src_sheet, src_row) VALUES (?,?,?,?,?,?,?)",
                     (no, inv["total_amount"], rem["pure_date"], "import", batch_id, sheet, row),
                 )
             else:
@@ -306,7 +306,7 @@ def _rewrite_collection_for_invoice(conn, inv: Dict, batch_id: int) -> str | Non
                     if amt == 0:
                         amt = inv["total_amount"]
                     conn.execute(
-                        "INSERT INTO collection (invoice_no, amount, receipt_date, source, import_batch_id, src_sheet, src_row) VALUES (?,?,?,?,?,?,?,?)",
+                        "INSERT INTO collection (invoice_no, amount, receipt_date, source, import_batch_id, src_sheet, src_row) VALUES (?,?,?,?,?,?,?)",
                         (no, amt, ym, "import", batch_id, sheet, row),
                     )
     _upsert_received_snapshot(conn, inv, batch_id)

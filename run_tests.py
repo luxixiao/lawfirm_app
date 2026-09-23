@@ -38,6 +38,7 @@ EXPECTED_FILES = [
     "tests/test_expense_edit.py",          # T4 新增（详情页保存内核）
     "tests/test_header_norm.py",
     "tests/test_import_confirm.py",
+    "tests/test_import_delete_scope.py",  # P0-3：导入/撤销 DELETE 作用域（方案 A/B + G2）
     "tests/test_import_fix_log.py",
     "tests/test_person_settlement.py",     # T1 新增
     "tests/test_raw_ledger_mirror.py",
