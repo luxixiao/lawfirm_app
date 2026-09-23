@@ -183,6 +183,72 @@ def main() -> int:
     check("P0-2 退款 全年累计=1000", sf["uncollected_total"] == 1000.0,
           f"got={sf['uncollected_total']}")
 
+    # ===== 5. P1-5：脏日期不崩、不错桶、不静默（warnings 显式上报）=====
+    # 5a _ym_parts 行为矩阵（正常路径与旧 _month_of/_year_of 逐值一致）
+    y, m = ps._ym_parts("2025-09-01")
+    check("P1-5 完整日期", (y, m) == (2025, 9), f"got=({y},{m})")
+    y, m = ps._ym_parts("2025-09")
+    check("P1-5 年月粒度", (y, m) == (2025, 9), f"got=({y},{m})")
+    y, m = ps._ym_parts("2025/09/01")
+    check("P1-5 斜杠归一", (y, m) == (2025, 9), f"got=({y},{m})")
+    y, m = ps._ym_parts("2025.9")
+    check("P1-5 点分归一", (y, m) == (2025, 9), f"got=({y},{m})")
+    y, m = ps._ym_parts("2025-1")
+    check("P1-5 单数月", (y, m) == (2025, 1), f"got=({y},{m})")
+    y, m = ps._ym_parts("")
+    check("P1-5 空串→(0,0)", (y, m) == (0, 0), f"got=({y},{m})")
+    y, m = ps._ym_parts("20250105")
+    check("P1-5 紧凑串→(0,0)", (y, m) == (0, 0), f"got=({y},{m})")
+    y, m = ps._ym_parts("2025-13-99")
+    check("P1-5 月越界→(0,0)", (y, m) == (0, 0), f"got=({y},{m})")
+    y, m = ps._ym_parts("abc")
+    check("P1-5 乱串→(0,0)", (y, m) == (0, 0), f"got=({y},{m})")
+    check("P1-5 旧 _month_of 正常路径不变", ps._month_of("2025-09-01") == 9)
+    check("P1-5 旧 _year_of 正常路径不变", ps._year_of("2025-09-01") == 2025)
+
+    # 5b 端到端：脏 invoice_date / receipt_date / period 不崩且必须产生警告
+    conn2 = make_conn()
+    st.ensure_defaults(conn2)
+    # 脏开票日期发票（旧代码 _month_of 直接 IndexError）
+    conn2.execute("INSERT INTO invoice(invoice_no, invoice_date, total_amount) VALUES('INV_BAD','20250105',1000)")
+    conn2.execute("INSERT INTO charge_detail(invoice_no, person_name, billing_amount) VALUES('INV_BAD','周脏日',1000)")
+    # 正常票 + 脏收款日期收款（旧代码 _month_of IndexError）
+    conn2.execute("INSERT INTO invoice(invoice_no, invoice_date, total_amount) VALUES('INV_OK','2025-02-01',500)")
+    conn2.execute("INSERT INTO charge_detail(invoice_no, person_name, billing_amount) VALUES('INV_OK','周脏日',500)")
+    conn2.execute("INSERT INTO collection(invoice_no, receipt_date, amount, person_name) VALUES('INV_OK','20250301',300,'周脏日')")
+    # 脏账期费用行（旧代码 KeyError months[0]）+ 正常费用行
+    conn2.execute(
+        "INSERT INTO expense_ledger(period, exp_date, name, actual_handler, expense_amount, "
+        "tax_amount, book_amount, expense_type, source) "
+        "VALUES('202501','2025-01-05','打车','周脏日',50,0,50,'交通费','manual')")
+    conn2.execute(
+        "INSERT INTO expense_ledger(period, exp_date, name, actual_handler, expense_amount, "
+        "tax_amount, book_amount, expense_type, source) "
+        "VALUES('2025-01','2025-01-06','加油','周脏日',80,0,80,'交通费','manual')")
+    conn2.commit()
+    warns: list = []
+    res = ps.build_settlement_conn(conn2, 2025, warnings=warns)
+    joined = " | ".join(warns)
+    check("P1-5 脏日期全程不崩", True)
+    check("P1-5 至少 3 条警告", len(warns) >= 3, f"warns={warns}")
+    check("P1-5 警告含发票号 INV_BAD", "INV_BAD" in joined, joined)
+    check("P1-5 警告含原始值 20250105", "20250105" in joined, joined)
+    check("P1-5 警告含原始值 20250301", "20250301" in joined, joined)
+    check("P1-5 警告含脏账期 202501", "202501」" in joined or "202501'" in joined or "202501」" in joined or "202501(" in joined or "账期" in joined, joined)
+    sdt = res.get("周脏日")
+    check("P1-5 正常票入桶(2月开票500)", sdt is not None and sdt["months"][2]["inv_total"] == 500.0,
+          f"got={None if sdt is None else sdt['months'][2]['inv_total']}")
+    check("P1-5 脏收款不入月度统计(3月收本年=0)", sdt["months"][3]["rec_cur_year"] == 0.0,
+          f"got={sdt['months'][3]['rec_cur_year']}")
+    check("P1-5 脏收款按期外预收扣应收池→未收200（既有口径）",
+          sdt["months"][2]["inv_open_uncollected"] == 200.0,
+          f"got={sdt['months'][2]['inv_open_uncollected']}")
+    check("P1-5 脏票不入桶(1月开票0)", sdt["months"][1]["inv_total"] == 0.0,
+          f"got={sdt['months'][1]['inv_total']}")
+    check("P1-5 正常费用入桶(1月交通费80)", sdt["expenses"].get("交通费", {}).get(1) == 80.0,
+          f"got={sdt['expenses'].get('交通费')}")
+    conn2.close()
+
     conn.close()
     print(f"PASS {OK} checks" if not FAILS else "FAILED:\n" + "\n".join(FAILS))
     return 0 if not FAILS else 1

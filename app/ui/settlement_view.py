@@ -112,6 +112,12 @@ class SettlementView(QWidget):
         bar.addWidget(self.person_type)
         bar.addStretch()
         lay.addLayout(bar)
+
+        # P1-5：脏日期警告条（结算数据存在无法解析日期的记录时显示，平时隐藏）
+        self.lbl_warn = CaptionLabel("")
+        self.lbl_warn.setWordWrap(True)
+        self.lbl_warn.setVisible(False)
+        lay.addWidget(self.lbl_warn)
         # 下拉列表显式样式：白底黑字 + 选中高亮（避免 qfluentwidgets 主题影响不可见）
         COMBO_QSS = _combo_qss(full=True)
         for c in (self.year, self.person, self.month, self.person_type):
@@ -258,10 +264,19 @@ class SettlementView(QWidget):
         if not name:
             self.table.setRowCount(0)
             self.lbl_summary.setText("请选择经办人")
+            self.lbl_warn.setVisible(False)
             return
         self._sync_type_options(name)
         ptype = self.person_type.currentData()
-        data = build_settlement(year, person=name, person_type=ptype)
+        warns: list = []
+        data = build_settlement(year, person=name, person_type=ptype, warnings=warns)
+        # P1-5：脏日期警告条（不静默——错值不入结算，但必须可见）
+        if warns:
+            head = "；".join(warns[:5]) + ("…" if len(warns) > 5 else "")
+            self.lbl_warn.setText(f"⚠ 有 {len(warns)} 条记录日期无法解析、未计入结算：{head}")
+            self.lbl_warn.setVisible(True)
+        else:
+            self.lbl_warn.setVisible(False)
         st = data.get(name)
         if st is None:
             self.table.setRowCount(0)

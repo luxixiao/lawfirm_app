@@ -35,12 +35,56 @@ def _ym(year: int, month: int) -> str:
     return f"{year:04d}-{month:02d}"
 
 
+def _ym_parts(ym) -> Tuple[int, int]:
+    """健壮解析日期/账期串 → (year, month)（P1-5）。
+
+    - 成功：返回合法 (年, 1..12月)；正常路径与旧 _year_of/_month_of 返回值逐值一致；
+    - 失败/越界/空：返回 (0, 0)（两者同生共死：要么都合法，要么都是 0）。
+    先走旧实现的快路径（split("-")），失败再经 normalize_date 归一
+    （2025/09/01、2025.9、中文年月日、Excel 序列号…），仍失败才判 (0, 0)。
+    """
+    if not ym:
+        return 0, 0
+    s = str(ym).strip()
+    if not s:
+        return 0, 0
+    try:
+        parts = s.split("-")
+        if len(parts) >= 2:
+            y, mo = int(parts[0]), int(parts[1])
+            if y > 0 and 1 <= mo <= 12:
+                return y, mo
+    except (ValueError, IndexError):
+        pass
+    try:
+        from app.importer.date_utils import normalize_date  # 延迟导入避免环
+        nd = normalize_date(s)
+    except Exception:  # noqa: BLE001  彻底解析不了 → (0,0)，由调用方记警告
+        return 0, 0
+    if nd:
+        try:
+            y, mo = int(str(nd)[:4]), int(str(nd)[5:7])
+            if y > 0 and 1 <= mo <= 12:
+                return y, mo
+        except ValueError:
+            pass
+    return 0, 0
+
+
+def _warn(warnings, msg: str) -> None:
+    """P1-5：脏日期必须可见——警告列表由结算页显示，绝不允许静默跳过。"""
+    if warnings is not None:
+        warnings.append(msg)
+
+
 def _month_of(ym: str) -> int:
-    return int(ym.split("-")[1]) if ym else 0
+    """月份（1..12）；空/无法解析/越界 → 0（P1-5 健壮化，正常路径不变）。"""
+    return _ym_parts(ym)[1]
 
 
 def _year_of(ym: str) -> int:
-    return int(ym.split("-")[0]) if ym else 0
+    """年份；空/无法解析/越界 → 0（P1-5 健壮化，正常路径不变，不再出现静默 20250105）。"""
+    return _ym_parts(ym)[0]
 
 
 def _staff_type(conn, name: str, override: str | None = None) -> str:
@@ -64,10 +108,13 @@ def _staff_type_orig(conn, name: str) -> str:
     return "其他"
 
 
-def build_settlement(year: int, person: str | None = None, person_type: str | None = None) -> Dict:
+def build_settlement(year: int, person: str | None = None, person_type: str | None = None,
+                     warnings: List[str] | None = None) -> Dict:
     """计算个人结算总表数据
 
     person_type: 按身份过滤（合伙/聘用/兼职，None=全部=汇总口径）
+    warnings: 可选列表（原地追加）。P1-5：日期无法解析的记录不计入结算，但
+              逐条写入此处（含发票号/人员/原始值），由结算页显示，不静默。
     Returns:
         {person: {
             'staff_type': 合伙|聘用|兼职|其他,
@@ -79,15 +126,16 @@ def build_settlement(year: int, person: str | None = None, person_type: str | No
     """
     conn = get_conn()
     try:
-        return _compute(conn, year, person, person_type)
+        return _compute(conn, year, person, person_type, warnings)
     finally:
         conn.close()
 
 
 def build_settlement_conn(conn, year: int, person: str | None = None,
-                          person_type: str | None = None) -> Dict:
+                          person_type: str | None = None,
+                          warnings: List[str] | None = None) -> Dict:
     """同 build_settlement，但使用调用方提供的连接（供分成计算引擎等复用口径，不自行开连接）。"""
-    return _compute(conn, year, person, person_type)
+    return _compute(conn, year, person, person_type, warnings)
 
 
 def _new_st(conn, name: str, override: str | None = None) -> Dict:
@@ -126,7 +174,8 @@ def cumulative_uncollected(st: dict, mo: int = 0) -> float:
         for m in months), 2)
 
 
-def _compute(conn, year: int, person: str | None, person_type: str | None = None) -> Dict:
+def _compute(conn, year: int, person: str | None, person_type: str | None = None,
+             warnings: List[str] | None = None) -> Dict:
     result: Dict[str, Dict] = {}
     person_filter = (person,) if person else None
     pt_filter = (" AND person_type=?" if person_type else "")
@@ -183,7 +232,12 @@ def _compute(conn, year: int, person: str | None, person_type: str | None = None
 
     for inv in invoices:
         no = inv["invoice_no"]
-        inv_year, inv_month = _year_of(inv["invoice_date"]), _month_of(inv["invoice_date"])
+        inv_year, inv_month = _ym_parts(inv["invoice_date"])
+        if inv_year == 0 and inv["invoice_date"]:
+            # P1-5：脏开票日期（旧代码在此 IndexError）→ 显式警告 + 整票跳过，不静默
+            _warn(warnings, f"发票 {no} 开票日期无法解析：「{inv['invoice_date']}」，"
+                            f"该票本年不计入开票/收款统计")
+            continue
         cds = cds_by_inv.get(no, [])
         if not cds:
             continue
@@ -200,9 +254,13 @@ def _compute(conn, year: int, person: str | None, person_type: str | None = None
             else:
                 # 未归因（历史/普通导入）：按开票份额比例分摊兜底
                 got = allocate_receipt(remaining, amount)
-            rec_year, rec_month = _year_of(rec_date), _month_of(rec_date)
+            rec_year, rec_month = _ym_parts(rec_date)
+            if rec_year == 0 and rec_date:
+                # P1-5：脏收款日期（旧代码 IndexError）→ 显式警告；空日期维持旧版静默跳过
+                _warn(warnings, f"发票 {no} 收款日期无法解析：「{rec_date}」"
+                                f"（金额 {amount}，经办 {pname or '未归因'}），本笔不计入")
             if rec_year != year:
-                continue  # 只统计本年收款
+                continue  # 只统计本年收款（含解析失败/空日期）
             for name, val in got.items():
                 if val == 0:
                     continue
@@ -243,7 +301,12 @@ def _compute(conn, year: int, person: str | None, person_type: str | None = None
 
     # ============ 红字发票（三⑧⑨）============
     for red in reds:
-        red_year, red_month = _year_of(red["invoice_date"]), _month_of(red["invoice_date"])
+        red_year, red_month = _ym_parts(red["invoice_date"])
+        if red_year == 0 and red["invoice_date"]:
+            # P1-5：脏红冲日期（旧代码 IndexError）→ 显式警告 + 跳过
+            _warn(warnings, f"红字发票 {red['invoice_no']} 日期无法解析：「{red['invoice_date']}」，"
+                            f"本年不计入红冲")
+            continue
         if red_year != year:
             continue  # 只统计本年红冲
         cds = conn.execute(
@@ -257,8 +320,13 @@ def _compute(conn, year: int, person: str | None, person_type: str | None = None
         if red["orig_invoice_no"]:
             oi = conn.execute("SELECT invoice_date FROM invoice WHERE invoice_no=?", (red["orig_invoice_no"],)).fetchone()
             if oi:
-                orig_year = _year_of(oi["invoice_date"])
-                orig_month = _month_of(oi["invoice_date"])
+                oy, om = _ym_parts(oi["invoice_date"])
+                if oy == 0 and oi["invoice_date"]:
+                    # P1-5：脏原票日期 → 警告并按「原票缺失」既有口径归本年红冲
+                    _warn(warnings, f"红字发票 {red['invoice_no']} 原票 {red['orig_invoice_no']} "
+                                    f"日期无法解析：「{oi['invoice_date']}」，按原票缺失归本年红冲")
+                else:
+                    orig_year, orig_month = oy, om
         for cd in cds:
             name = cd["person_name"]
             st = result.setdefault(name, _new_st(conn, name, person_type))
@@ -286,17 +354,26 @@ def _compute(conn, year: int, person: str | None, person_type: str | None = None
         if not cds:
             continue
         total_abs = sum(abs(cd["billing_amount"]) for cd in cds) or 1.0
-        refund_year = _year_of(ref["refund_date"])
+        refund_year, refund_month = _ym_parts(ref["refund_date"])
+        if refund_year == 0 and ref["refund_date"]:
+            # P1-5：脏退款日期 → 显式警告
+            _warn(warnings, f"退款（红字 {red_no}，金额 {ref['refund_amount']}）"
+                            f"日期无法解析：「{ref['refund_date']}」，本笔不计入")
         if refund_year != year:
-            continue  # 只统计本年退款
-        refund_month = _month_of(ref["refund_date"])
+            continue  # 只统计本年退款（含解析失败/空日期）
         # 原票年份
         ri = conn.execute("SELECT orig_invoice_no FROM invoice WHERE invoice_no=?", (red_no,)).fetchone()
         orig_year = None
         if ri and ri["orig_invoice_no"]:
             oi = conn.execute("SELECT invoice_date FROM invoice WHERE invoice_no=?", (ri["orig_invoice_no"],)).fetchone()
             if oi:
-                orig_year = _year_of(oi["invoice_date"])
+                oy, om = _ym_parts(oi["invoice_date"])
+                if oy == 0 and oi["invoice_date"]:
+                    # P1-5：脏原票日期 → 警告并按「原票缺失」既有口径归本年退款
+                    _warn(warnings, f"退款原票 {ri['orig_invoice_no']} 日期无法解析：「{oi['invoice_date']}」，"
+                                    f"按原票缺失归本年退款")
+                else:
+                    orig_year = oy
         for cd in cds:
             name = cd["person_name"]
             if person and name != person:
@@ -351,8 +428,13 @@ def _compute(conn, year: int, person: str | None, person_type: str | None = None
         name = er["actual_handler"]
         if not name:
             continue
-        exp_month = _month_of(er["period"])
-        if er["period"] and _year_of(er["period"]) != year:
+        exp_year, exp_month = _ym_parts(er["period"])
+        if exp_year == 0:
+            # P1-5：空/脏账期（旧代码 KeyError months[0]）→ 显式警告 + 跳过，不静默
+            _warn(warnings, f"费用台账「{name}」账期无法解析：「{er['period']}」"
+                            f"（{er['expense_type']} {er['expense_amount'] or 0}），本行不计入费用")
+            continue
+        if exp_year != year:
             continue
         etype = er["expense_type"] or "其他费用"
         st = result.setdefault(name, {"staff_type": _staff_type(conn, name),
