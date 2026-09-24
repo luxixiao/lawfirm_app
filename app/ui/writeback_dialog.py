@@ -141,6 +141,11 @@ class WritebackDialog(QDialog):
                 amt_f = float(amt.replace(",", "")) if amt else 0.0
             except ValueError:
                 raise ValueError(f"第 {r + 1} 行收款金额无法解析：{amt!r}")
+            if amt_f < 0:
+                # P3-2：collection 表不允许负数（红冲=负字发票、退款=独立退款台账，
+                # 都不写 collection）。负数流入结算引擎会虚增其后未归因收款的分摊。
+                raise ValueError(f"第 {r + 1} 行收款金额不允许为负数：{amt!r}"
+                                 "（红冲/退款请在「退款台账」处理）")
             if not ym:
                 raise ValueError(f"第 {r + 1} 行请填写收款年月（YYYY-MM）")
             out.append((person, amt_f, ym[:7]))

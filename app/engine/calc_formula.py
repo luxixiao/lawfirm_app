@@ -391,7 +391,12 @@ def _to_number(v):
 
 
 class Engine:
-    """求值器：绑定一个网格 provider，带请求级缓存与循环引用检测。"""
+    """求值器：绑定一个网格 provider，带请求级缓存与循环引用检测。
+
+    注意（P3-6 加固注记）：`_cache` 的生命周期 = 实例 = 单次求值批次
+    （UI 每次重算 `_fill` 都新建 CalcEvaluator）。勿跨编辑批次复用同一实例——
+    缓存不随网格数据失效，复用会拿到旧值（含被永久记住的 ERR_CIRC）。
+    """
 
     def __init__(self, provider: CellProvider, cur_sheet: str):
         self.provider = provider

@@ -249,6 +249,38 @@ def main() -> int:
           f"got={sdt['expenses'].get('交通费')}")
     conn2.close()
 
+    # ===== P3-2 负金额收款：只冲减应收池、不虚增其后分摊（QA 探针场景 D）=====
+    conn3 = make_conn()
+    conn3.execute("INSERT INTO invoice(invoice_no, invoice_date, total_amount) "
+                  "VALUES('INV_NEG','2025-03-01',1000)")
+    conn3.execute("INSERT INTO charge_detail(invoice_no, person_name, billing_amount) "
+                  "VALUES('INV_NEG','张三',600)")
+    conn3.execute("INSERT INTO charge_detail(invoice_no, person_name, billing_amount) "
+                  "VALUES('INV_NEG','李四',400)")
+    conn3.execute("INSERT INTO staff(name, staff_type) VALUES('张三','聘用')")
+    conn3.execute("INSERT INTO staff(name, staff_type) VALUES('李四','聘用')")
+    # 负收款在前（归因张三），其后一笔未归因 +1200 —— 旧缺陷下张三被多分 200
+    conn3.execute("INSERT INTO collection(invoice_no, receipt_date, amount, person_name) "
+                  "VALUES('INV_NEG','2025-04-10',-200,'张三')")
+    conn3.execute("INSERT INTO collection(invoice_no, receipt_date, amount, person_name) "
+                  "VALUES('INV_NEG','2025-05-10',1200,'')")
+    conn3.commit()
+    warns3: list = []
+    res3 = ps.build_settlement_conn(conn3, 2025, warnings=warns3)
+    zs = res3["张三"]
+    check("P3-2 负收款不计入收款(4月收本年=0)", zs["months"][4]["rec_cur_year"] == 0.0,
+          f"got={zs['months'][4]['rec_cur_year']}")
+    # allocate_receipt 均摊轮转、按池封顶：修复后池=张三400/李四400 → 各得 400；
+    # 旧缺陷（remaining - (-200) = 加钱）下池=张三800/李四400 → 张三被多分到 800。
+    check("P3-2 后续分摊不虚增(5月张三=400 而非 800)",
+          zs["months"][5]["rec_cur_year"] == 400.0,
+          f"got={zs['months'][5]['rec_cur_year']}")
+    check("P3-2 李四同票不超池(5月=400)",
+          res3["李四"]["months"][5]["rec_cur_year"] == 400.0,
+          f"got={res3['李四']['months'][5]['rec_cur_year']}")
+    check("P3-2 警告含负金额提示", any("负金额收款" in w for w in warns3), f"{warns3}")
+    conn3.close()
+
     conn.close()
     print(f"PASS {OK} checks" if not FAILS else "FAILED:\n" + "\n".join(FAILS))
     return 0 if not FAILS else 1

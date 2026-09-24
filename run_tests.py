@@ -45,6 +45,7 @@ EXPECTED_FILES = [
     "tests/test_review_refresh_idempotent.py",  # P2-4：复核页 refresh 脏签名短路
     "tests/test_wal_startup_checkpoint.py",      # P3-1：启动时 WAL TRUNCATE checkpoint
     "tests/test_split_failure_visible.py",       # P3-5：sheet3 切分失败可见化（日志+提交提示）
+    "tests/test_writeback_receipt_guard.py",     # P3-2：回写弹窗收款明细拦负数
     "tests/test_import_confirm.py",
     "tests/test_import_delete_scope.py",  # P0-3：导入/撤销 DELETE 作用域（方案 A/B + G2）
     "tests/test_import_fix_log.py",

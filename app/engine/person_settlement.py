@@ -249,8 +249,14 @@ def _compute(conn, year: int, person: str | None, person_type: str | None = None
             pname = rec["person_name"]
             if pname and pname in remaining:
                 # 已按经办人归因的收款：直接计入该经办人并扣减其应收池
+                # P3-2：负金额（回写弹窗手输/异常数据）只按 |amount| 冲减其应收池、
+                # 不计入收款（对称逻辑）——旧行为 `remaining - amount` 等价于给池加钱，
+                # 会让其后的未归因收款多分给该人（收款合计/收入虚增、超收判定失效）。
                 got = {pname: amount} if amount > 0 else {}
-                remaining[pname] = max(remaining[pname] - amount, 0.0)
+                remaining[pname] = max(remaining[pname] - abs(amount), 0.0)
+                if amount < 0:
+                    _warn(warnings, f"发票 {no} 出现负金额收款（{amount}，经办 {pname}），"
+                                    f"已按冲减处理：不计入收款、只冲减其应收份额")
             else:
                 # 未归因（历史/普通导入）：按开票份额比例分摊兜底
                 got = allocate_receipt(remaining, amount)
@@ -457,7 +463,8 @@ def _allocated_total(remaining: Dict[str, float], cds, name: str, receipts) -> L
         pname = rec["person_name"]
         if pname and pname in rem:
             got = {pname: rec["amount"]} if rec["amount"] > 0 else {}
-            rem[pname] = max(rem[pname] - rec["amount"], 0.0)
+            # P3-2：与 _compute 主循环同款对称逻辑（负金额只冲减、不加池）
+            rem[pname] = max(rem[pname] - abs(rec["amount"]), 0.0)
         else:
             got = allocate_receipt(rem, rec["amount"])
         out.append(got.get(name, 0.0))
