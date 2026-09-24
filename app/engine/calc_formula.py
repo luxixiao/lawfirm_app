@@ -133,6 +133,7 @@ _TOKEN_RE = re.compile(
         (?P<errref>\#REF!)
       | (?P<num>\d+(?:\.\d+)?)
       | (?P<str>"[^"]*")
+      | (?P<qname>'(?:[^']|'')*')
       | (?P<ident>[A-Za-z_\u4e00-\u9fff$][A-Za-z0-9_\u4e00-\u9fff$]*)
       | (?P<op><>|<=|>=|[-+*/^()<>=!,:])
     )""",
@@ -155,6 +156,52 @@ def tokenize(src: str) -> List[Tuple[str, str]]:
         tokens.append((kind, m.group(kind)))
         pos = m.end()
     return tokens
+
+
+# ---------------------------------------------------------------------------
+# 表名引用规则（Excel 单引号表名：'2026-01'!A1）
+# ---------------------------------------------------------------------------
+
+# 「简单名」= 无需单引号即可写进 `表名!A1` 的名字。
+# **必须与上面 tokenizer 的 ident 规则严格互逆**，否则 render 出来的公式自己都解析不了
+# （G2 插删行列 / G4 复制填充 / G10 改名 都是 parse→变换→render，引号错了会静默退化）。
+_SIMPLE_SHEET_RE = re.compile(r"^[A-Za-z_\u4e00-\u9fff][A-Za-z0-9_\u4e00-\u9fff]*$")
+# Excel 保留字面量：作表名时必须引号，否则会被当成布尔值
+_EXCEL_RESERVED_NAMES = {"TRUE", "FALSE"}
+
+
+def sheet_needs_quotes(name: str) -> bool:
+    """Excel 规则：表名出现在引用里（`表名!A1`）时是否需要单引号包裹。
+
+    需要引号：空名、非"简单名"（含空格/-/. 等、或以数字开头）、
+    形如单元格地址（A1/AB12）、是 TRUE/FALSE 字面量。
+    """
+    if not name:
+        return False
+    if not _SIMPLE_SHEET_RE.match(name):
+        return True
+    if name.upper() in _EXCEL_RESERVED_NAMES:
+        return True
+    return bool(_CELL_RE.match(name))
+
+
+def quote_sheet_name(name: str) -> str:
+    """渲染引用里的表前缀（**含结尾 `!`**），按 Excel 规则决定是否加单引号。
+
+    名字里的 `'` 按 Excel 约定转义为 `''`。
+    """
+    if not name:
+        return ""
+    if sheet_needs_quotes(name):
+        return "'" + name.replace("'", "''") + "'!"
+    return f"{name}!"
+
+
+def unquote_sheet_name(text: str) -> str:
+    """把词法层拿到的 `'xxx'` 还原成真实表名（剥外层引号 + `''` 转义还原）。"""
+    if len(text) >= 2 and text.startswith("'") and text.endswith("'"):
+        text = text[1:-1]
+    return text.replace("''", "'")
 
 
 # ---------------------------------------------------------------------------
@@ -304,6 +351,13 @@ class Parser:
             return node
         if k == "errref":
             return ErrRef()
+        # 单引号表名前缀：'2026-01'!A1（名字里的 ' 写成 ''）
+        if k == "qname":
+            nxt = self._peek()
+            if nxt and nxt[0] == "op" and nxt[1] == "!":
+                self._next()   # 消费 '!'
+                return self._after_sheet(unquote_sheet_name(v))
+            raise ParseError(f"带引号的表名后必须是 '!'：{v}")
         if k == "ident":
             nxt = self._peek()
             # 跨表前缀 Sheet!xxx

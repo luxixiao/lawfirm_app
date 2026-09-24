@@ -65,7 +65,11 @@ check("SUM 保留", should_keep_formula("=SUM(A1:A10)") is True)
 check("DATA 填值", should_keep_formula('=DATA("x","y",2025)') is False)
 check("PARAM 填值", should_keep_formula('=PARAM("k")') is False)
 check("混合填值", should_keep_formula('=A1+DATA("x","y",2025)') is False)
-check("跨表填值", should_keep_formula("=Sheet2!A1") is False)
+# 阶段5 C：跨表引用**保留**为真公式，前提是被引用表一起导出（见 export_sheet 闭包）
+check("跨表保留", should_keep_formula("=Sheet2!A1") is True)
+check("跨表 被引用表不在集合内填值",
+      should_keep_formula("=Sheet2!A1", {"主表"}) is False)
+check("N2 #REF! 不写公式", should_keep_formula("=#REF!") is False)
 check("非公式不保留", should_keep_formula("100") is False)
 
 # ===== 带公式版导出 =====
@@ -78,7 +82,9 @@ check("A1 数字", ws["A1"].value == 100, f"got={ws['A1'].value}")
 check("A2 保留公式", ws["A2"].value == "=A1*2", f"got={ws['A2'].value}")
 check("A3 DATA 填值 6000", ws["A3"].value == 6000, f"got={ws['A3'].value}")
 check("A4 混合填值 6200", ws["A4"].value == 6200, f"got={ws['A4'].value}")
-check("A5 跨表填值 100", ws["A5"].value == 100, f"got={ws['A5'].value}")
+# 阶段5 C：跨表引用保留为真公式，且「辅助表」作为被引用表一起导出
+check("A5 跨表保留公式", ws["A5"].value == "=辅助表!A1", f"got={ws['A5'].value}")
+check("辅助表一并导出", "辅助表" in wb.sheetnames, f"got={wb.sheetnames}")
 check("A6 PARAM 填值 30", ws["A6"].value == 30, f"got={ws['A6'].value}")
 
 # ===== 不带公式版导出 =====

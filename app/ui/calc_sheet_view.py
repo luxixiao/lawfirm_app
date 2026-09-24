@@ -28,13 +28,14 @@ from PySide6.QtWidgets import (
 
 from app.engine import calc_sheet as cs
 from app.engine.calc_eval import CalcEvaluator
-from app.engine.calc_formula import ErrVal, classify_cell
+from app.engine.calc_formula import ErrVal, classify_cell, col_to_letters
 from app.engine.calc_ref_rewrite import translate_refs
 from app.engine.calc_nav import jump_to_boundary, nav_step
 from app.engine.calc_undo import (
     CommandStack, EditCellCommand, ParamCommand, BulkCommand, snapshot)
 from app.exporter.calc_export import export_sheet, suggest_filename
-from app.ui.calc_dialogs import DataRefDialog, IndicatorManagerDialog, ParamDialog
+from app.ui.calc_dialogs import (
+    DataRefDialog, IndicatorManagerDialog, ParamDialog, SheetRefDialog)
 from app.ui import scale, style
 from app.ui.scale import PREFS_PATH
 from app.ui.widgets import CaptionLabel, PageHeader
@@ -399,6 +400,7 @@ class CalcSheetView(QWidget):
     def __init__(self) -> None:
         super().__init__()
         self.sheet_id: int | None = None
+        self.cur_name: str = ""      # 当前表名（插入跨表引用时排除自身）
         self.content: dict = {}
         self.edit_mode: bool = False
         self._filling = False
@@ -479,20 +481,25 @@ class CalcSheetView(QWidget):
         bar.addWidget(self.btn_view_mode)
         bar.addWidget(self.btn_edit_mode)
         self.btn_ref = QPushButton("插入数据引用")
+        self.btn_sref = QPushButton("插入跨表引用")
         self.btn_param = QPushButton("参数")
         self.btn_ind = QPushButton("指标管理")
         self.btn_ref.setToolTip("选 职工+指标+账期，生成 =DATA(...) 写入当前格")
+        self.btn_sref.setToolTip("选表 + 地址，生成 ='表名'!A1 写入当前格（引号自动加）")
         self.btn_param.setToolTip("本表命名参数，供 PARAM(\"名称\") 引用")
         self.btn_ind.setToolTip("自定义指标：在 DATA() 指标下拉中出现")
         self.btn_ref.clicked.connect(self._on_insert_ref)
+        self.btn_sref.clicked.connect(self._on_insert_sheet_ref)
         self.btn_param.clicked.connect(self._on_params)
         self.btn_ind.clicked.connect(self._on_indicators)
         self.btn_export = QPushButton("导出Excel")
         self.btn_export.setToolTip(
-            "带公式：纯单元格引用公式保留为真实公式，DATA/PARAM 与跨表引用填值\n"
+            "带公式：纯单元格引用公式（含跨表引用）保留为真实公式，DATA/PARAM 填值\n"
+            "被引用的表会一起导出，否则 Excel 里就是 #REF!\n"
             "不带公式：全部填计算值")
         self.btn_export.clicked.connect(self._on_export)
         bar.addWidget(self.btn_ref)
+        bar.addWidget(self.btn_sref)
         bar.addWidget(self.btn_param)
         bar.addWidget(self.btn_ind)
         bar.addWidget(self.btn_export)
@@ -683,6 +690,7 @@ class CalcSheetView(QWidget):
         self.btn_view_mode.setEnabled(True)
         if self.sheet_id is None:
             self.content = {}
+            self.cur_name = ""
             self._refresh_completer()
             self.table.setRowCount(0)
             self.table.setColumnCount(0)
@@ -694,6 +702,7 @@ class CalcSheetView(QWidget):
             self._load_sheet()
             return
         self.content = rec["content"] or {}
+        self.cur_name = rec.get("name") or ""
         # P0-4：库内 content 无法解析（Seafile 半写入 / 手工改动 / 跨版本结构）时，
         # get_sheet 已把原始串备份到库外并打 content_corrupt 标记。此处必须**锁只读** ——
         # 否则用户看到的是空表，若以为"打开错了表"随手改一格，空表就会被"编辑即存"写回，
@@ -1002,6 +1011,21 @@ class CalcSheetView(QWidget):
         if dlg.exec() != QDialog.DialogCode.Accepted or not dlg.formula:
             return
         r, c = self.table.currentRow(), self.table.currentColumn()
+        if r < 0 or c < 0:
+            r, c = 0, 0
+        self._write_cell(r, c, dlg.formula)
+
+    def _on_insert_sheet_ref(self) -> None:
+        """插入跨表引用：选表 + 地址，引号由引擎按 Excel 规则自动生成。"""
+        if not self.edit_mode or self.sheet_id is None:
+            return
+        r, c = self.table.currentRow(), self.table.currentColumn()
+        default_a1 = "A1"
+        if r >= 0 and c >= 0:
+            default_a1 = f"{col_to_letters(c + 1)}{r + 1}"
+        dlg = SheetRefDialog(self, current_sheet=self.cur_name, default_a1=default_a1)
+        if dlg.exec() != QDialog.DialogCode.Accepted or not dlg.formula:
+            return
         if r < 0 or c < 0:
             r, c = 0, 0
         self._write_cell(r, c, dlg.formula)

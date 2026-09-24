@@ -34,6 +34,8 @@ EXPECTED_FILES = [
     "tests/test_calc_undo.py",          # 阶段2：撤销/重做命令栈（EditCell/Param/Bulk + CommandStack）
     "tests/test_calc_sheet.py",
     "tests/test_calc_rename.py",           # 阶段5：重命名表 + 跨表引用重写（AST，含损坏表预检原子性）
+    "tests/test_calc_export.py",           # 阶段5 C：导出 xlsx 带真公式（AST 判定 + 多表闭包 + #REF! 填值）
+    "tests/test_calc_sheet_ref.py",        # 阶段5 C：跨表引用生成（引号自动化 + 离屏对话框）
     "tests/test_conn_hygiene.py",          # P1-2：连接卫生 AST 门禁（规则 A/B）
     "tests/test_deferred_sheet3.py",
     "tests/test_diag_gating.py",           # P2-1：诊断埋点默认关闭（LAWFIRM_DIAG 门控）

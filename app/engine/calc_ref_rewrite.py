@@ -14,6 +14,8 @@
 """
 from __future__ import annotations
 
+from typing import Set
+
 from app.engine.calc_formula import (
     BinOp, CellRef, ErrRef, FuncCall, Parser, ParseError, RangeRef, UnaryOp,
     _SheetParam,
@@ -53,6 +55,50 @@ def rename_sheet_refs(formula: str, old: str, new: str) -> str:
     except ParseError:
         return formula
     return ("=" if has_eq else "") + render(_walk_rename(ast, old, new))
+
+
+def formula_sheet_refs(formula: str) -> Set[str]:
+    """收集公式里引用到的**表名**集合（导出时算"要一起导出的表"闭包用）。
+
+    只收跨表引用（sheet 非 None）；跨表区域/带引号表名同样覆盖。
+    解析失败返回**空集**（保守：不因此把公式误判为非法，只是闭包可能不完整）。
+    """
+    body = formula[1:] if formula.startswith("=") else formula
+    try:
+        ast = Parser(body).parse()
+    except ParseError:
+        return set()
+    out: Set[str] = set()
+    _collect_sheets(ast, out)
+    return out
+
+
+def _collect_sheets(node, out: Set[str]) -> None:
+    """递归收集节点里的表名。注意**不能**复用 _walk：它对跨表节点原样返回且不聚合。"""
+    if isinstance(node, CellRef):
+        if node.sheet:
+            out.add(node.sheet)
+        return
+    if isinstance(node, RangeRef):
+        if node.sheet:
+            out.add(node.sheet)
+        return
+    if isinstance(node, BinOp):
+        _collect_sheets(node.l, out)
+        _collect_sheets(node.r, out)
+        return
+    if isinstance(node, UnaryOp):
+        _collect_sheets(node.operand, out)
+        return
+    if isinstance(node, FuncCall):
+        for a in node.args:
+            _collect_sheets(a, out)
+        return
+    if isinstance(node, _SheetParam):
+        if node.sheet:
+            out.add(node.sheet)
+        for a in node.args:
+            _collect_sheets(a, out)
 
 
 def _walk_rename(node, old: str, new: str):

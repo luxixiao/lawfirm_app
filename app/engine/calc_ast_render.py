@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from app.engine.calc_formula import (
     BinOp, CellRef, ErrRef, FuncCall, Num, RangeRef, Str, UnaryOp,
-    _SheetParam, col_to_letters,
+    _SheetParam, col_to_letters, quote_sheet_name,
 )
 
 # 运算符优先级（低 → 高）。用于决定何时加最小括号。
@@ -50,7 +50,7 @@ def render(node) -> str:
         # 跨表区域前缀只在首端出现一次：Sheet2!A1:B2（非 Sheet2!A1:Sheet2!B2）
         a = _render_cell(None, node.r1, node.c1, node.abs_r1, node.abs_c1)
         b = _render_cell(None, node.r2, node.c2, node.abs_r2, node.abs_c2)
-        return (f"{node.sheet}!" if node.sheet else "") + f"{a}:{b}"
+        return quote_sheet_name(node.sheet) + f"{a}:{b}"
     if isinstance(node, ErrRef):
         return "#REF!"
     if isinstance(node, UnaryOp):
@@ -63,14 +63,15 @@ def render(node) -> str:
     if isinstance(node, FuncCall):
         return f"{node.name}(" + ",".join(render(a) for a in node.args) + ")"
     if isinstance(node, _SheetParam):
-        return f"{node.sheet}!PARAM(" + ",".join(render(a) for a in node.args) + ")"
+        return quote_sheet_name(node.sheet) + "PARAM(" + ",".join(
+            render(a) for a in node.args) + ")"
     raise ValueError(f"未知节点：{type(node).__name__}")
 
 
 def _render_cell(sheet, row0, col0, abs_row=False, abs_col=False) -> str:
     col = ("$" if abs_col else "") + col_to_letters(col0 + 1)
     row = ("$" if abs_row else "") + str(row0 + 1)
-    return (f"{sheet}!" if sheet else "") + col + row
+    return quote_sheet_name(sheet) + col + row
 
 
 def _render_binop(node: BinOp) -> str:

@@ -2,12 +2,14 @@
 
 - DataRefDialog：选择器单元格 → 选 职工+指标+账期，生成 =DATA(...) 原文写入当前格
   （与手写公式完全等价）。
+- SheetRefDialog：跨表引用单元格 → 选 表+地址，生成 ='表名'!A1 原文写入当前格；
+  **引号由引擎决定**（见 quote_sheet_name），用户不必手输。
 - ParamDialog：本表命名参数（A 层）管理，编辑 content.params。
 - IndicatorManagerDialog：自定义指标（B 层）calc_indicator 增删改；
   definition 保存前用公式内核做语法校验（占位符替换哑元后 parse）；
   删除前扫描全部计算表检测引用（JSON 全表扫描，表量小可接受）。
-纯逻辑辅助函数（build_data_formula / validate_indicator_definition /
-indicator_usage_count）独立导出，供无头测试。
+纯逻辑辅助函数（build_data_formula / build_sheet_ref /
+validate_indicator_definition / indicator_usage_count）独立导出，供无头测试。
 """
 from __future__ import annotations
 
@@ -18,7 +20,7 @@ from typing import Dict, List, Optional
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QComboBox, QDialog, QDialogButtonBox, QFormLayout, QHBoxLayout,
+    QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout, QHBoxLayout,
     QLabel, QLineEdit, QMessageBox, QPlainTextEdit,
     QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout,
 )
@@ -26,13 +28,18 @@ from PySide6.QtWidgets import (
 from app.db import get_conn
 from app.ui import style
 from app.engine.calc_data import builtin_names
-from app.engine.calc_formula import ParseError, Parser
+from app.engine.calc_ast_render import render
+from app.engine.calc_formula import ParseError, Parser, quote_sheet_name
+from app.engine import calc_sheet as cs
 
 # 内置函数名（spec §11.3：参数/指标名不得与其重名）
 _RESERVED = {"SUM", "ROUND", "AVERAGE", "IF", "MIN", "MAX", "ABS",
              "DATA", "PARAM", "TRUE", "FALSE"}
 
 _PLACEHOLDER = re.compile(r"\$(职工|年|月)")
+
+# A1 地址 / A1:B2 区域（列 1-3 字母，行 1-7 位数字）
+_A1_RE = re.compile(r"^([A-Za-z]{1,3})([0-9]{1,7})(?::([A-Za-z]{1,3})([0-9]{1,7}))?$")
 
 
 # ---------------------------------------------------------------------------
@@ -46,6 +53,42 @@ def build_data_formula(person: str, indicator: str, year: int,
     if month is None:
         return f'=DATA("{p}","{i}",{int(year)})'
     return f'=DATA("{p}","{i}",{int(year)},{int(month)})'
+
+
+def build_sheet_ref(sheet: str, a1: str, abs_col: bool = False,
+                    abs_row: bool = False) -> str:
+    """生成跨表引用原文（如 `='2026-01'!A1`）；非法参数返回 ""。
+
+    **引号一律由 `quote_sheet_name` 决定**（Excel 规则：数字开头/含 `-` `.` 空格等
+    非简单名的表必须引号），用户不需要、也不应该手输引号。
+    生成后再 parse→render 往返一次：既做语法自检，又保证产出与引擎规范形一致
+    （G2/G4/G10 改写都基于 AST，规范形可重入）。
+    """
+    sheet = (sheet or "").strip()
+    a1 = (a1 or "").strip().upper().replace("$", "")
+    m = _A1_RE.match(a1)
+    if not sheet or not m:
+        return ""
+    c, r = ("$" if abs_col else ""), ("$" if abs_row else "")
+    left = f"{c}{m.group(1)}{r}{m.group(2)}"
+    if m.group(3):
+        ref = f"{left}:{c}{m.group(3)}{r}{m.group(4)}"
+    else:
+        ref = left
+    try:
+        return "=" + render(Parser(quote_sheet_name(sheet) + ref).parse())
+    except ParseError:
+        return ""
+
+
+def list_sheet_names(exclude: str = "") -> List[str]:
+    """库内全部计算表名（按 sheet_order），可排除当前表（避免自引用）。"""
+    try:
+        rows = cs.list_sheets()
+    except Exception:
+        return []
+    return [r["name"] for r in rows
+            if r.get("name") and r["name"] != exclude]
 
 
 def validate_indicator_name(name: str, exclude_self: str = "") -> Optional[str]:
@@ -231,6 +274,89 @@ class DataRefDialog(QDialog):
         f = self._current_formula()
         if not f:
             QMessageBox.warning(self, "信息不全", "请选择 职工、指标与年份。")
+            return
+        self.formula = f
+        self.accept()
+
+
+# ---------------------------------------------------------------------------
+# 跨表引用单元格
+# ---------------------------------------------------------------------------
+
+class SheetRefDialog(QDialog):
+    """选 表+地址 → 生成 ='表名'!A1 公式。formula 属性取结果。
+
+    引号由引擎 `quote_sheet_name` 自动决定，避免手输引号出错（阶段5 C 方案）。
+    """
+
+    def __init__(self, parent=None, current_sheet: str = "", default_a1: str = "A1"):
+        super().__init__(parent)
+        self.setWindowTitle("插入跨表引用")
+        self.formula: str = ""
+
+        lay = QVBoxLayout(self)
+        lay.setSpacing(10)
+        form = QFormLayout()
+        form.setSpacing(8)
+
+        self.f_sheet = QComboBox()
+        self.names = list_sheet_names(exclude=current_sheet)
+        for n in self.names:
+            self.f_sheet.addItem(n, n)
+        if not self.names:
+            self.f_sheet.addItem("（库中无其它计算表）", None)
+            self.f_sheet.setEnabled(False)
+        form.addRow("引用表：", self.f_sheet)
+
+        self.f_a1 = QLineEdit(default_a1 or "A1")
+        self.f_a1.setPlaceholderText("如 A1 或 A1:B2")
+        form.addRow("地址：", self.f_a1)
+
+        abs_row = QHBoxLayout()
+        self.f_abs_col = QCheckBox("锁定列（$A）")
+        self.f_abs_row = QCheckBox("锁定行（$1）")
+        abs_row.addWidget(self.f_abs_col)
+        abs_row.addWidget(self.f_abs_row)
+        abs_row.addStretch(1)
+        form.addRow("绝对引用：", abs_row)
+
+        lay.addLayout(form)
+        self.lbl_preview = QLabel("")
+        lay.addWidget(self.lbl_preview)
+
+        warn = QLabel("表名含数字开头、- . 空格等字符时会自动加单引号，Excel 可直接识别。")
+        warn.setWordWrap(True)
+        warn.setStyleSheet(f"color:{style.palette()['text_mute']};")
+        lay.addWidget(warn)
+
+        btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok
+                                | QDialogButtonBox.StandardButton.Cancel)
+        btns.accepted.connect(self._accept)
+        btns.rejected.connect(self.reject)
+        lay.addWidget(btns)
+
+        self.f_sheet.currentIndexChanged.connect(self._preview)
+        self.f_a1.textChanged.connect(self._preview)
+        self.f_abs_col.stateChanged.connect(self._preview)
+        self.f_abs_row.stateChanged.connect(self._preview)
+        self._preview()
+
+    def _current_formula(self) -> str:
+        sheet = self.f_sheet.currentData()
+        if not sheet:
+            return ""
+        return build_sheet_ref(sheet, self.f_a1.text(),
+                               self.f_abs_col.isChecked(), self.f_abs_row.isChecked())
+
+    def _preview(self) -> None:
+        f = self._current_formula()
+        self.lbl_preview.setText(f"将插入：{f}" if f else "请填写有效的表名与地址（如 A1 / A1:B2）")
+        self.lbl_preview.setStyleSheet(f"color:{style.palette()['text_mute']};")
+
+    def _accept(self) -> None:
+        f = self._current_formula()
+        if not f:
+            QMessageBox.warning(self, "信息不全", "请选择引用表并填写有效地址（如 A1 或 A1:B2）。")
             return
         self.formula = f
         self.accept()

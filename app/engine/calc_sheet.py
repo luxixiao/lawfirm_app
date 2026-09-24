@@ -31,6 +31,10 @@ DEFAULT_COLS = 12
 # 表名禁单元格模式（A1 ~ ZZZ99999），禁空格与 !
 _CELL_LIKE = re.compile(r"^[A-Za-z]{1,3}[0-9]+$")
 
+# Excel 工作表标题硬约束（导出带公式后必须能被 Excel 解析，故在校验层就对齐）
+EXCEL_TITLE_MAX = 31
+_EXCEL_TITLE_BAD_RE = re.compile(r"[\[\]:*?/\\]")
+
 
 class CalcSheetError(Exception):
     """表格存取层业务错误（提示给 UI）。"""
@@ -41,16 +45,28 @@ class CalcSheetError(Exception):
 # ---------------------------------------------------------------------------
 
 def validate_sheet_name(name: str) -> Optional[str]:
-    """合法返回 None；非法返回错误说明。"""
+    """合法返回 None；非法返回错误说明。
+
+    规则**与 Excel 工作表标题对齐**（见 app/exporter/calc_export._safe_title）——
+    因为导出的 xlsx 要能被 Excel 直接解析，表名必须同时是合法的 Excel 表名：
+    - ≤31 字符（Excel 硬限；超过会被标题截断，导致公式里的表名与 worksheet 标题漂移）
+    - 禁 `[]:*?/\\`（Excel 标题禁用字符）
+    - 禁空格/全角空格（本应用约定，也避免引用歧义）
+    - 禁 `!`（引用分隔符）；**允许 `'`**（引用时自动转义为 `''`，见 quote_sheet_name）
+    - 禁单元格地址样式（A1/AB12）——会被当成引用而非表名
+    其余字符（含 `-` `.` 与数字开头）均允许，引用时由单引号承载。
+    """
     name = (name or "").strip()
     if not name:
         return "表名不能为空"
-    if len(name) > 50:
-        return "表名过长（≤50 字符）"
+    if len(name) > EXCEL_TITLE_MAX:
+        return f"表名过长（Excel 表名上限 {EXCEL_TITLE_MAX} 字符）"
     if " " in name or "\u3000" in name:
         return "表名不能含空格"
-    if "!" in name or "'" in name:
-        return "表名不能含 ! 或 '"
+    if "!" in name:
+        return "表名不能含 !"
+    if _EXCEL_TITLE_BAD_RE.search(name):
+        return "表名不能含 [ ] : * ? / \\ 等 Excel 禁用字符"
     if _CELL_LIKE.match(name):
         return "表名不能是单元格引用样式（如 A1、AB12）"
     return None
@@ -334,7 +350,9 @@ def create_sheet(name: str, updated_by: str = "", rows: int = DEFAULT_ROWS,
         err = validate_sheet_name(name)
         if err:
             raise CalcSheetError(err)
-        dup = conn.execute("SELECT id FROM calc_sheet WHERE name=?", (name,)).fetchone()
+        # COLLATE NOCASE：Excel 表名重名是**大小写不敏感**的，导出前就拦住
+        dup = conn.execute("SELECT id FROM calc_sheet WHERE name=? COLLATE NOCASE",
+                           (name,)).fetchone()
         if dup:
             raise CalcSheetError(f"表名已存在：{name}")
         order_row = conn.execute(
@@ -464,8 +482,9 @@ def rename_sheet(sheet_id: int, new_name: str, updated_by: str = "", conn=None) 
         target = next((r for r in rows if r["id"] == sheet_id), None)
         if target is None:
             raise CalcSheetError(f"表不存在：id={sheet_id}")
-        dup = conn.execute("SELECT id FROM calc_sheet WHERE name=? AND id<>?",
-                           (new_name, sheet_id)).fetchone()
+        dup = conn.execute(
+            "SELECT id FROM calc_sheet WHERE name=? COLLATE NOCASE AND id<>?",
+            (new_name, sheet_id)).fetchone()
         if dup:
             raise CalcSheetError(f"表名已存在：{new_name}")
         old_name = target["name"]

@@ -57,8 +57,13 @@ def main() -> int:
     check("函数参数内引用",
           rename_sheet_refs("=ROUND(Old!A1,2)", "Old", "New") == "=ROUND(New!A1,2)")
     # --- B1：纯文本替换 `Old!`→`New!` 会踩的两个坑，AST 方案必须都躲开 ---
+    # B1 前缀：Old2 不能被当成 Old 改掉。（阶段5 C 后 `Old2` 因形似单元格地址 OLD2
+    # 而按 Excel 规则补了引号——类名表本身被 validate_sheet_name 禁掉，故只出现在构造用例里。）
     check("B1 前缀不误伤 Old2!A1",
-          rename_sheet_refs("=Old2!A1", "Old", "New") == "=Old2!A1")
+          rename_sheet_refs("=Old2!A1", "Old", "New") == "='Old2'!A1",
+          f"got={rename_sheet_refs('=Old2!A1', 'Old', 'New')}")
+    check("B1 绝不能变成 New2",
+          "New2" not in rename_sheet_refs("=Old2!A1", "Old", "New"))
     check("B1 字符串字面量不误改",
           rename_sheet_refs('="Old!A1"', "Old", "New") == '="Old!A1"')
     # --- 表前缀参数 Sheet!PARAM("x") ---
