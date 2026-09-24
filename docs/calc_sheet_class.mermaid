@@ -1,0 +1,124 @@
+classDiagram
+    %% ===== 既有 AST 节点（calc_formula.py，阶段0扩 abs） =====
+    class CellRef {
+        +sheet: Optional[str]
+        +row0: int
+        +col0: int
+        +abs_row: bool
+        +abs_col: bool
+    }
+    class RangeRef {
+        +sheet: Optional[str]
+        +r1: int
+        +c1: int
+        +r2: int
+        +c2: int
+        +abs_r1: bool
+        +abs_c1: bool
+        +abs_r2: bool
+        +abs_c2: bool
+    }
+    class ErrRef {
+        +token: str = "#REF!"
+    }
+    class Num {
+        +v: float
+    }
+    class BinOp {
+        +op: str
+        +l
+        +r
+    }
+    class UnaryOp {
+        +op: str
+        +operand
+    }
+    class FuncCall {
+        +name: str
+        +args: list
+    }
+
+    %% ===== 新增：序列化器（calc_ast_render.py） =====
+    class ASTRender {
+        +render(node) str
+        -render_cell(sheet,row0,col0,abs_row,abs_col) str
+        -render_binop(node) str
+    }
+    ASTRender ..> CellRef : renders
+    ASTRender ..> RangeRef : renders
+    ASTRender ..> ErrRef : renders
+
+    %% ===== 新增：引用重写（calc_ref_rewrite.py） =====
+    class RefRewriter {
+        +shift_refs(formula, axis, at, delta, insert) str
+        +translate_refs(formula, dr, dc) str
+        -_walk(node, T) node
+        -_make_shift_T(axis, at, delta, insert) fn
+        -_make_translate_T(dr, dc) fn
+    }
+    RefRewriter ..> CellRef : 读 abs 标志
+    RefRewriter ..> RangeRef : 读 abs 标志
+    RefRewriter ..> ASTRender : 用 render 还原
+
+    %% ===== 新增：结构变换（calc_sheet.py 纯函数） =====
+    class SheetTransform {
+        <<module functions>>
+        +insert_row(content, at, delta) dict
+        +delete_row(content, at, delta) dict
+        +insert_col(content, at, delta) dict
+        +delete_col(content, at, delta) dict
+    }
+    SheetTransform ..> RefRewriter : 调 shift_refs
+
+    %% ===== 新增：命令栈（calc_undo.py） =====
+    class Command {
+        <<interface>>
+        +label: str
+        +apply(content) dict
+        +revert(content) dict
+    }
+    class EditCellCommand {
+        +key: str
+        +before: Optional[str]
+        +after: Optional[str]
+    }
+    class PasteCommand {
+        +cells: list
+        +before: dict
+        +after: dict
+    }
+    class StructuralCommand {
+        +op: str
+        +at: int
+        +delta: int
+    }
+    class ParamCommand {
+        +before: dict
+        +after: dict
+    }
+    class CommandStack {
+        -_undo: list
+        -_redo: list
+        +push(cmd)
+        +undo() Command
+        +redo() Command
+        +can_undo() bool
+    }
+    EditCellCommand ..|> Command
+    PasteCommand ..|> Command
+    StructuralCommand ..|> Command
+    ParamCommand ..|> Command
+    CommandStack o-- Command
+
+    %% ===== UI 接线（calc_sheet_view.py） =====
+    class CalcSheetView {
+        -stack: CommandStack
+        +keyPressEvent(...)
+        +_write_cell(r,c,text)
+        +_recalc_fill()
+        +insertRowAtSelection()
+    }
+    CalcSheetView ..> CommandStack : 压/弹命令
+    CalcSheetView ..> SheetTransform : 调插/删行列
+    CalcSheetView ..> RefRewriter : 调 translate_refs(粘贴)
+    CalcSheetView ..> ASTRender : 间接(经 RefRewriter)

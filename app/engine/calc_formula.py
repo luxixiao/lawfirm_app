@@ -100,14 +100,39 @@ def classify_cell(raw) -> str:
 
 
 # ---------------------------------------------------------------------------
+# A1 引用解析（含绝对引用 $）
+# ---------------------------------------------------------------------------
+
+_A1_RE = re.compile(r"^\$?([A-Za-z]{1,3})\$?([0-9]{1,5})$")
+
+
+def _parse_ref_part(tok: str):
+    """'$A$1' / '$A1' / 'A$1' / 'A1' → (row0, col0, abs_row, abs_col)；非单元格引用→None。
+
+    row0/col0 为 0 基；abs_row/abs_col 标记该轴是否为绝对引用（不随插行/复制平移）。
+    """
+    m = _A1_RE.match(tok)
+    if not m:
+        return None
+    col_letters, digits = m.group(1), m.group(2)
+    col0 = letters_to_col(col_letters) - 1
+    row0 = int(digits) - 1
+    abs_col = tok.startswith("$")
+    # 列字母之后的 '$' 属于行绝对值标记
+    abs_row = "$" in tok[len(col_letters):]
+    return (row0, col0, abs_row, abs_col)
+
+
+# ---------------------------------------------------------------------------
 # tokenizer
 # ---------------------------------------------------------------------------
 
 _TOKEN_RE = re.compile(
     r"""\s*(?:
-        (?P<num>\d+(?:\.\d+)?)
+        (?P<errref>\#REF!)
+      | (?P<num>\d+(?:\.\d+)?)
       | (?P<str>"[^"]*")
-      | (?P<ident>[A-Za-z_\u4e00-\u9fff][A-Za-z0-9_\u4e00-\u9fff]*)
+      | (?P<ident>[A-Za-z_\u4e00-\u9fff$][A-Za-z0-9_\u4e00-\u9fff$]*)
       | (?P<op><>|<=|>=|[-+*/^()<>=!,:])
     )""",
     re.X,
@@ -145,16 +170,26 @@ class Str:
         self.v = v
 
 
+class ErrRef:
+    """被删除行列命中的引用失效伪节点（渲染为 #REF!）。"""
+
+
 class CellRef:
-    def __init__(self, sheet: Optional[str], row0: int, col0: int):
+    def __init__(self, sheet: Optional[str], row0: int, col0: int,
+                 abs_row: bool = False, abs_col: bool = False):
         self.sheet, self.row0, self.col0 = sheet, row0, col0
+        self.abs_row, self.abs_col = abs_row, abs_col
 
 
 class RangeRef:
-    def __init__(self, sheet: Optional[str], r1: int, c1: int, r2: int, c2: int):
+    def __init__(self, sheet: Optional[str], r1: int, c1: int, r2: int, c2: int,
+                 abs_r1: bool = False, abs_c1: bool = False,
+                 abs_r2: bool = False, abs_c2: bool = False):
         self.sheet = sheet
         self.r1, self.c1 = min(r1, r2), min(c1, c2)
         self.r2, self.c2 = max(r1, r2), max(c1, c2)
+        self.abs_r1, self.abs_c1 = abs_r1, abs_c1
+        self.abs_r2, self.abs_c2 = abs_r2, abs_c2
 
 
 class BinOp:
@@ -266,6 +301,8 @@ class Parser:
             node = self._comparison()
             self._expect_op(")")
             return node
+        if k == "errref":
+            return ErrRef()
         if k == "ident":
             nxt = self._peek()
             # 跨表前缀 Sheet!xxx
@@ -277,18 +314,20 @@ class Parser:
                 self._next()
                 args = self._arglist()
                 return FuncCall(v, args)
-            # 单元格 / 区域
-            rc = a1_to_rc(v)
-            if rc is not None:
+            # 单元格 / 区域（支持绝对引用 $A$1 / A$1 / $A1）
+            ref = _parse_ref_part(v)
+            if ref is not None:
+                r0, c0, ar, ac = ref
                 t2 = self._peek()
                 if t2 and t2[0] == "op" and t2[1] == ":":
                     self._next()
                     k3, v3 = self._next()
-                    if k3 != "ident" or a1_to_rc(v3) is None:
+                    ref2 = _parse_ref_part(v3) if k3 == "ident" else None
+                    if ref2 is None:
                         raise ParseError(f"区域结束引用非法：'{v3}'")
-                    r2, c2 = a1_to_rc(v3)
-                    return RangeRef(None, rc[0], rc[1], r2, c2)
-                return CellRef(None, rc[0], rc[1])
+                    r2, c2, ar2, ac2 = ref2
+                    return RangeRef(None, r0, c0, r2, c2, ar, ac, ar2, ac2)
+                return CellRef(None, r0, c0, ar, ac)
             raise ParseError(f"无法识别的名称：'{v}'")
         raise ParseError(f"意外标记：'{v}'")
 
@@ -302,18 +341,20 @@ class Parser:
             self._next()
             args = self._arglist()
             return _SheetParam(sheet, args)
-        rc = a1_to_rc(v)
-        if rc is None:
+        ref = _parse_ref_part(v)
+        if ref is None:
             raise ParseError(f"表 '{sheet}' 后引用非法：'{v}'")
+        r0, c0, ar, ac = ref
         t2 = self._peek()
         if t2 and t2[0] == "op" and t2[1] == ":":
             self._next()
             k3, v3 = self._next()
-            if k3 != "ident" or a1_to_rc(v3) is None:
+            ref2 = _parse_ref_part(v3) if k3 == "ident" else None
+            if ref2 is None:
                 raise ParseError(f"区域结束引用非法：'{v3}'")
-            r2, c2 = a1_to_rc(v3)
-            return RangeRef(sheet, rc[0], rc[1], r2, c2)
-        return CellRef(sheet, rc[0], rc[1])
+            r2, c2, ar2, ac2 = ref2
+            return RangeRef(sheet, r0, c0, r2, c2, ar, ac, ar2, ac2)
+        return CellRef(sheet, r0, c0, ar, ac)
 
     def _arglist(self) -> list:
         args = []
@@ -448,6 +489,8 @@ class Engine:
             return node.v
         if isinstance(node, Str):
             return node.v
+        if isinstance(node, ErrRef):
+            return ErrVal(ERR_REF)
         if isinstance(node, CellRef):
             return self.cell_value(node.sheet or self.cur_sheet, node.row0, node.col0)
         if isinstance(node, RangeRef):

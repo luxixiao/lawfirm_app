@@ -1,0 +1,63 @@
+sequenceDiagram
+    autonumber
+    participant U as 用户
+    participant G as GridTable(keyPressEvent)
+    participant V as CalcSheetView
+    participant RW as calc_ref_rewrite
+    participant ST as calc_sheet(结构变换)
+    participant CS as cs.save_content
+    participant EV as CalcEvaluator
+    participant S as CommandStack
+
+    %% ============ 场景1：插入行 + 引用重写（阶段3，依赖阶段0） ============
+    rect rgb(235,245,255)
+    note over U,S: 场景1 — 在选中行 at 插入 delta 行
+    U->>G: 点"插入行"按钮
+    G->>V: insertRowAtSelection(at)
+    V->>ST: insert_row(content, at, delta)
+    loop 每个 formula 单元格
+        ST->>RW: shift_refs(raw, "row", at, delta, insert=True)
+        RW->>RW: parse→_walk(T)→render
+        RW-->>ST: 重写后的 raw
+    end
+    ST->>ST: cell-key 重映射(r>=at → r+delta) + rows+delta + headers
+    ST-->>V: new_content
+    V->>S: push(StructuralCommand("insert_row",at,delta))
+    V->>CS: _recalc_fill(new_content)
+    CS-->>EV: save + 重算
+    EV-->>V: _fill() 刷新网格
+    end
+
+    %% ============ 场景2：撤销逆操作（阶段2） ============
+    rect rgb(240,255,240)
+    note over U,S: 场景2 — Ctrl+Z 撤销上一步
+    U->>G: Ctrl+Z
+    G->>V: onUndo()
+    V->>S: undo() -> cmd
+    S-->>V: StructuralCommand / EditCellCommand
+    V->>V: content = cmd.revert(content)
+    V->>CS: _recalc_fill(content)  %% 复用同一写回路径
+    CS-->>EV: save + 重算
+    EV-->>V: _fill() 刷新
+    end
+
+    %% ============ 场景3：复制公式块 + 填充（阶段4，依赖阶段0） ============
+    rect rgb(255,245,235)
+    note over U,S: 场景3 — Ctrl+C 复制公式块，Ctrl+V 粘贴并平移引用
+    U->>G: Ctrl+C（选中区）
+    G->>V: copySelection()
+    V->>V: 读 content.cells 取 raw
+    V->>V: 写剪贴板(MIME x-lawfirm-calc-cells + TSV)
+    U->>G: 选目标区 Ctrl+V
+    G->>V: pasteFromApp()
+    V->>V: 解析剪贴板 origin/raw
+    loop 每个源公式格
+        V->>RW: translate_refs(raw, dr, dc)
+        RW->>RW: parse→_walk(位移T)→render
+        RW-->>V: 平移后 raw（绝对引用不动）
+    end
+    V->>S: push(PasteCommand(cells, before, after))
+    V->>CS: _recalc_fill(content)
+    CS-->>EV: save + 重算
+    EV-->>V: _fill() 刷新（相对引用已平移、绝对锚定）
+    end
