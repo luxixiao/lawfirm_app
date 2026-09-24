@@ -25,7 +25,6 @@ from qframelesswindow import FramelessWindow
 from qframelesswindow.titlebar import TitleBar
 
 from app import __version__
-from app import __version__
 from app.db import get_conn
 from app.ui import scale, style
 from app.ui.sidebar import SidebarWidget

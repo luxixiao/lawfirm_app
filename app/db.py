@@ -527,6 +527,13 @@ def init_db(backfill: bool = True) -> None:
         if backfill:
             _backfill_received_snapshot(conn)
         conn.commit()
+        # P3-1：崩溃/强杀/断电后残留的 -wal 在下次启动时合入主库并截断。
+        # 否则 Seafile 同步的只是主库本体，另一台 PC 打开的是未合入 WAL 的旧库。
+        # 失败不阻断启动（wal 会在正常退出时随最后一个连接关闭再次合入）。
+        try:
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        except sqlite3.Error:
+            pass
     finally:
         conn.close()
 
