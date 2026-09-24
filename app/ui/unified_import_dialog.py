@@ -106,6 +106,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.db import get_conn
+from app.diag import get_logger
 from app.engine import raw_ledger as rl
 from app.engine.backfill_module import load_invoice_detail, prefill_red_original
 from app.engine.import_confidence import (  # noqa: F401  （REASON_LIB_DIFF 供测试断言）
@@ -210,6 +211,9 @@ class UnifiedImportDialog(QWidget):
         # 以及用户「确认」过的 deferred 下标（已入库行据此置 receipt_confirmed → A10 写收款）
         self._deferred_edits: Dict[int, dict] = {}
         self._deferred_confirmed: set = set()
+        # P3-5：sheet3 幂等切分是否失败过（_split_work 置位）——失败不允许静默，
+        # 除日志外还要在「确认入库」时弹提示（见 _merged_data 调用点）。
+        self._split_failed = False
         # 阶段 3（B2c）：行内「补录原票」收集到的补录条目 —— 票号 → 条目
         # （不写库；随台账同一事务入库，点「取消」一行都不写）
         self._backfills: Dict[str, dict] = {}
@@ -327,6 +331,7 @@ class UnifiedImportDialog(QWidget):
         self._inv_edits = {}
         self._deferred_edits = {}
         self._deferred_confirmed = set()
+        self._split_failed = False  # P3-5：新数据重新计切分失败态
         # B2c：以 data 里已有的 backfills 为起点（「入库不过 → 返回修改」会重载同一份
         # data，已填的补录不能丢；按钮态与「原因」列也据此还原）
         self._backfills = {
@@ -529,7 +534,12 @@ class UnifiedImportDialog(QWidget):
         try:
             split_deferred(d, self._period)
         except Exception:  # noqa: BLE001
-            pass
+            # P3-5：切分失败不允许静默——失败后 sheet3 行会留在普通票路径被错建成票。
+            # 不阻断界面（既有设计：commit 前还会再切一次），但必须日志 + 提交时可见。
+            self._split_failed = True
+            get_logger().warning(
+                "SPLIT split_deferred failed period=%s（sheet3 行将按普通票处理）",
+                self._period, exc_info=True)
 
     def _rebuild_work(self) -> None:
         """按当前修正结果重建工作副本（真实 data 始终不被修改）。"""
@@ -2153,6 +2163,14 @@ class UnifiedImportDialog(QWidget):
             return
 
         merged = self._merged_data()
+        if self._split_failed:
+            # P3-5：切分失败必须可见（不静默）。不阻断——用户可自行权衡是否继续，
+            # 但必须明确知道应收账款(sheet3)行将按普通发票入库。
+            QMessageBox.warning(
+                self, "sheet3 切分失败",
+                "应收账款（sheet3）切分失败（详见日志），本次入库会把 sheet3 行"
+                "按普通发票处理。\n建议先「取消」排查（常见原因：数据库被占用），"
+                "确认无碍也可继续。")
         if self._validate is not None:
             err = self._validate(merged)
             if err:
