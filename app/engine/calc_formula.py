@@ -15,6 +15,7 @@
 """
 from __future__ import annotations
 
+import logging
 import re
 from decimal import Decimal, ROUND_HALF_UP
 from typing import List, Optional, Tuple
@@ -44,6 +45,46 @@ ERR_VALUE = "#VALUE!"
 ERR_DIV = "#DIV/0!"
 ERR_NUM = "#NUM!"
 ERR_SYNTAX = "#ERROR!"
+# 取数层**非预期**异常（表结构缺失 / 驱动错误 / 代码 bug）专用码。
+# 为什么要单独一个码：以前这类崩溃被一律兜成 #REF!，与「真·引用失效」长得一模一样，
+# 于是「少了一个迁移列」这种致命问题在网格里看起来只是普通的引用断开，
+# 排查方向直接跑偏（2026-09-25 在 tests/_smoke_calc_export.py 上实测踩到）。
+ERR_UNEXPECTED = "#SYSERR!"
+
+
+class CalcDataFailure(Exception):
+    """取数层异常**标记基类**（`calc_data.CalcDataError` 继承它）。
+
+    放在本叶子模块是为了让 `calc_data` 单向依赖它而不产生循环导入
+    （`calc_formula` 不 import 任何 app.*，是依赖图的叶子）。
+    引擎据此区分：
+      - `CalcDataFailure` 子类且 `unexpected=False` → 业务错误，呈现 `#REF!`；
+      - `unexpected=True` 或**非**该类异常 → `#SYSERR!` + 写日志告警。
+    """
+
+
+def _log_unexpected(msg: str) -> None:
+    """非预期取数异常写日志：data/app_debug.log（%LOCALAPPDATA%/lawfirm_app/logs）+ stderr。
+    **不受 LAWFIRM_DIAG 门控**——真出错就要留痕，不能因为没开诊断而静默。
+    刻意延迟 import app.diag：它依赖 PySide6，而在**出错时**才导入，
+    保证纯逻辑（无 Qt）环境下 import calc_formula 依然可用。
+    """
+    try:
+        from app.diag import get_logger, setup_logging
+        setup_logging()
+        get_logger().warning(msg)
+    except Exception:      # 连日志都失败也不能把异常二次抛出
+        logging.getLogger(__name__).warning(msg)
+
+
+def _wrap_unexpected(exc: BaseException, person, indicator, year, month) -> ErrVal:
+    """把非预期取数异常转成 `#SYSERR!` 并落一条带完整上下文的告警日志。"""
+    period = f"{year}年{month}月" if month else f"{year}年全年"
+    root = getattr(exc, "__cause__", None) or exc
+    detail = (f"DATA 取数异常：职工={person!r} 指标={indicator!r} 账期={period} | "
+              f"{type(root).__name__}: {root}")
+    _log_unexpected(detail)
+    return ErrVal(ERR_UNEXPECTED, detail)
 
 
 def is_err(v) -> bool:
@@ -708,8 +749,15 @@ class Engine:
                 month = int(mnum)
         try:
             return float(self.provider.data(person, indicator, year, month))
-        except Exception as e:  # CalcDataError 及其它取数异常 → #REF!
+        except CalcDataFailure as e:
+            if getattr(e, "unexpected", False):
+                return _wrap_unexpected(e, person, indicator, year, month)
+            # 业务错误（未知指标 / 姓名重名 / 月份非法 / 指标循环）→ 保持既有 #REF!
             return ErrVal(ERR_REF, str(e))
+        except Exception as e:
+            # 非预期：表结构缺失、驱动错误、除零溢出之外的任何崩溃。
+            # 必须与 #REF! 区分开，并留下可排障的日志。
+            return _wrap_unexpected(e, person, indicator, year, month)
 
     def _flatten_numbers(self, args) -> list:
         """参数展开：区域逐格取值（文本/空格跳过，公式格求值），散值直接收。"""

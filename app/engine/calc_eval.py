@@ -22,7 +22,9 @@ from app.db import get_conn
 from app.engine.calc_formula import (
     CellProvider, Engine, ErrVal, classify_cell,
 )
-from app.engine.calc_data import CalcData, CalcDataError
+from app.engine.calc_data import (
+    CalcData, CalcDataError, CalcDataUnexpectedError)
+from app.engine.calc_formula import ERR_UNEXPECTED
 
 _PLACEHOLDER = re.compile(r"\$(职工|年|月)")
 
@@ -106,6 +108,10 @@ class CalcEvaluator:
             formula = self._bind_definition(definition, person, year, month)
             v = self._engine.evaluate(formula)
             if isinstance(v, ErrVal):
+                # 非预期崩溃（#SYSERR!）**不要**降级成 #REF!，否则又会掩盖真实病因
+                if v.code == ERR_UNEXPECTED:
+                    raise CalcDataUnexpectedError(
+                        f"指标 {indicator} 取数异常：{v.msg}")
                 raise CalcDataError(f"指标 {indicator} 求值失败：{v.code} {v.msg}")
             num = float(v) if not isinstance(v, str) else _num_or_fail(v, indicator)
             self._ind_cache[key] = round(num, 2)

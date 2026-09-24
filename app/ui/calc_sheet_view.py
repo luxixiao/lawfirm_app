@@ -17,7 +17,7 @@ import json
 import os
 import re
 
-from PySide6.QtCore import Qt, Signal, QStringListModel, QRect, QMimeData
+from PySide6.QtCore import Qt, QRectF, Signal, QStringListModel, QRect, QMimeData
 from PySide6.QtGui import QBrush, QColor, QPainter
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QCompleter, QDialog, QFileDialog, QHBoxLayout,
@@ -37,6 +37,7 @@ from app.exporter.calc_export import export_sheet, suggest_filename
 from app.ui.calc_dialogs import (
     DataRefDialog, IndicatorManagerDialog, ParamDialog, SheetRefDialog)
 from app.ui import scale, style
+from app.ui.nav_icons import draw_chevron
 from app.ui.scale import PREFS_PATH
 from app.ui.widgets import CaptionLabel, PageHeader
 
@@ -50,6 +51,43 @@ _KNOWN_FUNCS = ["SUM", "ROUND", "AVERAGE", "IF", "MIN", "MAX", "ABS", "DATA", "P
 
 # 阶段4 G4：应用内公式块复制用的自定义 MIME（剪贴板），外部粘贴降级走 text/plain TSV
 _CALC_MIME = "application/x-lawfirm-calc-cells"
+
+
+class ChevronButton(QPushButton):
+    """左侧列表折叠/展开开关：箭头由 `draw_chevron` **自绘**（默认朝右）。
+
+    为什么不用文本字形：原先写 "≪"/"≫"（U+226A/226B），这两个字符在部分
+    Windows 字体里**没有字形**，按钮会显示成一块空白，只剩 tooltip 可猜。
+    自绘箭头不受字体覆盖影响，且与侧栏折叠指示同一视觉语言。
+
+    颜色用 `style.qcolor(...)` **在 paintEvent 里用时取**（不能提到模块加载期），
+    以便跟随皮肤切换 —— 见 style.qcolor 的注释与 test_skin_contract。
+    """
+
+    def __init__(self, parent=None, tooltip: str = "") -> None:
+        super().__init__("", parent)
+        self._left = True          # True = 箭头朝左（列表正展开，点它会收起）
+        self.setFixedWidth(28)
+        self.setToolTip(tooltip)
+
+    def set_direction(self, left: bool, tooltip: str = "") -> None:
+        self._left = bool(left)
+        if tooltip:
+            self.setToolTip(tooltip)
+        self.update()
+
+    def paintEvent(self, event) -> None:  # noqa: N802
+        super().paintEvent(event)          # 边框/底色/按压态仍由 QSS 画
+        p = QPainter(self)
+        try:
+            if self._left:                 # draw_chevron 默认朝右 → 旋转 180° 得朝左
+                p.translate(self.width(), self.height())
+                p.rotate(180)
+            draw_chevron(p, QRectF(0.0, 0.0, float(self.width()),
+                                   float(self.height())),
+                         style.qcolor("text_mute"), 1.6)
+        finally:
+            p.end()
 
 
 class _FormulaCompleter(QCompleter):
@@ -465,9 +503,8 @@ class CalcSheetView(QWidget):
 
         bar = QHBoxLayout()
         bar.setSpacing(8)
-        self.btn_toggle_list = QPushButton("≪")
-        self.btn_toggle_list.setFixedWidth(28)
-        self.btn_toggle_list.setToolTip("收起左侧表格列表，把空间让给网格")
+        self.btn_toggle_list = ChevronButton(
+            tooltip="收起左侧表格列表，把空间让给网格")
         self.btn_toggle_list.clicked.connect(self._toggle_list)
         bar.addWidget(self.btn_toggle_list)
         self.btn_view_mode = QPushButton("查看")
@@ -629,8 +666,7 @@ class CalcSheetView(QWidget):
         # 左栏折叠状态记忆
         if _pref("calc_list_collapsed", False):
             self.left_widget.setVisible(False)
-            self.btn_toggle_list.setText("≫")
-            self.btn_toggle_list.setToolTip("展开左侧表格列表")
+            self.btn_toggle_list.set_direction(False, "展开左侧表格列表")
 
         self._set_mode(False)
         self._reload_list()
@@ -739,9 +775,8 @@ class CalcSheetView(QWidget):
     def _toggle_list(self) -> None:
         vis = not self.left_widget.isVisible()
         self.left_widget.setVisible(vis)
-        self.btn_toggle_list.setText("≪" if vis else "≫")
-        self.btn_toggle_list.setToolTip(
-            "收起左侧表格列表，把空间让给网格" if vis else "展开左侧表格列表")
+        self.btn_toggle_list.set_direction(
+            vis, "收起左侧表格列表，把空间让给网格" if vis else "展开左侧表格列表")
         _pref_set("calc_list_collapsed", not vis)
         if vis:
             self.split.setSizes([220, 1000])
@@ -887,6 +922,10 @@ class CalcSheetView(QWidget):
             item.setToolTip(str(raw))
             if isinstance(v, ErrVal):
                 item.setForeground(QBrush(style.qcolor("neg_fg")))
+                if v.msg:
+                    # 悬停可见根因：#SYSERR! 这类非预期错误尤其需要，否则只有一个错误码，
+                    # 排查时无从下手（如何排障请看 %LOCALAPPDATA%/lawfirm_app/logs/app_debug.log）
+                    item.setToolTip(f"{raw}\n\n{v.msg}")
             elif isinstance(v, (int, float)):
                 item.setTextAlignment(Qt.AlignmentFlag.AlignRight
                                       | Qt.AlignmentFlag.AlignVCenter)

@@ -27,6 +27,7 @@ from typing import Dict, Optional
 
 from app.db import get_conn
 from app.engine import person_settlement as _ps
+from app.engine.calc_formula import CalcDataFailure
 
 # 指标注册表：name -> 口径说明（UI 下拉/文档共用；数据驱动，加指标=加一条）
 BUILTIN_INDICATORS: Dict[str, str] = {
@@ -52,8 +53,24 @@ _ALIASES = {"已收净额": "收款净额"}
 MONTHS = list(range(1, 13))
 
 
-class CalcDataError(Exception):
-    """DATA() 取数失败（由公式引擎转成对应错误值）。"""
+class CalcDataError(CalcDataFailure):
+    """DATA() 取数失败（由公式引擎转成对应错误值）。
+
+    继承 `calc_formula.CalcDataFailure` 这个标记基类 → 引擎认得出它是**业务错误**，
+    呈现 `#REF!`；而到不了这里的崩溃（表结构缺失等）会走 `#SYSERR!` + 告警。
+    """
+
+    unexpected = False
+
+
+class CalcDataUnexpectedError(CalcDataError):
+    """取数过程中冒出的**非预期**异常（sqlite3.Error / 类型错误 / 其它崩溃）。
+
+    由下面的 `_wrap_unexpected()` 统一包一层：带上 职工/指标/账期 上下文，
+    并把 `__cause__` 指回原始异常，便于排障。
+    """
+
+    unexpected = True
 
 
 class AmbiguousPersonError(CalcDataError):
@@ -62,6 +79,13 @@ class AmbiguousPersonError(CalcDataError):
 
 class UnknownIndicatorError(CalcDataError):
     """指标名不存在（既非内置也非自定义）。"""
+
+
+def _wrap_unexpected(exc: BaseException, ctx: str) -> CalcDataUnexpectedError:
+    """把非 CalcDataError 的崩溃包成 CalcDataUnexpectedError（保留 __cause__）。"""
+    err = CalcDataUnexpectedError(f"{ctx} | {type(exc).__name__}: {exc}")
+    err.__cause__ = exc
+    return err
 
 
 def builtin_names() -> list:
@@ -93,7 +117,14 @@ class CalcData:
             raise AmbiguousPersonError(f"职工姓名重名：{person}")
         key = (person, indicator, int(year), month)
         if key not in self._cache:
-            self._cache[key] = round(self._compute(person, indicator, int(year), month), 2)
+            ctx = f"职工={person!r} 指标={indicator!r} 年={year} 月={month}"
+            try:
+                value = self._compute(person, indicator, int(year), month)
+            except CalcDataError:      # 业务错误（未知指标/重名/非法月份）原样上抛
+                raise
+            except Exception as e:     # 非预期：表结构缺失、驱动错误、后续 RP bug
+                raise _wrap_unexpected(e, ctx) from e
+            self._cache[key] = round(value, 2)
         return self._cache[key]
 
     # ---------- 重名检测 ----------

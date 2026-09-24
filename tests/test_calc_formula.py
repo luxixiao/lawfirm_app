@@ -10,17 +10,23 @@ sys.path.insert(0, str(ROOT))
 
 from app.engine.calc_formula import (  # noqa: E402
     Engine, CellProvider, ErrVal, classify_cell, a1_to_rc, rc_to_a1, is_err,
-    Parser, _parse_ref_part,
+    Parser, _parse_ref_part, CalcDataFailure, ERR_UNEXPECTED,
 )
 from app.engine.calc_ast_render import render
 
 
+class _BizErr(CalcDataFailure):
+    """模拟 calc_data.CalcDataError（业务错误）：没有 unexpected 标记 → 走 #REF!。"""
+
+
 class FakeProvider(CellProvider):
-    def __init__(self, cells=None, params=None, data=None, sheets=("Sheet1", "Sheet2")):
+    def __init__(self, cells=None, params=None, data=None, sheets=("Sheet1", "Sheet2"),
+                 data_error=None):
         self.cells = cells or {}        # (sheet, r0, c0) -> raw
         self.params = params or {}      # (sheet, name) -> value
         self.data_map = data or {}      # (person, indicator, year, month) -> value
         self.sheets = set(sheets)
+        self.data_error = data_error    # 取数时要抛的异常（测错误分流用）
 
     def raw_cell(self, sheet, r, c):
         raw = self.cells.get((sheet, r, c), "")
@@ -30,14 +36,16 @@ class FakeProvider(CellProvider):
         return self.params.get((sheet, name))
 
     def data(self, person, indicator, year, month):
+        if self.data_error is not None:
+            raise self.data_error
         return self.data_map[(person, indicator, year, month)]
 
     def has_sheet(self, sheet):
         return sheet in self.sheets
 
 
-def make_engine(cells=None, params=None, data=None):
-    return Engine(FakeProvider(cells, params, data), "Sheet1")
+def make_engine(cells=None, params=None, data=None, **kw):
+    return Engine(FakeProvider(cells, params, data, **kw), "Sheet1")
 
 
 def run(src, **kw):
@@ -157,8 +165,19 @@ def main() -> int:
           run('=DATA(A1,"业务收入",2025,1)',
               cells={("Sheet1", 0, 0): "周立生"}, data=dt), 1234.5)
     check("DATA 月份非法", run('=DATA("周立生","业务收入",2025,13)', data=dt), "#VALUE!")
-    check("DATA 取数失败→#REF!",
-          run('=DATA("无名","开票金额",2025,1)'), "#REF!")
+    # --- DATA 错误分流：业务错误 vs 非预期崩溃（2026-09-25 新增）---
+    # 以前一视同仁兜成 #REF!，导致「少了一个迁移列」这类致命问题
+    # 在网格里看起来只是普通的引用断开（见 _smoke_calc_export 的 DATA 假红事故）。
+    check("DATA 业务错误（CalcDataFailure）→#REF!",
+          run('=DATA("周立生","业务收入",2025,1)',
+              data_error=_BizErr("未知指标：业务收入")), "#REF!")
+    syserr = run('=DATA("无名","开票金额",2025,1)')   # KeyError：非业务异常
+    check("DATA 非预期崩溃→#SYSERR!", syserr, ERR_UNEXPECTED)
+    _msg = getattr(syserr, "msg", "")
+    check("SYSERR msg 含职工上下文", "职工='无名'" in _msg, True)
+    check("SYSERR msg 含指标上下文", "指标='开票金额'" in _msg, True)
+    check("SYSERR msg 含账期上下文", "账期=2025年1月" in _msg, True)
+    check("SYSERR msg 含原始异常类型", "KeyError" in _msg, True)
 
     # ===== 10. 未知函数 / 语法错 / 循环 =====
     check("未知函数→#NAME?", run("=NOSUCH(1)"), "#NAME?")
