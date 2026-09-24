@@ -12,6 +12,7 @@
 """
 from __future__ import annotations
 
+import copy
 import json
 import os
 import re
@@ -29,6 +30,8 @@ from app.engine import calc_sheet as cs
 from app.engine.calc_eval import CalcEvaluator
 from app.engine.calc_formula import ErrVal, classify_cell
 from app.engine.calc_nav import jump_to_boundary, nav_step
+from app.engine.calc_undo import (
+    CommandStack, EditCellCommand, ParamCommand, BulkCommand, snapshot)
 from app.exporter.calc_export import export_sheet, suggest_filename
 from app.ui.calc_dialogs import DataRefDialog, IndicatorManagerDialog, ParamDialog
 from app.ui import scale, style
@@ -145,6 +148,8 @@ class GridTable(QTableWidget):
         self.paste_callback = None  # Ctrl+V → TSV 值粘贴
         # 阶段1 键盘导航（G3）注入点：由 CalcSheetView 在 __init__ 末尾赋值
         self.clear_callback = None       # 无参：清空当前/选中格（编辑模式内判断）
+        self.undo_callback = None        # Ctrl+Z（导航态）
+        self.redo_callback = None        # Ctrl+Y / Ctrl+Shift+Z（导航态）
         self.bounds_provider = None      # () -> (rows, cols)
         self.occupied_provider = None    # () -> set["r,c"] 有数据格
 
@@ -169,6 +174,17 @@ class GridTable(QTableWidget):
         mods = event.modifiers()
         ctrl = bool(mods & Qt.KeyboardModifier.ControlModifier)
         shift = bool(mods & Qt.KeyboardModifier.ShiftModifier)
+        # Ctrl+Z 撤销 / Ctrl+Y 或 Ctrl+Shift+Z 重做（仅导航态；编辑态交 QLineEdit 自管输入撤销，B3）
+        if ctrl and key == Qt.Key.Key_Z and not shift:
+            if self.undo_callback is not None:
+                self.undo_callback()
+            event.accept()
+            return
+        if ctrl and (key == Qt.Key.Key_Y or (key == Qt.Key.Key_Z and shift)):
+            if self.redo_callback is not None:
+                self.redo_callback()
+            event.accept()
+            return
         rows, cols = self._nav_bounds()
         # Del / Backspace：清空当前格或选中区（只读拒绝在 clear_callback 内判断）
         if key in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
@@ -262,6 +278,7 @@ class CalcSheetView(QWidget):
         self.content: dict = {}
         self.edit_mode: bool = False
         self._filling = False
+        self.stack = CommandStack()
 
         root = QVBoxLayout(self)
         root.setContentsMargins(28, 24, 28, 20)
@@ -344,6 +361,16 @@ class CalcSheetView(QWidget):
         bar.addWidget(self.btn_param)
         bar.addWidget(self.btn_ind)
         bar.addWidget(self.btn_export)
+        self.btn_undo = QPushButton("撤销")
+        self.btn_undo.setToolTip("撤销上一步（Ctrl+Z）；切换表后清空")
+        self.btn_undo.setEnabled(False)
+        self.btn_undo.clicked.connect(self._on_undo)
+        self.btn_redo = QPushButton("重做")
+        self.btn_redo.setToolTip("重做（Ctrl+Y / Ctrl+Shift+Z）；切换表后清空")
+        self.btn_redo.setEnabled(False)
+        self.btn_redo.clicked.connect(self._on_redo)
+        bar.addWidget(self.btn_undo)
+        bar.addWidget(self.btn_redo)
         bar.addStretch(1)
         self.lbl_zoom = QLabel("100%")
         self.lbl_zoom.setToolTip("Ctrl+滚轮缩放网格（60%~200%），按表记忆；点「复位」回到 100%")
@@ -395,6 +422,8 @@ class CalcSheetView(QWidget):
             int(self.content.get("rows") or 0), int(self.content.get("cols") or 0))
         self.table.occupied_provider = lambda: set((self.content.get("cells") or {}).keys())
         self.table.clear_callback = self._clear_selected_cells
+        self.table.undo_callback = self._on_undo
+        self.table.redo_callback = self._on_redo
 
         rv.addWidget(self.table, 1)
         # 基准行高（标准字号、缩放 100% 时），供缩放派生
@@ -468,6 +497,8 @@ class CalcSheetView(QWidget):
         self._comp_model.setStringList(items)
 
     def _load_sheet(self) -> None:
+        self.stack.clear()
+        self._update_undo_buttons()
         self.fx.clear()
         self.lbl_cell.clear()
         self._corrupt = False
@@ -706,6 +737,60 @@ class CalcSheetView(QWidget):
         self._write_cell(r, c, self.fx.text())
 
     # ------------------------------------------------------------------ #
+    # 撤销 / 重做（阶段2 命令栈，G1）
+    # ------------------------------------------------------------------ #
+    def _commit_command(self, cmd) -> None:
+        """统一提交命令（B2）：apply 返回新 content → 保存重算 → 入栈 → 按钮刷新 → 焦点回锚点。"""
+        if self.sheet_id is None or getattr(self, "_corrupt", False):
+            return
+        # B1：命令 apply 返回新 content，绝不在原 content 上就地改
+        self.content = cmd.apply(self.content)
+        self._recalc_fill()
+        self.stack.push(cmd)
+        self._update_undo_buttons()
+        anchor = cmd.anchor()
+        if anchor:
+            r, c = anchor
+            if 0 <= r < self.table.rowCount() and 0 <= c < self.table.columnCount():
+                self.table.setCurrentCell(r, c)
+
+    def _on_undo(self) -> None:
+        if self.sheet_id is None:
+            return
+        cmd = self.stack.undo()
+        if cmd is None:  # B7：空栈 no-op
+            return
+        self.content = cmd.revert(self.content)
+        self._recalc_fill()
+        self._update_undo_buttons()
+        anchor = cmd.anchor()
+        if anchor:
+            r, c = anchor
+            if 0 <= r < self.table.rowCount() and 0 <= c < self.table.columnCount():
+                self.table.setCurrentCell(r, c)
+
+    def _on_redo(self) -> None:
+        if self.sheet_id is None:
+            return
+        cmd = self.stack.redo()
+        if cmd is None:  # B7：空栈 no-op
+            return
+        self.content = cmd.apply(self.content)
+        self._recalc_fill()
+        self._update_undo_buttons()
+        anchor = cmd.anchor()
+        if anchor:
+            r, c = anchor
+            if 0 <= r < self.table.rowCount() and 0 <= c < self.table.columnCount():
+                self.table.setCurrentCell(r, c)
+
+    def _update_undo_buttons(self) -> None:
+        if not hasattr(self, "btn_undo"):
+            return
+        self.btn_undo.setEnabled(self.stack.can_undo())
+        self.btn_redo.setEnabled(self.stack.can_redo())
+
+    # ------------------------------------------------------------------ #
     # 编辑
     # ------------------------------------------------------------------ #
     def _set_mode(self, edit: bool) -> None:
@@ -740,12 +825,16 @@ class CalcSheetView(QWidget):
     def _on_params(self) -> None:
         if self.sheet_id is None:
             return
+        before = copy.deepcopy(self.content.get("params") or {})
         dlg = ParamDialog(self.content.get("params") or {}, parent=self)
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
-        self.content["params"] = dlg.params
+        after = copy.deepcopy(dlg.params)
+        if before == after:
+            self._refresh_completer()
+            return
+        self._commit_command(ParamCommand(before=before, after=after))
         self._refresh_completer()
-        self._recalc_fill()
 
     def _on_indicators(self) -> None:
         dlg = IndicatorManagerDialog(self)
@@ -786,16 +875,18 @@ class CalcSheetView(QWidget):
         self._write_cell(item.row(), item.column(), item.text())
 
     def _write_cell(self, r: int, c: int, text: str) -> None:
-        """用户编辑提交：更新 content → 保存 → 重算刷新。"""
-        if r < 0 or c < 0:
+        """用户编辑提交：构造单格命令（B1 纯逆操作）→ 提交栈（不直接改 content）。"""
+        if r < 0 or c < 0 or not self.edit_mode or self.sheet_id is None:
             return
-        cells = self.content.setdefault("cells", {})
+        key = f"{r},{c}"
         text = (text or "").strip()
-        if text:
-            cells[f"{r},{c}"] = {"raw": text, "kind": classify_cell(text)}
-        else:
-            cells.pop(f"{r},{c}", None)
-        self._recalc_fill()
+        cells = self.content.get("cells") or {}
+        before = cells.get(key)
+        before = copy.deepcopy(before) if before else None
+        after = {"raw": text, "kind": classify_cell(text)} if text else None
+        if before == after:  # 值无变化不记命令（避免无意义撤销项）
+            return
+        self._commit_command(EditCellCommand(key=key, before=before, after=after))
 
     def _clear_selected_cells(self) -> None:
         """Del/Backspace（导航态、编辑模式）：清空当前格或选中区，不进编辑。"""
@@ -812,17 +903,27 @@ class CalcSheetView(QWidget):
                 targets.add((r, c))
         if not targets:
             return
+        before = snapshot(self.content)
         cells = self.content.setdefault("cells", {})
         for (r, c) in targets:
             cells.pop(f"{r},{c}", None)
-        self._recalc_fill()
+        after = snapshot(self.content)
+        if before == after:
+            return
+        r, c = self.table.currentRow(), self.table.currentColumn()
+        anchor_key = f"{r},{c}" if r >= 0 and c >= 0 else None
+        self._commit_command(BulkCommand(before=before, after=after, anchor_key=anchor_key))
 
     def _grow(self, d_rows: int, d_cols: int) -> None:
         if self.sheet_id is None or not self.edit_mode:
             return
+        before = snapshot(self.content)
         self.content["rows"] = int(self.content.get("rows") or 0) + d_rows
         self.content["cols"] = int(self.content.get("cols") or 0) + d_cols
-        self._recalc_fill()
+        after = snapshot(self.content)
+        if before == after:
+            return
+        self._commit_command(BulkCommand(before=before, after=after))
 
     # ------------------------------------------------------------------ #
     # TSV 粘贴（值粘贴，spec §11.5）
@@ -836,6 +937,7 @@ class CalcSheetView(QWidget):
         r0, c0 = self.table.currentRow(), self.table.currentColumn()
         if r0 < 0 or c0 < 0:
             r0, c0 = 0, 0
+        before = snapshot(self.content)
         cells = self.content.setdefault("cells", {})
         rows = clip.replace("\r\n", "\n").rstrip("\n").split("\n")
         for dr, line in enumerate(rows):
@@ -850,7 +952,10 @@ class CalcSheetView(QWidget):
                     cells[f"{r},{c}"] = {"raw": val, "kind": classify_cell(val)}
                 else:
                     cells.pop(f"{r},{c}", None)
-        self._recalc_fill()
+        after = snapshot(self.content)
+        if before == after:
+            return
+        self._commit_command(BulkCommand(before=before, after=after, anchor_key=f"{r0},{c0}"))
 
     # ------------------------------------------------------------------ #
     # 新建 / 复制 / 删除

@@ -31,6 +31,7 @@ EXPECTED_FILES = [
     "tests/test_calc_ast_render.py",    # 阶段0：AST→文本反向序列化器
     "tests/test_calc_ref_rewrite.py",   # 阶段0：引用重写（shift/translate，供 G2/G4）
     "tests/test_calc_nav.py",           # 阶段1：键盘导航纯逻辑（jump_to_boundary/nav_step）
+    "tests/test_calc_undo.py",          # 阶段2：撤销/重做命令栈（EditCell/Param/Bulk + CommandStack）
     "tests/test_calc_sheet.py",
     "tests/test_conn_hygiene.py",          # P1-2：连接卫生 AST 门禁（规则 A/B）
     "tests/test_deferred_sheet3.py",
