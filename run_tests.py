@@ -41,6 +41,7 @@ EXPECTED_FILES = [
     "tests/test_expense_edit.py",          # T4 新增（详情页保存内核）
     "tests/test_header_norm.py",
     "tests/test_column_layout_resize.py",  # P2-2：列布局 Resize 120ms 防抖
+    "tests/test_column_layout_state_cache.py",  # P2 增强：apply 状态缓存（省 QSettings 读）
     "tests/test_snapshot_policy.py",       # P2-3：导入前快照策略 + 孤儿清扫
     "tests/test_review_refresh_idempotent.py",  # P2-4：复核页 refresh 脏签名短路
     "tests/test_wal_startup_checkpoint.py",      # P3-1：启动时 WAL TRUNCATE checkpoint

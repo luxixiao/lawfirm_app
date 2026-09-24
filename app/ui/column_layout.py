@@ -295,6 +295,21 @@ class TableColumnLayout(QObject):
         self._resize_timer.setSingleShot(True)
         self._resize_timer.setInterval(120)
         self._resize_timer.timeout.connect(self._apply_on_resize)
+        # P2 增强：apply 复用布局状态——mgr.load 每次都做 QSettings 读 + json.loads，
+        # 而 apply 是热路径（渲染/防抖到期都调）。缓存后任一 save 路径
+        # （拖宽/挪列/冻结/列设置）即失效，保证下次 apply 重读最新状态。
+        self._state_cache: Optional[dict] = None
+        self._state_keys: Optional[List[str]] = None
+
+    def _state(self, keys: List[str]) -> dict:
+        if self._state_cache is None or self._state_keys != keys:
+            self._state_cache = self.mgr.load(keys)
+            self._state_keys = list(keys)
+        return self._state_cache
+
+    def _invalidate_state(self) -> None:
+        self._state_cache = None
+        self._state_keys = None
 
     # ---------- 入口 ----------
     def install(self) -> "TableColumnLayout":
@@ -346,7 +361,8 @@ class TableColumnLayout(QObject):
             self.content_w = self.mgr.measure_content_widths(self.table, keys)
         self._applying = True
         try:
-            self.mgr.apply(self.table, keys, self.content_w, sorted_col=self._sort_col)
+            self.mgr.apply(self.table, keys, self.content_w,
+                           sorted_col=self._sort_col, state=self._state(keys))
         finally:
             self._applying = False
 
@@ -360,7 +376,8 @@ class TableColumnLayout(QObject):
         state["order"] = [keys[hdr.logicalIndex(v)] for v in range(self.table.columnCount())]
         parent = self.table.window()
         if open_column_settings(parent, self.mgr, keys, state, self.content_w, movable=self._movable):
-            # 应用后重新测量（显隐/顺序/宽度变了），再填充
+            # 应用后重新测量（显隐/顺序/宽度变了），再填充；列设置可能改过存档 → 缓存失效
+            self._invalidate_state()
             self.content_w = self.mgr.measure_content_widths(self.table, keys)
             self._applying = True
             try:
@@ -379,6 +396,7 @@ class TableColumnLayout(QObject):
         state = self.mgr.load(keys)
         state["order"] = order
         self.mgr.save(state)
+        self._invalidate_state()
 
     def _on_resized(self, logical: int, _old: int, new_w: int) -> None:
         """用户手动调列宽：记为 fixed 宽度（程序化重填触发的 resize 由 _applying 屏蔽，不重复标记）。"""
@@ -388,9 +406,10 @@ class TableColumnLayout(QObject):
             return
         keys = self._keys()
         if 0 <= logical < len(keys):
-            state = self.mgr.load(keys)
+            state = self._state(keys)
             state["widths"][keys[logical]] = int(new_w)
             self.mgr.save(state)
+            self._invalidate_state()
             self.apply(remeasure=False)
 
     def _on_context_menu(self, pos: QPoint) -> None:
@@ -444,6 +463,7 @@ class TableColumnLayout(QObject):
             # 解冻任一列 → 解除全部列的冻结
             state["frozen"] = {k: False for k in state["frozen"]}
         self.mgr.save(state)
+        self._invalidate_state()  # 冻结改动已存档，下次 apply 重读
         self.content_w = self.mgr.measure_content_widths(self.table, keys)
         self._applying = True
         try:

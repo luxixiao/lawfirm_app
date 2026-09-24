@@ -142,6 +142,118 @@ def main() -> int:
     finally:
         env.close()
 
+    # ===== 4. zip 快照 + 恢复 + P3-3 先删后拷 =====
+    import shutil as _shutil
+    from pathlib import Path as _P
+
+    env = _Env()
+    try:
+        c = env._conn()
+        c.execute("INSERT INTO staff (name, staff_type, is_active) VALUES ('v1','聘用',1)")
+        c.commit()
+        c.close()
+        sid = snap.save_snapshot("zip1", "手动")
+        c = env._conn()
+        bp = c.execute("SELECT db_backup FROM snapshot WHERE id=?", (sid,)).fetchone()[0]
+        c.close()
+        check("zip 快照落盘（lawfirm.db.zip）", bp.endswith(".zip") and os.path.exists(bp), bp)
+        sdir = _P(bp).parent
+        check("目录内只有 zip（无裸 db）",
+              [p.name for p in sdir.iterdir()] == ["lawfirm.db.zip"],
+              f"{[p.name for p in sdir.iterdir()]}")
+
+        # 修改库 → 从 zip 恢复 → 内容回到 v1
+        c = env._conn()
+        c.execute("UPDATE staff SET name='v2'")
+        c.commit()
+        c.close()
+        msg = snap.restore_snapshot(sid)
+        c = env._conn()
+        name = c.execute("SELECT name FROM staff").fetchone()[0]
+        c.close()
+        check("zip 恢复成功（v2→v1）", name == "v1" and "已恢复" in msg, f"name={name}")
+
+        # 旧目录快照（裸 lawfirm.db）仍可恢复（向后兼容）
+        old_dir = env.snap_root / "20250101_000000_old"
+        old_dir.mkdir(parents=True)
+        _shutil.copy2(env.db_path, old_dir / "lawfirm.db")
+        c = env._conn()
+        c.execute("INSERT INTO snapshot(name, created_at, db_backup, note) VALUES(?,?,?,?)",
+                  ("旧格式", "2025-01-01 00:00:00", str(old_dir / "lawfirm.db"), "手动"))
+        old_id = c.execute("SELECT id FROM snapshot WHERE name='旧格式'").fetchone()[0]
+        c.execute("UPDATE staff SET name='v3'")
+        c.commit()
+        c.close()
+        msg = snap.restore_snapshot(old_id)
+        c = env._conn()
+        name = c.execute("SELECT name FROM staff").fetchone()[0]
+        c.close()
+        check("旧目录快照仍可恢复", name == "v1" and "已恢复" in msg, f"name={name}")
+
+        # P3-3：顺序验证——删 -wal/-shm 必须发生在覆盖主库（copy2）之前。
+        # 实测：正常路径 sqlite close 即清 wal/shm（unlink 只是崩溃残留的保险），
+        # 故 patch Path.exists 让 -wal/-shm 分支被走到（unlink 记录器真实调用）。
+        # 注意：restore 是整库覆盖（snapshot 表也回到存档时点），上一步 legacy
+        # 恢复后表已空——重插一行指向现存 zip。
+        c = env._conn()
+        c.execute("INSERT INTO snapshot(name, created_at, db_backup, note) VALUES(?,?,?,?)",
+                  ("zip1b", "2025-01-01 00:00:00", bp, "手动"))
+        sid2 = c.execute("SELECT id FROM snapshot WHERE name='zip1b'").fetchone()[0]
+        c.commit()
+        c.close()
+        events: list = []
+        orig_unlink = _P.unlink
+        orig_exists = _P.exists
+        orig_copy2 = snap.shutil.copy2
+
+        def rec_unlink(self, *a, **k):
+            events.append("unlink:" + self.name)
+            return orig_unlink(self, *a, **k)
+
+        def rec_exists(self):
+            if self.name.endswith(("-wal", "-shm")):
+                return True
+            return orig_exists(self)
+
+        def rec_copy2(src, dst, *a, **k):
+            events.append("copy2")
+            return orig_copy2(src, dst, *a, **k)
+
+        _P.unlink = rec_unlink
+        _P.exists = rec_exists
+        snap.shutil.copy2 = rec_copy2
+        try:
+            msg = snap.restore_snapshot(sid2)
+        finally:
+            _P.unlink = orig_unlink
+            _P.exists = orig_exists
+            snap.shutil.copy2 = orig_copy2
+        try:
+            first_copy = events.index("copy2")
+            wal_idx = [i for i, e in enumerate(events[:first_copy]) if e.startswith("unlink:")]
+            check("P3-3 删 wal 先于覆盖主库", bool(wal_idx), f"events={events}")
+            check("P3-3 恢复成功", "已恢复" in msg, f"msg={msg!r}")
+        except ValueError:
+            check("P3-3 删 wal 先于覆盖主库", False, f"events={events}")
+
+        # copy2 失败（文件被占用）→ 占用提示；主库未被覆盖（copy2 抛错即未写入）。
+        # 注意：上一步 restore 已把 snapshot 表整库覆盖回 zip 存档时点（空表），
+        # 须重插一行指向现存 zip。
+        c = env._conn()
+        c.execute("INSERT INTO snapshot(name, created_at, db_backup, note) VALUES(?,?,?,?)",
+                  ("zip1c", "2025-01-01 00:00:00", bp, "手动"))
+        sid3 = c.execute("SELECT id FROM snapshot WHERE name='zip1c'").fetchone()[0]
+        c.commit()
+        c.close()
+        snap.shutil.copy2 = lambda *a, **k: (_ for _ in ()).throw(PermissionError(13, "denied"))
+        try:
+            msg = snap.restore_snapshot(sid3)
+        finally:
+            snap.shutil.copy2 = orig_copy2
+        check("copy2 占用走提示", "被占用" in msg, f"msg={msg!r}")
+    finally:
+        env.close()
+
     print(f"PASS {OK} checks" if not FAILS else "FAILED:\n" + "\n".join(FAILS))
     return 0 if not FAILS else 1
 

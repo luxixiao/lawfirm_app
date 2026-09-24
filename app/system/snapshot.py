@@ -1,8 +1,15 @@
-"""快照：保存 / 恢复 / 删除（手动 + 导入前自动）"""
+"""快照：保存 / 恢复 / 删除（手动 + 导入前自动）
+
+P2 增强：快照以 zip 存储（`lawfirm.db.zip`，DEFLATED 压缩）——SQLite 库文件
+压缩率高，可省约 60~70% 磁盘。restore 兼容两种格式：zip（新）与
+`lawfirm.db` 裸文件目录（旧快照，恢复路径不变）。
+"""
 from __future__ import annotations
 
 import os
 import shutil
+import tempfile
+import zipfile
 from datetime import datetime
 from pathlib import Path
 
@@ -28,8 +35,9 @@ def save_snapshot(name: str, note: str = "", auto: bool = False) -> int:
     ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")  # 毫秒级，避免目录撞名
     dest_dir = SNAP_ROOT / ts
     dest_dir.mkdir(parents=True, exist_ok=True)
-    dest = dest_dir / "lawfirm.db"
-    shutil.copy2(DB_PATH, dest)
+    dest = dest_dir / "lawfirm.db.zip"
+    with zipfile.ZipFile(dest, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.write(DB_PATH, "lawfirm.db")
 
     conn = get_conn()
     try:
@@ -85,11 +93,21 @@ def restore_snapshot(snap_id: int) -> str:
             raise FileNotFoundError(f"快照文件缺失: {src}")
         # 关闭所有连接（SQLite 短连接已关闭，此处确保 checkpoint 后无写事务）
         conn.close()
-        shutil.copy2(src, DB_PATH)
+        # P3-3：先删 -wal/-shm 再覆盖主库。此刻 wal 已被 TRUNCATE 为空文件（内容
+        # 已并入主库），先删无副作用；若文件被占用（PermissionError）→ 主库尚未
+        # 被覆盖，不会留下「新主库 + 旧 wal」的半程状态，直接走占用提示。
         for suffix in ("-wal", "-shm"):
             p = Path(str(DB_PATH) + suffix)
             if p.exists():
                 p.unlink(missing_ok=True)
+        if src.suffix == ".zip":
+            # P2 增强：zip 快照 → 解到临时目录再覆盖（旧目录快照走原路径）
+            with tempfile.TemporaryDirectory(prefix="snap_restore_") as td:
+                with zipfile.ZipFile(src) as zf:
+                    zf.extractall(td)
+                shutil.copy2(Path(td) / "lawfirm.db", DB_PATH)
+        else:
+            shutil.copy2(src, DB_PATH)
         return f"已恢复到快照「{row['name']}」。\n请在导入记录页确认数据，建议重启应用。"
     except PermissionError:
         return "恢复失败：数据库文件被占用。请关闭应用后重新打开，再执行恢复。"
