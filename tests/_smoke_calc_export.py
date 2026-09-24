@@ -15,15 +15,14 @@ TMP = Path(tempfile.mkdtemp(prefix="calc_exp_smoke_")) / "smoke.db"
 import app.db as appdb  # noqa: E402
 appdb.DB_PATH = TMP
 
-from app.db import SCHEMA  # noqa: E402
 from app.engine import calc_sheet as cs  # noqa: E402
-from tests.test_calc_data import seed  # noqa: E402   复用业务种子数据
+from tests.test_calc_data import make_conn, seed  # noqa: E402
 
-conn = sqlite3.connect(TMP)
-conn.row_factory = sqlite3.Row
-conn.executescript(SCHEMA)
-for tbl in ("charge_detail", "expense_ledger"):
-    conn.execute(f"ALTER TABLE {tbl} ADD COLUMN person_type TEXT DEFAULT ''")
+# ⚠️ 必须用 make_conn()（它复刻了 init_db 的迁移列 person_type /
+# received_override / staff_type_def.is_settle / net_basis + ensure_defaults）。
+# 以前在这里手搓半套建库，漏了 is_settle ⇒ CalcData.get 抛 OperationalError
+# 被引擎兜成 #REF!，导致本脚本 DATA 三条长期假红（2026-09-25 定位）。
+conn = make_conn()
 seed(conn)
 conn.commit()
 
