@@ -442,6 +442,17 @@ class CalcSheetView(QWidget):
         btn_new.clicked.connect(self._on_new)
         btn_copy.clicked.connect(self._on_copy)
         btn_del.clicked.connect(self._on_delete)
+        # 阶段5 G10：重命名**单独一行**——左栏最小宽 200px，4 个按钮挤一行会超出宽度、
+        # 按钮文字被裁成空白（该类问题在左栏已有先例）。
+        lb2 = QHBoxLayout()
+        lb2.setSpacing(8)
+        self.btn_rename = QPushButton("重命名")
+        self.btn_rename.setToolTip(
+            "修改表名；其他表中对本表的引用（=表名!A1）会同步改写，防止断链成 #REF!")
+        lb2.addWidget(self.btn_rename)
+        lb2.addStretch(1)
+        lv.addLayout(lb2)
+        self.btn_rename.clicked.connect(self._on_rename)
         split.addWidget(left)
 
         # ---------------- 右：网格区 ----------------
@@ -1324,6 +1335,40 @@ class CalcSheetView(QWidget):
             return
         self._reload_list()
         self._select_id(sid)
+
+    def _on_rename(self) -> None:
+        """重命名表（阶段5 G10）：改名 + 同步重写全库跨表引用，防他表断链成 #REF!。"""
+        if self.sheet_id is None:
+            return
+        rec = cs.get_sheet(self.sheet_id)
+        old_name = rec["name"] if rec else ""
+        name, ok = QInputDialog.getText(
+            self, "重命名计算表",
+            "新表名（禁空格/!、禁 A1 样式）。改名会同步更新其他表中对本表的引用，"
+            "避免引用断链变成 #REF!：",
+            text=old_name)
+        if not ok:
+            return
+        name = (name or "").strip()
+        if not name or name == old_name:
+            return
+        err = cs.validate_sheet_name(name)
+        if err:
+            QMessageBox.warning(self, "重命名失败", err)
+            return
+        try:
+            changed = cs.rename_sheet(self.sheet_id, name, updated_by=_user())
+        except cs.CalcSheetError as e:
+            QMessageBox.warning(self, "重命名失败", str(e))
+            return
+        except Exception as e:  # noqa: BLE001
+            QMessageBox.warning(self, "重命名失败", str(e))
+            return
+        self._reload_list()   # 按 id 保持选中，改名后仍停在这张表
+        tip = f"已重命名为「{name}」"
+        if changed:
+            tip += f"，并同步更新了 {changed} 张表中的跨表引用"
+        self.lbl_hint.setText(tip)
 
     def _on_delete(self) -> None:
         if self.sheet_id is None:

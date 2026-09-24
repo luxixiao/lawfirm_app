@@ -35,6 +35,55 @@ def translate_refs(formula: str, dr: int, dc: int) -> str:
     return _rewrite(formula, _make_translate_T(dr, dc))
 
 
+def rename_sheet_refs(formula: str, old: str, new: str) -> str:
+    """把公式中指向 old 表的**跨表引用**整体改成 new 表（阶段5 G10）。
+
+    为什么**不能**纯文本替换 `Old!`→`New!`（阶段5 评估 B1）：
+      - 误伤字符串字面量：文本格 `="Old!A1"` 会被改成 `="New!A1"`；
+      - 前缀误判：old="Old" 时 `=Old2!A1` 会被改成 `=New2!A1`。
+    因此走 parse → 只改 CellRef / RangeRef / _SheetParam 的 sheet 属性 → render。
+    本地引用（sheet is None）、他表引用、绝对引用**均不动**；解析失败原样返回。
+
+    匹配为**精确匹配**（大小写敏感）——与 CalcEvaluator.has_sheet 的精确查表保持一致。
+    """
+    has_eq = formula.startswith("=")
+    body = formula[1:] if has_eq else formula
+    try:
+        ast = Parser(body).parse()
+    except ParseError:
+        return formula
+    return ("=" if has_eq else "") + render(_walk_rename(ast, old, new))
+
+
+def _walk_rename(node, old: str, new: str):
+    """递归改写指向 old 的跨表引用。
+
+    **不能复用 `_walk`**：它在 `node.sheet is not None` 时直接原样返回（跨表不平移），
+    而这里恰恰**只**改跨表节点，语义相反，故单独一支。
+    """
+    if isinstance(node, CellRef):
+        if node.sheet == old:
+            return CellRef(new, node.row0, node.col0, node.abs_row, node.abs_col)
+        return node
+    if isinstance(node, RangeRef):
+        if node.sheet == old:
+            return RangeRef(new, node.r1, node.c1, node.r2, node.c2,
+                            node.abs_r1, node.abs_c1, node.abs_r2, node.abs_c2)
+        return node
+    if isinstance(node, BinOp):
+        return BinOp(node.op, _walk_rename(node.l, old, new),
+                     _walk_rename(node.r, old, new))
+    if isinstance(node, UnaryOp):
+        return UnaryOp(node.op, _walk_rename(node.operand, old, new))
+    if isinstance(node, FuncCall):
+        return FuncCall(node.name, [_walk_rename(a, old, new) for a in node.args])
+    if isinstance(node, _SheetParam):
+        # Sheet!PARAM("x")：表前缀同样要跟着改名，否则该表参数取不到
+        return _SheetParam(new if node.sheet == old else node.sheet,
+                           [_walk_rename(a, old, new) for a in node.args])
+    return node
+
+
 # ---------------------------------------------------------------------------
 # 内部：通用改写骨架
 # ---------------------------------------------------------------------------

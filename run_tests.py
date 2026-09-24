@@ -33,6 +33,7 @@ EXPECTED_FILES = [
     "tests/test_calc_nav.py",           # 阶段1：键盘导航纯逻辑（jump_to_boundary/nav_step）
     "tests/test_calc_undo.py",          # 阶段2：撤销/重做命令栈（EditCell/Param/Bulk + CommandStack）
     "tests/test_calc_sheet.py",
+    "tests/test_calc_rename.py",           # 阶段5：重命名表 + 跨表引用重写（AST，含损坏表预检原子性）
     "tests/test_conn_hygiene.py",          # P1-2：连接卫生 AST 门禁（规则 A/B）
     "tests/test_deferred_sheet3.py",
     "tests/test_diag_gating.py",           # P2-1：诊断埋点默认关闭（LAWFIRM_DIAG 门控）

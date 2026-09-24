@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from app.db import get_conn
-from app.engine.calc_ref_rewrite import shift_refs, translate_refs
+from app.engine.calc_ref_rewrite import shift_refs, translate_refs, rename_sheet_refs
 
 CONTENT_VERSION = 1
 DEFAULT_ROWS = 50
@@ -421,24 +421,98 @@ def copy_sheet(src_id: int, new_name: str, updated_by: str = "", conn=None) -> i
             conn.close()
 
 
-def rename_sheet(sheet_id: int, new_name: str, updated_by: str = "", conn=None) -> None:
+def rename_sheet_refs_in_content(content: Dict, old: str, new: str) -> Dict:
+    """返回**新** content：把其中所有公式格里指向 old 的跨表引用改成 new。纯函数，不就地改。
+
+    只处理 raw 以 '=' 开头的格；改名不改变格的 kind（原是 formula 仍是 formula）。
+    文本/数字格、本地引用、他表引用一律不动（见 rename_sheet_refs 的精确匹配说明）。
+    """
+    new_content = copy.deepcopy(content)
+    cells = new_content.get("cells") or {}
+    if not isinstance(cells, dict):
+        return new_content
+    for cell in cells.values():
+        if not isinstance(cell, dict):
+            continue
+        raw = cell.get("raw")
+        if isinstance(raw, str) and raw.startswith("="):
+            cell["raw"] = rename_sheet_refs(raw, old, new)
+    return new_content
+
+
+def rename_sheet(sheet_id: int, new_name: str, updated_by: str = "", conn=None) -> int:
+    """改名 + **同步重写全库跨表引用**（阶段5 G10），单事务。返回内容被改动的表数。
+
+    为什么不能只改 name：他表里的 `=Old!A1` 靠表名解析（CalcEvaluator 按
+    name→content 装配，`has_sheet` 查不到即 `#REF!`），改名不重写会造成**静默错值**。
+
+    原子性（阶段5 评估 B2）：
+      - **先预检**所有表 content 能否解析；任一损坏 → 抛 CalcSheetError 整单中止，
+        此时**一个字节都没写**（杜绝"名已改、引用只改了一半"的不一致）；
+      - 改名 UPDATE 与各表 content UPDATE 同处**一个事务**，最后一次性 commit；
+        中途任何异常 → rollback。
+      - 只 UPDATE 内容**真的变了**的表，其余不动（不刷 updated_at，缩小 Seafile 同步面）。
+    """
     own = conn is None
     conn = conn or get_conn()
     try:
         err = validate_sheet_name(new_name)
         if err:
             raise CalcSheetError(err)
+        rows = conn.execute(
+            "SELECT id, name, content FROM calc_sheet ORDER BY id").fetchall()
+        target = next((r for r in rows if r["id"] == sheet_id), None)
+        if target is None:
+            raise CalcSheetError(f"表不存在：id={sheet_id}")
         dup = conn.execute("SELECT id FROM calc_sheet WHERE name=? AND id<>?",
                            (new_name, sheet_id)).fetchone()
         if dup:
             raise CalcSheetError(f"表名已存在：{new_name}")
-        cur = conn.execute(
-            """UPDATE calc_sheet SET name=?, updated_by=?,
-               updated_at=datetime('now','localtime') WHERE id=?""",
-            (new_name, updated_by, sheet_id))
-        if cur.rowcount == 0:
-            raise CalcSheetError(f"表不存在：id={sheet_id}")
-        conn.commit()
+        old_name = target["name"]
+        if old_name == new_name:
+            return 0
+
+        # --- 预检：任一表损坏 → 整单中止（P0-4 同向：宁可不动，也不半改）---
+        parsed: Dict[int, Dict] = {}
+        broken: List[str] = []
+        for r in rows:
+            raw = r["content"] or ""
+            try:
+                parsed[r["id"]] = json.loads(raw) if raw.strip() else {}
+            except json.JSONDecodeError:
+                broken.append(r["name"])
+        if broken:
+            raise CalcSheetError(
+                "以下表的内容已损坏（无法解析 JSON），为避免「改了名但引用没改全」"
+                f"已中止改名，未做任何改动：{'、'.join(broken)}")
+
+        # --- 单事务：改名 + 重写 ---
+        changed = 0
+        try:
+            cur = conn.execute(
+                """UPDATE calc_sheet SET name=?, updated_by=?,
+                   updated_at=datetime('now','localtime') WHERE id=?""",
+                (new_name, updated_by, sheet_id))
+            if cur.rowcount == 0:
+                raise CalcSheetError(f"表不存在：id={sheet_id}")
+            for r in rows:
+                src = parsed.get(r["id"]) or {}
+                if not isinstance(src, dict):
+                    continue
+                after = rename_sheet_refs_in_content(src, old_name, new_name)
+                if after == src:
+                    continue   # 无变化 → 不写、不刷 updated_at
+                normalize_content(after)
+                conn.execute(
+                    """UPDATE calc_sheet SET content=?, updated_by=?,
+                       updated_at=datetime('now','localtime') WHERE id=?""",
+                    (json.dumps(after, ensure_ascii=False), updated_by, r["id"]))
+                changed += 1
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        return changed
     finally:
         if own:
             conn.close()
