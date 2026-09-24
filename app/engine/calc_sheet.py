@@ -19,10 +19,10 @@ import json
 import os
 import re
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from app.db import get_conn
-from app.engine.calc_ref_rewrite import shift_refs
+from app.engine.calc_ref_rewrite import shift_refs, translate_refs
 
 CONTENT_VERSION = 1
 DEFAULT_ROWS = 50
@@ -201,6 +201,55 @@ def insert_col(content: Dict, at: int, delta: int = 1) -> Dict:
 def delete_col(content: Dict, at: int, delta: int = 1) -> Dict:
     """删除第 at 列（0 基）起的 delta 列，返回新 content。"""
     return _restructure(content, "col", at, delta, insert=False)
+
+
+# ---------------------------------------------------------------------------
+# 阶段4 G4：复制公式块 + 填充柄（纯逻辑，供 calc_sheet_view 调用）
+# ---------------------------------------------------------------------------
+
+def fill_map(source: Tuple[int, int, int, int], target: Tuple[int, int, int, int]):
+    """生成填充映射：yield (target_r, target_c, src_r, src_c)。
+
+    rect = (r0, c0, h, w)，均为 0 基正整数。
+    - 单格源 (h==1 and w==1)：每个目标格都映射到源格本身（逐格独立偏移）。
+    - 多格（块）源：目标 (tr,tc) 映射到源 (sr0+(tr-tr0)%sh, sc0+(tc-tc0)%sw)，
+      即按块尺寸取模重复（Excel 复制式填充：块整体平移 + 超出部分循环重复）。
+
+    偏移统一在调用侧算为 (tr - sr, tc - sc)：单格源得到逐格递增偏移，
+    块源得到整块常量偏移（tgt_origin - src_origin）。
+    """
+    sr0, sc0, sh, sw = source
+    tr0, tc0, th, tw = target
+    for dr in range(th):
+        for dc in range(tw):
+            tr, tc = tr0 + dr, tc0 + dc
+            if sh == 1 and sw == 1:
+                yield (tr, tc, sr0, sc0)
+            else:
+                yield (tr, tc, sr0 + (tr - tr0) % sh, sc0 + (tc - tc0) % sw)
+
+
+def fill_cells(cells: Dict, source_rect: Tuple[int, int, int, int],
+               target_rect: Tuple[int, int, int, int]) -> Dict[str, str]:
+    """按填充映射产出写入：{target_key: new_raw}。纯函数，不改动入参。
+
+    - 仅处理「源格有数据」的目标（D3：空白源格跳过，不误清目标已有数据）。
+    - 公式格按偏移 (tr-sr, tc-sc) 调 translate_refs 真平移相对引用；绝对/跨表不动。
+    - 平移后坐标越界（<0）由 translate_refs 返回 #REF!（G0-1 修复一致）。
+    """
+    out: Dict[str, str] = {}
+    for (tr, tc, sr, sc) in fill_map(source_rect, target_rect):
+        cell = cells.get(f"{sr},{sc}")
+        if not cell:
+            continue
+        raw = cell.get("raw")
+        if raw is None or raw == "":
+            continue
+        dr, dc = tr - sr, tc - sc
+        if str(raw).startswith("="):
+            raw = translate_refs(raw, dr, dc)
+        out[f"{tr},{tc}"] = raw
+    return out
 
 
 # ---------------------------------------------------------------------------

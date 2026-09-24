@@ -222,6 +222,38 @@ def main() -> int:
     check("G2 BulkCommand revert 回到 before", reverted["cols"] == 4
           and _raw(reverted, 1, 1) == "=B2")
 
+    # ===== 阶段4 G4：填充映射与块位移（纯逻辑） =====
+    # 单格源（1x1）：逐格独立偏移
+    f1 = {"0,0": {"raw": "=A1", "kind": "formula"}}
+    m = list(cs.fill_map((0, 0, 1, 1), (0, 0, 3, 1)))
+    check("G4 fill_map 单格源 3 目标", len(m) == 3)
+    fc = cs.fill_cells(f1, (0, 0, 1, 1), (0, 0, 3, 1))
+    check("G4 单格源下填 =A1→=A2/=A3", fc.get("1,0") == "=A2" and fc.get("2,0") == "=A3")
+    # 右填：=A1 从 B1 拖到 C1 → =B1
+    fc2 = cs.fill_cells(f1, (0, 0, 1, 1), (0, 0, 1, 2))
+    check("G4 单格源右填 =A1→=B1（C1 列）", fc2.get("0,1") == "=B1")
+    # 块源（2x2）取模重复：源 B2:C3，填充到 4x2 目标
+    f2 = {"1,1": {"raw": "=B2", "kind": "formula"},
+          "1,2": {"raw": "=C2", "kind": "formula"},
+          "2,1": {"raw": "=B3", "kind": "formula"},
+          "2,2": {"raw": "=C3", "kind": "formula"}}
+    fc3 = cs.fill_cells(f2, (1, 1, 2, 2), (1, 1, 4, 2))
+    check("G4 块源 前两行原样", fc3.get("1,1") == "=B2" and fc3.get("2,2") == "=C3")
+    check("G4 块源 后两行整块平移（下移2行）",
+          fc3.get("3,1") == "=B4" and fc3.get("4,2") == "=C5")
+    # D3：空白源格跳过（不误清目标已有数据）
+    f3 = {"0,0": {"raw": "=A1", "kind": "formula"}}  # 2x2 源但只有 0,0 有值
+    fc4 = cs.fill_cells(f3, (0, 0, 2, 2), (0, 0, 2, 2))
+    check("G4 D3 空白源格跳过", list(fc4.keys()) == ["0,0"] and fc4["0,0"] == "=A1")
+    # 绝对列在块位移中不动
+    f4 = {"0,0": {"raw": "=$A1", "kind": "formula"}}
+    fc5 = cs.fill_cells(f4, (0, 0, 1, 1), (0, 0, 1, 2))  # 右填 1 格
+    check("G4 绝对列右填不动 =$A1→=$A1", fc5.get("0,1") == "=$A1")
+    # 越界→#REF!：单格源左填越界（B2 的 =A1 拖到 A2 → 列 -1）
+    f5 = {"1,1": {"raw": "=A1", "kind": "formula"}}
+    fc6 = cs.fill_cells(f5, (1, 1, 1, 1), (1, 0, 1, 1))
+    check("G4 越界填充→#REF!", fc6.get("1,0") == "=#REF!")
+
     conn.close()
     print(f"PASS {OK} checks" if not FAILS else "FAILED:\n" + "\n".join(FAILS))
     return 0 if not FAILS else 1

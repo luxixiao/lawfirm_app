@@ -17,8 +17,8 @@ import json
 import os
 import re
 
-from PySide6.QtCore import Qt, Signal, QStringListModel
-from PySide6.QtGui import QBrush
+from PySide6.QtCore import Qt, Signal, QStringListModel, QRect, QMimeData
+from PySide6.QtGui import QBrush, QColor, QPainter
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QCompleter, QDialog, QFileDialog, QHBoxLayout,
     QInputDialog, QLabel, QLineEdit, QListWidget, QMessageBox,
@@ -29,6 +29,7 @@ from PySide6.QtWidgets import (
 from app.engine import calc_sheet as cs
 from app.engine.calc_eval import CalcEvaluator
 from app.engine.calc_formula import ErrVal, classify_cell
+from app.engine.calc_ref_rewrite import translate_refs
 from app.engine.calc_nav import jump_to_boundary, nav_step
 from app.engine.calc_undo import (
     CommandStack, EditCellCommand, ParamCommand, BulkCommand, snapshot)
@@ -45,6 +46,9 @@ _ZOOM_MIN, _ZOOM_MAX, _ZOOM_STEP = 0.6, 2.0, 1.1
 
 # 公式栏自动补全候选：内置函数 + 当前表参数片段
 _KNOWN_FUNCS = ["SUM", "ROUND", "AVERAGE", "IF", "MIN", "MAX", "ABS", "DATA", "PARAM"]
+
+# 阶段4 G4：应用内公式块复制用的自定义 MIME（剪贴板），外部粘贴降级走 text/plain TSV
+_CALC_MIME = "application/x-lawfirm-calc-cells"
 
 
 class _FormulaCompleter(QCompleter):
@@ -145,13 +149,21 @@ class GridTable(QTableWidget):
     def __init__(self, *a, **kw):
         super().__init__(*a, **kw)
         self.raw_provider = None   # callable(r0, c0) -> raw | None
-        self.paste_callback = None  # Ctrl+V → TSV 值粘贴
+        self.paste_callback = None  # Ctrl+V → 块粘贴（自定义 MIME 优先）/ TSV 值粘贴
         # 阶段1 键盘导航（G3）注入点：由 CalcSheetView 在 __init__ 末尾赋值
         self.clear_callback = None       # 无参：清空当前/选中格（编辑模式内判断）
         self.undo_callback = None        # Ctrl+Z（导航态）
         self.redo_callback = None        # Ctrl+Y / Ctrl+Shift+Z（导航态）
         self.bounds_provider = None      # () -> (rows, cols)
         self.occupied_provider = None    # () -> set["r,c"] 有数据格
+        # 阶段4 G4：复制/剪切/填充柄
+        self.copy_callback = None   # Ctrl+C → 写入自定义 MIME + TSV
+        self.cut_callback = None    # Ctrl+X → 复制后清空选中
+        self.fill_callback = None   # 填充柄释放：fill_callback(source_rect, target_rect)
+        self.fill_enabled = False   # 仅编辑模式置 True（查看模式不画/不拖）
+        self._fill_dragging = False
+        self._fill_src = None       # (r0, c0, h, w)
+        self._fill_preview = None   # QRect（视口坐标），绘制目标预览
 
     def wheelEvent(self, event):  # noqa: N802 (Qt override)
         if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
@@ -161,19 +173,26 @@ class GridTable(QTableWidget):
         super().wheelEvent(event)
 
     def keyPressEvent(self, event):  # noqa: N802 (Qt override)
-        if (self.paste_callback is not None
-                and event.key() == Qt.Key.Key_V
-                and event.modifiers() & Qt.KeyboardModifier.ControlModifier):
-            self.paste_callback()
-            return
-        # 编辑态：Tab/Enter 提交并移动、Esc 取消、方向/Home/End 光标移动 全部交 Qt 默认
+        # 编辑态：文本编辑器的复制/粘贴/撤销交给 QLineEdit 自管（B3），不拦截
         if self.state() == QAbstractItemView.State.EditingState:
             super().keyPressEvent(event)
             return
-        key = event.key()
         mods = event.modifiers()
         ctrl = bool(mods & Qt.KeyboardModifier.ControlModifier)
         shift = bool(mods & Qt.KeyboardModifier.ShiftModifier)
+        key = event.key()
+        # 阶段4 G4：Ctrl+C/X 复制/剪切；Ctrl+V 块粘贴（自定义 MIME 优先，降级 TSV）
+        if ctrl and key == Qt.Key.Key_C and self.copy_callback is not None:
+            self.copy_callback()
+            event.accept()
+            return
+        if ctrl and key == Qt.Key.Key_X and self.cut_callback is not None:
+            self.cut_callback()
+            event.accept()
+            return
+        if ctrl and key == Qt.Key.Key_V and self.paste_callback is not None:
+            self.paste_callback()
+            return
         # Ctrl+Z 撤销 / Ctrl+Y 或 Ctrl+Shift+Z 重做（仅导航态；编辑态交 QLineEdit 自管输入撤销，B3）
         if ctrl and key == Qt.Key.Key_Z and not shift:
             if self.undo_callback is not None:
@@ -269,6 +288,111 @@ class GridTable(QTableWidget):
                 if it is not None:
                     it.setText(str(raw))
         return super().edit(index, trigger, event)
+
+    # ------------------------------------------------------------------ #
+    # 阶段4 G4：填充柄绘制 + 拖拽（复制式填充，序列识别不做）
+    # 说明：QAbstractItemView 会把视口鼠标事件以「视口坐标」转发到本类 mouse*Event，
+    # 因此 event.pos() 与 visualRect() 同坐标系，可直接比对。
+    # ------------------------------------------------------------------ #
+    def _sel_bbox(self):
+        """当前选区的包围矩形：(r0, c0, h, w)，无选区返回 None。"""
+        rngs = self.selectedRanges()
+        if not rngs:
+            return None
+        r0 = min(rng.topRow() for rng in rngs)
+        c0 = min(rng.leftColumn() for rng in rngs)
+        r1 = max(rng.bottomRow() for rng in rngs)
+        c1 = max(rng.rightColumn() for rng in rngs)
+        if r1 < 0 or c1 < 0:
+            return None
+        return (r0, c0, r1 - r0 + 1, c1 - c0 + 1)
+
+    def _fill_handle_rect(self):
+        """选区右下角手柄的小方块（视口坐标）；无选区/越界返回 None。"""
+        bbox = self._sel_bbox()
+        if bbox is None:
+            return None
+        r1 = bbox[0] + bbox[2] - 1
+        c1 = bbox[1] + bbox[3] - 1
+        if r1 < 0 or c1 < 0:
+            return None
+        idx = self.model().index(r1, c1)
+        if not idx.isValid():
+            return None
+        cell = self.visualRect(idx)
+        if cell.isEmpty():
+            return None
+        return QRect(cell.right() - 6, cell.bottom() - 6, 8, 8)
+
+    def paintEvent(self, event):  # noqa: N802 (Qt override)
+        super().paintEvent(event)
+        if not self.fill_enabled:
+            return
+        # 拖拽中的目标预览
+        if self._fill_preview is not None and not self._fill_preview.isEmpty():
+            p = QPainter(self.viewport())
+            p.setPen(style.qcolor("accent_blue"))
+            p.setBrush(style.qcolor("accent_blue_bg"))
+            p.drawRect(self._fill_preview)
+            p.end()
+        # 手柄小方块（蓝底白边，色号走皮肤 token）
+        hr = self._fill_handle_rect()
+        if hr is not None:
+            p = QPainter(self.viewport())
+            p.setPen(style.qcolor("white"))
+            p.setBrush(style.qcolor("accent_blue"))
+            p.drawRect(hr)
+            p.end()
+
+    def mousePressEvent(self, event):  # noqa: N802 (Qt override)
+        if self.fill_enabled and event.button() == Qt.MouseButton.LeftButton:
+            hr = self._fill_handle_rect()
+            if hr is not None and hr.adjusted(-3, -3, 3, 3).contains(event.pos()):
+                bbox = self._sel_bbox()
+                if bbox is not None:
+                    self._fill_dragging = True
+                    self._fill_src = bbox
+                    self._fill_preview = None
+                    event.accept()
+                    return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):  # noqa: N802 (Qt override)
+        if self._fill_dragging and self._fill_src is not None:
+            idx = self.indexAt(event.pos())
+            if idx.isValid():
+                tr, tc = idx.row(), idx.column()
+                sr0, sc0, sh, sw = self._fill_src
+                r0 = max(0, min(sr0, tr))   # D2：负夹取
+                c0 = max(0, min(sc0, tc))
+                h = abs(tr - sr0) + 1
+                w = abs(tc - sc0) + 1
+                a = self.visualRect(self.model().index(r0, c0))
+                b = self.visualRect(self.model().index(r0 + h - 1, c0 + w - 1))
+                self._fill_preview = a.united(b)
+                self.viewport().update()
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):  # noqa: N802 (Qt override)
+        if self._fill_dragging and self._fill_src is not None:
+            idx = self.indexAt(event.pos())
+            self._fill_dragging = False
+            self._fill_preview = None
+            self.viewport().update()
+            if idx.isValid() and self.fill_callback is not None:
+                tr, tc = idx.row(), idx.column()
+                sr0, sc0, sh, sw = self._fill_src
+                r0 = max(0, min(sr0, tr))   # D2：负夹取
+                c0 = max(0, min(sc0, tc))
+                th = abs(tr - sr0) + 1
+                tw = abs(tc - sc0) + 1
+                self.fill_callback(self._fill_src, (r0, c0, th, tw))
+            self._fill_src = None
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
 
 
 class CalcSheetView(QWidget):
@@ -445,7 +569,11 @@ class CalcSheetView(QWidget):
         self._cell_completer.setModel(self._comp_model)
         self.table.setItemDelegate(_GridItemDelegate(self._cell_completer, self.table))
         self.table.raw_provider = self._raw_of
-        self.table.paste_callback = self.paste_tsv
+        # 阶段4 G4：Ctrl+C/X/V + 填充柄回调（paste 优先识别自定义 MIME，降级 TSV）
+        self.table.paste_callback = self._paste_cells
+        self.table.copy_callback = self._copy_selection
+        self.table.cut_callback = self._cut_selection
+        self.table.fill_callback = self._do_fill
         self.table.setWordWrap(False)
         self.table.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
         self.table.setHorizontalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
@@ -847,6 +975,11 @@ class CalcSheetView(QWidget):
                   self.btn_ins_row_above, self.btn_ins_row_below, self.btn_del_row,
                   self.btn_ins_col_left, self.btn_ins_col_right, self.btn_del_col):
             b.setEnabled(edit)
+        # 阶段4 G4：仅编辑模式显示/启用填充柄（查看模式不画、不拖）
+        self.table.fill_enabled = edit
+        if not edit:
+            self.table._fill_dragging = False
+            self.table._fill_preview = None
 
     # ------------------------------------------------------------------ #
     # 选择器 / 参数 / 指标管理
@@ -988,6 +1121,145 @@ class CalcSheetView(QWidget):
         r, c = self.table.currentRow(), self.table.currentColumn()
         anchor_key = f"{r},{c}" if r >= 0 and c >= 0 else None
         self._commit_command(BulkCommand(before=before, after=after, anchor_key=anchor_key))
+
+    # ------------------------------------------------------------------ #
+    # 阶段4 G4：复制 / 剪切 / 块粘贴 / 填充柄
+    # ------------------------------------------------------------------ #
+    def _copy_selection(self) -> None:
+        """Ctrl+C：把选中区 raw 写入剪贴板，带自定义 MIME（应用内公式块）+ TSV（外部兼容）。
+
+        仅收集「有数据」的源格（D3：空白源格不入块，粘贴/填充时不误清目标）。
+        查看模式也可复制（只读数据，无害）；没有数据可复制则静默返回。
+        """
+        if self.sheet_id is None:
+            return
+        rngs = self.table.selectedRanges()
+        if not rngs:
+            return
+        cells = self.content.get("cells") or {}
+        r0 = min(rng.topRow() for rng in rngs)
+        c0 = min(rng.leftColumn() for rng in rngs)
+        r1 = max(rng.bottomRow() for rng in rngs)
+        c1 = max(rng.rightColumn() for rng in rngs)
+        w, h = c1 - c0 + 1, r1 - r0 + 1
+        block: Dict[str, Dict[str, str]] = {}
+        tsv_rows: List[str] = []
+        for r in range(r0, r1 + 1):
+            row_vals: List[str] = []
+            for c in range(c0, c1 + 1):
+                cell = cells.get(f"{r},{c}")
+                raw = (cell or {}).get("raw")
+                row_vals.append(raw if raw is not None else "")
+                if raw not in (None, ""):
+                    block[f"{r},{c}"] = {
+                        "raw": raw,
+                        "kind": (cell or {}).get("kind") or classify_cell(raw),
+                    }
+            tsv_rows.append("\t".join(row_vals))
+        if not block:
+            return
+        payload = json.dumps(
+            {"origin": [r0, c0], "w": w, "h": h, "cells": block},
+            ensure_ascii=False)
+        mime = QMimeData()
+        mime.setData(_CALC_MIME, payload.encode("utf-8"))
+        mime.setText("\n".join(tsv_rows))
+        QApplication.clipboard().setMimeData(mime)
+
+    def _cut_selection(self) -> None:
+        """Ctrl+X：复制后再清空选中区（压 BulkCommand）。仅编辑模式有效。"""
+        if not self.edit_mode or self.sheet_id is None:
+            return
+        self._copy_selection()
+        self._clear_selected_cells()
+
+    def _paste_cells(self) -> None:
+        """Ctrl+V：若剪贴板含自定义 MIME → 块粘贴（按位移 translate_refs 平移公式）；
+        否则降级走 TSV 值粘贴（D7：自定义 MIME 优先）。
+
+        块位移 = 目标原点 − 源原点（常量）；公式格走 translate_refs，绝对/跨表不动；
+        kind 经 classify_cell 重算（D6）；越界目标自动增长网格（D1）。
+        """
+        if not self.edit_mode or self.sheet_id is None:
+            return
+        mime = QApplication.clipboard().mimeData()
+        r0t, c0t = self.table.currentRow(), self.table.currentColumn()
+        if r0t < 0 or c0t < 0:
+            r0t, c0t = 0, 0
+        if mime is not None and mime.hasFormat(_CALC_MIME):
+            try:
+                data = json.loads(bytes(mime.data(_CALC_MIME)).decode("utf-8"))
+            except Exception:
+                self.paste_tsv()
+                return
+            sr0, sc0 = data.get("origin", [0, 0])
+            src_cells = data.get("cells", {})
+            if not src_cells:
+                return
+            dr0, dc0 = r0t - sr0, c0t - sc0   # 整块常量位移
+            before = snapshot(self.content)
+            new_cells = dict(self.content.get("cells") or {})
+            max_r = max_c = -1
+            for key, cell in src_cells.items():
+                sr, sc = (int(x) for x in key.split(","))
+                tr, tc = sr + dr0, sc + dc0
+                raw = cell.get("raw")
+                if raw is None:
+                    continue
+                if str(raw).startswith("="):   # D5：仅公式平移
+                    raw = translate_refs(raw, dr0, dc0)
+                new_cells[f"{tr},{tc}"] = {
+                    "raw": raw, "kind": classify_cell(raw)}   # D6：重算 kind
+                max_r = max(max_r, tr)
+                max_c = max(max_c, tc)
+            new = dict(self.content)
+            new["cells"] = new_cells
+            rows = int(new.get("rows") or 0)
+            cols = int(new.get("cols") or 0)
+            if max_r + 1 > rows:   # D1：越界增长
+                new["rows"] = max_r + 1
+            if max_c + 1 > cols:
+                new["cols"] = max_c + 1
+            if before == new:
+                return
+            self._commit_command(
+                BulkCommand(before=before, after=new, anchor_key=f"{r0t},{c0t}"))
+        else:
+            self.paste_tsv()
+
+    def _do_fill(self, src_rect, tgt_rect) -> None:
+        """填充柄释放：按 fill_cells 映射把源区复制到目标区（复制式，无序列识别）。
+
+        src_rect/tgt_rect = (r0, c0, h, w)。单格源→逐格递增偏移；块源→整块常量偏移 +
+        取模重复。D1 越界增长、D2 负夹取、D3 空白源格跳过、D5 仅平移公式、D6 重算 kind。
+        """
+        if not self.edit_mode or self.sheet_id is None or getattr(self, "_corrupt", False):
+            return
+        cells = self.content.get("cells") or {}
+        out = cs.fill_cells(cells, src_rect, tgt_rect)   # 纯函数：{target_key: new_raw}
+        if not out:
+            return
+        before = snapshot(self.content)
+        new_cells = dict(cells)
+        max_r = max_c = -1
+        for key, raw in out.items():
+            new_cells[key] = {"raw": raw, "kind": classify_cell(raw)}   # D6
+            r, c = (int(x) for x in key.split(","))
+            max_r = max(max_r, r)
+            max_c = max(max_c, c)
+        new = dict(self.content)
+        new["cells"] = new_cells
+        rows = int(new.get("rows") or 0)
+        cols = int(new.get("cols") or 0)
+        if max_r + 1 > rows:   # D1：越界增长
+            new["rows"] = max_r + 1
+        if max_c + 1 > cols:
+            new["cols"] = max_c + 1
+        if before == new:
+            return
+        tr0, tc0 = tgt_rect[0], tgt_rect[1]
+        self._commit_command(
+            BulkCommand(before=before, after=new, anchor_key=f"{tr0},{tc0}"))
 
     # ------------------------------------------------------------------ #
     # TSV 粘贴（值粘贴，spec §11.5）

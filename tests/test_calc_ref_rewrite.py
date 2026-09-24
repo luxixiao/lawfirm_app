@@ -81,6 +81,22 @@ def main() -> int:
     # 合法负位移仍正常平移（不误伤）
     check("左移1列 B2*C2→A2*B2", translate_refs("=B2*C2", 0, -1), "=A2*B2")
 
+    # ===== 阶段4 G4：复制/填充的块位移（translate_refs 复用阶段0）=====
+    # 源 B2*C2 复制到目标 D4（右2下2）→ D4*E4（计划 §323 验证例）
+    check("块位移 右2下2 B2*C2→D4*E4",
+          translate_refs("=B2*C2", 2, 2), "=D4*E4")
+    check("块位移 右2下2 SUM(B2:C3)→SUM(D4:E5)",
+          translate_refs("=SUM(B2:C3)", 2, 2), "=SUM(D4:E5)")
+    # 绝对列在块位移中不动（仅行平移）
+    check("块位移 含列绝对 $B2 右2下2→$B4",
+          translate_refs("=$B2", 2, 2), "=$B4")
+    # 跨表引用不平移 + 本地引用按块位移（右2下2：A1→C3）
+    check("块位移 跨表+自引用 Sheet2!A1+A1→Sheet2!A1+C3",
+          translate_refs("=Sheet2!A1+A1", 2, 2), "=Sheet2!A1+C3")
+    # 块位移中本地端越界→#REF!（源在 A 列、左移整块越界）
+    check("块位移 左移越界 A1→#REF!",
+          translate_refs("=A1", 0, -1), "=#REF!")
+
     # ===== 防御：解析失败原样返回 =====
     check("语法错原样返回", shift_refs("=1+", "row", 0, 1, insert=True), "=1+")
 
