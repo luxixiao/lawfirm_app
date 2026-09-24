@@ -93,28 +93,32 @@ def _apply_corner(r, c, ar, ac, T):
 # ---------------------------------------------------------------------------
 
 def _make_shift_T(axis: str, at: int, delta: int, insert: bool):
-    def T(ref: CellRef) -> CellRef:
+    """对单个 CellRef 作用：返回**新** CellRef / ErrRef，绝不原地改写入参（G0-5 纯函数化）。
+
+    row：非绝对且 >= at（插入）/ >= at+delta（删除）→ ±delta；删除落在 [at, at+delta) → #REF!。
+    col 同理。绝对引用不平移。
+    """
+    def T(ref: CellRef):
         if axis == "row":
-            if not ref.abs_row:
-                if insert:
-                    if ref.row0 >= at:
-                        ref.row0 += delta
-                else:  # 删除：落在 [at, at+delta) → #REF!；其后 → -delta
-                    if at <= ref.row0 < at + delta:
-                        return ErrRef()
-                    if ref.row0 >= at + delta:
-                        ref.row0 -= delta
+            if ref.abs_row:
+                return CellRef(ref.sheet, ref.row0, ref.col0, ref.abs_row, ref.abs_col)
+            if insert:
+                new_row = ref.row0 + delta if ref.row0 >= at else ref.row0
+            else:
+                if at <= ref.row0 < at + delta:
+                    return ErrRef()
+                new_row = ref.row0 - delta if ref.row0 >= at + delta else ref.row0
+            return CellRef(ref.sheet, new_row, ref.col0, ref.abs_row, ref.abs_col)
         else:  # col
-            if not ref.abs_col:
-                if insert:
-                    if ref.col0 >= at:
-                        ref.col0 += delta
-                else:
-                    if at <= ref.col0 < at + delta:
-                        return ErrRef()
-                    if ref.col0 >= at + delta:
-                        ref.col0 -= delta
-        return ref
+            if ref.abs_col:
+                return CellRef(ref.sheet, ref.row0, ref.col0, ref.abs_row, ref.abs_col)
+            if insert:
+                new_col = ref.col0 + delta if ref.col0 >= at else ref.col0
+            else:
+                if at <= ref.col0 < at + delta:
+                    return ErrRef()
+                new_col = ref.col0 - delta if ref.col0 >= at + delta else ref.col0
+            return CellRef(ref.sheet, ref.row0, new_col, ref.abs_row, ref.abs_col)
     return T
 
 

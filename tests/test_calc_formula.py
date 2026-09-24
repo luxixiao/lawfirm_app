@@ -10,7 +10,9 @@ sys.path.insert(0, str(ROOT))
 
 from app.engine.calc_formula import (  # noqa: E402
     Engine, CellProvider, ErrVal, classify_cell, a1_to_rc, rc_to_a1, is_err,
+    Parser, _parse_ref_part,
 )
+from app.engine.calc_ast_render import render
 
 
 class FakeProvider(CellProvider):
@@ -47,6 +49,12 @@ OK, FAILS = 0, []
 
 def check(label, got, want):
     global OK
+    if want is None:
+        if got is None:
+            OK += 1
+        else:
+            FAILS.append(f"{label}: got={got!r} want=None")
+        return
     if isinstance(want, (tuple, list)):
         if tuple(got) == tuple(want):
             OK += 1
@@ -181,6 +189,21 @@ def main() -> int:
     check("溢出→#VALUE!", run("=2^10000"), "#VALUE!")
     check("0^-1→#VALUE!", run("=0^-1"), "#VALUE!")
     check("单元格负值开方→#NUM!", run("=A1^0.5", cells={("Sheet1", 0, 0): "-8"}), "#NUM!")
+
+    # ===== 13. 绝对引用解析与渲染（G0-4 完善项：与 spec §2.2 ref 分支对齐）=====
+    # 解析+渲染 round-trip：四种 $ 组合必须保持原样
+    for _s in ("$A$1", "$A1", "A$1", "A1"):
+        check(f"G0-4 绝对引用 round-trip {_s}", render(Parser(_s).parse()), _s)
+    # 混合绝对符区域
+    check("G0-4 区域 round-trip $A$1:B$2", render(Parser("$A$1:B$2").parse()), "$A$1:B$2")
+    check("G0-4 区域 round-trip A$1:$B2", render(Parser("A$1:$B2").parse()), "A$1:$B2")
+    # _parse_ref_part 直接断言 abs 标志位（row0, col0, abs_row, abs_col）
+    check("G0-4 _parse_ref_part $A$1", _parse_ref_part("$A$1"), (0, 0, True, True))
+    check("G0-4 _parse_ref_part $A1", _parse_ref_part("$A1"), (0, 0, False, True))
+    check("G0-4 _parse_ref_part A$1", _parse_ref_part("A$1"), (0, 0, True, False))
+    check("G0-4 _parse_ref_part A1", _parse_ref_part("A1"), (0, 0, False, False))
+    check("G0-4 _parse_ref_part 非引用→None", _parse_ref_part("ABC"), None)
+    check("G0-4 _parse_ref_part 列后杂字→None", _parse_ref_part("A1B2"), None)
 
     print(f"PASS {OK} checks" if not FAILS else "FAILED:\n" + "\n".join(FAILS))
     return 0 if not FAILS else 1

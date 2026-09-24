@@ -103,23 +103,24 @@ def classify_cell(raw) -> str:
 # A1 引用解析（含绝对引用 $）
 # ---------------------------------------------------------------------------
 
-_A1_RE = re.compile(r"^\$?([A-Za-z]{1,3})\$?([0-9]{1,5})$")
+# G0-4 完善：与 spec §2.2 ref 分支对齐——用命名组显式捕获列/行绝对符，
+# 不再用 tok[len(col_letters):] 下标推断（脆弱且偏离 spec），功能等价。
+_A1_RE = re.compile(r"^(?P<ac>\$?)(?P<col>[A-Za-z]{1,3})(?P<ar>\$?)(?P<row>[0-9]{1,5})$")
 
 
 def _parse_ref_part(tok: str):
     """'$A$1' / '$A1' / 'A$1' / 'A1' → (row0, col0, abs_row, abs_col)；非单元格引用→None。
 
     row0/col0 为 0 基；abs_row/abs_col 标记该轴是否为绝对引用（不随插行/复制平移）。
+    ac = 列绝对符（$ 在列字母前），ar = 行绝对符（$ 在列字母与数字之间）。
     """
     m = _A1_RE.match(tok)
     if not m:
         return None
-    col_letters, digits = m.group(1), m.group(2)
-    col0 = letters_to_col(col_letters) - 1
-    row0 = int(digits) - 1
-    abs_col = tok.startswith("$")
-    # 列字母之后的 '$' 属于行绝对值标记
-    abs_row = "$" in tok[len(col_letters):]
+    col0 = letters_to_col(m.group("col")) - 1
+    row0 = int(m.group("row")) - 1
+    abs_col = bool(m.group("ac"))
+    abs_row = bool(m.group("ar"))
     return (row0, col0, abs_row, abs_col)
 
 

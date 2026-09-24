@@ -9,7 +9,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from app.engine.calc_ref_rewrite import shift_refs, translate_refs  # noqa: E402
+from app.engine.calc_ref_rewrite import (  # noqa: E402
+    shift_refs, translate_refs, _walk, _make_shift_T)
+from app.engine.calc_formula import Parser, CellRef, ErrRef
 
 
 OK, FAILS = 0, []
@@ -81,6 +83,36 @@ def main() -> int:
 
     # ===== 防御：解析失败原样返回 =====
     check("语法错原样返回", shift_refs("=1+", "row", 0, 1, insert=True), "=1+")
+
+    # ===== G0-5 完善：_make_shift_T 纯函数化（不得原地改写输入 CellRef）=====
+    def _shift_node(formula, T):
+        src = formula[1:] if formula.startswith("=") else formula
+        n = Parser(src).parse()
+        assert isinstance(n, CellRef), f"{formula} 应解析为 CellRef"
+        before = n.row0
+        out = _walk(n, T)
+        return n, before, out
+
+    T_ins = _make_shift_T("row", 0, 1, insert=True)
+    n1, b1, o1 = _shift_node("=A2", T_ins)
+    check("G0-5 插入: 原节点未改写", n1.row0, b1)
+    check("G0-5 插入: 新坐标+1", o1.row0, b1 + 1)
+    check("G0-5 插入: 返回新对象", o1 is not n1, True)
+
+    T_del = _make_shift_T("row", 1, 1, insert=False)
+    n2, b2, o2 = _shift_node("=A2", T_del)
+    check("G0-5 删除: 原节点未改写", n2.row0, b2)
+    check("G0-5 删除命中→ErrRef", isinstance(o2, ErrRef), True)
+
+    # 绝对行（A$2）：行不平移、原节点不改写
+    T_abs_row = _make_shift_T("row", 0, 1, insert=True)
+    n3, b3, o3 = _shift_node("=A$2", T_abs_row)
+    check("G0-5 绝对行: 原节点未改写", n3.row0, b3)
+    check("G0-5 绝对行: 坐标不变", o3.row0, b3)
+    # 绝对列（$A2）：列不平移，但行是相对 → 应平移；原节点不改写
+    n4, b4, o4 = _shift_node("=$A2", T_ins)
+    check("G0-5 绝对列: 原节点未改写", n4.row0, b4)
+    check("G0-5 绝对列: 相对行仍平移", o4.row0, b4 + 1)
 
     print(f"PASS {OK} checks" if not FAILS else "FAILED:\n" + "\n".join(FAILS))
     return 0 if not FAILS else 1
