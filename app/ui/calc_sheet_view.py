@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
 from app.engine import calc_sheet as cs
 from app.engine.calc_eval import CalcEvaluator
 from app.engine.calc_formula import ErrVal, classify_cell
+from app.engine.calc_nav import jump_to_boundary, nav_step
 from app.exporter.calc_export import export_sheet, suggest_filename
 from app.ui.calc_dialogs import DataRefDialog, IndicatorManagerDialog, ParamDialog
 from app.ui import scale, style
@@ -85,6 +86,8 @@ class _GridItemDelegate(QStyledItemDelegate):
         editor = super().createEditor(parent, option, index)
         if isinstance(editor, QLineEdit):
             editor.setCompleter(self._completer)
+            # F2/双击进入编辑时光标置末（插入式，不选中原内容），贴近 Excel F2 手感
+            editor.setCursorPosition(len(editor.text()))
         return editor
 
 
@@ -140,6 +143,10 @@ class GridTable(QTableWidget):
         super().__init__(*a, **kw)
         self.raw_provider = None   # callable(r0, c0) -> raw | None
         self.paste_callback = None  # Ctrl+V → TSV 值粘贴
+        # 阶段1 键盘导航（G3）注入点：由 CalcSheetView 在 __init__ 末尾赋值
+        self.clear_callback = None       # 无参：清空当前/选中格（编辑模式内判断）
+        self.bounds_provider = None      # () -> (rows, cols)
+        self.occupied_provider = None    # () -> set["r,c"] 有数据格
 
     def wheelEvent(self, event):  # noqa: N802 (Qt override)
         if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
@@ -154,7 +161,89 @@ class GridTable(QTableWidget):
                 and event.modifiers() & Qt.KeyboardModifier.ControlModifier):
             self.paste_callback()
             return
+        # 编辑态：Tab/Enter 提交并移动、Esc 取消、方向/Home/End 光标移动 全部交 Qt 默认
+        if self.state() == QAbstractItemView.State.EditingState:
+            super().keyPressEvent(event)
+            return
+        key = event.key()
+        mods = event.modifiers()
+        ctrl = bool(mods & Qt.KeyboardModifier.ControlModifier)
+        shift = bool(mods & Qt.KeyboardModifier.ShiftModifier)
+        rows, cols = self._nav_bounds()
+        # Del / Backspace：清空当前格或选中区（只读拒绝在 clear_callback 内判断）
+        if key in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
+            if self.clear_callback is not None:
+                self.clear_callback()
+            event.accept()
+            return
+        # Tab / Enter：导航态无提交，仅移动焦点
+        if key == Qt.Key.Key_Tab:
+            if rows > 0 and cols > 0:
+                self._nav_move("tab", shift)
+            event.accept()
+            return
+        if key in (Qt.Key.Key_Enter, Qt.Key.Key_Return):
+            if rows > 0 and cols > 0:
+                self._nav_move("enter", shift)
+            event.accept()
+            return
+        # Ctrl+Home / Ctrl+End：整表首 / 尾
+        if ctrl and key == Qt.Key.Key_Home and rows > 0 and cols > 0:
+            self.setCurrentCell(0, 0)
+            event.accept()
+            return
+        if ctrl and key == Qt.Key.Key_End and rows > 0 and cols > 0:
+            self.setCurrentCell(rows - 1, cols - 1)
+            event.accept()
+            return
+        # Home / End：行首 / 行尾
+        if key == Qt.Key.Key_Home:
+            r = self.currentRow()
+            if r >= 0:
+                self.setCurrentCell(r, 0)
+            event.accept()
+            return
+        if key == Qt.Key.Key_End:
+            r = self.currentRow()
+            if r >= 0 and cols > 0:
+                self.setCurrentCell(r, cols - 1)
+            event.accept()
+            return
+        # Ctrl+方向：跳数据边界
+        if ctrl and key in (Qt.Key.Key_Up, Qt.Key.Key_Down,
+                            Qt.Key.Key_Left, Qt.Key.Key_Right):
+            self._nav_jump(key)
+            event.accept()
+            return
+        # 其余（方向键、Shift+方向 扩展选区等）交 Qt 默认
         super().keyPressEvent(event)
+
+    def _nav_bounds(self):
+        if self.bounds_provider is not None:
+            return self.bounds_provider()
+        return (self.rowCount(), self.columnCount())
+
+    def _nav_occupied(self):
+        if self.occupied_provider is not None:
+            return self.occupied_provider()
+        return set()
+
+    def _nav_move(self, key, shift):
+        r, c = self.currentRow(), self.currentColumn()
+        rows, cols = self._nav_bounds()
+        nr, nc = nav_step(r, c, rows, cols, key, shift)
+        if (nr, nc) != (r, c):
+            self.setCurrentCell(nr, nc)
+
+    def _nav_jump(self, key):
+        r, c = self.currentRow(), self.currentColumn()
+        if r < 0 or c < 0:
+            return
+        rows, cols = self._nav_bounds()
+        dr, dc = {Qt.Key.Key_Up: (-1, 0), Qt.Key.Key_Down: (1, 0),
+                  Qt.Key.Key_Left: (0, -1), Qt.Key.Key_Right: (0, 1)}[key]
+        nr, nc = jump_to_boundary(self._nav_occupied(), rows, cols, r, c, dr, dc)
+        self.setCurrentCell(nr, nc)
 
     def edit(self, index, trigger, event):  # noqa: N802 (Qt override)
         if self.raw_provider is not None:
@@ -299,6 +388,13 @@ class CalcSheetView(QWidget):
         self.table.itemChanged.connect(self._on_item_changed)
         self.table.zoomRequested.connect(self._on_zoom)
         self.table.itemSelectionChanged.connect(self._update_stats)
+        # 阶段1 键盘导航（G3）注入点
+        self.table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectItems)
+        self.table.bounds_provider = lambda: (
+            int(self.content.get("rows") or 0), int(self.content.get("cols") or 0))
+        self.table.occupied_provider = lambda: set((self.content.get("cells") or {}).keys())
+        self.table.clear_callback = self._clear_selected_cells
 
         rv.addWidget(self.table, 1)
         # 基准行高（标准字号、缩放 100% 时），供缩放派生
@@ -619,8 +715,7 @@ class CalcSheetView(QWidget):
         if edit:
             self.table.setEditTriggers(
                 QAbstractItemView.EditTrigger.DoubleClicked
-                | QAbstractItemView.EditTrigger.EditKeyPressed
-                | QAbstractItemView.EditTrigger.AnyKeyPressed)
+                | QAbstractItemView.EditTrigger.EditKeyPressed)
             self.fx.setReadOnly(False)
         else:
             self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -699,6 +794,26 @@ class CalcSheetView(QWidget):
         if text:
             cells[f"{r},{c}"] = {"raw": text, "kind": classify_cell(text)}
         else:
+            cells.pop(f"{r},{c}", None)
+        self._recalc_fill()
+
+    def _clear_selected_cells(self) -> None:
+        """Del/Backspace（导航态、编辑模式）：清空当前格或选中区，不进编辑。"""
+        if not self.edit_mode or self.sheet_id is None:
+            return
+        targets = set()
+        for rng in self.table.selectedRanges():
+            for r in range(rng.topRow(), rng.bottomRow() + 1):
+                for c in range(rng.leftColumn(), rng.rightColumn() + 1):
+                    targets.add((r, c))
+        if not targets:
+            r, c = self.table.currentRow(), self.table.currentColumn()
+            if r >= 0 and c >= 0:
+                targets.add((r, c))
+        if not targets:
+            return
+        cells = self.content.setdefault("cells", {})
+        for (r, c) in targets:
             cells.pop(f"{r},{c}", None)
         self._recalc_fill()
 

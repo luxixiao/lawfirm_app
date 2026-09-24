@@ -36,6 +36,7 @@
 |------|------|------|
 | `app/engine/calc_ast_render.py` | **新增** | `render(ast) -> str`：AST→文本反向序列化器；`render_cell(sheet,row0,col0,abs_row,abs_col)` 等纯函数。**阶段 0** |
 | `app/engine/calc_ref_rewrite.py` | **新增** | `shift_refs(formula, axis, at, delta, insert)`、`translate_refs(formula, dr, dc)`：引用平移/重写。**阶段 0**（供 3/4 复用） |
+| `app/engine/calc_nav.py` | **新增** | `jump_to_boundary(occupied,rows,cols,r,c,dr,dc)`、`nav_step(r,c,rows,cols,key,shift)`：键盘导航纯逻辑（Ctrl+方向跳边界 / Tab·Enter 移动）。**阶段 1**（与 UI 严格分离，可无头单测） |
 | `app/engine/calc_undo.py` | **新增** | `Command` 协议 + `EditCellCommand`/`PasteCommand`/`StructuralCommand`/`ParamCommand` + `CommandStack`。**阶段 2** |
 | `app/engine/calc_formula.py` | **修改** | `CellRef`/`RangeRef` 增加 abs 标志；tokenizer 增加 `$`/range/`#REF!` 引用 token；`_primary`/`_after_sheet` 解析为带 abs 的节点；新增 `#REF!` 伪引用节点。**阶段 0** |
 | `app/engine/calc_sheet.py` | **修改** | 新增**纯函数** `insert_row/delete_row/insert_col/delete_col(content, at, delta) -> new_content`（内部调 `shift_refs` + cell-key 重映射）。`rename_sheet` 已就绪，本期仅补"重命名时重写跨表引用"。**阶段 3/5** |
@@ -294,7 +295,7 @@ class CommandStack:
 
 ### 阶段 1 — 键盘导航补全（G3，低成本高体感）
 - **目标**：Tab/Enter 提交并移动、F2 就地编辑、Esc 取消、Home/End、Ctrl+方向跳边界、Del/Backspace 清空、Shift+方向扩展选区。解决 `AnyKeyPressed` 与 F2 冲突。
-- **文件**：`calc_sheet_view.py`（`GridTable.keyPressEvent` 重写 + `CalcSheetView` 钩子）、`tests/test_calc_view_smoke.py`(可选 offscreen)。
+- **文件**：`calc_sheet_view.py`（`GridTable.keyPressEvent` 重写 + `CalcSheetView` 钩子）、`app/engine/calc_nav.py`(新增，导航纯函数，与 UI 分离可无头单测)、`tests/test_calc_nav.py`(新增，纯逻辑单测替代可选 offscreen 冒烟)。
 - **关键改动**：
   - `_set_mode`：编辑触发改为 `DoubleClicked | EditKeyPressed | F2`（**移除 `AnyKeyPressed` 的强制覆盖歧义**——保留"选中态键入即覆盖"靠 `EditKeyPressed` 默认行为，F2 单独走就地编辑不清除）。
   - `GridTable.keyPressEvent`：拦截 `F2`(进入编辑、光标置末)、`Esc`(编辑中则取消编辑器，因不触发 `itemChanged` 故内容天然还原)、`Tab/Shift+Tab`(提交并左右移)、`Enter/Shift+Enter`(提交并下/上移)、`Home/End`(行首/行尾)、`Ctrl+方向`(跳数据边界，基于 `content["cells"]` 占用 + 表范围算 `jump_to_boundary`)、`Delete/Backspace`(清空 raw，**不进编辑**，调 `_write_cell(r,c,"")`)、`Shift+方向`(选区扩展，验证 QTableWidget 默认行为可用)。
