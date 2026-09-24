@@ -13,6 +13,7 @@
 """
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import os
@@ -21,6 +22,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from app.db import get_conn
+from app.engine.calc_ref_rewrite import shift_refs
 
 CONTENT_VERSION = 1
 DEFAULT_ROWS = 50
@@ -83,6 +85,122 @@ def normalize_content(content: Dict) -> Dict:
     if not isinstance(content["params"], dict):
         raise CalcSheetError("params 必须是对象")
     return content
+
+
+# ---------------------------------------------------------------------------
+# 结构变换（阶段3 G2：插入/删除行、列，引用按 §2.4 真重写）—— 全部返回**新** content
+# ---------------------------------------------------------------------------
+
+def _clamp_at(at: int, limit: int) -> int:
+    """插入/删除位置夹取到 [0, limit]（D2：越界位置不崩，夹到边界）。"""
+    if at < 0:
+        return 0
+    if at > limit:
+        return limit
+    return at
+
+
+def _shift_headers(headers: List, at: int, delta: int, insert: bool) -> List:
+    """同步 row_headers/col_headers：插入=在 at 处补 delta 个空位；删除=移除 [at,at+delta)。"""
+    new = list(headers)
+    if at < 0:
+        at = 0
+    if insert:
+        for _ in range(delta):
+            if at <= len(new):
+                new.insert(at, None)
+            else:
+                new.append(None)
+    else:
+        if at < len(new):
+            del new[at:at + delta]
+    return new
+
+
+def _restructure(content: Dict, axis: str, at: int, delta: int, insert: bool) -> Dict:
+    """插/删行列的统一内核（返回新 content，绝不原地改）。
+
+    - 数据格：按 `>=at` 后移 / `[at,at+delta)` 删除 重映射 cell-key。
+    - 公式格：先对内部引用跑 `shift_refs`（扩张/收缩/绝对不动/跨表不动/#REF!），
+      再对**自身位置**按同规则重映射 key。
+    - D1 最小尺寸守卫：删除后至少留 1 行/列，delta 过大时夹掉多余删除量。
+    - D2 `at` 越界夹取到 [0, limit]。
+    """
+    if delta <= 0:
+        return copy.deepcopy(content)
+    content = copy.deepcopy(content)
+    rows = int(content.get("rows") or 0)
+    cols = int(content.get("cols") or 0)
+
+    # D2：位置夹取
+    if axis == "row":
+        limit = rows
+    else:
+        limit = cols
+    at = _clamp_at(at, limit)
+
+    # D1：删除后至少留 1 行/列
+    if not insert and delta >= limit:
+        delta = max(0, limit - 1)
+        if delta <= 0:
+            return content  # 已是最末 1 行/列，无物可删
+
+    new_cells: Dict[str, Dict] = {}
+    for key, cell in (content.get("cells") or {}).items():
+        r0, c0 = (int(x) for x in key.split(","))
+        coord = r0 if axis == "row" else c0
+        raw = cell.get("raw", "")
+        # 公式格：先重写内部引用
+        if isinstance(raw, str) and raw.startswith("="):
+            new_raw = shift_refs(raw, axis, at, delta, insert=insert)
+        else:
+            new_raw = raw
+        # 自身位置重映射（与 shift_refs 的 at 语义一致，0 基、无 off-by-one）
+        if insert:
+            new_coord = coord + delta if coord >= at else coord
+        else:
+            if at <= coord < at + delta:
+                continue  # 落在被删带 → 整格删除
+            new_coord = coord - delta if coord >= at + delta else coord
+        if axis == "row":
+            nr, nc = new_coord, c0
+        else:
+            nr, nc = r0, new_coord
+        new_cells[f"{nr},{nc}"] = {
+            "raw": new_raw,
+            "kind": cell.get("kind"),
+        }
+
+    if axis == "row":
+        content["rows"] = rows + delta if insert else rows - delta
+        content["row_headers"] = _shift_headers(
+            content.get("row_headers", []), at, delta, insert)
+    else:
+        content["cols"] = cols + delta if insert else cols - delta
+        content["col_headers"] = _shift_headers(
+            content.get("col_headers", []), at, delta, insert)
+    content["cells"] = new_cells
+    return content
+
+
+def insert_row(content: Dict, at: int, delta: int = 1) -> Dict:
+    """在第 at 行（0 基）上方插入 delta 行，返回新 content。"""
+    return _restructure(content, "row", at, delta, insert=True)
+
+
+def delete_row(content: Dict, at: int, delta: int = 1) -> Dict:
+    """删除第 at 行（0 基）起的 delta 行，返回新 content。"""
+    return _restructure(content, "row", at, delta, insert=False)
+
+
+def insert_col(content: Dict, at: int, delta: int = 1) -> Dict:
+    """在第 at 列（0 基）左侧插入 delta 列，返回新 content。"""
+    return _restructure(content, "col", at, delta, insert=True)
+
+
+def delete_col(content: Dict, at: int, delta: int = 1) -> Dict:
+    """删除第 at 列（0 基）起的 delta 列，返回新 content。"""
+    return _restructure(content, "col", at, delta, insert=False)
 
 
 # ---------------------------------------------------------------------------

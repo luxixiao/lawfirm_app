@@ -387,6 +387,44 @@ class CalcSheetView(QWidget):
         bar.addWidget(self.btn_add_col)
         rv.addLayout(bar)
 
+        # ---------------- 结构变换栏（阶段3 G2：插/删行、列） ----------------
+        sbar = QHBoxLayout()
+        sbar.setSpacing(8)
+        sbar.addWidget(QLabel("结构："))
+        self.btn_ins_row_above = QPushButton("↑插入行")
+        self.btn_ins_row_below = QPushButton("↓插入行")
+        self.btn_del_row = QPushButton("删除行")
+        self.btn_ins_col_left = QPushButton("←插入列")
+        self.btn_ins_col_right = QPushButton("→插入列")
+        self.btn_del_col = QPushButton("删除列")
+        self.btn_ins_row_above.setToolTip(
+            "在当前选中行上方插入一行；引用按 $/绝对/跨表规则真重写（扩张/收缩/#REF!）")
+        self.btn_ins_row_below.setToolTip("在当前选中行下方插入一行")
+        self.btn_del_row.setToolTip(
+            "删除当前选中行；被删行上的引用变 #REF!，其下引用自动上移")
+        self.btn_ins_col_left.setToolTip(
+            "在当前选中列左侧插入一列；引用按规则真重写")
+        self.btn_ins_col_right.setToolTip("在当前选中列右侧插入一列")
+        self.btn_del_col.setToolTip(
+            "删除当前选中列；被删列上的引用变 #REF!，其右引用自动左移")
+        self.btn_ins_row_above.clicked.connect(
+            lambda: self._struct_op("row", self.table.currentRow(), 1, True))
+        self.btn_ins_row_below.clicked.connect(
+            lambda: self._struct_op("row", self.table.currentRow() + 1, 1, True))
+        self.btn_del_row.clicked.connect(
+            lambda: self._struct_op("row", self.table.currentRow(), 1, False))
+        self.btn_ins_col_left.clicked.connect(
+            lambda: self._struct_op("col", self.table.currentColumn(), 1, True))
+        self.btn_ins_col_right.clicked.connect(
+            lambda: self._struct_op("col", self.table.currentColumn() + 1, 1, True))
+        self.btn_del_col.clicked.connect(
+            lambda: self._struct_op("col", self.table.currentColumn(), 1, False))
+        for b in (self.btn_ins_row_above, self.btn_ins_row_below, self.btn_del_row,
+                  self.btn_ins_col_left, self.btn_ins_col_right, self.btn_del_col):
+            sbar.addWidget(b)
+        sbar.addStretch(1)
+        rv.addLayout(sbar)
+
         fbar = QHBoxLayout()
         self.lbl_cell = QLabel("")          # 当前格坐标
         self.lbl_cell.setMinimumWidth(56)
@@ -805,7 +843,9 @@ class CalcSheetView(QWidget):
         else:
             self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
             self.fx.setReadOnly(True)
-        for b in (self.btn_add_row, self.btn_add_col, self.btn_ref, self.btn_param):
+        for b in (self.btn_add_row, self.btn_add_col, self.btn_ref, self.btn_param,
+                  self.btn_ins_row_above, self.btn_ins_row_below, self.btn_del_row,
+                  self.btn_ins_col_left, self.btn_ins_col_right, self.btn_del_col):
             b.setEnabled(edit)
 
     # ------------------------------------------------------------------ #
@@ -924,6 +964,30 @@ class CalcSheetView(QWidget):
         if before == after:
             return
         self._commit_command(BulkCommand(before=before, after=after))
+
+    def _struct_op(self, axis: str, at: int, delta: int, insert: bool) -> None:
+        """插入/删除行、列（阶段3 G2）：调引擎纯函数 → 压 BulkCommand → 走统一提交。
+
+        复用阶段2 的 BulkCommand（整 content 快照），calc_undo.py 零改动。
+        at/currentRow/Column 可能越界（-1 表示未选），先拦下提示用户选格。
+        """
+        if self.sheet_id is None or not self.edit_mode or getattr(self, "_corrupt", False):
+            return
+        if at < 0:
+            self.lbl_hint.setText("请先点选一个单元格，再执行插/删行列。")
+            return
+        before = snapshot(self.content)
+        if axis == "row":
+            after = (cs.insert_row if insert else cs.delete_row)(self.content, at, delta)
+        else:
+            after = (cs.insert_col if insert else cs.delete_col)(self.content, at, delta)
+        if before == after:
+            # D1：已是最末 1 行/列无法再删，或 delta 被守卫夹成 0
+            self.lbl_hint.setText("已是最末一行/列，无法继续删除。")
+            return
+        r, c = self.table.currentRow(), self.table.currentColumn()
+        anchor_key = f"{r},{c}" if r >= 0 and c >= 0 else None
+        self._commit_command(BulkCommand(before=before, after=after, anchor_key=anchor_key))
 
     # ------------------------------------------------------------------ #
     # TSV 粘贴（值粘贴，spec §11.5）

@@ -139,6 +139,89 @@ def main() -> int:
         else:
             os.environ["LAWFIRM_ANCHOR_ROOT"] = _old_root
 
+    # ===== 阶段3 G2：插入/删除行、列（结构变换纯函数 + 引用重写） =====
+    def _raw(c, r, col):
+        cell = c.get("cells", {}).get(f"{r},{col}")
+        return cell.get("raw") if cell else None
+
+    # --- 行插入（at=2, delta=1）：数据格后移、公式扩张、绝对不动、跨表不动 ---
+    b1 = cs.default_content(rows=6, cols=6)
+    b1["row_headers"] = [f"h{i}" for i in range(6)]
+    b1["cells"]["0,0"] = {"raw": "标题", "kind": "text"}              # 行0（<at）不动
+    b1["cells"]["4,3"] = {"raw": "数据", "kind": "text"}              # 行4（>=at）下移→行5
+    b1["cells"]["0,1"] = {"raw": "=A3", "kind": "formula"}            # 引用 row2(>=at)→下移
+    b1["cells"]["5,0"] = {"raw": "=$A$1", "kind": "formula"}          # 绝对不动
+    b1["cells"]["4,0"] = {"raw": "=Sheet2!A1+A1", "kind": "formula"}  # 跨表不动+本地A1(<at)不动
+    nr = cs.insert_row(b1, 2, 1)
+    check("G2 行插入 rows+1", nr["rows"] == 7)
+    check("G2 行插入 数据格<at不动 0,0 仍=标题", _raw(nr, 0, 0) == "标题")
+    check("G2 行插入 数据格>=at后移 4,3→5,3", _raw(nr, 5, 3) == "数据")
+    check("G2 行插入 公式扩张 =A3→=A4", _raw(nr, 0, 1) == "=A4")
+    check("G2 行插入 绝对引用不动 =$A$1", _raw(nr, 6, 0) == "=$A$1")
+    check("G2 行插入 跨表引用不动+本地A1不动", _raw(nr, 5, 0) == "=Sheet2!A1+A1")
+    check("G2 行插入 纯函数：原表未变", b1["rows"] == 6 and _raw(b1, 0, 1) == "=A3")
+    check("G2 行插入 row_headers 同步（at 处补空位）",
+          nr["row_headers"] == ["h0", "h1", None, "h2", "h3", "h4", "h5"])
+
+    # --- 行删除（at=2, delta=1）：引用命中删除带→#REF!，其下引用上移 ---
+    b2 = cs.default_content(rows=6, cols=3)
+    b2["cells"]["0,0"] = {"raw": "=A3", "kind": "formula"}   # 引用 row2（落在删除带）→ #REF!
+    b2["cells"]["0,1"] = {"raw": "=A4", "kind": "formula"}   # 引用 row3(>=at+1)→上移到 A3
+    dr = cs.delete_row(b2, 2, 1)
+    check("G2 行删除 rows-1", dr["rows"] == 5)
+    check("G2 行删除 命中删除带→#REF!", _raw(dr, 0, 0) in ("=#REF!", "#REF!"))
+    check("G2 行删除 其下引用上移 =A4→=A3", _raw(dr, 0, 1) == "=A3")
+
+    # --- 列插入（at=1, delta=1）：公式列轴扩张、绝对列不动 ---
+    b3 = cs.default_content(rows=3, cols=4)
+    b3["cells"]["0,0"] = {"raw": "=B2", "kind": "formula"}     # 列1(>=at)→右移成 C，格在 col0 不动
+    b3["cells"]["0,1"] = {"raw": "=$A1", "kind": "formula"}    # 列绝对不动，格随插列移到 col2
+    b3["cells"]["0,2"] = {"raw": "=B$1", "kind": "formula"}    # 行绝对列相对：B(列1)→C，格移到 col3
+    nc = cs.insert_col(b3, 1, 1)
+    check("G2 列插入 cols+1", nc["cols"] == 5)
+    check("G2 列插入 公式扩张 =B2→=C2", _raw(nc, 0, 0) == "=C2")
+    check("G2 列插入 列绝对不动 =$A1（格移到 col2）", _raw(nc, 0, 2) == "=$A1")
+    check("G2 列插入 行绝对列相对 =B$1→=C$1（格移到 col3）", _raw(nc, 0, 3) == "=C$1")
+
+    # --- 列删除（at=1, delta=1）：命中删除带→#REF!，其右引用左移 ---
+    b4 = cs.default_content(rows=3, cols=4)
+    b4["cells"]["0,0"] = {"raw": "=B2", "kind": "formula"}   # 列1（落在删除带）→ #REF!，格在 col0 存
+    b4["cells"]["0,2"] = {"raw": "=C3", "kind": "formula"}   # 列2(>=at+1)→左移成 B，格移到 col1
+    dc = cs.delete_col(b4, 1, 1)
+    check("G2 列删除 cols-1", dc["cols"] == 3)
+    check("G2 列删除 命中删除带→#REF!", _raw(dc, 0, 0) in ("=#REF!", "#REF!"))
+    check("G2 列删除 其右引用左移 =C3→=B3（格移到 col1）", _raw(dc, 0, 1) == "=B3")
+
+    # --- 区域收缩：删中间列 → 区域两端收紧 ---
+    b5 = cs.default_content(rows=2, cols=4)
+    b5["cells"]["0,0"] = {"raw": "=SUM(A1:C1)", "kind": "formula"}  # 删列1(B) → A1:B1
+    dc_rng = cs.delete_col(b5, 1, 1)
+    check("G2 列删除 区域收缩 =SUM(A1:C1)→=SUM(A1:B1)",
+          _raw(dc_rng, 0, 0) == "=SUM(A1:B1)")
+
+    # --- D1 最小尺寸守卫：删到只剩 1 行/列不崩、内容保留 ---
+    one = cs.default_content(rows=1, cols=1)
+    one["cells"]["0,0"] = {"raw": "x", "kind": "text"}
+    check("G2 D1 删末行被守卫：仍剩 1 行", cs.delete_row(one, 0, 1)["rows"] == 1)
+    check("G2 D1 删末行内容不变", _raw(cs.delete_row(one, 0, 1), 0, 0) == "x")
+    check("G2 D1 删末列被守卫：仍剩 1 列", cs.delete_col(one, 0, 1)["cols"] == 1)
+
+    # --- D2 at 越界夹取：插到末行之后=追加，且不丢首格 ---
+    oob = cs.insert_row(b1, 999, 1)
+    check("G2 D2 at 越界夹取到末行后", oob["rows"] == 7)
+    check("G2 D2 越界插入不丢首格", _raw(oob, 0, 0) == "标题")
+
+    # --- 撤销链路：BulkCommand 整 content 快照（阶段2 复用，calc_undo.py 零改动） ---
+    from app.engine.calc_undo import BulkCommand
+    bk = cs.default_content(rows=4, cols=4)
+    bk["cells"]["1,1"] = {"raw": "=B2", "kind": "formula"}
+    after = cs.insert_col(bk, 1, 1)
+    cmd = BulkCommand(before=bk, after=after)
+    check("G2 BulkCommand apply 幂等于 after", cmd.apply(bk)["cols"] == 5)
+    reverted = cmd.revert(after)
+    check("G2 BulkCommand revert 回到 before", reverted["cols"] == 4
+          and _raw(reverted, 1, 1) == "=B2")
+
     conn.close()
     print(f"PASS {OK} checks" if not FAILS else "FAILED:\n" + "\n".join(FAILS))
     return 0 if not FAILS else 1

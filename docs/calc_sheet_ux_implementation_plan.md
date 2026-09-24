@@ -312,10 +312,12 @@ class CommandStack:
 
 ### 阶段 3 — 插入 / 删除行、列 + 引用重写（G2，依赖阶段 0）
 - **目标**：在选中位置插/删行列，引用按 §2.4 真重写（含扩张/收缩/绝对不动/跨表不动），`#REF!` 处理被删行。
-- **文件**：`calc_sheet.py`(新增 `insert_row/delete_row/insert_col/delete_col` 纯函数 + 重命名时重写跨表引用)、`calc_sheet_view.py`(工具栏"插入行/删除行/插入列/删除列"按钮 + 调引擎函数 + 压 `StructuralCommand`)、`tests/test_calc_sheet_ops.py`。
-- **关键函数**：`insert_row/delete_row/insert_col/delete_col(content, at, delta)`；UI 依据 `currentRow()/currentColumn()` 决定 `at`，缺省末行/末列。
+- **文件**：`calc_sheet.py`(新增 `insert_row/delete_row/insert_col/delete_col` 纯函数 + `_shift_headers` 与最小尺寸/越界守卫)、`calc_sheet_view.py`(结构变换栏"↑/↓插入行、删除行、←/→插入列、删除列"6 按钮 + 调引擎函数 + 复用 `BulkCommand`)、`tests/test_calc_sheet.py`(结构变换用例已并入该门禁文件)。
+- **关键函数**：`insert_row/delete_row/insert_col/delete_col(content, at, delta=1)` 返回**新** content（纯函数，不原地改）；UI 依据 `currentRow()/currentColumn()` 决定 `at`（越界时由引擎夹取到 [0,rows/cols]）；撤销复用 `BulkCommand`（calc_undo.py 零改动）。
 - **验证**：
-  - 单测：`insert_row` 后 cell-key `r>=at` 全部 +1；公式 `=A2+A5` 在第 3 行插入 → `=A2+A6`；`=SUM(A1:A3)` 在第 2 行插入 → `=SUM(A1:A4)`(扩张)；`=A$1` 列插入 → `=A$1`(绝对列不动)。`delete_row` 删第 2 行 → `=A3` 变 `=A2`；删中 `=SUM(A1:A3)` 的第 2 行 → `=SUM(A1:A2)`(收缩)；删中 `=A2` → `=#REF!`。
+  - 单测：`insert_row` 后 cell-key `r>=at` 全部 +1；公式 `=A2+A5` 在第 3 行插入 → `=A2+A6`；`=SUM(A1:A3)` 在第 2 行插入 → `=SUM(A1:A4)`(扩张)；**列绝对** `=$A1` 列插入 → `=$A1`(列不动)，**行绝对列相对** `=A$1` 列插入 → `=B$1`(列变)。`delete_row` 删第 2 行 → `=A3` 变 `=A2`；删中 `=SUM(A1:A3)` 的第 2 行 → `=SUM(A1:A2)`(收缩)；删中 `=A2` → `=#REF!`。
+  - 已知限制（D6）：**入向**跨表引用（如 `Sheet2!A1` 指向本表被删行）不重写，仅本表自引用按规则平移；跨表引用本身不平移（与 §2.4 一致）。
+  - 守卫：删到只剩 1 行/列时 `delta` 被夹成 0（内容不变，不崩）；`at` 越界夹取到边界（插到末行之后=追加）。
   - 冒烟：插行后重算值正确、导出公式引用一致。
 
 ### 阶段 4 — 复制公式块 + 填充柄（G4，依赖阶段 0）
