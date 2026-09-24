@@ -53,6 +53,18 @@ def main() -> int:
     check("字符串引号", r('="a"'), '"a"')
     check("#REF! 节点", r("=#REF!"), "#REF!")
 
+    # ===== 5. 纯单元格绝对引用 round-trip =====
+    check("$A$1 绝对双锚", r("=$A$1"), "$A$1")
+    check("A$1 行绝对", r("=A$1"), "A$1")
+    check("$A1 列绝对", r("=$A1"), "$A1")
+    check("A1 相对", r("=A1"), "A1")
+
+    # ===== 6. 比较运算符 round-trip（< > <> <= >=）=====
+    check("<>", r("=A1<>B1"), "A1<>B1")
+    check("<", r("=A1<B1"), "A1<B1")
+    check(">", r("=A1>B1"), "A1>B1")
+    check("<=", r("=A1<=B1"), "A1<=B1")
+
     # ===== 4. 幂等性：render(parse(render(parse(x)))) == render(parse(x)) =====
     fixtures = [
         "=A1+B1", "=SUM(A1:A10)", "=Sheet2!$A$1:B$2",

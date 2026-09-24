@@ -120,9 +120,11 @@ def _make_shift_T(axis: str, at: int, delta: int, insert: bool):
 
 def _make_translate_T(dr: int, dc: int):
     def T(ref: CellRef) -> CellRef:
-        if not ref.abs_row:
-            ref.row0 += dr
-        if not ref.abs_col:
-            ref.col0 += dc
-        return ref
+        new_row0 = ref.row0 if ref.abs_row else ref.row0 + dr
+        new_col0 = ref.col0 if ref.abs_col else ref.col0 + dc
+        # 平移后坐标越界（<0）→ 引用失效（Excel：复制/填充到越界位置产生 #REF!）。
+        # G0-1 修复：此前负位移会生成非法引用（如 =A1 左移→=1、上移→=A0）并静默错值。
+        if new_row0 < 0 or new_col0 < 0:
+            return ErrRef()
+        return CellRef(None, new_row0, new_col0, ref.abs_row, ref.abs_col)
     return T

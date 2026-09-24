@@ -72,6 +72,13 @@ def main() -> int:
     check("纯数字不误改", translate_refs("123", 1, 1), "123")
     check("含 #REF! 公式保持", translate_refs("=#REF!+A1", 1, 1), "=#REF!+B2")
 
+    # ===== 负位移→越界引用变 #REF!（G0-1 修复）=====
+    check("左移越界 A1→#REF!", translate_refs("=A1", 0, -1), "=#REF!")
+    check("上移越界 A1→#REF!", translate_refs("=A1", -1, 0), "=#REF!")
+    check("左移越界 范围→#REF!", translate_refs("=SUM(A1:A3)", 0, -1), "=SUM(#REF!)")
+    # 合法负位移仍正常平移（不误伤）
+    check("左移1列 B2*C2→A2*B2", translate_refs("=B2*C2", 0, -1), "=A2*B2")
+
     # ===== 防御：解析失败原样返回 =====
     check("语法错原样返回", shift_refs("=1+", "row", 0, 1, insert=True), "=1+")
 
