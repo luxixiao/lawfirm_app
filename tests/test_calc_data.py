@@ -38,9 +38,25 @@ def make_conn() -> sqlite3.Connection:
         conn.execute("ALTER TABLE staff_type_def ADD COLUMN is_settle INTEGER NOT NULL DEFAULT 0")
     if "net_basis" not in cols:
         conn.execute("ALTER TABLE staff_type_def ADD COLUMN net_basis TEXT NOT NULL DEFAULT '收款净额'")
-    # 注入内置员工类型（合伙/聘用/兼职/公共/行政/…），使结算口径与真实库一致
-    st.ensure_defaults(conn)
+    # 注入员工类型（合伙/聘用/兼职/公共/行政…）：改动 1 后 ensure_defaults 不再预置，
+    # 改由 seed_types 显式自建，使结算口径与真实库一致
+    seed_types(conn)
     return conn
+
+
+def seed_types(conn: sqlite3.Connection) -> None:
+    """铺出结算口径用到的员工类型（聘用/合伙/兼职 参与）。
+
+    改动 1 后 `ensure_defaults()` 不再预置任何类型（员工类型表初始为空），
+    改为由用例显式新建；没有它们结算类指标会全部判 0，口径一致性断言就没意义了。
+    """
+    for name, settle, basis in (("合伙", True, "开票净额"), ("聘用", True, "收款净额"),
+                                ("兼职", True, "收款净额"), ("公共", True, "收款净额"),
+                                ("行政", True, "收款净额")):
+        if st.get_type(name, conn) is None:
+            st.add_type(name, conn=conn)
+        st.set_settle(name, settle, conn=conn)
+        st.set_net_basis(name, basis, conn=conn)
 
 
 def seed(conn: sqlite3.Connection) -> None:

@@ -41,6 +41,8 @@ BASE_PAD_LEFT = 8     # 大类行内左边距（容器 margin 6 + 8 = 图标左�
 BASE_ICON_GAP = 8     # 图标 → 文字
 BASE_CHEVRON = 12
 BASE_MARGIN_SIDE = 6  # 分组区左右外边距
+# 顶部「全部折叠」按钮的图标字形（与 toggle_btn/pin_btn 一样走单字形图标）
+FOLD_ALL_GLYPH = "≡"
 
 
 def _px(base: float) -> int:
@@ -433,8 +435,14 @@ class SidebarWidget(QWidget):
         self.pin_btn.setCheckable(True)
         self.pin_btn.setToolTip("固定为展开（鼠标移开也不收起）")
         self.pin_btn.clicked.connect(self._on_pin)
+        self.fold_all_btn = QPushButton(FOLD_ALL_GLYPH)
+        self.fold_all_btn.setObjectName("groupToggle")   # 与 toggle_btn 同一套 QSS
+        self.fold_all_btn.setCheckable(False)            # 单向动作，不继承 pin_btn 的 checkable 语义
+        self.fold_all_btn.setToolTip("收起所有展开的分组（不改变侧边栏整体收起状态）")
+        self.fold_all_btn.clicked.connect(self._fold_all_groups)
         top.addWidget(self.toggle_btn)
         top.addWidget(self.pin_btn)
+        top.addWidget(self.fold_all_btn)
         top.addStretch(1)
         root.addLayout(top)
 
@@ -510,6 +518,17 @@ class SidebarWidget(QWidget):
         self._leave_timer.stop()
         self.set_collapsed(not self._collapsed)
 
+    def _fold_all_groups(self) -> None:
+        """顶部「全部折叠」：把所有分组标为折叠并落地（**单向**，不提供「全部展开」）。
+
+        只写 `_folded`（各分组子项），**不动 `_collapsed`**（侧边栏整体收起状态），
+        两者是两套状态，混用会让「全部折叠」变成"把侧边栏收成图标列"。
+        """
+        for title in self._group_titles:
+            self._folded[title] = True
+        self._apply_fold()
+        self._save_folded()
+
     def _on_pin(self, checked: bool) -> None:
         self._pinned = bool(checked)
         self._settings.setValue("pinned", self._pinned)
@@ -548,6 +567,8 @@ class SidebarWidget(QWidget):
         self.toggle_btn.setText("›" if self._collapsed else "‹")
         self.pin_btn.setVisible(not self._collapsed)
         self.pin_btn.setChecked(self._pinned)
+        # 「全部折叠」在图标列（整体收起）下与 pin_btn 一并隐藏：此时已无展开的分组
+        self.fold_all_btn.setVisible(not self._collapsed)
         self._apply_fold(animate=animate)
         self._settings.setValue("collapsed", self._collapsed)
         self.collapseToggled.emit(self._collapsed)

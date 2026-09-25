@@ -36,6 +36,26 @@ def make_conn():
     return conn
 
 
+def seed_types(conn) -> None:
+    """按「员工类型页自建」铺出结算口径（合伙/聘用/兼职/公共/行政 参与、挂靠/其他 不参与）。
+
+    改动 1 后 `ensure_defaults()` 不再预置任何类型（员工类型表初始为空），
+    用例必须自己建类型，否则 build_settlement_conn 会把所有人的业务收入判为 0。
+    """
+    for name, settle, basis in (("合伙", True, "开票净额"), ("聘用", True, "收款净额"),
+                                ("兼职", True, "收款净额"), ("公共", True, "收款净额"),
+                                ("行政", True, "收款净额"), ("挂靠", False, "收款净额"),
+                                ("其他", False, "收款净额")):
+        if st.get_type(name, conn) is None:
+            st.add_type(name, conn=conn)
+            conn.execute("UPDATE staff_type_def SET is_builtin=? WHERE name=?",
+                         (1 if name in st.BUILTIN_TYPES or name in ("公共", "行政") else 0,
+                          name))
+            conn.commit()
+        st.set_settle(name, settle, conn=conn)
+        st.set_net_basis(name, basis, conn=conn)
+
+
 def check(label, cond, detail=""):
     global OK
     if cond:
@@ -108,7 +128,7 @@ def seed_refund_scenario(conn, name):
 
 def main() -> int:
     conn = make_conn()
-    st.ensure_defaults(conn)
+    seed_types(conn)   # 不预置类型后由用例自建（见 seed_types 注释）
 
     # ===== 1. settle_flags_of（G 核心驱动）=====
     check("合伙=(1,开票净额)", ps.staff_type.settle_flags_of("合伙", conn) == (True, "开票净额"))
@@ -208,7 +228,7 @@ def main() -> int:
 
     # 5b 端到端：脏 invoice_date / receipt_date / period 不崩且必须产生警告
     conn2 = make_conn()
-    st.ensure_defaults(conn2)
+    seed_types(conn2)
     # 脏开票日期发票（旧代码 _month_of 直接 IndexError）
     conn2.execute("INSERT INTO invoice(invoice_no, invoice_date, total_amount) VALUES('INV_BAD','20250105',1000)")
     conn2.execute("INSERT INTO charge_detail(invoice_no, person_name, billing_amount) VALUES('INV_BAD','周脏日',1000)")
@@ -280,6 +300,24 @@ def main() -> int:
           f"got={res3['李四']['months'][5]['rec_cur_year']}")
     check("P3-2 警告含负金额提示", any("负金额收款" in w for w in warns3), f"{warns3}")
     conn3.close()
+
+    # ===== P1 ★核心回归★：取消勾选 → 重新勾选 → 口径与算费金额原样恢复 =====
+    # 合伙=开票净额：开票 1000、收 600 → 正确 income=1000；口径若被静默改写成
+    # 收款净额会退化成 600（少计 400），这条断言直接锁住金额而不只是锁住读数。
+    st.set_settle("合伙", False, conn=conn)
+    seed_person(conn, "周恢复", "合伙", 1000, 600)
+    r_off = ps.build_settlement_conn(conn, 2025)
+    check("取消勾选期间 该类型不参与（income=0）",
+          r_off["周恢复"]["months"][3]["income"] == 0.0,
+          f"got={r_off['周恢复']['months'][3]['income']}")
+    st.set_settle("合伙", True, conn=conn)
+    r_on = ps.build_settlement_conn(conn, 2025)
+    check("重新勾选后 读数恢复=开票净额",
+          st.settle_flags_of("合伙", conn) == (True, "开票净额"),
+          f"got={st.settle_flags_of('合伙', conn)}")
+    check("重新勾选后 算费 income 回到 inv_total(1000)",
+          r_on["周恢复"]["months"][3]["income"] == 1000.0,
+          f"got={r_on['周恢复']['months'][3]['income']}")
 
     conn.close()
     print(f"PASS {OK} checks" if not FAILS else "FAILED:\n" + "\n".join(FAILS))

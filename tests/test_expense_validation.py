@@ -39,9 +39,30 @@ def check(label, cond, detail=""):
         FAILS.append(f"{label} {detail}".strip())
 
 
+def seed_types(conn) -> None:
+    """铺出规则③用到的员工类型（合伙/聘用/公共/行政 参与、挂靠/其他 不参与）。
+
+    改动 1 后 `ensure_defaults()` 不再预置任何类型（员工类型表初始为空），
+    用例必须自己建类型，否则「经办人必须参与结算」规则会全部误判为未参与。
+    """
+    for name, settle, basis in (("合伙", True, "开票净额"), ("聘用", True, "收款净额"),
+                                ("兼职", True, "收款净额"), ("公共", True, "收款净额"),
+                                ("行政", True, "收款净额"), ("挂靠", False, "收款净额"),
+                                ("其他", False, "收款净额")):
+        if st.get_type(name, conn) is None:
+            st.add_type(name, conn=conn)
+            conn.execute("UPDATE staff_type_def SET is_builtin=? WHERE name=?",
+                         (1 if name in st.BUILTIN_TYPES or name in ("公共", "行政") else 0,
+                          name))
+            conn.commit()
+        st.set_settle(name, settle, conn=conn)
+        st.set_net_basis(name, basis, conn=conn)
+
+
 def main() -> int:
     conn = make_conn()
     st.ensure_defaults(conn)
+    seed_types(conn)
 
     # 会计科目主表（供规则②校验）
     p1 = asub.add_level1("资产类", conn=conn)

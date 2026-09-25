@@ -65,6 +65,8 @@ EXPECTED_FILES = [
     "tests/test_review_writeback.py",
     "tests/test_skin_contract.py",
     "tests/test_staff_type.py",
+    "tests/test_staff_view_settle_ui.py",  # 参与结算三处语义修复 + 表头「业务金额方式」（离屏 Qt）
+    "tests/test_sidebar_fold_all.py",      # 侧边栏「全部折叠」按钮（离屏 Qt）
 ]
 
 

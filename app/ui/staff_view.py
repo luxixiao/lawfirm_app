@@ -29,6 +29,9 @@ from app.ui.widgets import (
     CaptionLabel, PrimaryPushButton, PushButton, tab_help_corner,
 )
 
+# 业务金额方式（下拉：库里存的 net_basis 取值，非表头文案）未存口径时的显示默认值
+BASIS_FALLBACK = "收款净额"
+
 
 class StaffView(QWidget):
     def __init__(self) -> None:
@@ -45,7 +48,7 @@ class StaffView(QWidget):
         self.tabs.currentChanged.connect(self._on_tab_changed)
         self.tabs.setCornerWidget(tab_help_corner(
             "职工花名册（基础数据）：台账导入时校验经办人是否在此名单中。"
-            "类型中只有「合伙 / 聘用 / 兼职」参与业务收入计算。"
+            "能否参与结算，看该类型在「员工类型」页有没有勾选「参与结算」。"
         ), Qt.Corner.TopRightCorner)
         lay.addWidget(self.tabs, 1)
 
@@ -98,7 +101,7 @@ class StaffView(QWidget):
         lay.setSpacing(10)
         lay.addWidget(CaptionLabel(
             "自定义员工类型。合伙 / 聘用 / 兼职 为内置结算类型：禁止删除与改名，说明可改；"
-            "其余类型仅作身份标签，不参与业务收入计算。"))
+            "能否参与结算，看该类型在下面有没有勾选「参与结算」。"))
 
         btns = QHBoxLayout()
         self.btn_t_add = QPushButton("新增类型")
@@ -121,7 +124,7 @@ class StaffView(QWidget):
 
         self.type_table = QTableWidget(0, 5)
         self.type_table.setHorizontalHeaderLabels(
-            ["类型", "参与结算", "净额口径", "说明", "人数"])
+            ["类型", "参与结算", "业务金额方式", "说明", "人数"])
         self.type_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.type_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.type_table.verticalHeader().setVisible(False)
@@ -171,16 +174,17 @@ class StaffView(QWidget):
         self.type_table.setRowCount(len(rows))
         for r, row in enumerate(rows):
             name = row["name"]
+            # 参与结算：可点击开关（checkable item，点击即写库）
+            settle = bool(row["is_settle"])
             name_item = QTableWidgetItem(name)
             name_item.setData(Qt.ItemDataRole.UserRole, name)
-            if row["is_builtin"]:
+            # 内置且已参与 → 类型名加粗；取消参与后刷新即恢复普通字体
+            if row["is_builtin"] and settle:
                 f = name_item.font()
                 f.setBold(True)
                 name_item.setFont(f)
             self.type_table.setItem(r, 0, name_item)
 
-            # 参与结算：可点击开关（checkable item，点击即写库）
-            settle = bool(row["is_settle"])
             s_item = QTableWidgetItem()
             s_item.setFlags(s_item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
             s_item.setCheckState(Qt.CheckState.Checked if settle
@@ -194,7 +198,7 @@ class StaffView(QWidget):
             combo = QComboBox()
             combo.addItems(["开票净额", "收款净额"])
             if settle:
-                combo.setCurrentText(row.get("net_basis") or "收款净额")
+                combo.setCurrentText(row.get("net_basis") or BASIS_FALLBACK)
             else:
                 combo.setCurrentIndex(-1)   # 不参与结算 → 显示空白
             combo.setEnabled(settle)
@@ -211,21 +215,52 @@ class StaffView(QWidget):
         self._type_col.apply()
 
     def _on_settle_changed(self, item: QTableWidgetItem) -> None:
-        """参与结算开关被点选 → 写库 + 同步本行净额口径下拉可用态。"""
+        """参与结算开关被点选 → 写库 + 同步本行业务金额方式下拉与加粗态。"""
         if self._loading or item.column() != 1:
             return
         name = item.data(Qt.ItemDataRole.UserRole)
         if not name:
             return
         flag = item.checkState() == Qt.CheckState.Checked
+        # set_settle 只改 is_settle、保留 net_basis：口径原样留在库里
         st.set_settle(name, flag)
         combo = self.type_table.cellWidget(item.row(), 2)
         if isinstance(combo, QComboBox):
+            # 程序化改动下拉会触发 currentTextChanged，这里必须屏蔽：
+            # 否则「取消勾选时清空显示」会被当成一次口径变更写进库里，等于又把口径清掉。
+            combo.blockSignals(True)
             combo.setEnabled(flag)
+            if flag:
+                # 重新勾选：回填库中保留的口径；罕见脏空值只作显示默认值，不写库
+                combo.setCurrentText((st.get_type(name) or {}).get("net_basis")
+                                     or BASIS_FALLBACK)
+            else:
+                # 取消勾选：仅清空页面显示，库里的口径不动（回来时按原口径恢复）
+                combo.setCurrentIndex(-1)
+            combo.blockSignals(False)
+        self._apply_builtin_bold(name)
+
+    def _apply_builtin_bold(self, name: str) -> None:
+        """内置类型：参与结算时类型名加粗，取消勾选后恢复普通字体（立即生效）。"""
+        t = st.get_type(name)
+        if t is None or not t["is_builtin"]:
+            return
+        bold = bool(t["is_settle"])
+        for r in range(self.type_table.rowCount()):
+            it = self.type_table.item(r, 0)
+            if it is not None and it.data(Qt.ItemDataRole.UserRole) == name:
+                f = it.font()
+                f.setBold(bold)
+                it.setFont(f)
+                return
 
     def _on_basis_changed(self, name: str, basis: str) -> None:
-        """净额口径下拉变更 → 写库。"""
-        if self._loading:
+        """净额口径下拉变更 → 写库。
+
+        空串不写：口径只有「开票净额 / 收款净额」两个合法值，空不是口径，
+        写进去只会丢配置（下拉留空显示 ≠ 口径为空值）。
+        """
+        if self._loading or not basis:
             return
         st.set_net_basis(name, basis)
 
@@ -245,7 +280,7 @@ class StaffView(QWidget):
             return
         note, ok2 = QInputDialog.getText(
             self, "新增员工类型",
-            "说明（可留空；不含「合伙 / 聘用 / 兼职」则不参与结算计算）：")
+            "说明（可留空；仅作身份标签，与是否参与结算无关）：")
         if not ok2:
             return
         try:
@@ -447,7 +482,7 @@ class StaffView(QWidget):
             ret = QMessageBox.question(
                 self, "确认修改类型",
                 f"将 {name} 的人员类型从「{s['staff_type']}」改为「{new_type}」？\n"
-                f"注意：类型决定业务收入口径（合伙=按开票，聘用/兼职=按收款，其余=0）；"
+                f"注意：能否参与结算看该类型的「参与结算」勾选（勾选后才计入业务收入）；"
                 f"历史数据的身份不受影响。",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
             if ret != QMessageBox.StandardButton.Yes:

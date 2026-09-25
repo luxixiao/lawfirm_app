@@ -48,13 +48,44 @@ def expect_err(label, fn, exc=StaffTypeError):
         OK += 1
 
 
+# (类型名, 是否参与结算, 业务金额方式)：口径沿用历史预置行的取值（列默认值=收款净额）
+_SEED_TYPES = (("合伙", True, "开票净额"), ("聘用", True, "收款净额"),
+               ("兼职", True, "收款净额"), ("公共", True, "收款净额"),
+               ("行政", True, "收款净额"), ("挂靠", False, "收款净额"),
+               ("其他", False, "收款净额"))
+
+
+def seed_types(conn) -> None:
+    """按「用户在员工类型页自建」的等价动作铺出结算口径。
+
+    为什么需要它：改动 1 后 `ensure_defaults()` 不再预置任何类型（员工类型表初始为
+    空），所以用例用到的类型必须自己建 —— 否则"合伙/聘用"这类断言会直接 KeyError。
+    这里复刻的是页面动作：add_type 新建 → 勾选参与 → 下拉选口径；
+    is_builtin=1（合伙/聘用/兼职/公共/行政）与禁删禁改名语义保持一致。
+    """
+    for name, settle, basis in _SEED_TYPES:
+        if st.get_type(name, conn) is None:
+            st.add_type(name, conn=conn)
+            builtin = name in st.BUILTIN_TYPES or name in ("公共", "行政")
+            conn.execute("UPDATE staff_type_def SET is_builtin=? WHERE name=?",
+                         (1 if builtin else 0, name))
+            conn.commit()
+        st.set_settle(name, settle, conn=conn)   # 参与结算开关（不动口径，顺序任意）
+        st.set_net_basis(name, basis, conn=conn)
+
+
 def main() -> int:
     conn = make_conn()
 
-    # ===== 1. 内置类型初始化 =====
+    # ===== 1. 建库/首次打开：不预置任何类型，类型由用户自行新建 =====
     st.ensure_defaults(conn)
     names = [t["name"] for t in st.list_types(conn)]
-    check("预置 7 类(含公共/行政)", names == ["合伙", "聘用", "兼职", "公共", "行政", "挂靠", "其他"],
+    check("ensure_defaults 不预置任何类型", names == [], f"got={names}")
+    check("list_types 初始为空表", st.list_types(conn) == [], f"got={st.list_types(conn)}")
+    # 用户自建之后口径与改动前一致（下列断言保持原语义）
+    seed_types(conn)
+    names = [t["name"] for t in st.list_types(conn)]
+    check("自建 7 类(含公共/行政)", names == ["合伙", "聘用", "兼职", "公共", "行政", "挂靠", "其他"],
           f"got={names}")
     builtin = {t["name"]: t["is_builtin"] for t in st.list_types(conn)}
     check("合伙是内置", builtin["合伙"] == 1)
@@ -91,7 +122,8 @@ def main() -> int:
     check("行政 settle=(1,收款净额)", st.settle_flags_of("行政", conn) == (True, "收款净额"))
     check("挂靠 settle=(0,收款净额)", st.settle_flags_of("挂靠", conn) == (False, "收款净额"))
     check("其他 settle=(0,收款净额)", st.settle_flags_of("其他", conn) == (False, "收款净额"))
-    check("未知类型 settle=(0,收款净额)", st.settle_flags_of("不存在的类型", conn) == (False, "收款净额"))
+    # 类型不存在 → 无口径可依据，返回空串（不再臆造"收款净额"）
+    check("未知类型 settle=(0,'')", st.settle_flags_of("不存在的类型", conn) == (False, ""))
 
     check("空名非参与", st.is_settle_participant("", conn) is False)
     check("空名(None)非参与", st.is_settle_participant(None, conn) is False)
@@ -185,6 +217,92 @@ def main() -> int:
               "业务收入按 0 计" in str(e) and "保留" in str(e), f"msg={e}")
     check("拒绝后员工仍在", conn.execute(
         "SELECT COUNT(*) AS n FROM staff WHERE name='李四'").fetchone()["n"] == 1)
+
+    # ===== 8. 回归：初始为空 / 不覆盖用户勾选 / 取消勾选清空口径 =====
+    # 8a 全新库：建库后员工类型表必须完全空白
+    c_new = make_conn()
+    st.ensure_defaults(c_new)
+    check("全新库 类型表为空", st.list_types(c_new) == [], f"got={st.list_types(c_new)}")
+    check("全新库 表内 0 行", c_new.execute(
+        "SELECT COUNT(*) AS n FROM staff_type_def").fetchone()["n"] == 0)
+    c_new.close()
+
+    # 8b 老库升级：缺 is_settle / net_basis 的列要能补上，且不改写已有行
+    c_old = make_conn()
+    # 退回"未迁移"形态（仅 4 列），再由 ensure_defaults 补列
+    c_old.executescript(
+        "ALTER TABLE staff_type_def RENAME TO staff_type_def_tmp;"
+        "CREATE TABLE staff_type_def(name TEXT PRIMARY KEY, is_builtin INTEGER DEFAULT 0,"
+        " note TEXT DEFAULT '', sort_order INTEGER DEFAULT 0);"
+        " INSERT INTO staff_type_def(name, is_builtin, note, sort_order)"
+        "  SELECT name, is_builtin, note, sort_order FROM staff_type_def_tmp;"
+        " DROP TABLE staff_type_def_tmp;")
+    # 造一行"升级前就在"的历史数据（未参与结算，也不该在补列时被改写）
+    c_old.execute("INSERT INTO staff_type_def(name, is_builtin, note, sort_order)"
+                  " VALUES('合伙',1,'',1)")
+    c_old.commit()
+    st.ensure_defaults(c_old)
+    cols = [r[1] for r in c_old.execute("PRAGMA table_info(staff_type_def)")]
+    check("老库补出 is_settle 列", "is_settle" in cols, f"cols={cols}")
+    check("老库补出 net_basis 列", "net_basis" in cols, f"cols={cols}")
+    # 存量行落在列默认值上（与 db.init_db 迁移块同一口径），不因补列被改写 is_settle
+    check("老库补列后 存量行按列默认值", st.settle_flags_of("合伙", c_old) == (False, "收款净额"),
+          f"got={st.settle_flags_of('合伙', c_old)}")
+    c_old.close()
+
+    # 8c ★核心回归★：取消勾选后，反复 list_types（=刷新页面）不得写回
+    c_r = make_conn()
+    st.add_type("外部顾问", conn=c_r)
+    st.set_settle("外部顾问", True, conn=c_r)
+    st.set_net_basis("外部顾问", "开票净额", conn=c_r)
+    check("开启参与", st.is_settle_participant("外部顾问", c_r) is True)
+    st.set_settle("外部顾问", False, conn=c_r)
+    for _ in range(3):            # 模拟"打开页面 → refresh → list_types"反复调用
+        st.list_types(c_r)
+    row = st.get_type("外部顾问", c_r)
+    check("取消勾选不被 list_types 写回",
+          row["is_settle"] == 0 and st.is_settle_participant("外部顾问", c_r) is False,
+          f"got={dict(row)}")
+    # 取消勾选只关开关：口径按原样留在库里，且不被 "or 收款净额" 兜底悄悄还原。
+    # 结算侧（person_settlement）只在 is_settle=True 时读第 2 项，故金额完全不受影响。
+    check("取消勾选后 口径按原样保留", row["net_basis"] == "开票净额", f"got={row['net_basis']!r}")
+    check("取消勾选后 读数不参与结算且口径原样",
+          st.settle_flags_of("外部顾问", c_r) == (False, "开票净额"),
+          f"got={st.settle_flags_of('外部顾问', c_r)}")
+
+    # ★核心回归★：取消勾选 → 重新勾选 → 口径原样恢复，不得退化成默认口径（收款净额）。
+    # 退化会让「合伙」这类按开票净额计的类型少算收入（开票 100 万/收 60 万 → 只计 60 万）。
+    st.set_settle("外部顾问", True, conn=c_r)
+    check("重新勾选后 口径未退化成默认",
+          st.settle_flags_of("外部顾问", c_r) == (True, "开票净额"),
+          f"got={st.settle_flags_of('外部顾问', c_r)}")
+
+    # 内置类型同口径：公共 关掉后刷新仍保持关闭，重新勾选可再参与
+    seed_types(c_r)
+    st.set_settle("公共", False, conn=c_r)
+    st.list_types(c_r)
+    check("内置类型取消勾选不被写回", st.get_type("公共", c_r)["is_settle"] == 0)
+    st.set_settle("公共", True, conn=c_r)
+    check("内置类型可重新勾选参与", st.is_settle_participant("公共", c_r) is True)
+
+    # 内置「合伙」最小复现（QA 场景）：开票 1000 未收，口径=开票净额
+    check("内置 合伙 初始读数", st.settle_flags_of("合伙", c_r) == (True, "开票净额"),
+          f"got={st.settle_flags_of('合伙', c_r)}")
+    st.set_settle("合伙", False, conn=c_r)
+    check("内置 合伙 取消勾选后 不参与且口径保留",
+          st.settle_flags_of("合伙", c_r) == (False, "开票净额"),
+          f"got={st.settle_flags_of('合伙', c_r)}")
+    st.set_settle("合伙", True, conn=c_r)
+    check("内置 合伙 重新勾选后 口径恢复（不退化为收款净额）",
+          st.settle_flags_of("合伙", c_r) == (True, "开票净额"),
+          f"got={st.settle_flags_of('合伙', c_r)}")
+
+    # 8d 导入按需建类型：默认不参与，且不动已有类型的勾选
+    st.ensure_types(c_r, ["返聘"])
+    check("导入按需补类型", "返聘" in [t["name"] for t in st.list_types(c_r)])
+    check("按需补的类型默认不参与", st.is_settle_participant("返聘", c_r) is False)
+    check("按需补类型不覆盖已设勾选", st.get_type("公共", c_r)["is_settle"] == 1)
+    c_r.close()
 
     conn.close()
     print(f"PASS {OK} checks" if not FAILS else "FAILED:\n" + "\n".join(FAILS))

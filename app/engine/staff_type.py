@@ -1,12 +1,15 @@
 """员工类型维护 + 员工删除的引用检查
 
 口径（已与需求方确认）：
-- **参与结算由 staff_type_def.is_settle 控制**（内置三类 合伙/聘用/兼职 + 公共/行政
-  默认参与），**净额口径由 net_basis 控制**（'开票净额' | '收款净额'）。
+- **员工类型表初始为空**：建库/首次打开不再预置任何类型（合伙/聘用/… 一律由用户在
+  「员工类型」页自己新建，见 `ensure_defaults`）。`ensure_types()` 在导入职工清单时把
+  清单里出现的未知类型**按需**补入，因此导入是唯一会自动建类型的路径。
+- **参与结算由 staff_type_def.is_settle 控制**，**净额口径（net_basis）由
+  '开票净额' | '收款净额' 两个枚举值表达**。
 - person_settlement 改用 `settle_flags_of(name)` 读取，不再按类型名硬编码：
-  合伙=开票净额、聘用/兼职=收款净额、其余（含自定义类型中未开启者）=0。
-- 故内置三类为 is_builtin=1：**禁止删除、禁止改名**（改名会断结算口径），说明可改。
-- 自定义类型（如"顾问""实习"）默认不参与结算，可在员工类型页自行开启参与并选择净额口径。
+  按类型自己的 is_settle 决定是否计入、按 net_basis 决定按哪个金额计。
+- 故内置三类（合伙/聘用/兼职，is_builtin=1）：**禁止删除、禁止改名**（改名会断结算口径），
+  说明可改；公共/行政 等历史上默认参与的类型现在同样以「页面勾选」为准。
 
 员工删除：有业务数据引用（charge_detail/collection/expense_ledger/raw_salary）时
 禁止删除——硬删会让结算表查不到身份，业务收入被判为 0。
@@ -20,13 +23,10 @@ from typing import Dict, List, Optional, Tuple
 from app.db import get_conn
 
 # 内置三类：参与结算计算，锁定删除与改名
+# 注意：这**只是**「禁止删除/改名的内置名单」，不表示建库时会自动建行 ——
+# 员工类型表初始为空，这三类与其余类型一样由用户在员工类型页自行新建。
+# （expense_cat.py 通过本常量做费用类型的人员白/黑名单判断，勿删。）
 BUILTIN_TYPES = ["合伙", "聘用", "兼职"]
-# 预置但可删可改名的常见类型
-DEFAULT_EXTRA = ["挂靠", "其他"]
-
-# 内置默认参与结算的类型及其净额口径（ensure_defaults 回填依据）
-SETTLE_DEFAULTS = {"合伙": "开票净额", "聘用": "收款净额", "兼职": "收款净额",
-                  "公共": "收款净额", "行政": "收款净额"}
 
 
 class StaffTypeError(Exception):
@@ -55,40 +55,38 @@ def _close(own: bool, conn) -> None:
 # ---------------------------------------------------------------------------
 
 def ensure_defaults(conn=None) -> None:
-    """建库/升级后补齐：内置三类 + 公共/行政（默认参与结算）+ 预置的挂靠/其他。"""
+    """建库/升级后补齐 staff_type_def 的参与结算列（**只补列，绝不预置任何类型**）。
+
+    行为边界（两条口径，勿再扩大）：
+    - **不写行**：员工类型表初始为空，类型一律由用户在员工类型页自行新建；
+      导入职工清单时的按需建类型走 `ensure_types()`。
+    - **不回写已存在的行**：早期实现在每次调用时无条件
+      `UPDATE ... SET is_settle=1 WHERE name IN (...)`，而 `list_types()` 又会每次
+      调 `ensure_defaults()` —— 结果用户在页面上取消勾选后，下一次打开/刷新就被
+      强行改回「参与结算」，表现为「勾选取消不掉」。修复：这里只做 schema 层面的
+      幂等补列（老库缺 is_settle / net_basis 时补上，存量行落列默认值），
+      对已有行**一个字段都不动**。
+    """
     own, conn = _own_conn(conn)
     try:
-        # 内置三类：参与结算（合伙按开票净额，聘用/兼职按收款净额）
-        for i, name in enumerate(BUILTIN_TYPES):
-            conn.execute(
-                "INSERT OR IGNORE INTO staff_type_def(name, is_builtin, note, sort_order, is_settle, net_basis)"
-                " VALUES(?,1,'',?,1,'收款净额')", (name, i + 1))
-        # 公共 / 行政：非人员经办人，按需求也参与结算（净额口径=收款净额）
-        base = len(BUILTIN_TYPES)
-        for j, name in enumerate(("公共", "行政")):
-            conn.execute(
-                "INSERT OR IGNORE INTO staff_type_def(name, is_builtin, note, sort_order, is_settle, net_basis)"
-                " VALUES(?,1,'',?,1,'收款净额')", (name, base + 1 + j))
-        # 预置但可删可改名的常见类型：默认不参与结算（is_settle 走列默认值 0）
-        # 公共/行政 占 sort_order 4,5；此处从 6 起，避免与 行政(5) 撞序
-        extra_base = base + 3
-        for k, name in enumerate(DEFAULT_EXTRA):
-            conn.execute(
-                "INSERT OR IGNORE INTO staff_type_def(name, is_builtin, note, sort_order)"
-                " VALUES(?,0,?,?)", (name, "", extra_base + k))
-        # 回填：确认列已存在后修正内置类型的净额口径与公共/行政的参与开关（幂等）
         cols = [r[1] for r in conn.execute("PRAGMA table_info(staff_type_def)")]
-        if "is_settle" in cols and "net_basis" in cols:
-            conn.execute("UPDATE staff_type_def SET is_settle=1, net_basis='开票净额' WHERE name='合伙'")
-            conn.execute("UPDATE staff_type_def SET is_settle=1, net_basis='收款净额' WHERE name IN ('聘用','兼职')")
-            conn.execute("UPDATE staff_type_def SET is_settle=1, net_basis='收款净额' WHERE name IN ('公共','行政')")
+        if "is_settle" not in cols:
+            conn.execute(
+                "ALTER TABLE staff_type_def ADD COLUMN is_settle INTEGER NOT NULL DEFAULT 0")
+        if "net_basis" not in cols:
+            conn.execute(
+                "ALTER TABLE staff_type_def ADD COLUMN net_basis TEXT NOT NULL DEFAULT '收款净额'")
         conn.commit()
     finally:
         _close(own, conn)
 
 
 def ensure_types(conn, names: List[str]) -> None:
-    """导入职工清单时调用：把未知类型自动入库（is_builtin=0）。"""
+    """导入职工清单时调用：把未知类型自动入库（is_builtin=0）。
+
+    口径：**初始为空、按需创建**。这里只补「本次导入清单里出现、表里还没有」的类型，
+    不预置任何常见类型、也不改动已有类型的 is_settle / net_basis（用户勾选为准）。
+    """
     if not names:
         return
     for name in names:
@@ -101,7 +99,12 @@ def ensure_types(conn, names: List[str]) -> None:
 
 
 def list_types(conn=None) -> List[Dict]:
-    """类型清单：名称/是否内置/说明/排序/引用人数/是否参与计算。"""
+    """类型清单：名称/是否内置/说明/排序/引用人数/是否参与计算/业务金额方式。
+
+    表初始为空 → 首次打开返回 []，用户新建后才有行。
+    返回行里的 net_basis **原样透出**（未参与结算时为 ''），不做兜底改写，
+    供员工类型页直接显示。
+    """
     own, conn = _own_conn(conn)
     try:
         ensure_defaults(conn)
@@ -158,26 +161,47 @@ def is_settle_participant(name: str, conn=None) -> bool:
 
 
 def settle_flags_of(name: str, conn=None) -> Tuple[bool, str]:
-    """(是否参与结算, 净额口径)。类型缺失/未参与 → (False, '收款净额')。"""
+    """(是否参与结算, 业务金额方式/「净额口径」) 的读数口径。
+
+    - 名空 / 类型不存在 → (False, "")：无从依据的口径一律返回空，**不做臆造**；
+    - 未参与结算 → (False, 库存的 net_basis 原样)：**不做 `or '收款净额'` 兜底**。
+      否则「取消勾选时清空 net_basis」存下的空值会被悄悄还原成"收款净额"，
+      用户以为清掉了其实还在，重新勾选就会沿用旧口径。
+    - 参与结算 → (True, net_basis or '收款净额')：既然参与就必须有个口径。
+
+    结算侧（person_settlement）只在 is_settle=True 时读第 2 项，故收窄兜底不影响金额。
+    """
     n = (name or "").strip()
     if not n:
-        return (False, "收款净额")
+        return (False, "")
     own, c = _own_conn(conn)
     try:
         r = c.execute(
             "SELECT is_settle, net_basis FROM staff_type_def WHERE name=?", (n,)).fetchone()
         if not r:
-            return (False, "收款净额")
-        return (bool(r["is_settle"]), r["net_basis"] or "收款净额")
+            return (False, "")
+        if not r["is_settle"]:
+            return (False, r["net_basis"] or "")
+        return (True, r["net_basis"] or "收款净额")
     finally:
         _close(own, c)
 
 
 def set_settle(name: str, flag: bool, conn=None) -> None:
-    """员工类型页开关回调：设置是否参与结算。"""
+    """员工类型页开关回调：设置是否参与结算。
+
+    只写 is_settle，**不碰 net_basis**：净额口径是用户自己选的配置，取消勾选
+    只表达「这次不参与」，不该顺手删掉。清掉后重新勾选只能填默认值（收款净额），
+    原口径被静默改写 → 金额按另一个口径算（合伙开票 100 万只收 60 万 → 少计 40 万）。
+    库里留着原口径、页面显示留空，两者不冲突：is_settle=0 时结算侧根本不读 net_basis，
+    金额完全不受影响。
+    """
     own, c = _own_conn(conn)
     try:
-        c.execute("UPDATE staff_type_def SET is_settle=? WHERE name=?", (1 if flag else 0, name))
+        if flag:
+            c.execute("UPDATE staff_type_def SET is_settle=1 WHERE name=?", (name,))
+        else:
+            c.execute("UPDATE staff_type_def SET is_settle=0 WHERE name=?", (name,))
         c.commit()
     finally:
         _close(own, c)
@@ -196,8 +220,8 @@ def set_net_basis(name: str, basis: str, conn=None) -> None:
 def is_computable(name: str, conn=None) -> bool:
     """该类型是否参与业务收入计算。
 
-    改为读取 staff_type_def.is_settle（参与结算是可设置的开关，见需求）：
-    参与结算的内置三类（合伙/聘用/兼职）+ 公共/行政 返回 True，其余 False。
+    读取 staff_type_def.is_settle（参与结算是可设置的开关，见需求）：
+    该类型被勾选参与则返回 True，未勾选/类型不存在返回 False。
     """
     return is_settle_participant(name, conn)
 

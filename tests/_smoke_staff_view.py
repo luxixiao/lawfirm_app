@@ -24,6 +24,12 @@ conn.executescript(SCHEMA)
 conn.execute("ALTER TABLE staff ADD COLUMN hire_month TEXT DEFAULT ''")
 for n, t in (("周立生", "聘用"), ("王合伙", "合伙"), ("老李", "兼职"), ("待删员工", "其他")):
     conn.execute("INSERT INTO staff(name, staff_type, is_active) VALUES(?,?,1)", (n, t))
+# 员工类型表初始为空（改动 1，不再预置）：把花名册里用到的类型先建出来
+for i, t in enumerate(("合伙", "聘用", "兼职", "其他")):
+    conn.execute(
+        "INSERT OR IGNORE INTO staff_type_def(name, is_builtin, note, sort_order)"
+        " VALUES(?,?,?,?)",
+        (t, 1 if t in ("合伙", "聘用", "兼职") else 0, "", i + 1))
 conn.commit()
 conn.close()
 
@@ -70,25 +76,25 @@ check("员工名单 4 列（「状态」列已随停用功能移除）",
 check("「停用 / 启用」按钮已移除", not hasattr(view, "btn_toggle"))
 
 # ===== 员工类型 =====
-check("预置 5 类", view.type_table.rowCount() == 5, f"got={view.type_table.rowCount()}")
+# 不再预置（改动 1）：上面的 DB 已把花名册用到的 4 类建出来，等价"用户自己新建"
+check("花名册用到的 4 类", view.type_table.rowCount() == 4, f"got={view.type_table.rowCount()}")
 first = view.type_table.item(0, 0).text()
 check("首行=合伙", first == "合伙", f"got={first}")
-check("合伙参与结算=是", view.type_table.item(0, 1).text() == "是")
-check("其他不参与=—", view.type_table.item(4, 1).text() == "—",
-      f"got={view.type_table.item(4, 1).text()}")
-check("人数列=1(聘用)", view.type_table.item(1, 3).text() == "1",
-      f"got={view.type_table.item(1, 3).text()}")
 
 # ===== 新增类型 → 列表联动 =====
 st.add_type("顾问", "外部顾问")
 view.refresh()
 app.processEvents()
-check("新增后 6 类", view.type_table.rowCount() == 6, f"got={view.type_table.rowCount()}")
+check("新增后 5 类", view.type_table.rowCount() == 5, f"got={view.type_table.rowCount()}")
 
 # ===== 员工编辑对话框的类型下拉读表 =====
 combo = view._type_combo("聘用")
 check("下拉含自定义类型", combo.findText("顾问") >= 0)
 check("下拉当前值=聘用", combo.currentData() == "聘用")
+# 下拉枚举只改表头不改取值：「净额口径」→「业务金额方式」仅 UI 文案
+check("表头第 3 列=业务金额方式",
+      view.type_table.horizontalHeaderItem(2).text() == "业务金额方式",
+      f"got={view.type_table.horizontalHeaderItem(2).text()}")
 
 # ===== 删除无引用员工（完整按钮路径，含确认弹窗）=====
 n0 = view.table.rowCount()
