@@ -47,10 +47,11 @@
   **在补录弹窗里填的经办人/收款会写回该行**（`_deferred_edits`）→ 该行随即从「待补录」
   落到**「待确认」**，并在右栏与「各经办人已收」列**回显**刚填的内容（A 甲要求）；
   之后在「待确认」里再改，以**行的最终值**为准回写补录条目（`_merged_data`）。
-  红字行的原票号用 `SELECT orig_invoice_no FROM invoice WHERE invoice_no=?` 反查
-  （查 `invoice` 表 —— `raw_invoice` 无此列），取不到则按钮不出现。
-- **红字行（阶段 5，B 乙，用户 2026-09-18 拍板）**：红字发票**本身没问题**（照常高置信），
-  缺的是它引用的**蓝字原票** —— 故让**红字行自己**落「待补录」，原因列写明
+  红字行的原票号走**三路取号**（见 `_red_orig_no`）：`invoice.orig_invoice_no`（销项导入
+  写的）+ 台账行备注用 `_RED_RE` 现算 + `refund.orig_invoice_no`（退款台账的红蓝配对）；
+  **取不到原票号才不出现按钮**。
+- **红字行（阶段 5，B 乙，用户 2026-09-18 拍板 + 2026-09-25 新口径）**：红字发票**本身没问题**
+  （照常高置信），缺的是它引用的**蓝字原票** —— 故让**红字行自己**落「待补录」，原因列写明
   `需补录原票（红字引用 <原票号>）`，本行自身的疑问照旧拼在后面（绝不隐藏）：
   · 待补录时**不给「确认」**（确认写不出任何东西，点了状态也不变 → 只提示先补录）；
   · 填完补录 → `orig in self._backfills` 成立 → 判定自动失效 → 状态**回落到它本来的**
@@ -113,6 +114,7 @@ from app.engine.import_confidence import (  # noqa: F401  （REASON_LIB_DIFF 供
     REASON_LIB_DIFF, SHEET_LABEL, evaluate, receipt_summary, red_orig_diff,
 )
 from app.engine.raw_ledger import expand_receipts
+from app.engine.raw_invoice import _RED_RE
 from app.importer.excel_reader import ImportError_
 from app.ui import scale, style
 from app.ui.backfill_dialog import BackfillDialog, backfill_validator, red_mismatch_notice
@@ -1354,24 +1356,75 @@ class UnifiedImportDialog(QWidget):
     # ------------------------------------------------------------------ #
     # 行内「补录原票」（阶段 3 B2g/B2h）
     # ------------------------------------------------------------------ #
-    def _red_orig_no(self, red_invoice_no: str) -> str:
-        """红字发票号 → 其引用的原票号（查 `invoice` 表，销项导入时已写入该列）。
+    def _red_orig_no(self, red_invoice_no: str, remark: str = "") -> str:
+        """红字发票号 → 其引用的**原蓝字票号**；**三路取号**，合并去重后取首个非空。
 
-        `raw_invoice` 镜像表**没有** `orig_invoice_no` 列（它是从 remark 现算的），
-        故必须查 `invoice`。查不到（该红字票不在销项）返回空串。
+        需求方 2026-09-25 新口径（原话）：「我们补录的是**原蓝字发票**，只需要判断
+        原蓝字发票是否在库中就行……当然要先判断，该红字发票对应的蓝字发票是否
+        在该账期中」。故取号路径**越宽越好**——只要还拿得到原票号就必须继续往下判，
+        「原票不在库 → 待补录」这条主判定才走得到；只有三路全空才返回空串。
+
+        三路（多来源不冲突时取第一个非空）：
+        1. `invoice.orig_invoice_no` —— 销项导入写入的（**唯一曾有的路径，必须保留**）；
+           `raw_invoice` 镜像表没有这列，故只能查 `invoice`。
+        2. **传入的备注文本**用 `_RED_RE` 现算 —— 台账行的 remark 本来就在手上
+           （`r["ev"]["_inv"]["remark_raw"]`，见 `review_rebuild`）。**这是本次新增的
+           主路径**：台账导入写 `invoice` 时把 `orig_invoice_no` 硬编码成空串
+           （`app/importer/importer.py`），所以台账导进来的红字票库里一律查不出冲的是
+           哪张，但它们**备注是留着的**。
+        3. `refund.orig_invoice_no` —— 退款台账登记的红蓝配对（最新一条）。
+
+        任一路径失败就跳过（沿用既有「反查失败只影响按钮、不影响导入」的兜底风格），
+        绝不因某条查询炸掉而让整个「待补录」判定崩掉。多个来源一致或互补都不影响结果。
         """
         no = (red_invoice_no or "").strip()
         if not no:
             return ""
-        conn = get_conn()
+        found: List[str] = []
+
+        # ---- 路径 1：invoice.orig_invoice_no（销项导入写入） ----
         try:
-            row = conn.execute(
-                "SELECT orig_invoice_no FROM invoice WHERE invoice_no=?", (no,)).fetchone()
+            conn = get_conn()
+            try:
+                row = conn.execute(
+                    "SELECT orig_invoice_no FROM invoice WHERE invoice_no=?", (no,)).fetchone()
+            finally:
+                conn.close()
         except Exception:  # noqa: BLE001 反查失败只影响按钮是否出现，不影响导入
-            return ""
-        finally:
-            conn.close()
-        return ((row["orig_invoice_no"] if row else "") or "").strip()
+            row = None
+        v = ((row["orig_invoice_no"] if row else "") or "").strip()
+        if v:
+            found.append(v)
+
+        # ---- 路径 2：备注文本现算（台账行的 remark，台账红字行的主路径） ----
+        m = _RED_RE.search(remark or "")
+        if m:
+            v = (m.group(1) or "").strip()
+            if v:
+                found.append(v)
+
+        # ---- 路径 3：退款台账登记的红蓝配对 ----
+        try:
+            conn = get_conn()
+            try:
+                row = conn.execute(
+                    "SELECT orig_invoice_no FROM refund WHERE red_invoice_no=? "
+                    "ORDER BY id DESC LIMIT 1", (no,)).fetchone()
+            finally:
+                conn.close()
+        except Exception:  # noqa: BLE001 同上，退款表反查失败不阻断判定
+            row = None
+        v = ((row["orig_invoice_no"] if row else "") or "").strip()
+        if v:
+            found.append(v)
+
+        # 去重（保持首次出现顺序）：三个来源本当指向同一张原票，去重只为防重复拼接
+        seen: set = set()
+        for v in found:
+            if v not in seen:
+                seen.add(v)
+                return v
+        return ""
 
     def _invoice_in_library(self, invoice_no: str) -> bool:
         no = (invoice_no or "").strip()
@@ -1414,8 +1467,14 @@ class UnifiedImportDialog(QWidget):
     def _red_backfill_orig(self, r: Dict) -> str:
         """红字行 → 待补录的**蓝字原票号**；不适用（无需补录）返回空串。
 
-        判据（阶段 5，B 乙）：本行是红字 + 反查到原票 + 原票不在库、不在本批、
-        本次也没填过补录。四条缺一不可，全部收口在 `_row_backfill_target`（单一口径）。
+        判据（阶段 5，B 乙 + 2026-09-25 新口径）：本行是红字 + 反查到原票（三路取号
+        「越宽越好」）+ 原票**不在库**、不在本批、本次也没填过补录。四条缺一不可，
+        全部收口在 `_row_backfill_target`（单一口径）。
+
+        ⚠ **不因红字发票本身的状态而跳过判定**：红字票在不在 `invoice` 表、在哪个表
+        里，都不影响这里的结果——只要拿到原票号就继续判（拿不到是 `_red_orig_no`
+        的问题，那条路径自己已三路兜过）。这正是新口径的核心：补录对象是**原蓝字票**，
+        判据只看「原票在不在库」。
         """
         if r["kind"] != "invoice":
             return ""
@@ -1465,7 +1524,11 @@ class UnifiedImportDialog(QWidget):
                 return True
             if not hist:
                 return False      # pre：不查库、不反查原票号（留痕恒空 → 直接 False）
-            orig = self._red_orig_no((r.get("ev") or {}).get("invoice_no") or "")
+            # 与 `_row_backfill_target` 同源：同样把台账行备注喂进去，否则三路取号
+            # 第 2 路（备注现算）在这里漏喂 → 「已补录」认不出用户刚补的原票
+            ev = r.get("ev") or {}
+            remark = ((ev.get("_inv") or {}).get("remark_raw") or "")
+            orig = self._red_orig_no(ev.get("invoice_no") or "", remark)
             return bool(orig) and orig in hist
         return False
 
@@ -1475,12 +1538,18 @@ class UnifiedImportDialog(QWidget):
         语义差异（§8 第 3 点）：
         - 应收账款(deferred)行：补**它自己**（行上票号即待补原票；
           已在库 = `need_backfill` 为假）；
-        - 红字发票(invoice)行：补**它引用的原票**（票号经 `_red_orig_no` 反查），
-          取不到原票号 → 无入口（可接受）。
+        - 红字发票(invoice)行：补**它引用的蓝字原票**（票号经 `_red_orig_no` 三路取号）。
 
-        阶段 5 收紧：红字行引用的原票**在本批**（见 `_batch_nos`）且不在库时，
-        返回 None（不给入口）—— 该票本次会随台账入库，强行补录会在写前校验被拦下、
-        卡住整批（`_validate_backfills` 校验③）。
+        **判据顺序**（阶段 5 收紧 + 2026-09-25 新口径，逐条都写清为什么）：
+        1. 取不到原票号 → None。**无法判定**就只能维持现状：连「该补哪张」都不知道，
+           给入口只会让用户点进一个没头没尾的弹窗。
+        2. 原票**在本批台账中** → None。该票**随本次台账一起入库**，此刻查库当然查不到，
+           若照「不在库」判就成**假阳性**；而真去补录会在写前被
+           `_validate_backfills` 校验③ 拦下、**卡死整批**（用户明确要求避免）。
+           （本批 = sheet1/2 + sheet3，见 `_batch_nos`。）
+        3. 原票**已在库** → `(orig, True)` 只给「查看原票」（只读）。票已经齐了，
+           没有可补的东西。
+        4. 原票**不在库** → `(orig, False)` 给「补录原票」，红字行落「待补录」。
         """
         if r["kind"] == "deferred":
             d = r["deferred"] or {}
@@ -1492,14 +1561,16 @@ class UnifiedImportDialog(QWidget):
             ev = r.get("ev") or {}
             if not ev.get("is_red"):
                 return None
-            orig = self._red_orig_no(ev.get("invoice_no") or "")
+            # 备注（台账行 remark）是台账红字行的**主取号路径**（见 `_red_orig_no`）
+            remark = ((ev.get("_inv") or {}).get("remark_raw") or "")
+            orig = self._red_orig_no(ev.get("invoice_no") or "", remark)
             if not orig:
-                return None
-            if self._invoice_in_library(orig):
-                return (orig, True)      # 已在库 → 「查看原票」（只读）
+                return None              # ①取不到原票号 → 无法判定，不给入口
             if orig in self._batch_nos():
-                return None              # 本次随台账入库 → 无需补录，也不给入口
-            return (orig, False)
+                return None              # ②原票在本批 → 随本次入库，补了会撞校验③卡整批
+            if self._invoice_in_library(orig):
+                return (orig, True)      # ③已在库 → 「查看原票」（只读）
+            return (orig, False)         # ④不在库 → 「补录原票」，落「待补录」
         return None
 
     # ------------------------------------------------------------------ #
