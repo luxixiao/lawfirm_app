@@ -1,5 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""PyInstaller spec — 律所开票收款统计 v1.1.4dev
+"""PyInstaller spec — 律所开票收款统计 v1.1.4dev2
 
 构建：在已安装依赖的 venv 中执行
     pyinstaller build_exe.spec --noconfirm --clean
@@ -100,6 +100,6 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    version="version_info.txt",  # 写入 Windows 版本信息（1.1.4dev）
+    version="version_info.txt",  # 写入 Windows 版本信息（1.1.4dev2）
     icon="app.ico",
 )
