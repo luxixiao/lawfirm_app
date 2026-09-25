@@ -63,9 +63,12 @@ EXPECTED_FILES = [
     "tests/test_over_collection_guard.py",  # 超收守卫落点（_write_collection_for_invoice / apply_backfill）
     "tests/test_review_compare.py",
     "tests/test_review_writeback.py",
+    "tests/test_red_backfill_orig_paths.py",  # 红字补录新口径 + `_red_orig_no` 三路取号
     "tests/test_skin_contract.py",
     "tests/test_staff_type.py",
     "tests/test_staff_view_settle_ui.py",  # 参与结算三处语义修复 + 表头「业务金额方式」（离屏 Qt）
+    "tests/test_staff_import_order_hint.py",  # 导入职工清单前的顺序指引（空类型表只提示一次）
+    "tests/test_staff_import_missing_type.py",  # 空类型硬拦（方案 B：整批拒绝 + 零写库）
     "tests/test_sidebar_fold_all.py",      # 侧边栏「全部折叠」按钮（离屏 Qt）
 ]
 
