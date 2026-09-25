@@ -122,19 +122,33 @@ class _FormulaCompleter(QCompleter):
 
 
 class _GridItemDelegate(QStyledItemDelegate):
-    """单元格双击编辑器套用公式补全（与公式栏共用同一候选模型）。"""
+    """单元格双击编辑器：套用公式补全（与公式栏共用同一候选模型），并显示公式原文。
 
-    def __init__(self, completer, parent=None):
+    关键点：编辑器文本框显示「公式原文」，但绝不改写 item 自身的显示文字——
+    网格里始终显示计算值，进编辑时才在编辑器里看到 raw。这样写出的公式提交后
+    由 _fill 重算刷新；若按 Esc 取消编辑，网格仍停留计算值（不再残留公式原文）。
+    """
+
+    def __init__(self, completer, raw_provider, parent=None):
         super().__init__(parent)
         self._completer = completer
+        self._raw_provider = raw_provider
 
     def createEditor(self, parent, option, index):  # noqa: N802 (Qt override)
         editor = super().createEditor(parent, option, index)
         if isinstance(editor, QLineEdit):
             editor.setCompleter(self._completer)
+        return editor
+
+    def setEditorData(self, editor, index):  # noqa: N802 (Qt override)
+        # 进编辑时编辑器显示「公式原文」，网格仍显示计算值（不再污染 item 文字）
+        if isinstance(editor, QLineEdit) and self._raw_provider is not None:
+            raw = self._raw_provider(index.row(), index.column())
+            editor.setText("" if raw is None else str(raw))
             # F2/双击进入编辑时光标置末（插入式，不选中原内容），贴近 Excel F2 手感
             editor.setCursorPosition(len(editor.text()))
-        return editor
+        else:
+            super().setEditorData(editor, index)
 
 
 def _user() -> str:
@@ -187,7 +201,6 @@ class GridTable(QTableWidget):
 
     def __init__(self, *a, **kw):
         super().__init__(*a, **kw)
-        self.raw_provider = None   # callable(r0, c0) -> raw | None
         self.paste_callback = None  # Ctrl+V → 块粘贴（自定义 MIME 优先）/ TSV 值粘贴
         # 阶段1 键盘导航（G3）注入点：由 CalcSheetView 在 __init__ 末尾赋值
         self.clear_callback = None       # 无参：清空当前/选中格（编辑模式内判断）
@@ -318,15 +331,6 @@ class GridTable(QTableWidget):
                   Qt.Key.Key_Left: (0, -1), Qt.Key.Key_Right: (0, 1)}[key]
         nr, nc = jump_to_boundary(self._nav_occupied(), rows, cols, r, c, dr, dc)
         self.setCurrentCell(nr, nc)
-
-    def edit(self, index, trigger, event):  # noqa: N802 (Qt override)
-        if self.raw_provider is not None:
-            raw = self.raw_provider(index.row(), index.column())
-            if raw not in (None, ""):
-                it = self.item(index.row(), index.column())
-                if it is not None:
-                    it.setText(str(raw))
-        return super().edit(index, trigger, event)
 
     # ------------------------------------------------------------------ #
     # 阶段4 G4：填充柄绘制 + 拖拽（复制式填充，序列识别不做）
@@ -622,8 +626,7 @@ class CalcSheetView(QWidget):
         self.table = GridTable(0, 0)
         self._cell_completer = _FormulaCompleter(self.table)
         self._cell_completer.setModel(self._comp_model)
-        self.table.setItemDelegate(_GridItemDelegate(self._cell_completer, self.table))
-        self.table.raw_provider = self._raw_of
+        self.table.setItemDelegate(_GridItemDelegate(self._cell_completer, self._raw_of, self.table))
         # 阶段4 G4：Ctrl+C/X/V + 填充柄回调（paste 优先识别自定义 MIME，降级 TSV）
         self.table.paste_callback = self._paste_cells
         self.table.copy_callback = self._copy_selection
