@@ -41,6 +41,17 @@ _PLACEHOLDER = re.compile(r"\$(职工|年|月)")
 # A1 地址 / A1:B2 区域（列 1-3 字母，行 1-7 位数字）
 _A1_RE = re.compile(r"^([A-Za-z]{1,3})([0-9]{1,7})(?::([A-Za-z]{1,3})([0-9]{1,7}))?$")
 
+# Excel 引用硬边界：列 ≤ XFD(=16384)、行 ≤ 1048576，超出 Excel 无法解析
+_EXCEL_MAX_COL, _EXCEL_MAX_ROW = 16384, 1048576
+
+
+def _a1_in_bounds(col: str, row: str) -> bool:
+    """A1 端点是否在 Excel 引用边界内（列≤XFD、行≤1048576）。"""
+    n = 0
+    for ch in col.upper():
+        n = n * 26 + (ord(ch) - ord("A") + 1)
+    return n <= _EXCEL_MAX_COL and int(row) <= _EXCEL_MAX_ROW
+
 
 # ---------------------------------------------------------------------------
 # 纯逻辑辅助（无 GUI，可测）
@@ -68,6 +79,9 @@ def build_sheet_ref(sheet: str, a1: str, abs_col: bool = False,
     a1 = (a1 or "").strip().upper().replace("$", "")
     m = _A1_RE.match(a1)
     if not sheet or not m:
+        return ""
+    if not _a1_in_bounds(m.group(1), m.group(2)) or (
+            m.group(3) and not _a1_in_bounds(m.group(3), m.group(4))):
         return ""
     c, r = ("$" if abs_col else ""), ("$" if abs_row else "")
     left = f"{c}{m.group(1)}{r}{m.group(2)}"

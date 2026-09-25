@@ -69,6 +69,26 @@ def main() -> int:
     # 区域反序由引擎 RangeRef 自行归一化（B2:A1 → A1:B2），与 Excel 一致
     check("区域反序被引擎归一化", build_sheet_ref("辅助表", "B2:A1") == "=辅助表!A1:B2",
           f"got={build_sheet_ref('辅助表', 'B2:A1')}")
+    # --- Excel 引用硬边界（列≤XFD=16384、行≤1048576，超出 Excel 打不开）---
+    # 注：引擎公式解析器 calc_formula._CELL_RE 行仅接受 1-5 位数字，6/7 位行
+    # 本就走不到 parse（ParseError 返回 ""），故 build_sheet_ref 层用引擎可达的
+    # 5 位行测列边界；Excel 满行边界由纯函数 _a1_in_bounds 单独覆盖。
+    check("边界内 XFD99999 合法", build_sheet_ref("t", "XFD99999") != "",
+          f"got={build_sheet_ref('t', 'XFD99999')}")
+    check("区间两端都合法 A1:XFD99999", build_sheet_ref("t", "A1:XFD99999") != "",
+          f"got={build_sheet_ref('t', 'A1:XFD99999')}")
+    check("列超界 XFE1 拒绝", build_sheet_ref("t", "XFE1") == "",
+          f"got={build_sheet_ref('t', 'XFE1')}")
+    check("列超界 ZZZ1 拒绝（引擎可达但 Excel 不认）", build_sheet_ref("t", "ZZZ1") == "",
+          f"got={build_sheet_ref('t', 'ZZZ1')}")
+    check("行超界 A1048577 拒绝", build_sheet_ref("t", "A1048577") == "",
+          f"got={build_sheet_ref('t', 'A1048577')}")
+    check("区间第二端点超界 A1:XFE1 拒绝", build_sheet_ref("t", "A1:XFE1") == "",
+          f"got={build_sheet_ref('t', 'A1:XFE1')}")
+    check("_a1_in_bounds 满行 1048576 合法", cd._a1_in_bounds("XFD", "1048576") is True)
+    check("_a1_in_bounds 超行 1048577 拒绝", cd._a1_in_bounds("A", "1048577") is False)
+    check("_a1_in_bounds 满列 XFD 合法", cd._a1_in_bounds("XFD", "1") is True)
+    check("_a1_in_bounds 超列 XFE 拒绝", cd._a1_in_bounds("XFE", "1") is False)
 
     # ===== 纯逻辑：list_sheet_names（排除当前表）=====
     orig = cd.cs.list_sheets

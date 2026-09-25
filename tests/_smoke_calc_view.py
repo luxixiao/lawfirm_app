@@ -120,6 +120,26 @@ it3 = view.table.item(3, 0)
 check("除零显示 #DIV/0!", it3 is not None and it3.text() == "#DIV/0!",
       f"got={it3.text() if it3 else None}")
 
+# 编辑器提交路径（真实回车走 eventFilter→commitData→setModelData）：
+# 仅尾部空格 → 库不变、网格不残留原文（P2#1 回归）
+from PySide6.QtWidgets import QLineEdit  # noqa: E402
+from PySide6.QtCore import QEvent, Qt as _Qt  # noqa: E402
+from PySide6.QtGui import QKeyEvent  # noqa: E402
+view.table.edit(view.table.model().index(2, 0))
+app.processEvents()
+_ed = view.table.findChild(QLineEdit)   # 必须 scope 到 table（fx 也是 QLineEdit）
+check("编辑器已打开且显示公式原文", _ed is not None and _ed.text() == "=B1*2",
+      f"got={_ed.text() if _ed else None!r}")
+if _ed is not None:
+    _ed.setText("=B1*2 ")   # 仅尾部空格：strip 后判等 → 走未提交分支
+    QApplication.sendEvent(_ed, QKeyEvent(
+        QEvent.KeyPress, _Qt.Key.Key_Return, _Qt.KeyboardModifier.NoModifier))
+    app.processEvents()
+check("尾部空格提交后网格仍显示 200", view.table.item(2, 0).text() == "200",
+      f"got={view.table.item(2, 0).text()!r}")
+check("尾部空格提交后库仍是 =B1*2",
+      cs.get_sheet(sid)["content"]["cells"]["2,0"]["raw"] == "=B1*2")
+
 # TSV 值粘贴（2×2 区域）
 from PySide6.QtWidgets import QApplication as _Q  # noqa: E402
 _Q.clipboard().setText("10\t20\n30\t40")

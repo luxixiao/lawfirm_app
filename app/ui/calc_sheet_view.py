@@ -67,7 +67,7 @@ class ChevronButton(QPushButton):
     def __init__(self, parent=None, tooltip: str = "") -> None:
         super().__init__("", parent)
         self._left = True          # True = 箭头朝左（列表正展开，点它会收起）
-        self.setFixedWidth(28)
+        self.setFixedWidth(scale.px(28))
         self.setToolTip(tooltip)
 
     def set_direction(self, left: bool, tooltip: str = "") -> None:
@@ -903,6 +903,27 @@ class CalcSheetView(QWidget):
         self._update_stats()
         self._on_current_cell(self.table.currentRow(), self.table.currentColumn(), -1, -1)
 
+    def _refresh_one_cell(self, r: int, c: int) -> None:
+        """单格重绘（不做全量重算/存库）：把该格显示恢复成规范计算值。
+
+        仅用于「编辑提交但内容未变」的显示兜底——setModelData 已把未 strip 原文
+        写进 item，须刷回 _make_item 的规范显示。_filling 置位防 itemChanged 递归。
+        """
+        if r < 0 or c < 0 or self.sheet_id is None:
+            return
+        self._filling = True
+        try:
+            ev = CalcEvaluator(cur_sheet_id=self.sheet_id)
+            try:
+                name = ev.cur_sheet()
+                self.table.setItem(r, c, self._make_item(ev, name, r, c))
+            finally:
+                ev.close()
+        except Exception:  # noqa: BLE001 单格重绘失败不致命，下次 _fill 会兜底
+            pass
+        finally:
+            self._filling = False
+
     @staticmethod
     def _col_name(i: int) -> str:
         s = ""
@@ -1122,12 +1143,18 @@ class CalcSheetView(QWidget):
     def _on_item_changed(self, item: QTableWidgetItem) -> None:
         if self._filling or not self.edit_mode or self.sheet_id is None:
             return
-        self._write_cell(item.row(), item.column(), item.text())
+        if not self._write_cell(item.row(), item.column(), item.text()):
+            # 内容未变（如只多打了首尾空格，strip 后判等）：但 setModelData 已把
+            # 未 strip 原文写进 item，须单格重绘把显示刷回计算值，否则网格残留原文
+            self._refresh_one_cell(item.row(), item.column())
 
-    def _write_cell(self, r: int, c: int, text: str) -> None:
-        """用户编辑提交：构造单格命令（B1 纯逆操作）→ 提交栈（不直接改 content）。"""
+    def _write_cell(self, r: int, c: int, text: str) -> bool:
+        """用户编辑提交：构造单格命令（B1 纯逆操作）→ 提交栈（不直接改 content）。
+
+        返回 True=已提交有变化；False=无变化或不可写，此时调用方须负责单格重绘。
+        """
         if r < 0 or c < 0 or not self.edit_mode or self.sheet_id is None:
-            return
+            return False
         key = f"{r},{c}"
         text = (text or "").strip()
         cells = self.content.get("cells") or {}
@@ -1135,8 +1162,9 @@ class CalcSheetView(QWidget):
         before = copy.deepcopy(before) if before else None
         after = {"raw": text, "kind": classify_cell(text)} if text else None
         if before == after:  # 值无变化不记命令（避免无意义撤销项）
-            return
+            return False
         self._commit_command(EditCellCommand(key=key, before=before, after=after))
+        return True
 
     def _clear_selected_cells(self) -> None:
         """Del/Backspace（导航态、编辑模式）：清空当前格或选中区，不进编辑。"""
