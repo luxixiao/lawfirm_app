@@ -356,12 +356,21 @@ class StaffView(QWidget):
     # 员工 CRUD
     # ================================================================== #
     def _type_combo(self, current: str = "") -> QComboBox:
+        """员工类型下拉。**不带初值时不预选** —— 让用户显式选，别把「第一项」当决定。
+
+        `staff.staff_type` 是 NOT NULL（`app/db.py`），而类型表现在是**初始为空**的：
+        - 有初值 → 选中它（找不到则退到第一项，行为不变）；
+        - 无初值 → 留空（`setCurrentIndex(-1)`），配合调用方的「未选择类型」守卫，
+          保证写库的一定是**用户自己选的**类型，而不是系统替他挑的默认值。
+        """
         combo = QComboBox()
         for t in st.list_types():
             combo.addItem(t["name"], userData=t["name"])
         if current:
             idx = combo.findData(current)
             combo.setCurrentIndex(idx if idx >= 0 else 0)
+        elif combo.count():
+            combo.setCurrentIndex(-1)
         return combo
 
     def _maybe_warn_settle_order(self) -> None:
@@ -490,12 +499,30 @@ class StaffView(QWidget):
         if not name:
             QMessageBox.warning(self, "提示", "姓名不能为空")
             return
+        # ===== 类型守卫（与 `edit_selected` 同源）=====
+        # `staff.staff_type` 是 **NOT NULL**，而类型表初始为空时下拉**根本没有选项**
+        # （`currentData()` 为 None）—— 没这道守卫的话 INSERT 会抛 IntegrityError
+        # 并直接崩出 Qt 槽（这段只有 try/finally，没有 except）。
+        # 按「不替用户决定」处理：不退化成默认选某个类型，把真正该做的事讲清楚。
+        new_type = type_combo.currentData()
+        if not new_type:
+            if type_combo.count() == 0:
+                QMessageBox.warning(
+                    self, "未选择类型",
+                    "目前「员工类型」表里还没有任何类型，无法添加职工。\n"
+                    "请先在「员工类型」页新建需要的类型，再回来添加职工。")
+            else:
+                QMessageBox.warning(
+                    self, "未选择类型",
+                    "请为该员工选择一个员工类型后再添加。\n"
+                    "若下拉里没有可用类型，请先到「员工类型」页新建。")
+            return
         conn = get_conn()
         try:
             cur = conn.execute(
                 "INSERT OR IGNORE INTO staff (name, staff_type, is_active, hire_month, note,"
                 " source) VALUES (?,?,1,?,?,?)",
-                (name, type_combo.currentData(), hire_edit.text().strip(),
+                (name, new_type, hire_edit.text().strip(),
                  note_edit.text().strip(), "manual"))
             conn.commit()
             if cur.rowcount == 0:
@@ -521,7 +548,9 @@ class StaffView(QWidget):
         dlg = QDialog(self)
         dlg.setWindowTitle(f"编辑员工：{name}")
         form = QFormLayout(dlg)
-        type_combo = self._type_combo(s["staff_type"] or "聘用")
+        # 初值**不再兜底成「聘用」**（员工类型去写死，方案 B）：类型为空就按空走，
+        # 下拉停在第一项让用户显式选 —— 不替用户决定他的类型。
+        type_combo = self._type_combo(s["staff_type"] or "")
         hire_edit = QLineEdit(s["hire_month"] or "")
         hire_edit.setPlaceholderText("如 2025-04，留空=始终在名单")
         note_edit = QLineEdit(s["note"] or "")
@@ -536,6 +565,15 @@ class StaffView(QWidget):
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
         new_type = type_combo.currentData()
+        # 类型表为空时下拉没有可选项，`currentData()` 会是 None —— 而
+        # `staff.staff_type` 是 NOT NULL，写进去直接炸 IntegrityError。
+        # 按「不替用户决定」处理：不退化成默认类型，让用户先去把类型建出来。
+        if not new_type:
+            QMessageBox.warning(
+                self, "未选择类型",
+                "请为该员工选择一个员工类型后再保存。\n"
+                "若下拉里没有可用类型，请先到「员工类型」页新建需要的类型。")
+            return
         if (s["staff_type"] or "") != new_type:
             ret = QMessageBox.question(
                 self, "确认修改类型",
