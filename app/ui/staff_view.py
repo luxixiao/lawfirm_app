@@ -37,6 +37,8 @@ class StaffView(QWidget):
     def __init__(self) -> None:
         super().__init__()
         self._loading = False
+        # 「先建类型并勾选参与结算、再导入职工清单」的提示是否已在本次使用中出现过
+        self._settle_order_hinted = False
         lay = QVBoxLayout(self)
         lay.setContentsMargins(24, 20, 24, 20)
         lay.setSpacing(12)
@@ -362,6 +364,33 @@ class StaffView(QWidget):
             combo.setCurrentIndex(idx if idx >= 0 else 0)
         return combo
 
+    def _maybe_warn_settle_order(self) -> None:
+        """导入职工清单前的顺序指引：员工类型表为空时提示一次（**只提醒，不代办**）。
+
+        员工类型表初始为空（见 `app/engine/staff_type.py`），而 `ensure_types()`
+        新建的类型默认 `is_settle=0`；此时若紧接着导入费用台账，
+        `expense_validation` 的「经办人是否参与结算」校验会把每一行都判为
+        「未参与结算」而逐行拒绝。这里的做法是**用流程顺序解决**：在导入前把
+        顺序讲清楚，而**不让系统替用户决定**——不自动建类型、不代勾「参与结算」、
+        也不拦本次导入（用户看完可以直接继续导）。
+
+        每个 StaffView 实例只提示一次（实例属性，不写 QSettings、不写库）。
+        状态查询失败时静默跳过，绝不影响导入本身。
+        """
+        if self._settle_order_hinted:
+            return
+        # 先置位再查询：无论本次是否真的弹窗，同一实例都不再重复打扰
+        self._settle_order_hinted = True
+        try:
+            if len(st.list_types()) > 0:
+                return
+        except Exception:  # noqa: BLE001 读类型表失败 → 不提示，导入照旧
+            return
+        QMessageBox.information(
+            self, "导入顺序提示",
+            "建议先到「员工类型」页建立类型并勾选「参与结算」，再导入职工清单；"
+            "否则后续导入费用台账会因经办人未参与结算被逐行拒绝。")
+
     def import_staff(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
             self, "选择职工清单", "", "Excel 文件 (*.xls *.xlsx *.xlsm)")
@@ -373,6 +402,32 @@ class StaffView(QWidget):
             QMessageBox.warning(self, "导入失败", str(e))
             return
 
+        # ===== 空类型硬拦（方案 B，需求方 2026-09-25 拍板）=====
+        # 必须**早于任何写库**：拦下即 return，`import_batch` / `staff` /
+        # `staff_type_def` 一张都不许被碰。整批拒绝（不跳过这几人）—— 用户可以改
+        # 清单重导，跳过会让他在不知情的情况下少了几个人。
+        #
+        # 为什么不能「默认填个类型」继续导：无类型 = 类型表里查不到行，
+        # `settle_flags_of()` 返回 (False, "") → 一律判「不参与结算」，随后导费用
+        # 台账会被 `expense_validation` **逐行拒绝**，而报错文案还会误导用户去
+        # 类型页找。所以宁可不导，也不给一个系统替用户决定的假类型。
+        missing = [name for name, stype, _note in staff if not (stype or "").strip()]
+        if missing:
+            shown = missing[:10]
+            tail = "" if len(missing) <= 10 else f" 等 {len(missing) - 10} 人"
+            QMessageBox.warning(
+                self, "导入被拦下",
+                f"职工清单里有 {len(missing)} 人未填写员工类型：\n"
+                "　" + "、".join(shown) + tail + "\n\n"
+                "未填类型的员工一律判为不参与结算，导入后导入费用台账时也会被逐行"
+                "拒绝；故本次整批未导入（改好清单可重新导入）。\n"
+                "需要的类型请到「员工类型」页新建，或在清单里补齐类型列。")
+            return
+
+        # 顺序指引（类型表为空时只提示一次）：放在空类型硬拦**之后**——
+        # 前面已经拦下了，这里再弹提示只会连着弹两个框（且第一个已说明导不了）
+        self._maybe_warn_settle_order()
+
         conn = get_conn()
         try:
             now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -381,12 +436,15 @@ class StaffView(QWidget):
                 " VALUES (?,?,?,?,?)",
                 ("staff", "0000", path.replace("\\", "/").split("/")[-1], file_hash, now))
             batch_id = cur.lastrowid
-            # 导入的类型若不在类型表中，自动补入（is_builtin=0）
-            st.ensure_types(conn, [s[1] for s in staff if s[1]] or ["聘用"])
+            # 只把清单里**真实出现过**的类型补进类型表（is_builtin=0）。
+            # ⚠ 这里**不预置任何类型**（原先的 `or ["聘用"]` 兜底已去掉，方案 B）：
+            # 类型表初始为空，空类型的员工在上面「空类型硬拦」那一步就已经被拦下，
+            # 走不到这里。保留 `ensure_types()` 而非整段删掉，是因为清单里如实填了
+            # 「合伙」的人需要它把该类型建进行 —— 否则那人会被挂上一个类型表里根本
+            # 没有的类型，查不到行 → 判「不参与结算」→ 导费用台账被逐行拒绝。
+            st.ensure_types(conn, [s[1] for s in staff if s[1]])
             n_new, n_dup = 0, 0
             for name, stype, note in staff:
-                if not stype:
-                    stype = "聘用"
                 r = conn.execute("SELECT id FROM staff WHERE name=?", (name,)).fetchone()
                 if r:
                     conn.execute(
