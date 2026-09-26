@@ -4,9 +4,12 @@
   删除前检查业务数据引用：有引用禁止删除（避免结算口径丢失）。
   ⚠「停用」功能已取消（2026-09）：离职人员仍会发生业务，用全局开关表达"不再参与"
   会把其所有年份的结算身份误判为「其他」→ 业务收入 0；分账/校验口径也随之分裂。
-- Tab2「员工类型」：类型可自定义。合伙/聘用/兼职为内置结算类型，
-  禁止删除与改名（改名会断结算口径），说明可改；自定义类型可自由增删改名。
-- 口径：只有 合伙 / 聘用 / 兼职 参与业务收入计算，其余类型仅作身份标签。
+- Tab2「员工类型」：类型可自由增删改名；每个类型归属一个「角色」（合伙/聘用/兼职/其他），
+  角色决定它是否计入收入报表、是否禁止承担公共专属费用、默认净额口径。
+  类型名与角色解耦 —— 改名/删除都不会影响结算口径（按角色解析），故不再有任何改名/删除锁；
+  唯一护栏是「有员工在用则禁止删除」（防止员工身份丢失→结算落 other→收入 0）。
+- 口径：是否参与结算、净额口径（开票净额/收款净额）仍按类型各自勾选设置；
+  角色的 include_in_income_report / forbid_public_exclusive / default_net_basis 作为默认值与批量语义。
 """
 from __future__ import annotations
 
@@ -102,8 +105,9 @@ class StaffView(QWidget):
         lay = QVBoxLayout(w)
         lay.setSpacing(10)
         lay.addWidget(CaptionLabel(
-            "自定义员工类型。合伙 / 聘用 / 兼职 为内置结算类型：禁止删除与改名，说明可改；"
-            "能否参与结算，看该类型在下面有没有勾选「参与结算」。"))
+            "自定义员工类型，可自由增删改名，并归属一个「角色」（合伙/聘用/兼职/其他）。"
+            "角色决定它是否计入收入报表、能否承担公共专属费用、默认净额口径；"
+            "类型名与角色解耦，改名/删除不影响结算口径。是否参与结算与净额口径仍按类型各自设置。"))
 
         btns = QHBoxLayout()
         self.btn_t_add = QPushButton("新增类型")
@@ -124,9 +128,9 @@ class StaffView(QWidget):
         btns.addStretch()
         lay.addLayout(btns)
 
-        self.type_table = QTableWidget(0, 5)
+        self.type_table = QTableWidget(0, 6)
         self.type_table.setHorizontalHeaderLabels(
-            ["类型", "参与结算", "业务金额方式", "说明", "人数"])
+            ["类型", "参与结算", "业务金额方式", "说明", "人数", "角色"])
         self.type_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.type_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.type_table.verticalHeader().setVisible(False)
@@ -134,6 +138,7 @@ class StaffView(QWidget):
         self.type_table.setColumnWidth(1, scale.px(80))
         self.type_table.setColumnWidth(2, scale.px(100))
         self.type_table.setColumnWidth(4, scale.px(60))
+        self.type_table.setColumnWidth(5, scale.px(90))
         self.type_table.itemChanged.connect(self._on_settle_changed)
         install_common_features(self.type_table)
         self._type_col = install_column_layout(self.type_table, "staff_type", "main")
@@ -213,6 +218,17 @@ class StaffView(QWidget):
             n_item.setTextAlignment(Qt.AlignmentFlag.AlignRight
                                     | Qt.AlignmentFlag.AlignVCenter)
             self.type_table.setItem(r, 4, n_item)
+
+            # 角色（去写死身份大类）：内联下拉，切换即写库；语义由 role_def 决定
+            role_cb = QComboBox()
+            for label, code in st.list_roles():
+                role_cb.addItem(label, userData=code)
+            cur_role = row.get("role_code") or "other"
+            idx = role_cb.findData(cur_role)
+            role_cb.setCurrentIndex(idx if idx >= 0 else 0)
+            role_cb.currentIndexChanged.connect(
+                lambda _i, n=name, cb=role_cb: self._on_role_changed(n, cb.currentData()))
+            self.type_table.setCellWidget(r, 5, role_cb)
         self._loading = False
         self._type_col.apply()
 
@@ -265,6 +281,21 @@ class StaffView(QWidget):
         if self._loading or not basis:
             return
         st.set_net_basis(name, basis)
+
+    def _on_role_changed(self, name: str, code) -> None:
+        """角色（身份大类）下拉变更 → 写库。
+
+        角色决定 forbid_public_exclusive / include_in_income_report / default_net_basis
+        等语义；改角色即时生效，结算/收入/费用口径随之按新角色解析。
+        """
+        if self._loading:
+            return
+        code = code or "other"
+        try:
+            st.set_role_code(name, code)
+        except st.StaffTypeError as e:
+            QMessageBox.warning(self, "设置角色失败", str(e))
+            self._refresh_types()
 
     def _current_type(self):
         r = self.type_table.currentRow()

@@ -8,8 +8,10 @@
   '开票净额' | '收款净额' 两个枚举值表达**。
 - person_settlement 改用 `settle_flags_of(name)` 读取，不再按类型名硬编码：
   按类型自己的 is_settle 决定是否计入、按 net_basis 决定按哪个金额计。
-- 故内置三类（合伙/聘用/兼职，is_builtin=1）：**禁止删除、禁止改名**（改名会断结算口径），
-  说明可改；公共/行政 等历史上默认参与的类型现在同样以「页面勾选」为准。
+- **去写死（Plan A）**：类型名与角色（role_code → role_def）解耦。结算/收入/费用口径
+  一律按角色解析，故**放开改名锁与内置删除锁**——改名/删除类型都不会断结算口径；
+  唯一护栏是「有员工在用则禁止删除」（防止员工身份丢失→落入 other→收入判 0）。
+  类型仍可各自设置 is_settle 与 net_basis（覆盖角色默认值）。
 
 员工删除：有业务数据引用（charge_detail/collection/expense_ledger/raw_salary）时
 禁止删除——硬删会让结算表查不到身份，业务收入被判为 0。
@@ -224,7 +226,7 @@ def list_types(conn=None) -> List[Dict]:
         rows = conn.execute(
             """SELECT t.name AS name, t.is_builtin AS is_builtin, t.note AS note,
                       t.sort_order AS sort_order, t.is_settle AS is_settle,
-                      t.net_basis AS net_basis,
+                      t.net_basis AS net_basis, t.role_code AS role_code,
                       (SELECT COUNT(*) FROM staff s WHERE s.staff_type = t.name) AS staff_count
                FROM staff_type_def t
                ORDER BY t.sort_order, t.name""").fetchall()
@@ -362,22 +364,41 @@ def add_type(name: str, note: str = "", role_code: str = "other", conn=None) -> 
 
 
 def rename_type(old: str, new: str, conn=None) -> None:
-    """改名：内置三类禁止；新名重复则报错；同步更新 staff 表的类型。"""
+    """改名：新名重复则报错；同步更新 staff 表的类型。
+
+    去写死（Plan A）：不再按类型名硬编码结算口径 —— 类型名与角色码（role_code）解耦，
+    改名后 role_code 不变、结算/收入/费用口径全部按角色解析，故**放开改名锁**
+    （含原「内置三类禁止改名」），改名不会再断结算口径。
+    """
     new = (new or "").strip()
     if not new:
         raise StaffTypeError("类型名不能为空")
     own, conn = _own_conn(conn)
     try:
-        row = conn.execute("SELECT is_builtin FROM staff_type_def WHERE name=?", (old,)).fetchone()
+        row = conn.execute("SELECT 1 FROM staff_type_def WHERE name=?", (old,)).fetchone()
         if not row:
             raise StaffTypeError(f"类型不存在：{old}")
-        if row["is_builtin"]:
-            raise StaffTypeError(f"「{old}」是内置结算类型，禁止改名（改名会断结算口径）")
         dup = conn.execute("SELECT 1 FROM staff_type_def WHERE name=?", (new,)).fetchone()
         if dup:
             raise StaffTypeError(f"类型已存在：{new}")
         conn.execute("UPDATE staff_type_def SET name=? WHERE name=?", (new, old))
         conn.execute("UPDATE staff SET staff_type=? WHERE staff_type=?", (new, old))
+        conn.commit()
+    finally:
+        _close(own, conn)
+
+
+def set_role_code(name: str, code: str, conn=None) -> None:
+    """改某员工类型的角色归属（partner/employee/parttime/other）。
+
+    角色决定 forbid_public_exclusive / include_in_income_report / default_net_basis
+    等语义；改名不影响角色，但用户可在此主动切换角色（如把一个自定义类型归为「合伙」）。
+    非法码兜底为 'other'。
+    """
+    rc = (code or "other") if code in ROLE_CODES else "other"
+    own, conn = _own_conn(conn)
+    try:
+        conn.execute("UPDATE staff_type_def SET role_code=? WHERE name=?", (rc, name))
         conn.commit()
     finally:
         _close(own, conn)
@@ -393,14 +414,16 @@ def set_note(name: str, note: str, conn=None) -> None:
 
 
 def delete_type(name: str, conn=None) -> None:
-    """删除类型：内置三类禁止；有员工在用则禁止（避免员工身份丢失）。"""
+    """删除类型：有员工在用则禁止（避免员工身份丢失）；其余自由删除。
+
+    去写死（Plan A）：类型名与角色解耦，故**放开原「内置三类禁止删除」锁**；
+    仅保留「有员工引用则禁删」这一真正的安全护栏（防止员工身份被改成空→结算落 other→收入 0）。
+    """
     own, conn = _own_conn(conn)
     try:
-        row = conn.execute("SELECT is_builtin FROM staff_type_def WHERE name=?", (name,)).fetchone()
+        row = conn.execute("SELECT 1 FROM staff_type_def WHERE name=?", (name,)).fetchone()
         if not row:
             raise StaffTypeError(f"类型不存在：{name}")
-        if row["is_builtin"]:
-            raise StaffTypeError(f"「{name}」是内置结算类型，禁止删除")
         n = conn.execute("SELECT COUNT(*) AS n FROM staff WHERE staff_type=?", (name,)).fetchone()["n"]
         if n:
             raise StaffTypeError(f"还有 {n} 名员工属于该类型，请先把他们改成别的类型再删除")
