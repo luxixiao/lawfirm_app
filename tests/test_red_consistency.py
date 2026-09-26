@@ -29,7 +29,7 @@ from app.engine import backfill_module as bm  # noqa: E402
 from app.engine.import_confidence import _handler_amounts, red_orig_diff  # noqa: E402
 from app.engine.collection import (  # noqa: E402
     assert_red_has_orig, RedOriginalMissing,
-    assert_red_amount_cross_period, RedAmountExceeded,
+    assert_red_amount_cross_period, RedAmountExceeded, red_shortage_message,
 )
 
 OK, FAILS = 0, []
@@ -358,6 +358,36 @@ def main() -> int:
     check("F5：原票在本批 → 本函数跳过（归解析期校验）", ok_f5)
     c2.close()
     c3.close()
+
+    # ==================================================================== #
+    # G) red_shortage_message —— 补录「被红冲的原票」时的金额下限（批2）
+    #    判据：补录金额 + 库中引用该票的红字合计 >= 0
+    # ==================================================================== #
+    c4 = build_conn()
+    # 红字 -9000 引用原票 24332000000398937755（真实场景：2025-01 的 836840）
+    add_invoice(c4, "25332000000000836840", -9000.0, orig="24332000000398937755")
+
+    check("G1：无红字引用的普通补录 → 不设下限（通过）",
+          red_shortage_message(c4, "BLUE-NOBODY", 1.0) is None)
+
+    check("G2：补录金额 == 红字绝对值（9000）→ 通过",
+          red_shortage_message(c4, "24332000000398937755", 9000.0) is None)
+
+    m_g3 = red_shortage_message(c4, "24332000000398937755", 8000.0)
+    check("G3：补录金额 8000 < 红字 9000 → 拦截",
+          m_g3 is not None and "补录金额不足" in m_g3, str(m_g3))
+
+    check("G4：补录金额 9000.01（容差内）→ 通过",
+          red_shortage_message(c4, "24332000000398937755", 9000.01) is None)
+
+    # 多张红字累计
+    add_invoice(c4, "RED-2ND", -2000.0, orig="24332000000398937755")
+    check("G5：两张红字累计 -11000，补录 11000 → 通过",
+          red_shortage_message(c4, "24332000000398937755", 11000.0) is None)
+    m_g6 = red_shortage_message(c4, "24332000000398937755", 10999.0)
+    check("G6：两张红字累计 -11000，补录 10999 → 拦截",
+          m_g6 is not None and "11,000.00" in m_g6, str(m_g6))
+    c4.close()
 
     print(f"\n{OK}/{OK + len(FAILS)} passed")
     if FAILS:

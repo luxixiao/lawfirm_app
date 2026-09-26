@@ -25,7 +25,7 @@ from typing import Dict, List
 
 from app.db import get_conn
 from app.engine.backfill import HANDLER_WHITELIST, missing_handlers, staff_type_of
-from app.engine.collection import over_collection_message
+from app.engine.collection import over_collection_message, red_shortage_message
 from app.engine.raw_ledger import deferred_sheet3_invoices
 
 
@@ -319,6 +319,9 @@ def apply_backfill(conn, payload: Dict) -> str | None:
     3. **不写 `received_snapshot`**、`invoice.import_batch_id` **留空**（B2f）：
        补录票不属任何导入批次，撤销该批台账不应连带删掉补录。
 
+    红冲金额校验（补录的是「被红冲的原票」时）：补录金额 + 库中引用该票的红字合计 >= 0，
+    详见 `collection.red_shortage_message`。同样是只读预校验，且排在超收校验之前。
+
     超收校验（用户铁律：累计收款不得超开票净额）：**只读预校验**放在所有写操作之前，
     确保"早返"不污染既有数据（不删 manual、不插新行）。
     - 新票（库内无该票）：直接比 本次补录收款 ≤ 开票净额；
@@ -328,6 +331,13 @@ def apply_backfill(conn, payload: Dict) -> str | None:
     """
     no = payload["invoice_no"]
     exist = conn.execute("SELECT source, total_amount FROM invoice WHERE invoice_no=?", (no,)).fetchone()
+    # ---- 只读红冲金额预校验（补录的是「被红冲的原票」时）----
+    # 销项里的跨期红字（C3 取消后照常入库）引用的原票，正是此刻要补录的这张。
+    # 判据：补录金额 + 库里引用该票的红字合计 >= 0（同 assert_red_amount_cross_period 式子）。
+    # 没有红字引用它时 red_shortage_message 直接返回 None → 普通补录不受影响。
+    msg_red = red_shortage_message(conn, no, float(payload.get("total_amount") or 0.0))
+    if msg_red:
+        return msg_red
     # ---- 只读超收预校验（不得先于任何写操作）----
     incoming = round(sum(float(a) for _n, a, _d in payload.get("collections") or []), 2)
     if incoming > 0.001:

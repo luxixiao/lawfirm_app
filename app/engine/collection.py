@@ -101,6 +101,30 @@ def assert_red_amount_cross_period(conn, invoices) -> None:
             )
 
 
+def red_shortage_message(conn, orig_no: str, face: float) -> Optional[str]:
+    """补录「被红冲的原票」时的金额下限校验；返回 None = 通过，否则返回用户可读文案。
+
+    场景（用户铁律「放行 + 补录时补一道校验」）：销项里有一张跨期红字，它引用的蓝字原票
+    不在库；C3 取消后红字照常入库，用户随后到补录页补这张原票。**补录金额必须撑得住
+    已入库的红字** —— 否则补完立刻变成超额红冲（负库存）。
+
+    判据与 `assert_red_amount_cross_period` 同一条式子，只是「本批红字」换成 0：
+        face + Σ(库里引用该票的红字金额) >= 0
+    返回文案而非抛异常，是为了复用 `apply_backfill` 现有的「返回文案 = 被拦」约定
+    （导入路径记进 problems / 独立补录页抛 ValueError）。
+    """
+    lib_red = conn.execute(
+        "SELECT COALESCE(SUM(total_amount),0) FROM invoice "
+        "WHERE orig_invoice_no=? AND total_amount<0", (orig_no,)).fetchone()[0] or 0.0
+    if lib_red == 0.0:
+        return None          # 没有红字引用它 → 普通补录，不设下限
+    if face + lib_red >= -0.01:
+        return None
+    return (f"补录金额不足：原票 {orig_no} 本次补录 {face:,.2f} 元，"
+            f"但库中引用它的红字合计 {lib_red:,.2f} 元；"
+            f"补录金额至少应为 {abs(lib_red):,.2f} 元。")
+
+
 def _collected_by_invoice(conn) -> Dict[str, float]:
     """{发票号: 已收金额}（正数发票 = Σcollection）"""
     return {
