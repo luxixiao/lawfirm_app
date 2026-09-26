@@ -374,6 +374,20 @@ CREATE TABLE IF NOT EXISTS staff_type_def (
     created_at  TEXT DEFAULT (datetime('now','localtime'))
 );
 
+-- ============ 角色定义（身份大类，去写死：合伙/聘用/兼职/其他）============
+-- 与具体「员工类型」名称解耦：staff_type_def.role_code 指向这里。
+-- 角色承载原先按名称硬编码的四类语义：是否禁承担「公共专属费用」/
+-- 是否进收入报表 / 对外报送分类 / 新建类型默认净额口径。
+-- 改名或删除任意员工类型都不会撼动这些语义（口径按角色，不按名称）。
+CREATE TABLE IF NOT EXISTS role_def (
+    role_code               TEXT PRIMARY KEY,
+    label                   TEXT NOT NULL,
+    forbid_public_exclusive INTEGER NOT NULL DEFAULT 0,
+    include_in_income_report  INTEGER NOT NULL DEFAULT 0,
+    report_class            TEXT NOT NULL DEFAULT '其他',
+    default_net_basis       TEXT NOT NULL DEFAULT '收款净额'
+);
+
 -- 费用分类说明（分类固定 6 类：报酬发放/住房公积金/保险费/汽油费/报销摊销等/公共专属费用；说明可自定义填写，供费用类型页分组展示）
 CREATE TABLE IF NOT EXISTS expense_category (
     name        TEXT PRIMARY KEY,
@@ -481,6 +495,31 @@ def init_db(backfill: bool = True) -> None:
             conn.execute("ALTER TABLE staff_type_def ADD COLUMN is_settle INTEGER NOT NULL DEFAULT 0")
         if "net_basis" not in cols:
             conn.execute("ALTER TABLE staff_type_def ADD COLUMN net_basis TEXT NOT NULL DEFAULT '收款净额'")
+        # 迁移：角色定义（去写死身份大类）—— 仅填充，不依赖任何类型名
+        for code, label, fpe, iir, rc, dnb in (
+            ("partner", "合伙", 1, 1, "合伙", "开票净额"),
+            ("employee", "聘用", 1, 1, "聘用", "收款净额"),
+            ("parttime", "兼职", 1, 1, "兼职", "收款净额"),
+            ("other", "其他", 0, 0, "其他", "收款净额"),
+        ):
+            conn.execute(
+                "INSERT OR IGNORE INTO role_def(role_code,label,forbid_public_exclusive,"
+                "include_in_income_report,report_class,default_net_basis) VALUES(?,?,?,?,?,?)",
+                (code, label, fpe, iir, rc, dnb))
+        # 迁移：staff_type_def 关联角色（一次性，仅此处允许按名称子串判定；运行期不再坍缩）
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(staff_type_def)")]
+        if "role_code" not in cols:
+            conn.execute("ALTER TABLE staff_type_def ADD COLUMN role_code TEXT NOT NULL DEFAULT 'other'")
+        for code, kw in (("partner", "合伙"), ("employee", "聘用"), ("parttime", "兼职")):
+            conn.execute(
+                "UPDATE staff_type_def SET role_code=? WHERE role_code<>? AND name LIKE ?",
+                (code, code, f"%{kw}%"))
+        # 迁移：历史数据行 person_type 旧标签（合伙/聘用/兼职/其他）→ role_code
+        for tbl in ("charge_detail", "expense_ledger"):
+            conn.execute(f"UPDATE {tbl} SET person_type='partner' WHERE person_type='合伙'")
+            conn.execute(f"UPDATE {tbl} SET person_type='employee' WHERE person_type='聘用'")
+            conn.execute(f"UPDATE {tbl} SET person_type='parttime' WHERE person_type='兼职'")
+            conn.execute(f"UPDATE {tbl} SET person_type='other' WHERE person_type='其他'")
         # 迁移：费用类型维护顺序
         cols = [r[1] for r in conn.execute("PRAGMA table_info(expense_cat)")]
         if "sort_order" not in cols:

@@ -28,6 +28,78 @@ from app.db import get_conn
 # （expense_cat.py 通过本常量做费用类型的人员白/黑名单判断，勿删。）
 BUILTIN_TYPES = ["合伙", "聘用", "兼职"]
 
+# ---------------------------------------------------------------------------
+# 角色（去写死身份大类）：staff_type_def.role_code → role_def
+# 运行期一切「身份口径」都走 role_code，绝不再按类型名子串坍缩。
+# ---------------------------------------------------------------------------
+ROLE_CODES = ("partner", "employee", "parttime", "other")
+
+
+def ensure_roles(conn=None) -> None:
+    """幂等填充 role_def 种子（建库/升级兜底；init_db 已种，这里再保险一次）。"""
+    own, c = _own_conn(conn)
+    try:
+        for code, label, fpe, iir, rc, dnb in (
+            ("partner", "合伙", 1, 1, "合伙", "开票净额"),
+            ("employee", "聘用", 1, 1, "聘用", "收款净额"),
+            ("parttime", "兼职", 1, 1, "兼职", "收款净额"),
+            ("other", "其他", 0, 0, "其他", "收款净额"),
+        ):
+            c.execute(
+                "INSERT OR IGNORE INTO role_def(role_code,label,forbid_public_exclusive,"
+                "include_in_income_report,report_class,default_net_basis) VALUES(?,?,?,?,?,?)",
+                (code, label, fpe, iir, rc, dnb))
+        c.commit()
+    finally:
+        _close(own, c)
+
+
+def role_code_of(name: str, conn=None) -> str:
+    """真实员工类型名 → 角色码（唯一运行期取身份口径入口，不再子串坍缩）。
+
+    - 空名 / 类型不存在 → 'other'；
+    - 否则取该类型 staff_type_def.role_code。
+    改名任意类型都不会影响结果（口径按角色，不按名称）。
+    """
+    n = (name or "").strip()
+    if not n:
+        return "other"
+    own, c = _own_conn(conn)
+    try:
+        r = c.execute("SELECT role_code FROM staff_type_def WHERE name=?", (n,)).fetchone()
+        return (r["role_code"] or "other") if r else "other"
+    finally:
+        _close(own, c)
+
+
+def role_label(role_code: str, conn=None) -> str:
+    """角色码 → 显示名（对外展示用，不当 key）。"""
+    code = (role_code or "").strip() or "other"
+    own, c = _own_conn(conn)
+    try:
+        r = c.execute("SELECT label FROM role_def WHERE role_code=?", (code,)).fetchone()
+        return r["label"] if r else code
+    finally:
+        _close(own, c)
+
+
+def role_attr(role_code: str, conn=None) -> Dict:
+    """角色全部属性（forbid_public_exclusive / include_in_income_report / report_class / default_net_basis）。
+
+    缺码 → 返回 'other' 语义的兜底字典，绝不抛错（展示/校验可安全下行）。
+    """
+    code = (role_code or "").strip() or "other"
+    own, c = _own_conn(conn)
+    try:
+        r = c.execute("SELECT * FROM role_def WHERE role_code=?", (code,)).fetchone()
+        if not r:
+            return {"role_code": code, "label": code, "forbid_public_exclusive": 0,
+                    "include_in_income_report": 0, "report_class": "其他",
+                    "default_net_basis": "收款净额"}
+        return dict(r)
+    finally:
+        _close(own, c)
+
 
 class StaffTypeError(Exception):
     """员工类型/员工删除的业务错误（提示给 UI）。"""
@@ -226,12 +298,13 @@ def is_computable(name: str, conn=None) -> bool:
     return is_settle_participant(name, conn)
 
 
-def add_type(name: str, note: str = "", conn=None) -> None:
+def add_type(name: str, note: str = "", role_code: str = "other", conn=None) -> None:
     name = (name or "").strip()
     if not name:
         raise StaffTypeError("类型名不能为空")
     if len(name) > 20:
         raise StaffTypeError("类型名过长（≤20 字符）")
+    rc = (role_code or "other") if role_code in ROLE_CODES else "other"
     own, conn = _own_conn(conn)
     try:
         dup = conn.execute("SELECT 1 FROM staff_type_def WHERE name=?", (name,)).fetchone()
@@ -240,8 +313,8 @@ def add_type(name: str, note: str = "", conn=None) -> None:
         nxt = conn.execute(
             "SELECT COALESCE(MAX(sort_order),0)+1 AS n FROM staff_type_def").fetchone()["n"]
         conn.execute(
-            "INSERT INTO staff_type_def(name, is_builtin, note, sort_order) VALUES(?,0,?,?)",
-            (name, note.strip(), nxt))
+            "INSERT INTO staff_type_def(name, is_builtin, note, sort_order, role_code) VALUES(?,0,?,?,?)",
+            (name, note.strip(), nxt, rc))
         conn.commit()
     finally:
         _close(own, conn)
