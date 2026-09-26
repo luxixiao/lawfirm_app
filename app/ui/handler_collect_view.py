@@ -8,6 +8,7 @@ from PySide6.QtWidgets import (
 
 from app.db import get_conn
 from app.engine.collection import handler_rows
+from app.engine.staff_type import person_type_combo_items, role_label_map
 from app.ui import style
 from app.ui.dialogs import show_invoice_handlers, show_red_relation
 from app.ui.table_features import TableBehaviorDelegate
@@ -27,8 +28,8 @@ class _TypeDelegate(TableBehaviorDelegate):
 
     def createEditor(self, parent, option, index):  # noqa: N802
         combo = QComboBox(parent)
-        for t in ["未标", "合伙", "聘用", "兼职"]:
-            combo.addItem(t, userData=t)
+        for label, code in person_type_combo_items():
+            combo.addItem(label, userData=code)
         return combo
 
     def setEditorData(self, editor, index):  # noqa: N802
@@ -94,9 +95,10 @@ class HandlerCollectView(BaseTableView):
             keyword=None,  # 搜索改由统一筛选引擎（跨列模糊，客户端）处理
             source=self.src.currentData() or None,
         )
+        labels = role_label_map()
         self._rows = [
             [r["invoice_date"], r["invoice_no"], r["buyer"], r["total_amount"],
-             r["person_name"], r["person_type"] or "未标",
+             r["person_name"], labels.get(r["person_type"], r["person_type"]) if r["person_type"] else "未标",
              r["billing_amount"], r["collected"], r["remain"],
              r.get("recv_refund_str", "")]
             for r in rows

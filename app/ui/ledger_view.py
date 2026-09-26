@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
 from app.ui.widgets import (CaptionLabel, PageHeader, PushButton)
 from app.db import get_conn
 from app.engine.change_log import log_change
+from app.engine.staff_type import person_type_combo_items, role_label_map
 from app.ui.column_layout import install_column_layout
 
 
@@ -92,10 +93,13 @@ class LedgerView(QWidget):
             ).fetchall()
         finally:
             conn.close()
+        labels = role_label_map()
         exp_display = []
         for r in exps:
+            pt = r["person_type"]
+            disp_pt = labels.get(pt, pt) if pt else "未标"
             exp_display.append([r["period"], r["actual_handler"], r["expense_type"], r["expense_amount"],
-                                r["ticket_no"], r["person_type"] or "未标", r["key"]])
+                                r["ticket_no"], disp_pt, r["key"]])
         self._fill(self.tab_expense, exp_display, "expense")
         # 修改记录由 AuditView 自行加载（统一审计中心），无需在此填充
 
@@ -126,9 +130,10 @@ class LedgerView(QWidget):
         amt = QDoubleSpinBox(); amt.setRange(-99999999, 99999999); amt.setDecimals(2); amt.setValue(e["expense_amount"] or 0)
         handler_edit = QLineEdit(e["actual_handler"] or "")
         type_combo2 = QComboBox()
-        for t in ["合伙", "聘用", "兼职", "未标"]:
-            type_combo2.addItem(t, userData=t)
-        type_combo2.setCurrentText(e["person_type"] or "未标")
+        for label, code in person_type_combo_items():
+            type_combo2.addItem(label, userData=code)
+        idx = type_combo2.findData(e["person_type"] or "")
+        type_combo2.setCurrentIndex(idx if idx >= 0 else 0)
         form.addRow("费用类型", type_edit)
         form.addRow("金额", amt)
         form.addRow("经办人", handler_edit)

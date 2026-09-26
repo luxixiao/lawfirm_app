@@ -24,7 +24,7 @@ from __future__ import annotations
 from typing import Dict, List
 
 from app.db import get_conn
-from app.engine.backfill import HANDLER_WHITELIST, missing_handlers, norm_type, staff_type_of
+from app.engine.backfill import HANDLER_WHITELIST, missing_handlers, staff_type_of
 from app.engine.collection import over_collection_message
 from app.engine.raw_ledger import deferred_sheet3_invoices
 
@@ -284,7 +284,7 @@ def build_backfill(conn, data: Dict) -> Dict:
             continue
         agg[nm] = agg.get(nm, 0.0) + float(h.get("billing") or 0)
     charge = [
-        (nm, billing, norm_type(staff_type_of(conn, nm)))
+        (nm, billing, staff_type_of(conn, nm))
         for nm, billing in agg.items()
     ]
     # collection：明细表每行（已收金额>0 且有收款日期）一笔

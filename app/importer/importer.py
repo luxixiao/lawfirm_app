@@ -17,7 +17,7 @@ from typing import Dict, List, Tuple
 
 from app.db import get_conn
 from app.engine.backfill import (
-    HANDLER_WHITELIST, all_staff_names, library_invoice_nos, missing_handlers, norm_type,
+    HANDLER_WHITELIST, all_staff_names, library_invoice_nos, missing_handlers,
     staff_type_of,
 )
 from app.engine.collection import over_collection_message
@@ -419,7 +419,7 @@ def _regen_charge_detail(conn, inv: Dict, batch_id: int) -> None:
 
     供「导入校验-一键修正（经办人分摊）」复用；不动 received_override。
     """
-    from app.engine.backfill import norm_type, staff_type_of
+    from app.engine.backfill import staff_type_of
     no = inv["invoice_no"]
     sheet = inv.get("sheet_name") or ""
     row = inv.get("row_no") or 0
@@ -431,7 +431,7 @@ def _regen_charge_detail(conn, inv: Dict, batch_id: int) -> None:
         if r:
             conn.execute(
                 "UPDATE charge_detail SET billing_amount=?, person_type=?, src_sheet=?, src_row=? WHERE id=?",
-                (amount, norm_type(staff_type_of(conn, name)), sheet, row, r["id"]),
+                (amount, staff_type_of(conn, name), sheet, row, r["id"]),
             )
         else:
             conn.execute(
@@ -439,7 +439,7 @@ def _regen_charge_detail(conn, inv: Dict, batch_id: int) -> None:
                 "import_batch_id, person_type, src_sheet, src_row, received_override) "
                 "VALUES (?,?,?,?,?,?,?,?,?)",
                 (no, name, amount, "import", batch_id,
-                 norm_type(staff_type_of(conn, name)), sheet, row, None),
+                 staff_type_of(conn, name), sheet, row, None),
             )
     for r in conn.execute(
         "SELECT id, person_name FROM charge_detail WHERE invoice_no=? AND source='import'", (no,)
@@ -1021,7 +1021,7 @@ def commit_ledger_import(data: Dict, period: str, path: str,
                     conn.execute(
                         "INSERT INTO charge_detail (invoice_no, person_name, billing_amount, source, import_batch_id, person_type, src_sheet, src_row, received_override) VALUES (?,?,?,?,?,?,?,?,?)",
                         (no, name, amount, "import", batch_id,
-                         norm_type(staff_type_of(conn, name)),
+                         staff_type_of(conn, name),
                          inv.get("sheet_name") or "", inv.get("row_no") or 0, ov),
                     )
                 else:
@@ -1265,7 +1265,7 @@ def import_expense_file(path: str, period: str, on_reimport_diff=None) -> Dict:
                 (it["period"], it["seq"], it["exp_date"], it["name"], it["ticket_no"],
                  it["handler"], it["actual_handler"], it["expense_amount"], it["tax_amount"],
                  it["book_amount"], it["expense_type"], it["voucher_no"], it["subject1"], it["subject2"],
-                 "import", batch_id, norm_type(staff_type_of(conn, it["actual_handler"]))),
+                 "import", batch_id, staff_type_of(conn, it["actual_handler"])),
             )
         conn.commit()
     except Exception:

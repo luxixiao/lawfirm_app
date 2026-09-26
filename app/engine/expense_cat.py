@@ -16,7 +16,7 @@ from __future__ import annotations
 from typing import Dict, List, Optional
 
 from app.db import get_conn
-from app.engine.staff_type import BUILTIN_TYPES  # 合伙/聘用/兼职（参与业务收入计算）
+from app.engine import staff_type  # 角色口径（去写死）：forbid_public_exclusive
 
 # 固定 6 类（顺序即展示顺序；不可增删，改动须同步 db.py 迁移与测试）
 CATEGORIES = ["报酬发放", "住房公积金", "保险费", "汽油费", "报销摊销等", "公共专属费用"]
@@ -25,7 +25,7 @@ FALLBACK_CATEGORY = "报销摊销等"
 
 # 公共专属费用分类：合伙/聘用/兼职 这三类员工不可承担该分类下的支出
 PUBLIC_EXCLUSIVE_CATEGORY = "公共专属费用"
-_FORBIDDEN_STAFF_TYPES = set(BUILTIN_TYPES)  # {"合伙", "聘用", "兼职"}
+# 去写死：禁承担「公共专属费用」不再按类型名硬编码，改用 role_def.forbid_public_exclusive。
 
 # 预置默认归类规则（按类型名包含关键词，顺序敏感）
 _DEFAULT_RULE = [
@@ -170,7 +170,7 @@ def validate_public_exclusive(conn, items: list) -> list:
     - 且承担人（actual_handler）的结算身份 ∈ {合伙, 聘用, 兼职}（取自 staff 花名册）；
     - 「公共」「行政」等非花名册经办人（白名单）及未登记人员（落为「其他」）一律放行。
     """
-    from app.engine.backfill import norm_type, staff_type_of
+    from app.engine.backfill import staff_type_of
     cat_map = get_map(conn)
     viol = set()
     for it in items:
@@ -180,9 +180,10 @@ def validate_public_exclusive(conn, items: list) -> list:
             continue
         cat = cat_map.get(et, FALLBACK_CATEGORY)
         if et == PUBLIC_EXCLUSIVE_CATEGORY or cat == PUBLIC_EXCLUSIVE_CATEGORY:
-            pt = norm_type(staff_type_of(conn, handler))
-            if pt in _FORBIDDEN_STAFF_TYPES:
-                viol.add(f"{handler}({pt})")
+            # 去写死：按角色判定（role_def.forbid_public_exclusive），不再按类型名
+            code = staff_type_of(conn, handler)  # 角色码
+            if staff_type.role_attr(code, conn).get("forbid_public_exclusive"):
+                viol.add(f"{handler}({staff_type.role_label(code, conn)})")
     return sorted(viol)
 
 

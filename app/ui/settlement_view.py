@@ -19,6 +19,7 @@ from app.ui.widgets import (
 )
 
 from app.engine.person_settlement import build_settlement, cumulative_uncollected
+from app.engine import staff_type
 from app.exporter.person_settlement_exporter import export_all, export_one
 
 MONTH_LABELS = ["1月", "2月", "3月", "4月", "5月", "6月",
@@ -106,8 +107,9 @@ class SettlementView(QWidget):
 
         bar.addWidget(CaptionLabel("类型"))
         self.person_type = QComboBox()
-        for t, v in [("汇总", None), ("合伙", "合伙"), ("聘用", "聘用"), ("兼职", "兼职")]:
-            self.person_type.addItem(t, userData=v)
+        self.person_type.addItem("汇总", userData=None)
+        for code, label in staff_type.identity_roles():
+            self.person_type.addItem(label, userData=code)
         self.person_type.currentIndexChanged.connect(lambda *_: self.refresh())
         bar.addWidget(self.person_type)
         bar.addStretch()
@@ -237,15 +239,15 @@ class SettlementView(QWidget):
         """类型下拉只显示该人实际拥有的身份；单身份自动选中"""
         year = self.year.currentData() or datetime.now().year
         available = []
-        for pt in ("合伙", "聘用", "兼职"):
-            st = build_settlement(year, person=name, person_type=pt).get(name)
+        for code, label in staff_type.identity_roles():
+            st = build_settlement(year, person=name, person_type=code).get(name)
             if self._has_any(st):
-                available.append(pt)
+                available.append((code, label))
         self.person_type.blockSignals(True)
         self.person_type.clear()
         self.person_type.addItem("汇总", userData=None)
-        for pt in available:
-            self.person_type.addItem(pt, userData=pt)
+        for code, label in available:
+            self.person_type.addItem(label, userData=code)
         # 单身份自动选中该身份；多身份默认汇总
         self.person_type.setCurrentIndex(1 if len(available) == 1 else 0)
         self.person_type.blockSignals(False)
@@ -611,15 +613,15 @@ class SettlementView(QWidget):
         """月度结算表 Tab 类型下拉动态化"""
         year = self.r_year.currentData() or datetime.now().year
         available = []
-        for pt in ("合伙", "聘用", "兼职"):
-            st = build_settlement(year, person=name, person_type=pt).get(name)
+        for code, label in staff_type.identity_roles():
+            st = build_settlement(year, person=name, person_type=code).get(name)
             if self._has_any(st):
-                available.append(pt)
+                available.append((code, label))
         self.r_type.blockSignals(True)
         self.r_type.clear()
         self.r_type.addItem("汇总", userData=None)
-        for pt in available:
-            self.r_type.addItem(pt, userData=pt)
+        for code, label in available:
+            self.r_type.addItem(label, userData=code)
         self.r_type.setCurrentIndex(1 if len(available) == 1 else 0)
         self.r_type.blockSignals(False)
 

@@ -23,6 +23,7 @@ from openpyxl.worksheet.page import PageMargins
 from openpyxl.worksheet.properties import PageSetupProperties
 
 from app.engine.person_settlement import build_settlement
+from app.engine import staff_type
 
 THIN = Side(style="thin", color="999999")
 BORDER = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
@@ -266,12 +267,12 @@ def export_report(out_path: str | Path, year: int, month: int, persons: list[str
             ws = wb.create_sheet(title="公共费用")
             _write_sheet(ws, "公共费用", st, year, month)
             continue
-        # 各身份 sheet
+        # 各身份 sheet（按角色枚举，去写死）
         any_data = False
-        for ptype in ("合伙", "聘用", "兼职"):
-            st = build_settlement(year, person=person, person_type=ptype).get(person)
+        for code, label in staff_type.identity_roles():
+            st = build_settlement(year, person=person, person_type=code).get(person)
             if st is not None and _has_data(st, month):
-                ws = wb.create_sheet(title=f"{person}{ptype}")
+                ws = wb.create_sheet(title=f"{person}{label}")
                 _write_sheet(ws, person, st, year, month)
                 any_data = True
         # 汇总 sheet（合并所有身份）

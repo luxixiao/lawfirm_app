@@ -19,6 +19,7 @@ from openpyxl.worksheet.properties import PageSetupProperties
 
 from app.db import get_conn
 from app.engine.person_settlement import build_settlement
+from app.engine import staff_type
 from app.engine.split import allocate_receipt
 
 THIN = Side(style="thin", color="999999")
@@ -30,10 +31,16 @@ LEFT = Alignment(horizontal="left", vertical="center")
 
 
 def _main_persons(conn, year: int, month: int) -> list:
-    """主表名单：合伙/聘用/兼职（不过滤 is_active，见「停用」功能已取消）；入职月份晚于当前月排除"""
+    """主表名单：按角色（合伙/聘用/兼职，role_def.include_in_income_report=1）去写死枚举；
+    不过滤 is_active（见「停用」功能已取消）；入职月份晚于当前月排除"""
+    codes = tuple(c for c, _ in staff_type.identity_roles(conn))
+    if not codes:
+        return []
     rows = conn.execute(
-        "SELECT name, hire_month FROM staff "
-        "WHERE staff_type IN ('合伙','聘用','兼职') ORDER BY name"
+        f"SELECT s.name, s.hire_month FROM staff s "
+        f"JOIN staff_type_def t ON t.name = s.staff_type "
+        f"WHERE t.role_code IN ({','.join('?' * len(codes))}) ORDER BY s.name",
+        codes,
     ).fetchall()
     cur = f"{year}-{month:02d}"
     out = []

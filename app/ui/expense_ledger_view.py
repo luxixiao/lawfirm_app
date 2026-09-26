@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
 
 from app.db import get_conn
 from app.engine.change_log import log_change
+from app.engine.staff_type import person_type_combo_items
 from app.ui.audit_view import AuditView
 from app.ui.column_layout import install_column_layout
 from app.ui.table_features import install_accent_header
@@ -31,7 +32,6 @@ _KEYS = ["period", "seq", "exp_date", "name", "ticket_no", "handler", "actual_ha
          "expense_amount", "tax_amount", "book_amount", "expense_type", "voucher_no",
          "subject1", "subject2", "person_type", "source"]
 _MONEY_COLS = (7, 8, 9)              # 费用金额 / 税额 / 账面费用金额
-_PERSON_TYPES = ["合伙", "聘用", "兼职", "挂靠", "行政", "未标"]
 
 # 可编辑字段：(表头, 列名, 控件类型)
 _EDIT_FIELDS = [
@@ -86,8 +86,8 @@ class ExpenseLedgerView(QWidget):
 
         self.f_ptype = QComboBox()
         self.f_ptype.addItem("全部身份", userData="")
-        for p in _PERSON_TYPES:
-            self.f_ptype.addItem(p, userData=p)
+        for label, code in person_type_combo_items():
+            self.f_ptype.addItem(label, userData=code)
         self.f_ptype.currentIndexChanged.connect(self._apply)
 
         self.f_search = QLineEdit()
@@ -357,10 +357,11 @@ class ExpenseLedgerView(QWidget):
             widgets[col] = w
 
         ptype = QComboBox()
-        cur_pt = row.get("person_type") or "未标"
-        for p in _PERSON_TYPES:
-            ptype.addItem(p, userData=p)
-        ptype.setCurrentText(cur_pt if cur_pt in _PERSON_TYPES else "未标")
+        cur_pt = row.get("person_type") or ""
+        for label, code in person_type_combo_items():
+            ptype.addItem(label, userData=code)
+        idx = ptype.findData(cur_pt)
+        ptype.setCurrentIndex(idx if idx >= 0 else 0)
         form.addRow("身份", ptype)
 
         box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok

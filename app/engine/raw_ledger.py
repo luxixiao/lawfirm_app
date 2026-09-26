@@ -407,7 +407,7 @@ def _sync_charge_detail(conn, invoice_no: str, handler_text: str, old_row: Dict)
     解析失败（经办人合计≠总额 / 含未上花名册姓名）时不改动现有分摊，避免误删/误建。
     """
     from app.importer.parse_handler import parse_handler_column
-    from app.engine.backfill import norm_type, staff_type_of
+    from app.engine.backfill import staff_type_of
 
     total = conn.execute("SELECT total_amount FROM invoice WHERE invoice_no=?", (invoice_no,)).fetchone()
     total = total["total_amount"] if total else 0.0
@@ -421,7 +421,7 @@ def _sync_charge_detail(conn, invoice_no: str, handler_text: str, old_row: Dict)
             "SELECT id, received_override FROM charge_detail WHERE invoice_no=? AND person_name=?",
             (invoice_no, name),
         ).fetchone()
-        ptype = norm_type(staff_type_of(conn, name))
+        ptype = staff_type_of(conn, name)
         if r:
             conn.execute(
                 "UPDATE charge_detail SET billing_amount=?, person_type=? WHERE id=?",

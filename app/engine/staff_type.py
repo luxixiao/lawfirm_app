@@ -101,6 +101,47 @@ def role_attr(role_code: str, conn=None) -> Dict:
         _close(own, c)
 
 
+def identity_roles(conn=None):
+    """结算分身份 / 收入报表的身份清单（角色码 → 显示名），按 include_in_income_report=1。
+
+    去写死：不再硬编码 合伙/聘用/兼职，改用 role_def 配置（默认 partner/employee/parttime）。
+    """
+    own, c = _own_conn(conn)
+    try:
+        rows = c.execute(
+            "SELECT role_code, label FROM role_def WHERE include_in_income_report=1 "
+            "ORDER BY role_code").fetchall()
+        return [(r["role_code"], r["label"]) for r in rows]
+    finally:
+        _close(own, c)
+
+
+def list_roles(conn=None):
+    """全部角色（角色码 → 显示名），用于下拉填充。"""
+    own, c = _own_conn(conn)
+    try:
+        rows = c.execute("SELECT role_code, label FROM role_def ORDER BY role_code").fetchall()
+        return [(r["role_code"], r["label"]) for r in rows]
+    finally:
+        _close(own, c)
+
+
+def person_type_combo_items(conn=None):
+    """身份下拉项（显示名, 角色码），含「未标」(空码)。供各 UI 编辑/筛选下拉共用。
+
+    去写死：下拉不再硬编码 合伙/聘用/兼职，角色来自 role_def；存储值恒为角色码。
+    """
+    items = [("未标", "")]
+    for code, label in list_roles(conn):
+        items.append((label, code))
+    return items
+
+
+def role_label_map(conn=None):
+    """角色码 → 显示名 字典（供只读表格把 person_type 翻成中文）。"""
+    return {code: label for code, label in list_roles(conn)}
+
+
 class StaffTypeError(Exception):
     """员工类型/员工删除的业务错误（提示给 UI）。"""
 

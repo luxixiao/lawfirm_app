@@ -9,6 +9,7 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
 from app.engine.person_settlement import MONTHS, build_settlement
+from app.engine import staff_type
 
 THIN = Side(style="thin", color="D9D9D9")
 BORDER = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
@@ -139,12 +140,12 @@ def export_one(person: str, path: str | Path, year: int) -> Path:
     wb = openpyxl.Workbook()
     wb.remove(wb.active)
     st_all = build_settlement(year, person=person).get(person)
-    # 各身份 sheet（有数据才出）
-    for ptype in ("合伙", "聘用", "兼职"):
-        st = build_settlement(year, person=person, person_type=ptype).get(person)
+    # 各身份 sheet（有数据才出）—— 按角色枚举（去写死，不再硬编码 合伙/聘用/兼职）
+    for code, label in staff_type.identity_roles():
+        st = build_settlement(year, person=person, person_type=code).get(person)
         if _has_data(st):
-            ws = wb.create_sheet(title=f"{person}{ptype}")
-            _write_ws(ws, person, st, year, ptype)
+            ws = wb.create_sheet(title=f"{person}{label}")
+            _write_ws(ws, person, st, year, label)
     # 汇总 sheet（恒出）
     ws = wb.create_sheet(title=f"{person}汇总")
     _write_ws(ws, person, st_all, year, "汇总")

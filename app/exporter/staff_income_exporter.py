@@ -22,6 +22,7 @@ from openpyxl.worksheet.properties import PageSetupProperties
 from app.db import get_conn
 from app.engine.expense_cat import get_by_category, get_map
 from app.engine.person_settlement import build_settlement
+from app.engine import staff_type
 
 THIN = Side(style="thin", color="999999")
 BORDER = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
@@ -34,11 +35,13 @@ COLS = [("报酬发放", "报酬发放"), ("住房公积金", "住房公积金")
 
 
 def _staff_employees(conn, year: int, month: int) -> list:
-    """聘用/兼职（视同聘用）且在职的员工；入职月份晚于当前月则排除（按姓名）"""
+    """聘用/兼职（视同聘用）且在职的员工；入职月份晚于当前月则排除（按姓名）。
+    按角色码 employee/parttime 枚举（去写死，不再按类型名子串 '%聘用%'）。"""
     # 离职不影响：不按 is_active 过滤，只要该月有数据/在名单即纳入（hire_month 过滤入职）
     rows = conn.execute(
-        "SELECT name, hire_month FROM staff "
-        "WHERE staff_type LIKE '%聘用%' OR staff_type LIKE '%兼职%' ORDER BY name"
+        "SELECT s.name, s.hire_month FROM staff s "
+        "JOIN staff_type_def t ON t.name = s.staff_type "
+        "WHERE t.role_code IN ('employee','parttime') ORDER BY s.name"
     ).fetchall()
     cur = f"{year}-{month:02d}"
     out = []

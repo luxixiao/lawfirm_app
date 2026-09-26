@@ -30,8 +30,9 @@ from app.engine.expense_edit import (
 from app.engine.expense_validation import validate_expense_edit
 from app.ui import scale, style
 from app.ui.audit_view import AuditView
+from app.engine.staff_type import person_type_combo_items, role_label_map
 from app.ui.expense_ledger_view import (
-    _HEADERS as _LEDGER_HEADERS, _KEYS as _LEDGER_KEYS, _PERSON_TYPES,
+    _HEADERS as _LEDGER_HEADERS, _KEYS as _LEDGER_KEYS,
 )
 from app.ui.widgets import CaptionLabel, DialogTitleLabel
 
@@ -82,19 +83,25 @@ class _MoneySpinDelegate(QStyledItemDelegate):
 
 
 class _PersonTypeDelegate(QStyledItemDelegate):
-    """身份列编辑器：下拉（与费用台账编辑页一致的可选集合）。"""
+    """身份列编辑器：下拉（与费用台账编辑页一致的可选集合）；存储值恒为角色码。"""
 
     def createEditor(self, parent, option, index):  # noqa: N802
         cb = QComboBox(parent)
-        cb.addItems(_PERSON_TYPES)
+        for label, code in person_type_combo_items():
+            cb.addItem(label, userData=code)
         return cb
 
     def setEditorData(self, editor, index):  # noqa: N802
-        cur = index.data(Qt.ItemDataRole.DisplayRole) or ""
-        editor.setCurrentText(cur if cur in _PERSON_TYPES else _PERSON_TYPES[-1])
+        cur = index.data(Qt.ItemDataRole.EditRole)
+        if cur is None:
+            cur = index.data(Qt.ItemDataRole.DisplayRole) or ""
+        idx = editor.findData(cur)
+        editor.setCurrentIndex(idx if idx >= 0 else 0)
 
     def setModelData(self, editor, model, index):  # noqa: N802
-        model.setData(index, editor.currentText(), Qt.ItemDataRole.DisplayRole)
+        code = editor.currentData() or ""
+        model.setData(index, code, Qt.ItemDataRole.EditRole)
+        model.setData(index, role_label_map().get(code, code), Qt.ItemDataRole.DisplayRole)
 
 
 class ExpenseDetailView(QWidget):
@@ -198,6 +205,11 @@ class ExpenseDetailView(QWidget):
                         f"{float(v or 0):,.2f}" if v is not None else "")
                     item.setData(Qt.ItemDataRole.EditRole,
                                  float(v) if v is not None else 0.0)
+                elif key == "person_type":
+                    # 存储值恒为角色码，展示翻成中文（与费用台账页一致）
+                    code = (v or "").strip()
+                    item = QTableWidgetItem(role_label_map().get(code, code) if code else "")
+                    item.setData(Qt.ItemDataRole.EditRole, code)
                 else:
                     item = QTableWidgetItem(_cell_text(v, False))
                 if key in _MONEY_KEYS:
@@ -258,6 +270,9 @@ class ExpenseDetailView(QWidget):
             return ""
         if key in ("expense_amount", "tax_amount"):
             return self._money_raw(r, c)
+        if key == "person_type":
+            # 落库值必须是角色码（EditRole），不是展示用的中文标签
+            return item.data(Qt.ItemDataRole.EditRole) or ""
         return (item.text() or "").strip()
 
     def _recompute_book(self, r: int) -> None:

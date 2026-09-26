@@ -7,6 +7,7 @@ from __future__ import annotations
 from typing import Iterable, List
 
 from app.db import get_conn
+from app.engine.staff_type import role_code_of
 
 # 非员工经办人白名单（公共费用等）。与导入校验共用同一份，避免两处口径漂移。
 HANDLER_WHITELIST = {"公共", "行政"}
@@ -58,17 +59,6 @@ def library_invoice_nos(conn=None) -> set:
             conn.close()
 
 
-def norm_type(staff_type) -> str:
-    t = (staff_type or "").strip()
-    if "合伙" in t:
-        return "合伙"
-    if "兼职" in t:
-        return "兼职"
-    if "聘用" in t:
-        return "聘用"
-    return "其他"
-
-
 def all_staff_names(conn) -> set:
     """花名册全部姓名（**不过滤 is_active**，「停用」功能已取消）。"""
     return {r["name"] for r in conn.execute("SELECT name FROM staff")}
@@ -90,13 +80,13 @@ def missing_handlers(conn, names: Iterable[str]) -> List[str]:
 
 
 def staff_type_of(conn, name: str) -> str:
-    """姓名 → 结算身份（合伙/聘用/兼职/其他）。**不过滤 is_active**。
+    """姓名 → 结算身份（角色码：partner/employee/parttime/other）。**不过滤 is_active**。
 
-    离职人员仍会有历史业务数据，若按 is_active 过滤会返回 '' → norm_type 落成
-    「其他」→ 其结算业务收入被判 0。故一律按花名册取真实类型。
+    返回该员工真实类型名对应的角色码（见 role_code_of）。离职人员仍会有历史业务
+    数据，一律按花名册取真实类型→角色，避免身份落成「其他」→ 结算业务收入被判 0。
     """
     r = conn.execute("SELECT staff_type FROM staff WHERE name=?", (name,)).fetchone()
-    return norm_type(r["staff_type"]) if r else ""
+    return role_code_of(r["staff_type"]) if r else "other"
 
 
 def backfill_person_types() -> None:

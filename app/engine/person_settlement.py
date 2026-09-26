@@ -28,8 +28,6 @@ from app.engine.split import allocate_receipt
 
 MONTHS = list(range(1, 13))
 
-STAFF_TYPE_MAP = {"合伙": "partner", "聘用": "employee", "兼职": "parttime", "其他": "other"}
-
 
 def _ym(year: int, month: int) -> str:
     return f"{year:04d}-{month:02d}"
@@ -94,25 +92,21 @@ def _staff_type(conn, name: str, override: str | None = None) -> str:
 
 
 def _staff_type_orig(conn, name: str) -> str:
-    # 不过滤 is_active：离职人员的历史年份业务仍须按真实身份计（否则「其他」→ 收入 0）
+    # 去写死：返回员工**真实类型名**（不按名称子串坍缩）。
+    # 结算口径改由真实类型名→role_def 解析（见下方「业务收入口径」分支），
+    # 因此改名任意类型都不会断结算口径（F1 根因修复）。
+    # 不过滤 is_active：离职人员的历史年份业务仍须按真实身份计（否则身份落成空→收入 0）。
     r = conn.execute("SELECT staff_type FROM staff WHERE name=?", (name,)).fetchone()
     if not r:
-        return "其他"
-    t = (r["staff_type"] or "").strip()
-    if "合伙" in t:
-        return "合伙"
-    if "兼职" in t:
-        return "兼职"
-    if "聘用" in t:
-        return "聘用"
-    return "其他"
+        return ""
+    return (r["staff_type"] or "").strip()
 
 
 def build_settlement(year: int, person: str | None = None, person_type: str | None = None,
                      warnings: List[str] | None = None) -> Dict:
     """计算个人结算总表数据
 
-    person_type: 按身份过滤（合伙/聘用/兼职，None=全部=汇总口径）
+    person_type: 按角色码过滤（partner/employee/parttime/other，None=全部=汇总口径）
     warnings: 可选列表（原地追加）。P1-5：日期无法解析的记录不计入结算，但
               逐条写入此处（含发票号/人员/原始值），由结算页显示，不静默。
     Returns:
@@ -400,9 +394,17 @@ def _compute(conn, year: int, person: str | None, person_type: str | None = None
                        + m["rec_refund_cur"] + m["rec_refund_prev"])   # 二小计（净）
             inv_net = (m["inv_open_received"] + m["inv_open_uncollected"]
                        + m["inv_red_cur"] + m["inv_red_prev"])          # 三小计（净）
-            # 业务收入口径：参与结算由 staff_type_def.is_settle 控制，
-            # 净额口径由 net_basis 控制（合伙=开票净额，聘用/兼职=收款净额，其余=0）。
-            is_settle, net_basis = staff_type.settle_flags_of(st["staff_type"], conn)
+            # 业务收入口径（去写死，按角色解析，不再按类型名硬编码）：
+            # st["staff_type"] 可能是真实类型名（汇总视图，沿用 per-type 的 is_settle /
+            # net_basis），也可能是角色码（分身份视图 override=person_type）。两者都按角色
+            # 取净额口径：合伙=开票净额，其余=收款净额；其他类型/未参与的 income=0。
+            role = st["staff_type"]
+            if role in staff_type.ROLE_CODES:
+                ra = staff_type.role_attr(role, conn)
+                is_settle = bool(ra["include_in_income_report"])
+                net_basis = ra["default_net_basis"]
+            else:
+                is_settle, net_basis = staff_type.settle_flags_of(role, conn)
             if is_settle:
                 m["income"] = round(m["inv_total"], 2) if net_basis == "开票净额" else round(rec_net, 2)
             else:
