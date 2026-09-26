@@ -27,6 +27,10 @@ def make_conn():
         conn.execute("ALTER TABLE staff_type_def ADD COLUMN is_settle INTEGER NOT NULL DEFAULT 0")
     if "net_basis" not in cols:
         conn.execute("ALTER TABLE staff_type_def ADD COLUMN net_basis TEXT NOT NULL DEFAULT '收款净额'")
+    # 去写死（Plan A）：角色列 + role_def 种子（复刻 init_db 迁移，幂等）
+    if "role_code" not in cols:
+        conn.execute("ALTER TABLE staff_type_def ADD COLUMN role_code TEXT NOT NULL DEFAULT 'other'")
+    st.ensure_roles(conn)
     conn.commit()
     return conn
 

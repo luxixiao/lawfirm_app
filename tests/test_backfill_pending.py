@@ -92,8 +92,13 @@ def main() -> int:
         "ALTER TABLE invoice ADD COLUMN src_sheet TEXT DEFAULT ''",
         "ALTER TABLE invoice ADD COLUMN src_row INTEGER DEFAULT 0",
         "ALTER TABLE staff ADD COLUMN hire_month TEXT DEFAULT ''",
+        # 去写死（Plan A）：角色列（复刻 init_db 迁移）
+        "ALTER TABLE staff_type_def ADD COLUMN role_code TEXT NOT NULL DEFAULT 'other'",
     ):
         conn.execute(stmt)
+    # 去写死（Plan A）：role_def 表 + 种子（内存库手工复刻）
+    from app.engine import staff_type as _st
+    _st.ensure_roles(conn)
     proxy = _ConnProxy(conn)
 
     # 四个模块的连接统一换成代理：library_invoice_nos() 也走 proxy（不传 conn 时）
@@ -102,6 +107,13 @@ def main() -> int:
 
     imp._auto_snapshot = lambda *a, **k: None  # P2-3 起新签名 (batch_type, period)
     imp._archive_file = lambda src, bt, period: ""
+
+    # 去写死（Plan A）：建员工类型 + 角色映射（复刻 init_db 的按名迁移，仅 fixture）
+    from app.engine import staff_type as _st
+    for _n, _c in (("合伙", "partner"), ("聘用", "employee"), ("兼职", "parttime")):
+        if _st.get_type(_n, conn) is None:
+            _st.add_type(_n, conn=conn)
+        _st.set_role_code(_n, _c, conn=conn)
 
     for nm, t in (("周立生", "聘用"), ("陈娟", "兼职"), ("胡坚", "合伙")):
         conn.execute("INSERT INTO staff (name, staff_type, is_active) VALUES (?,?,1)", (nm, t))
@@ -147,8 +159,9 @@ def main() -> int:
           err is not None and "超过价税合计" in err, str(err))
 
     payload = bm.build_backfill(proxy, bf_form())
-    check("A6 build：返回规范化 payload（charge 按人聚合 + person_type）",
-          payload["charge"] == [("周立生", 6000.0, "聘用"), ("陈娟", 4000.0, "兼职")],
+    # 去写死（Plan A）：person_type 存**角色码**（显示层才翻中文），不再是中文标签
+    check("A6 build：返回规范化 payload（charge 按人聚合 + person_type=角色码）",
+          payload["charge"] == [("周立生", 6000.0, "employee"), ("陈娟", 4000.0, "parttime")],
           str(payload["charge"]))
     check("A7 build：collections 只含已收>0 且有日期的行",
           payload["collections"] == [("周立生", 3000.0, "2024-06-01")],
@@ -210,8 +223,8 @@ def main() -> int:
           str(_inv_sql("BF-9")["import_batch_id"]))
     cds = {r0["person_name"]: (r0["billing_amount"], r0["person_type"]) for r0 in conn.execute(
         "SELECT person_name, billing_amount, person_type FROM charge_detail WHERE invoice_no='BF-9'")}
-    check("D4 commit：charge_detail 分摊 + person_type",
-          cds == {"周立生": (6000.0, "聘用"), "陈娟": (4000.0, "兼职")}, str(cds))
+    check("D4 commit：charge_detail 分摊 + person_type=角色码",
+          cds == {"周立生": (6000.0, "employee"), "陈娟": (4000.0, "parttime")}, str(cds))
     cols = _coll("BF-9")
     check("D5 commit：collection 一笔 manual/补录",
           len(cols) == 1 and cols[0]["source"] == "manual" and cols[0]["note"] == "补录",

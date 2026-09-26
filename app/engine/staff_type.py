@@ -38,9 +38,19 @@ ROLE_CODES = ("partner", "employee", "parttime", "other")
 
 
 def ensure_roles(conn=None) -> None:
-    """幂等填充 role_def 种子（建库/升级兜底；init_db 已种，这里再保险一次）。"""
+    """幂等建 role_def 表 + 填充种子（建库/升级兜底；init_db 已种，这里再保险一次）。
+
+    手工复刻 schema 的内存库（大量测试用 :memory: 自己建表）并没有 role_def 表，
+    故先 CREATE IF NOT EXISTS，否则下面的 INSERT OR IGNORE 会报 no such table。
+    """
     own, c = _own_conn(conn)
     try:
+        c.execute("CREATE TABLE IF NOT EXISTS role_def ("
+                  "role_code TEXT PRIMARY KEY, label TEXT NOT NULL, "
+                  "forbid_public_exclusive INTEGER NOT NULL DEFAULT 0, "
+                  "include_in_income_report INTEGER NOT NULL DEFAULT 0, "
+                  "report_class TEXT NOT NULL DEFAULT '其他', "
+                  "default_net_basis TEXT NOT NULL DEFAULT '收款净额')")
         for code, label, fpe, iir, rc, dnb in (
             ("partner", "合伙", 1, 1, "合伙", "开票净额"),
             ("employee", "聘用", 1, 1, "聘用", "收款净额"),

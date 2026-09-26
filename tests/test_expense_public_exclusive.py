@@ -21,6 +21,11 @@ def make_conn():
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
     conn.executescript(SCHEMA)
+    # 去写死（Plan A）：角色列 + role_def 种子（复刻 init_db 迁移，幂等）
+    if "role_code" not in [r[1] for r in conn.execute("PRAGMA table_info(staff_type_def)")]:
+        conn.execute("ALTER TABLE staff_type_def ADD COLUMN role_code TEXT NOT NULL DEFAULT 'other'")
+    from app.engine import staff_type as _st
+    _st.ensure_roles(conn)
     return conn
 
 
@@ -63,6 +68,13 @@ def main() -> int:
     # ===== 3. 公共专属费用导入校验 =====
     conn3 = make_conn()
     ec.ensure_categories(conn3)
+    # 去写死（Plan A）：建员工类型 + 角色映射（复刻 init_db 的按名迁移，仅 fixture）
+    from app.engine import staff_type as _st
+    for _n, _c in (("合伙", "partner"), ("聘用", "employee"), ("兼职", "parttime")):
+        if _st.get_type(_n, conn3) is None:
+            _st.add_type(_n, conn=conn3)
+        _st.set_role_code(_n, _c, conn=conn3)
+    conn3.commit()
     # 花名册
     for nm, st in [("张三", "合伙"), ("李四", "聘用"), ("王五", "兼职"), ("赵六", "挂靠"), ("钱七", "其他")]:
         conn3.execute("INSERT INTO staff(name, staff_type) VALUES(?,?)", (nm, st))

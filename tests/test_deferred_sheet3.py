@@ -105,8 +105,13 @@ def main() -> int:
         "ALTER TABLE invoice ADD COLUMN src_sheet TEXT DEFAULT ''",
         "ALTER TABLE invoice ADD COLUMN src_row INTEGER DEFAULT 0",
         "ALTER TABLE staff ADD COLUMN hire_month TEXT DEFAULT ''",
+        # 去写死（Plan A）：角色列（复刻 init_db 迁移）
+        "ALTER TABLE staff_type_def ADD COLUMN role_code TEXT NOT NULL DEFAULT 'other'",
     ):
         conn.execute(stmt)
+    # 去写死（Plan A）：role_def 表 + 种子（内存库手工复刻）
+    from app.engine import staff_type as _st
+    _st.ensure_roles(conn)
     proxy = _ConnProxy(conn)
 
     # bf 也要换连接：library_invoice_nos()（票号是否在库的唯一口径来源）用它

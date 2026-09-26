@@ -86,7 +86,8 @@ def staff_type_of(conn, name: str) -> str:
     数据，一律按花名册取真实类型→角色，避免身份落成「其他」→ 结算业务收入被判 0。
     """
     r = conn.execute("SELECT staff_type FROM staff WHERE name=?", (name,)).fetchone()
-    return role_code_of(r["staff_type"]) if r else "other"
+    # 必须把 conn 透传下去：否则 role_code_of 会回落模块默认连接（读错库）。
+    return role_code_of(r["staff_type"], conn) if r else "other"
 
 
 def backfill_person_types() -> None:

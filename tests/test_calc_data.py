@@ -38,6 +38,10 @@ def make_conn() -> sqlite3.Connection:
         conn.execute("ALTER TABLE staff_type_def ADD COLUMN is_settle INTEGER NOT NULL DEFAULT 0")
     if "net_basis" not in cols:
         conn.execute("ALTER TABLE staff_type_def ADD COLUMN net_basis TEXT NOT NULL DEFAULT '收款净额'")
+    # 去写死（Plan A）：角色列 + role_def 种子（复刻 init_db 迁移，幂等）
+    if "role_code" not in cols:
+        conn.execute("ALTER TABLE staff_type_def ADD COLUMN role_code TEXT NOT NULL DEFAULT 'other'")
+    st.ensure_roles(conn)
     # 注入员工类型（合伙/聘用/兼职/公共/行政…）：改动 1 后 ensure_defaults 不再预置，
     # 改由 seed_types 显式自建，使结算口径与真实库一致
     seed_types(conn)

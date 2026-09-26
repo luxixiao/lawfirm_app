@@ -32,6 +32,10 @@ def make_conn():
         conn.execute("ALTER TABLE staff_type_def ADD COLUMN is_settle INTEGER NOT NULL DEFAULT 0")
     if "net_basis" not in cols:
         conn.execute("ALTER TABLE staff_type_def ADD COLUMN net_basis TEXT NOT NULL DEFAULT '收款净额'")
+    # 去写死（Plan A）：角色列 + role_def 种子（复刻 init_db 迁移，幂等）
+    if "role_code" not in cols:
+        conn.execute("ALTER TABLE staff_type_def ADD COLUMN role_code TEXT NOT NULL DEFAULT 'other'")
+    st.ensure_roles(conn)
     conn.commit()
     return conn
 
@@ -164,11 +168,12 @@ def main() -> int:
     check("合伙 其他月收入=0", res["王合伙"]["months"][1]["income"] == 0.0)
 
     # ===== 3. 自定义类型开启参与后按所选净额口径计收入 =====
-    # 注：当前结算引擎把非关键字 staff_type 归一到 "其他"，故对自定义名设置参与即作用于
-    # 该归一类；这里直接对 "其他" 开启参与并选开票净额，验证自定义（非内置）类型参与结算。
-    st.set_settle("其他", True, conn=conn)
-    st.set_net_basis("其他", "开票净额", conn=conn)
-    seed_person(conn, "赵自由", "自由职业", 800, 0)  # 自定义名 → 归一到 其他
+    # 去写死（Plan A）：不再按名称把未知类型名归一到 "其他" —— 类型名即身份。
+    # 自定义类型只要在类型表里建出来并设好口径，就该按该口径参与结算（不写死任何类型名）。
+    st.add_type("自由职业", conn=conn)
+    st.set_settle("自由职业", True, conn=conn)
+    st.set_net_basis("自由职业", "开票净额", conn=conn)
+    seed_person(conn, "赵自由", "自由职业", 800, 0)
     res2 = ps.build_settlement_conn(conn, 2025)
     check("自定义(归其他) 开启参与+开票净额 收入=inv_total",
           res2["赵自由"]["months"][3]["income"] == 800.0,
