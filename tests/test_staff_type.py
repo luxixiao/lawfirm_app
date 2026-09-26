@@ -27,7 +27,11 @@ def make_conn():
         conn.execute("ALTER TABLE staff_type_def ADD COLUMN is_settle INTEGER NOT NULL DEFAULT 0")
     if "net_basis" not in cols:
         conn.execute("ALTER TABLE staff_type_def ADD COLUMN net_basis TEXT NOT NULL DEFAULT '收款净额'")
+    if "role_code" not in [r[1] for r in conn.execute("PRAGMA table_info(staff_type_def)")]:
+        conn.execute("ALTER TABLE staff_type_def ADD COLUMN role_code TEXT NOT NULL DEFAULT 'other'")
     conn.commit()
+    # role_def 种子（与 db.init_db 迁移块一致；去写死身份大类的语义来源）
+    st.ensure_roles(conn)
     return conn
 
 
@@ -63,6 +67,9 @@ def seed_types(conn) -> None:
     这里复刻的是页面动作：add_type 新建 → 勾选参与 → 下拉选口径；
     is_builtin=1（合伙/聘用/兼职/公共/行政）与禁删禁改名语义保持一致。
     """
+    # 每个种子类型的角色归属（去写死：角色决定 forbid_public_exclusive/
+    # include_in_income_report/default_net_basis；类型名与角色解耦）
+    _ROLE_OF = {"合伙": "partner", "聘用": "employee", "兼职": "parttime"}
     for name, settle, basis in _SEED_TYPES:
         if st.get_type(name, conn) is None:
             st.add_type(name, conn=conn)
@@ -70,6 +77,7 @@ def seed_types(conn) -> None:
             conn.execute("UPDATE staff_type_def SET is_builtin=? WHERE name=?",
                          (1 if builtin else 0, name))
             conn.commit()
+        st.set_role_code(name, _ROLE_OF.get(name, "other"), conn=conn)
         st.set_settle(name, settle, conn=conn)   # 参与结算开关（不动口径，顺序任意）
         st.set_net_basis(name, basis, conn=conn)
 
@@ -154,7 +162,14 @@ def main() -> int:
 
     st.rename_type("顾问", "外部专家", conn=conn)
     check("改名生效", "外部专家" in [t["name"] for t in st.list_types(conn)])
-    expect_err("内置禁改名", lambda: st.rename_type("合伙", "合伙人", conn=conn))
+    # 去写死（批次3）：改名锁已放开，内置类型也可改名，且角色（语义）保留
+    st.add_type("临时内置", conn=conn)
+    conn.execute("UPDATE staff_type_def SET is_builtin=1 WHERE name='临时内置'")
+    st.set_role_code("临时内置", "partner", conn=conn)
+    conn.commit()
+    st.rename_type("临时内置", "临时改名", conn=conn)
+    check("内置类型可改名(去写死)", st.get_type("临时改名", conn) is not None)
+    check("改名后角色保留 partner", st.role_code_of("临时改名", conn) == "partner")
 
     st.set_note("合伙", "按开票净额计业务收入", conn=conn)
     check("内置可改说明", st.get_type("合伙", conn)["note"] == "按开票净额计业务收入")
@@ -166,8 +181,8 @@ def main() -> int:
     check("上移改变顺序", order1 != order2 and order2.index("实习") < order1.index("实习"),
           f"{order1} -> {order2}")
 
-    # ===== 4. 删除类型：内置禁删 / 有人在用禁删 =====
-    expect_err("内置禁删", lambda: st.delete_type("聘用", conn=conn))
+    # ===== 4. 删除类型：有人在用禁删（去写死后「内置锁」已放开，仅保留员工引用护栏）=====
+    # 注：批次3 已移除「内置三类禁止删除」锁 —— 只要无员工引用，内置类型也能删。
     conn.execute("INSERT INTO staff(name, staff_type) VALUES('张三','顾问')")
     conn.commit()
     st.add_type("顾问", conn=conn)   # 重新加回（前面改名成了外部专家）
@@ -177,6 +192,14 @@ def main() -> int:
     conn.commit()
     st.delete_type("顾问", conn=conn)
     check("无人使用可删", "顾问" not in [t["name"] for t in st.list_types(conn)])
+
+    # 4a 去写死回归：内置类型无员工引用时也可删（原「内置锁」已放开）
+    st.add_type("临时内置删", conn=conn)
+    conn.execute("UPDATE staff_type_def SET is_builtin=1 WHERE name='临时内置删'")
+    conn.commit()
+    st.delete_type("临时内置删", conn=conn)   # 不应抛错
+    check("内置类型无员工可删(去写死)",
+          "临时内置删" not in [t["name"] for t in st.list_types(conn)])
 
     # ===== 5. 引用人数统计 =====
     types = {t["name"]: t["staff_count"] for t in st.list_types(conn)}

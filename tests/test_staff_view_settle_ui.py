@@ -75,10 +75,11 @@ def main() -> int:
     view.refresh()
     app.processEvents()
 
-    # ===== 1. 表头：只改第 3 列文案 =====
+    # ===== 1. 表头：第 3 列为「业务金额方式」，末列为「角色」（去写死身份大类下拉）=====
     hdr = [view.type_table.horizontalHeaderItem(i).text()
            for i in range(view.type_table.columnCount())]
-    check("员工类型 5 列表头", hdr == ["类型", "参与结算", "业务金额方式", "说明", "人数"], f"got={hdr}")
+    check("员工类型 6 列表头",
+          hdr == ["类型", "参与结算", "业务金额方式", "说明", "人数", "角色"], f"got={hdr}")
 
     # ===== 2. 初始状态：参与 + 口径下拉显示库中值 + 内置名加粗 =====
     r = row_of(view, "合伙")
