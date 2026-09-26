@@ -16,11 +16,15 @@ from app.engine.split import allocate_invoice
 
 
 class RedOriginalMissing(Exception):
-    """红字发票缺少已入库的原蓝字发票（用户铁律拦截）。"""
+    """红字发票缺少原蓝字发票号码（用户铁律拦截）。"""
 
 
-def assert_red_has_orig(invoices, conn) -> None:
-    """红字发票硬规则（用户铁律）：红字必须先保证原蓝字发票已入库，否则红字不能入库。
+class RedAmountExceeded(Exception):
+    """红字累计金额超过原蓝字发票金额（超额红冲）。"""
+
+
+def assert_red_has_orig(invoices, conn=None) -> None:
+    """红字发票硬规则（用户铁律）：红字必须填明所冲的原蓝字发票号。
 
     落点：销项文档导入 `import_invoice_file`（app/importer/importer.py）在写库前调用，
     由 importer 层把 `RedOriginalMissing` 转成 `ImportError_` 透出给用户。
@@ -29,7 +33,13 @@ def assert_red_has_orig(invoices, conn) -> None:
     - 非红字（is_red 为假）→ 不拦截；
     - 红字但原票号为空 → 非法（红字必填原票号）；
     - 原票号在同批发票列表内（同一销项文档）→ 合法（随本批一起入库）；
-    - 否则必须已在 invoice 表（任意账期）→ 否则抛 `RedOriginalMissing`。
+    - 跨期红冲（原票不在本批）→ **合法，不再要求原票已入库**（2026-09-27 取消 C3）。
+      红字照常入库，它引用的原票由「待补录」清单承接（源 A 扫 `invoice.orig_invoice_no`）；
+      金额是否超额改由 `assert_red_amount_cross_period` 校验。
+
+    ⚠ 为什么取消「原票必须已在库」：该规则会让整本销项因少数几张跨年红冲而中止，
+    连带几十张正常票一起导不进来（实测 2025-01 整期 86 张被 3 张跨年红字绑架）。
+    `conn` 参数保留仅为签名稳定，本函数已不查库。
     """
     batch_nos = {inv.get("invoice_no") for inv in invoices if inv.get("invoice_no")}
     for inv in invoices:
@@ -43,10 +53,51 @@ def assert_red_has_orig(invoices, conn) -> None:
             )
         if orig in batch_nos:
             continue
-        if not conn.execute("SELECT 1 FROM invoice WHERE invoice_no=?", (orig,)).fetchone():
-            raise RedOriginalMissing(
-                f"红字发票 {no} 的原蓝字发票 {orig} 尚未入库，"
-                f"请先补录原票再导入红字（跨期红冲合法，但原票必须已入库）。"
+        # 跨期红冲：原票不在本批 → 放行入库（C3 已取消）。
+        # 原票缺失不会卡住整批，改由「待补录」清单承接（源 A）。
+
+
+def assert_red_amount_cross_period(conn, invoices) -> None:
+    """跨期红冲金额约束：原票金额 + 引用该原票的红字合计 >= 0（不许超额红冲）。
+
+    与 `parse_invoice_file` 的「本月内」校验互补：**只管原票不在本批的跨期情形**；
+    原票在本批的归解析期校验（那里拿得到本批原票金额，无需连库）。
+
+    - 原票金额：查 `invoice.total_amount`；查不到（原票尚未补录入库）→ 无依据，放行；
+    - 红字合计：本批引用该原票的红字 + **库里已入库的**红字（跨期累计）；
+    - 去重：库里红字排除本批票号 —— 重导同账期时旧批次的同名红字即将被回滚，
+      若不排除会重复计入、误报超额。
+    """
+    batch_nos = {inv.get("invoice_no") for inv in invoices if inv.get("invoice_no")}
+    batch_red: Dict[str, float] = {}
+    for inv in invoices:
+        if not inv.get("is_red"):
+            continue
+        orig = (inv.get("orig_invoice_no") or "").strip()
+        if not orig or orig in batch_nos:
+            continue          # 原票在本批 → 归解析期校验
+        batch_red[orig] = batch_red.get(orig, 0.0) + float(inv.get("total_amount") or 0.0)
+
+    for orig, s in batch_red.items():
+        row = conn.execute(
+            "SELECT total_amount FROM invoice WHERE invoice_no=?", (orig,)).fetchone()
+        if row is None:
+            continue          # 原票不在库（待补录）→ 无金额依据，放行
+        face = float(row["total_amount"] or 0.0)
+        if batch_nos:
+            marks = ",".join("?" * len(batch_nos))
+            lib_red = conn.execute(
+                f"SELECT COALESCE(SUM(total_amount),0) FROM invoice "
+                f"WHERE orig_invoice_no=? AND total_amount<0 "
+                f"AND invoice_no NOT IN ({marks})", (orig, *batch_nos)).fetchone()[0] or 0.0
+        else:
+            lib_red = conn.execute(
+                "SELECT COALESCE(SUM(total_amount),0) FROM invoice "
+                "WHERE orig_invoice_no=? AND total_amount<0", (orig,)).fetchone()[0] or 0.0
+        if face + s + lib_red < -0.01:
+            raise RedAmountExceeded(
+                f"红冲校验失败（跨期）: 原票 {orig}({face:g}) + 本批红字({s:g}) "
+                f"+ 已入库红字({lib_red:g}) < 0"
             )
 
 

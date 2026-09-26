@@ -27,7 +27,10 @@ sys.path.insert(0, str(ROOT))
 from app.db import SCHEMA  # noqa: E402
 from app.engine import backfill_module as bm  # noqa: E402
 from app.engine.import_confidence import _handler_amounts, red_orig_diff  # noqa: E402
-from app.engine.collection import assert_red_has_orig, RedOriginalMissing  # noqa: E402
+from app.engine.collection import (  # noqa: E402
+    assert_red_has_orig, RedOriginalMissing,
+    assert_red_amount_cross_period, RedAmountExceeded,
+)
 
 OK, FAILS = 0, []
 
@@ -261,13 +264,15 @@ def main() -> int:
         blocked_e3 = True
     check("E3：红字原票号为空 → 应被阻断", blocked_e3, "未抛异常")
 
-    blocked_e4 = False
+    ok_e4 = True
     try:
+        # C3 已于 2026-09-27 取消：跨期红冲（原票不在本批）合法，放行入库，
+        # 其引用的原票交给「待补录」清单承接；金额是否超额由 assert_red_amount_cross_period 管。
         assert_red_has_orig(
             [{"invoice_no": "RED-ORPHAN", "is_red": True, "orig_invoice_no": "NOPE-999"}], c2)
     except RedOriginalMissing:
-        blocked_e4 = True
-    check("E4：红字原票既不在库也不在同批 → 应被阻断", blocked_e4, "未抛异常")
+        ok_e4 = False
+    check("E4：红字原票既不在库也不在同批（跨期红冲）→ 放行（C3 已取消）", ok_e4)
 
     ok_e5 = True
     try:
@@ -277,7 +282,82 @@ def main() -> int:
     except RedOriginalMissing:
         ok_e5 = False
     check("E5：蓝字无原票 → 不拦截", ok_e5)
+
+    # ==================================================================== #
+    # F) assert_red_amount_cross_period —— 跨期红冲金额约束（A9 扩跨期）
+    #    判据：原票金额 + 本批红字 + 库里已入库红字（排除本批票号） >= 0
+    # ==================================================================== #
+    c3 = build_conn()
+    add_invoice(c3, "BLUE-X", 1000.0)                 # 原票在库，面值 1000
+    add_invoice(c3, "RED-LIB-1", -300.0, orig="BLUE-X")  # 库里已有红字 -300
+
+    ok_f1 = True
+    try:
+        # 原票不在库（待补录）→ 无金额依据，放行
+        assert_red_amount_cross_period(c3, [
+            {"invoice_no": "RED-A", "is_red": True, "orig_invoice_no": "NOT-IN-DB",
+             "total_amount": -99999.0},
+        ])
+    except RedAmountExceeded:
+        ok_f1 = False
+    check("F1：原票不在库 → 无依据，放行", ok_f1)
+
+    ok_f2 = True
+    try:
+        # 1000 + (-600) + (-300) = 100 >= 0 → 放行
+        assert_red_amount_cross_period(c3, [
+            {"invoice_no": "RED-B", "is_red": True, "orig_invoice_no": "BLUE-X",
+             "total_amount": -600.0},
+        ])
+    except RedAmountExceeded:
+        ok_f2 = False
+    check("F2：累计红冲未超额（1000-600-300=100）→ 放行", ok_f2)
+
+    blocked_f3 = False
+    try:
+        # 1000 + (-600) + (-300) + (-200) = -100 < 0 → 拦截。
+        # 库里再放一张已入库红字 -200（本批外）。
+        add_invoice(c3, "RED-LIB-2", -200.0, orig="BLUE-X")
+        assert_red_amount_cross_period(c3, [
+            {"invoice_no": "RED-C", "is_red": True, "orig_invoice_no": "BLUE-X",
+             "total_amount": -600.0},
+        ])
+    except RedAmountExceeded:
+        blocked_f3 = True
+    check("F3：累计红冲超额（1000-600-300-200=-100）→ 应被拦截", blocked_f3, "未抛异常")
+
+    ok_f4 = True
+    try:
+        # 重导同账期：库里的红字就是本批这张（同名票号）→ 须排除，不能重复计入。
+        # 库里已有一张 RED-D=-800（orig=BLUE-X，先清掉 RED-LIB-2 让算式只有 -300 与 -800）
+        c3.execute("DELETE FROM invoice WHERE invoice_no='RED-LIB-2'")
+        c3.commit()
+        add_invoice(c3, "RED-D", -800.0, orig="BLUE-X")
+        # 再导一次同账期，本批仍含 RED-D=-800 → 1000(face) + (-800 本批) + (-300 库里) = -100
+        # 但库里的 RED-D 属本批票号应被排除 ⇒ 1000 - 800 - 300 = -100 仍超额。
+        # 用 -700 复核：1000 + (-700) + (-300) = 0 → 恰好吃满，放行
+        assert_red_amount_cross_period(c3, [
+            {"invoice_no": "RED-D", "is_red": True, "orig_invoice_no": "BLUE-X",
+             "total_amount": -700.0},
+        ])
+    except RedAmountExceeded:
+        ok_f4 = False
+    check("F4：重导同账期时库里同名红字不计入（1000-700-300=0）→ 放行", ok_f4)
+
+    ok_f5 = True
+    try:
+        # 原票在本批 → 归解析期校验，本函数跳过（不重复管）
+        assert_red_amount_cross_period(c3, [
+            {"invoice_no": "BLUE-Y", "is_red": False, "orig_invoice_no": "",
+             "total_amount": 100.0},
+            {"invoice_no": "RED-E", "is_red": True, "orig_invoice_no": "BLUE-Y",
+             "total_amount": -500.0},
+        ])
+    except RedAmountExceeded:
+        ok_f5 = False
+    check("F5：原票在本批 → 本函数跳过（归解析期校验）", ok_f5)
     c2.close()
+    c3.close()
 
     print(f"\n{OK}/{OK + len(FAILS)} passed")
     if FAILS:

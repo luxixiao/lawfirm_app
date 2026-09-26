@@ -568,11 +568,20 @@ def import_invoice_file(path: str, period: str) -> Dict:
     raw_rows, raw_warnings = parse_invoice_workbook(path, period)
     conn = get_conn()
     try:
-        # 红字发票硬规则（用户铁律）：红字必须先保证原蓝字发票已入库，否则红字不能入库
-        from app.engine.collection import assert_red_has_orig, RedOriginalMissing
+        # 红字发票硬规则（用户铁律），两道：
+        # ① assert_red_has_orig —— 只管「红字必填原蓝字票号」。
+        #    「原票须已入库」（C3）已于 2026-09-27 取消：跨期红冲合法，原票不在本批也放行，
+        #    它引用的原票交给「待补录」清单承接（否则整本销项会被几张跨年红字绑架）。
+        # ② assert_red_amount_cross_period —— 补上取消 C3 后跨期红冲缺的那道金额兜底：
+        #    原票金额 + 本批红字 + 库里已入库红字 >= 0（原票不在库则无依据，放行）。
+        from app.engine.collection import (
+            assert_red_has_orig, assert_red_amount_cross_period,
+            RedOriginalMissing, RedAmountExceeded,
+        )
         try:
             assert_red_has_orig(invoices, conn)
-        except RedOriginalMissing as e:
+            assert_red_amount_cross_period(conn, invoices)
+        except (RedOriginalMissing, RedAmountExceeded) as e:
             raise ImportError_(str(e))
         # 清旧批次的 raw_invoice 镜像（在 rollback 之前，否则 active 标记已变）
         old = conn.execute(

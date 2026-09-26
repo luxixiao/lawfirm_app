@@ -60,11 +60,19 @@ def parse_invoice_file(path: str, period: str) -> List[Dict]:
         def g(i: int) -> str:
             return row[i].strip() if 0 <= i < len(row) else ""
 
+        # A5：价税合计必填（原「为空 → 静默记 0.0」，会把 0 元票混进库；2026-09-27 改必填）
         total_txt = g(idx_total)
+        if not total_txt:
+            raise ImportError_(f"发票 {no} 价税合计为空（必须填写）")
         try:
-            total = float(total_txt.replace(",", "")) if total_txt else 0.0
+            total = float(total_txt.replace(",", ""))
         except ValueError:
             raise ImportError_(f"发票 {no} 价税合计无法解析: 「{total_txt}」") from None
+
+        # A6：开票日期必填（原「为空 → 静默留空串」，该票会在按月份分桶时消失；2026-09-27 改必填）
+        date_txt = g(idx_date)
+        if not date_txt:
+            raise ImportError_(f"发票 {no} 开票日期为空（必须填写）")
 
         remark = g(idx_remark)
         m = _RED_RE.search(remark)
@@ -72,7 +80,7 @@ def parse_invoice_file(path: str, period: str) -> List[Dict]:
 
         invoices.append({
             "invoice_no": no,
-            "invoice_date": normalize_date(g(idx_date), default_year=int(period.split("-")[0])),
+            "invoice_date": normalize_date(date_txt, default_year=int(period.split("-")[0])),
             "kind": g(idx_kind),
             "status": g(idx_status),
             "voucher_no": g(idx_voucher),
@@ -104,8 +112,10 @@ def parse_invoice_file(path: str, period: str) -> List[Dict]:
                     f"红冲校验失败: 原票 {orig}({pos['total_amount']:g}) + 红字合计({s:g}) < 0"
                 )
         else:
-            # 原票不在本月销项（跨期红冲，合法）—— 但原票必须已入库，
-            # 由 import_invoice_file 的 assert_red_has_orig 强制（任意账期）。
+            # 原票不在本月销项（跨期红冲，合法）—— 原票**不必**已入库（C3 已取消，
+            # 2026-09-27）；红字照常入库，其引用的原票进「待补录」清单。
+            # 跨期金额是否超额由 import_invoice_file 的
+            # assert_red_amount_cross_period 校验（需连库，故不在解析期做）。
             pass
 
     return invoices

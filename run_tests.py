@@ -59,6 +59,7 @@ EXPECTED_FILES = [
     "tests/test_import_fix_log.py",
     "tests/test_person_settlement.py",     # T1 新增
     "tests/test_raw_ledger_mirror.py",
+    "tests/test_invoice_import_validation.py",  # 销项解析期校验（A5 金额必填 / A6 日期必填 / C3 取消后跨期红字放行）
     "tests/test_red_consistency.py",
     "tests/test_over_collection_guard.py",  # 超收守卫落点（_write_collection_for_invoice / apply_backfill）
     "tests/test_review_compare.py",
