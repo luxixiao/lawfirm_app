@@ -125,6 +125,48 @@ def red_shortage_message(conn, orig_no: str, face: float) -> Optional[str]:
             f"补录金额至少应为 {abs(lib_red):,.2f} 元。")
 
 
+def assert_ledger_red_orig(conn, invoices) -> None:
+    """发票台账导入时的红字交叉校验（用户铁律 ③，整批中止）。
+
+    同一张红字发票（invoice_no 为 PK）在销项和台账里是同一张物理票。取其：
+    - 左边：发票台账红字行备注，用 `extract_orig_no` 现算（不依赖②的写库放开）；
+    - 右边：`invoice` 表里同 `invoice_no` 且 `total_amount<0` 的 `orig_invoice_no`
+      （由销项导入写入，权威源）。
+
+    判据（用户定调：没写原票号→拦；invoice_no 定位认）：
+    - 左边解析为空 → 拦（台账备注未写明原票号）；
+    - 右边查不到同号红票 → 拦（销项未先导，或票号不符）；
+    - 右边 orig 为空（极老数据销项未记录）→ 无依据，放行（不误拦）；
+    - 两边都有且不一致 → 拦。
+
+    抛 `ValueError`，由 importer 层转 `ImportError_` 透出（整批中止文案）。
+    """
+    from app.importer.parse_remark import extract_orig_no
+    for inv in invoices:
+        if not inv.get("is_red"):
+            continue
+        no = inv.get("invoice_no")
+        ledger_orig = (extract_orig_no(inv.get("remark") or "") or "").strip()
+        if not ledger_orig:
+            raise ValueError(
+                f"红字发票 {no} 的发票台账备注未写明原蓝字发票号，无法导入；"
+                f"请先在备注中填妥「冲<日期>发票<原票号>」后重试。")
+        row = conn.execute(
+            "SELECT orig_invoice_no FROM invoice WHERE invoice_no=? AND total_amount<0", (no,)
+        ).fetchone()
+        if row is None:
+            raise ValueError(
+                f"红字发票 {no} 在销项库中找不到对应记录（可能销项未先导，或票号不一致），"
+                f"无法校验原票号，已整批中止。")
+        db_orig = (row["orig_invoice_no"] or "").strip()
+        if not db_orig:
+            continue
+        if ledger_orig != db_orig:
+            raise ValueError(
+                f"红字发票 {no} 原票号不一致：发票台账备注={ledger_orig}，"
+                f"销项库记录={db_orig}，请核对后重试。")
+
+
 def _collected_by_invoice(conn) -> Dict[str, float]:
     """{发票号: 已收金额}（正数发票 = Σcollection）"""
     return {

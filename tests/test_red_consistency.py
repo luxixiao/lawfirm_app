@@ -30,6 +30,7 @@ from app.engine.import_confidence import _handler_amounts, red_orig_diff  # noqa
 from app.engine.collection import (  # noqa: E402
     assert_red_has_orig, RedOriginalMissing,
     assert_red_amount_cross_period, RedAmountExceeded, red_shortage_message,
+    assert_ledger_red_orig,
 )
 
 OK, FAILS = 0, []
@@ -388,6 +389,77 @@ def main() -> int:
     check("G6：两张红字累计 -11000，补录 10999 → 拦截",
           m_g6 is not None and "11,000.00" in m_g6, str(m_g6))
     c4.close()
+
+    # ==================================================================== #
+    # H) assert_ledger_red_orig —— 发票台账导入红字交叉校验（批3b / 用户铁律③）
+    #    左边：台账红字备注现算 orig；右边：销项库同号红票 orig_invoice_no（PK 同票）
+    # ==================================================================== #
+    c5 = build_conn()
+    add_invoice(c5, "836840", -9000.0, orig="24332000000398937755")  # 销项库已存红字+orig
+
+    ok_h1 = True
+    try:
+        assert_ledger_red_orig(c5, [
+            {"invoice_no": "836840", "is_red": True,
+             "remark": "冲24.11.4发票24332000000398937755"},
+        ])
+    except ValueError:
+        ok_h1 = False
+    check("H1：台账原票号 == 销项库 orig → 放行", ok_h1)
+
+    blocked_h2 = False
+    try:
+        assert_ledger_red_orig(c5, [
+            {"invoice_no": "836840", "is_red": True, "remark": "25.1.16冲掉"},
+        ])
+    except ValueError:
+        blocked_h2 = True
+    check("H2：台账备注未写原票号 → 拦截", blocked_h2, "未抛异常")
+
+    blocked_h3 = False
+    try:
+        # 销项库里没有同号红票（836841 不存在）→ 拦
+        assert_ledger_red_orig(c5, [
+            {"invoice_no": "836841", "is_red": True,
+             "remark": "冲24.11.4发票24332000000398937755"},
+        ])
+    except ValueError:
+        blocked_h3 = True
+    check("H3：销项库无同号红票 → 拦截", blocked_h3, "未抛异常")
+
+    blocked_h4 = False
+    try:
+        # 两边不一致
+        assert_ledger_red_orig(c5, [
+            {"invoice_no": "836840", "is_red": True,
+             "remark": "冲24.11.4发票99999999999999999999"},
+        ])
+    except ValueError:
+        blocked_h4 = True
+    check("H4：台账原票号与销项库 orig 不一致 → 拦截", blocked_h4, "未抛异常")
+
+    ok_h5 = True
+    try:
+        # 销项库该红票 orig 为空（极老数据未记录）→ 无依据放行
+        add_invoice(c5, "OLD-RED", -1000.0, orig="")
+        assert_ledger_red_orig(c5, [
+            {"invoice_no": "OLD-RED", "is_red": True,
+             "remark": "冲24.11.4发票24332000000398937755"},
+        ])
+    except ValueError:
+        ok_h5 = False
+    check("H5：销项库 orig 为空 → 无依据放行（不误拦）", ok_h5)
+
+    ok_h6 = True
+    try:
+        # 非红字 → 跳过，不拦
+        assert_ledger_red_orig(c5, [
+            {"invoice_no": "BLUE-X", "is_red": False, "remark": "25.1.2收1000"},
+        ])
+    except ValueError:
+        ok_h6 = False
+    check("H6：非红字 → 跳过不拦", ok_h6)
+    c5.close()
 
     print(f"\n{OK}/{OK + len(FAILS)} passed")
     if FAILS:

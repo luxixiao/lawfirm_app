@@ -960,6 +960,14 @@ def commit_ledger_import(data: Dict, period: str, path: str,
         if err:
             raise ImportError_(err)
 
+        # ---- 红字交叉校验（用户铁律 ③）：发票台账红字备注原票号 必须 == 销项库同号红票
+        # 的 orig_invoice_no（invoice_no 为 PK，销项和台账是同一张物理票）。不一致/缺失 → 整批中止。
+        from app.engine.collection import assert_ledger_red_orig
+        try:
+            assert_ledger_red_orig(conn, data["invoices"])
+        except ValueError as e:
+            raise ImportError_(str(e))
+
         # ---- 覆盖式导入 ----
         # 清旧批次的 raw_ledger 镜像（在 rollback 之前，否则 active 标记已变）
         old = conn.execute(
