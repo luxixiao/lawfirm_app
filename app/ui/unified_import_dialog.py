@@ -736,6 +736,10 @@ class UnifiedImportDialog(QWidget):
         self._blue_cache = None
         # 批 3-2c：同上 —— 「导入时填过补录」票号集合（`_import_backfilled_nos` 的缓存）
         self._imp_bf_nos_cache = None
+        # 批 3c（④ 两处同步已补录）：「已补录」叠加视图须与「补录页·已补录发票」tab
+        # （list_backfilled = source='manual'）同口径——手动补录（非随导入）的票在补录页
+        # 可见，复核页也要认得出。缓存全量 manual 票号，每轮重建失效。
+        self._manual_nos_cache = None
         # 批 2：「台账 ⇄ 库」比对只在导入前模式启用（lib=None → evaluate 完全跳过）
         evs = evaluate(self._work, self._staff_set, self._confirmed, self._period,
                        lib=(self._lib_ctx if self._mode == "pre" else None))
@@ -1512,24 +1516,45 @@ class UnifiedImportDialog(QWidget):
         （`_import_backfilled_nos()`，批 3-2c）—— post 的 `backfills` 恒空
         （内容已入 `invoice`/`charge_detail`/`collection`），不读留痕的话「已补录」
         筛选点开**永远是空表**（用户以为自己上次白补了）。两模式互补，绝不同时生效。
+        批 3c（④ 两处同步已补录）：另认 `source='manual'`（补录页·已补录发票 tab 的同口径
+        —— 手动补录、非随导入的票），使两处显示一致：用户在「发票补录」页手补的蓝字原票，
+        回到复核页也应被识别为「已补录」。
         """
         hist = self._import_backfilled_nos()
+        manual = self._manual_backfilled_nos()
         if r["kind"] == "deferred":
             no = ((r.get("deferred") or {}).get("invoice_no") or "").strip()
-            return bool(no) and (no in self._backfills or no in hist)
+            return bool(no) and (no in self._backfills or no in hist or no in manual)
         if r["kind"] == "invoice":
             tgt = self._row_backfill_target(r)
             if tgt and tgt[0] in self._backfills:
                 return True
-            if not hist:
-                return False      # pre：不查库、不反查原票号（留痕恒空 → 直接 False）
             # 与 `_row_backfill_target` 同源：同样把台账行备注喂进去，否则三路取号
             # 第 2 路（备注现算）在这里漏喂 → 「已补录」认不出用户刚补的原票
             ev = r.get("ev") or {}
             remark = ((ev.get("_inv") or {}).get("remark_raw") or "")
             orig = self._red_orig_no(ev.get("invoice_no") or "", remark)
-            return bool(orig) and orig in hist
+            return bool(orig) and (orig in hist or orig in manual)
         return False
+
+    def _manual_backfilled_nos(self) -> set:
+        """全量 `source='manual'` 票号集合（缓存，每轮重建失效）。
+
+        与 `backfill_module.list_backfilled` 同口径——「补录页·已补录发票」tab 展示的正是
+        这些票。复核页「已补录」叠加视图据此把**手动补录**（非随导入）的票也认出来，实现
+        ④「两处同步已补录」。与 `_import_backfilled_nos`（随导入补录的留痕）并集，二者各管
+        一类，不互相替代。
+        """
+        if self._manual_nos_cache is None:
+            from app.db import get_conn
+            conn = get_conn()
+            try:
+                self._manual_nos_cache = {
+                    row[0] for row in conn.execute(
+                        "SELECT invoice_no FROM invoice WHERE source='manual'")}
+            finally:
+                conn.close()
+        return self._manual_nos_cache
 
     def _row_backfill_target(self, r: Dict) -> tuple | None:
         """当前行是否有补录入口 → (要补/要看的票号, 该票是否已在库)；不适用返回 None。

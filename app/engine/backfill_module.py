@@ -21,7 +21,7 @@
 """
 from __future__ import annotations
 
-from typing import Dict, List
+from typing import Dict, Iterable, List
 
 from app.db import get_conn
 from app.engine.backfill import HANDLER_WHITELIST, missing_handlers, staff_type_of
@@ -153,6 +153,25 @@ def list_pending_backfill(conn=None) -> List[Dict]:
     finally:
         if own:
             conn.close()
+
+
+def invoice_is_backfilled(no: str, conn, import_backfill_nos: Iterable[str] = ()) -> bool:
+    """某票号是否被补录（与 `list_backfilled` 同口径），供复核页「已补录」叠加视图判定。
+
+    判定（批 3c / ④ 两处同步已补录——「复核页」与「补录页·已补录发票」tab 必须同口径）：
+    - 在 `import_backfill_nos`（`anomaly_note` dim=import_backfill，**本批随导入**补录的票号集合）中 → True；
+    - 或在 `invoice` 表为 `source='manual'`（`list_backfilled` 的口径，**手动补录**——
+      含「发票补录」页手补、历史补录，非随导入）→ True。
+    二者并集：用户在「发票补录」页手动补的蓝字原票，回到导入复核页也应被识别为「已补录」。
+    """
+    if not no:
+        return False
+    if no in import_backfill_nos:
+        return True
+    row = conn.execute(
+        "SELECT 1 FROM invoice WHERE invoice_no=? AND source='manual'", (no,)
+    ).fetchone()
+    return row is not None
 
 
 def list_backfilled(conn=None) -> List[Dict]:

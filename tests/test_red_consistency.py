@@ -66,11 +66,11 @@ def build_conn():
     return conn
 
 
-def add_invoice(conn, no, total, orig="", date="2024-03-01", buyer="甲", handlers=()):
+def add_invoice(conn, no, total, orig="", date="2024-03-01", buyer="甲", handlers=(), source="import"):
     conn.execute(
         "INSERT INTO invoice (invoice_no, invoice_date, buyer, total_amount, kind, source, "
         "orig_invoice_no, created_at) VALUES (?,?,?,?,?,?,?, datetime('now','localtime'))",
-        (no, date, buyer, total, "", "import", orig),
+        (no, date, buyer, total, "", source, orig),
     )
     for i, (nm, amount) in enumerate(handlers):
         conn.execute(
@@ -460,6 +460,30 @@ def main() -> int:
         ok_h6 = False
     check("H6：非红字 → 跳过不拦", ok_h6)
     c5.close()
+
+    # ==================================================================== #
+    # I) invoice_is_backfilled —— 批 3c（④ 两处同步已补录）的口径单点
+    #    与 list_backfilled 同口径：随导入补录（import_backfill_nos）∪ 手动补录（source='manual'）
+    # ==================================================================== #
+    c6 = build_conn()
+    add_invoice(c6, "M-001", 5000.0, source="manual")          # 手动补录
+    add_invoice(c6, "IMP-002", 3000.0, source="import")        # 仅随导入（不入 manual）
+
+    ok_i1 = bm.invoice_is_backfilled("M-001", c6, ())
+    check("I1：source='manual' → 已补录（与补录页同口径）", ok_i1)
+
+    ok_i2 = not bm.invoice_is_backfilled("IMP-002", c6, ())
+    check("I2：source='import' 且不在 import_backfill_nos → 非已补录", ok_i2)
+
+    ok_i3 = bm.invoice_is_backfilled("IMP-002", c6, ("IMP-002",))
+    check("I3：在 import_backfill_nos（随导入补录）→ 已补录", ok_i3)
+
+    ok_i4 = not bm.invoice_is_backfilled("", c6, ())
+    check("I4：空票号 → 非已补录（不误判）", ok_i4)
+
+    ok_i5 = not bm.invoice_is_backfilled("NOPE", c6, ())
+    check("I5：库里没有的票号 → 非已补录", ok_i5)
+    c6.close()
 
     print(f"\n{OK}/{OK + len(FAILS)} passed")
     if FAILS:
