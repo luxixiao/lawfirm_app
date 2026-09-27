@@ -25,6 +25,30 @@ _DATE = r"\d{1,2}\.\d{1,2}(?:\.\d{1,2})?"
 # 纯日期（可带省略月份的日范围，如 "24.12.20-21"）
 _PURE_DATE = re.compile(rf"^{_DATE}(?:-\d{{1,2}}(?:\.\d{{1,2}})?)?$")
 _RED_REMARK = re.compile(r"^冲.*发票")
+# 唯一真源：从发票备注提取「被红冲的蓝字发票号」。原 `_RED_RE` 只认销项写法
+# （被红冲蓝字数电票号码：xxx），对台账写法（冲<日期>发票<号>）命中 0，且全仓两份重复。
+# 这里统一两种写法，供销项解析 / 台账镜表归一化 / 复核页三路取号共用。
+_ORIG_NO_MODES = [
+    re.compile(r"被红冲蓝字数电票号码[:：]\s*(\d+)"),   # 销项官方写法
+    re.compile(r"冲[^发票]{0,40}?发票\s*(\d{6,})"),      # 台账写法（含老式 8 位号）
+]
+
+
+def extract_orig_no(remark: str | None) -> str:
+    """从发票备注提取被红冲的蓝字发票号（唯一真源）。
+
+    支持：
+    - 销项：被红冲蓝字数电票号码：24332000000398937755
+    - 台账：冲24.11.4发票24332000000398937755（含老式 8 位号 88929152）
+    匹配不到返回 ""（红字必填原票号的判据交给调用方）。
+    """
+    if not remark:
+        return ""
+    for rx in _ORIG_NO_MODES:
+        m = rx.search(remark)
+        if m:
+            return m.group(1).strip()
+    return ""
 _RED_OFF = re.compile(r"冲掉")
 _RECEIPT = re.compile(
     rf"(?:(?P<date>{_DATE})\s*)?(?P<verb>收到|收|汇|到|付)\s*(?P<amt>\d+(?:\.\d+)?万?|[\u4e00-\u9fa5]+万)"

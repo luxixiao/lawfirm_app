@@ -7,14 +7,12 @@
 """
 from __future__ import annotations
 
-import re
 from typing import Dict, Iterable, List, Optional
 
 from app.db import get_conn
 from app.importer.date_utils import normalize_date
 from app.engine.change_log import log_change
-
-_RED_RE = re.compile(r"被红冲蓝字数电票号码[:：]\s*(\d+)")
+from app.importer.parse_remark import extract_orig_no
 
 RAW_FIELDS = [
     "sheet_name", "row_no", "seq", "invoice_no", "kind", "invoice_date_raw",
@@ -193,7 +191,6 @@ def normalize_to_invoice(raw: Dict, default_year: int | None = None) -> Dict:
     tax = _parse_total(raw.get("tax_raw"))
     year = default_year or __import__("datetime").datetime.now().year
     remark = raw.get("remark") or ""
-    m = _RED_RE.search(remark)
     return {
         "invoice_no": (raw.get("invoice_no") or "").strip(),
         "invoice_date": normalize_date(raw.get("invoice_date_raw") or "", default_year=year),
@@ -206,7 +203,7 @@ def normalize_to_invoice(raw: Dict, default_year: int | None = None) -> Dict:
         "net_amount": net if raw.get("net_amount_raw") else None,
         "tax_rate": raw.get("tax_rate_raw") or "",
         "tax": tax if raw.get("tax_raw") else None,
-        "orig_invoice_no": m.group(1) if m else "",
+        "orig_invoice_no": extract_orig_no(remark),
         "remark": remark,
         "is_red": total < 0,
     }

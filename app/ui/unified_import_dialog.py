@@ -48,7 +48,7 @@
   落到**「待确认」**，并在右栏与「各经办人已收」列**回显**刚填的内容（A 甲要求）；
   之后在「待确认」里再改，以**行的最终值**为准回写补录条目（`_merged_data`）。
   红字行的原票号走**三路取号**（见 `_red_orig_no`）：`invoice.orig_invoice_no`（销项导入
-  写的）+ 台账行备注用 `_RED_RE` 现算 + `refund.orig_invoice_no`（退款台账的红蓝配对）；
+  写的）+ 台账行备注用 `extract_orig_no` 现算 + `refund.orig_invoice_no`（退款台账的红蓝配对）；
   **取不到原票号才不出现按钮**。
 - **红字行（阶段 5，B 乙，用户 2026-09-18 拍板 + 2026-09-25 新口径）**：红字发票**本身没问题**
   （照常高置信），缺的是它引用的**蓝字原票** —— 故让**红字行自己**落「待补录」，原因列写明
@@ -114,7 +114,7 @@ from app.engine.import_confidence import (  # noqa: F401  （REASON_LIB_DIFF 供
     REASON_LIB_DIFF, SHEET_LABEL, evaluate, receipt_summary, red_orig_diff,
 )
 from app.engine.raw_ledger import expand_receipts
-from app.engine.raw_invoice import _RED_RE
+from app.importer.parse_remark import extract_orig_no
 from app.importer.excel_reader import ImportError_
 from app.ui import scale, style
 from app.ui.backfill_dialog import BackfillDialog, backfill_validator, red_mismatch_notice
@@ -1367,7 +1367,7 @@ class UnifiedImportDialog(QWidget):
         三路（多来源不冲突时取第一个非空）：
         1. `invoice.orig_invoice_no` —— 销项导入写入的（**唯一曾有的路径，必须保留**）；
            `raw_invoice` 镜像表没有这列，故只能查 `invoice`。
-        2. **传入的备注文本**用 `_RED_RE` 现算 —— 台账行的 remark 本来就在手上
+        2. **传入的备注文本**用 `extract_orig_no` 现算 —— 台账行的 remark 本来就在手上
            （`r["ev"]["_inv"]["remark_raw"]`，见 `review_rebuild`）。**这是本次新增的
            主路径**：台账导入写 `invoice` 时把 `orig_invoice_no` 硬编码成空串
            （`app/importer/importer.py`），所以台账导进来的红字票库里一律查不出冲的是
@@ -1397,11 +1397,10 @@ class UnifiedImportDialog(QWidget):
             found.append(v)
 
         # ---- 路径 2：备注文本现算（台账行的 remark，台账红字行的主路径） ----
-        m = _RED_RE.search(remark or "")
-        if m:
-            v = (m.group(1) or "").strip()
-            if v:
-                found.append(v)
+        # 统一用 extract_orig_no（唯一真源）：同时满足销项写法与台账「冲…发票…」写法
+        v = extract_orig_no(remark)
+        if v:
+            found.append(v)
 
         # ---- 路径 3：退款台账登记的红蓝配对 ----
         try:

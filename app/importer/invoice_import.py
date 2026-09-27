@@ -8,13 +8,13 @@
 """
 from __future__ import annotations
 
-import re
 from typing import Dict, List
 
 from app.importer.date_utils import normalize_date
 from app.importer.excel_reader import (
     ImportError_, col_index, find_header_row, read_sheet, sheet_names,
 )
+from app.importer.parse_remark import extract_orig_no
 
 # 原始镜表列顺序（与 raw_invoice 表一一对应，不含 id/synced/import_batch_id/created_at）
 RAW_FIELDS = [
@@ -22,8 +22,6 @@ RAW_FIELDS = [
     "status", "voucher_no", "buyer", "total_amount_raw", "net_amount_raw",
     "tax_rate_raw", "tax_raw", "goods", "remark",
 ]
-
-_RED_RE = re.compile(r"被红冲蓝字数电票号码[:：]\s*(\d+)")
 
 
 def parse_invoice_file(path: str, period: str) -> List[Dict]:
@@ -75,8 +73,7 @@ def parse_invoice_file(path: str, period: str) -> List[Dict]:
             raise ImportError_(f"发票 {no} 开票日期为空（必须填写）")
 
         remark = g(idx_remark)
-        m = _RED_RE.search(remark)
-        orig_no = m.group(1) if m else ""
+        orig_no = extract_orig_no(remark)
 
         invoices.append({
             "invoice_no": no,
