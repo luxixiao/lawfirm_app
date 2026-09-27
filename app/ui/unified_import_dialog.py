@@ -1544,16 +1544,23 @@ class UnifiedImportDialog(QWidget):
         这些票。复核页「已补录」叠加视图据此把**手动补录**（非随导入）的票也认出来，实现
         ④「两处同步已补录」。与 `_import_backfilled_nos`（随导入补录的留痕）并集，二者各管
         一类，不互相替代。
+
+        ⚠ 失败一律吞掉（红线：只读库、绝不自动改数据）—— 取数异常（库锁 / 旧 schema 缺
+        `source` 列）时降级为空集，绝不拖垮整页渲染。
         """
         if self._manual_nos_cache is None:
-            from app.db import get_conn
-            conn = get_conn()
+            self._manual_nos_cache = set()
             try:
-                self._manual_nos_cache = {
-                    row[0] for row in conn.execute(
-                        "SELECT invoice_no FROM invoice WHERE source='manual'")}
-            finally:
-                conn.close()
+                from app.db import get_conn
+                conn = get_conn()
+                try:
+                    self._manual_nos_cache = {
+                        row[0] for row in conn.execute(
+                            "SELECT invoice_no FROM invoice WHERE source='manual'")}
+                finally:
+                    conn.close()
+            except Exception:  # noqa: BLE001  只读预检，任何异常都降级空集
+                self._manual_nos_cache = set()
         return self._manual_nos_cache
 
     def _row_backfill_target(self, r: Dict) -> tuple | None:
