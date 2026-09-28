@@ -51,7 +51,6 @@ def build_conn():
         "ALTER TABLE collection ADD COLUMN src_row INTEGER DEFAULT 0",
         "ALTER TABLE invoice ADD COLUMN src_sheet TEXT DEFAULT ''",
         "ALTER TABLE invoice ADD COLUMN src_row INTEGER DEFAULT 0",
-        "ALTER TABLE staff ADD COLUMN hire_month TEXT DEFAULT ''",
     ):
         conn.execute(stmt)
     conn.commit()

@@ -37,9 +37,10 @@ def _main_persons(conn, year: int, month: int) -> list:
     if not codes:
         return []
     rows = conn.execute(
-        f"SELECT s.name, s.hire_month FROM staff s "
-        f"JOIN staff_type_def t ON t.name = s.staff_type "
-        f"WHERE t.role_code IN ({','.join('?' * len(codes))}) ORDER BY s.name",
+        f"SELECT DISTINCT r.name, r.hire_month FROM staff_roster r "
+        f"JOIN staff_type_map m ON m.name = r.name "
+        f"JOIN staff_type_def t ON t.name = m.type_name "
+        f"WHERE t.role_code IN ({','.join('?' * len(codes))}) ORDER BY r.name",
         codes,
     ).fetchall()
     cur = f"{year}-{month:02d}"

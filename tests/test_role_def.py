@@ -73,7 +73,8 @@ def main() -> int:
         conn.execute("UPDATE staff_type_def SET role_code='partner' WHERE name='啊啊啊'")
         st.set_settle("啊啊啊", True, conn=conn)        # 参与结算
         st.set_net_basis("啊啊啊", "开票净额", conn=conn)  # 合伙按开票净额计
-        conn.execute("INSERT INTO staff(name, staff_type) VALUES('张三','啊啊啊')")
+        conn.execute("INSERT OR IGNORE INTO staff_roster(name) VALUES('张三')")
+        conn.execute("INSERT OR IGNORE INTO staff_type_map(name, type_name, is_primary) VALUES('张三','啊啊啊',1)")
         conn.commit()
         check("改名前 role_code_of=partner", st.role_code_of("啊啊啊", conn) == "partner")
 
@@ -125,7 +126,8 @@ def main() -> int:
     try:
         # 再插一个 employee 角色的经办人 + 发票（person_type 存角色码 'employee'）
         conn4 = c4
-        conn4.execute("INSERT INTO staff(name, staff_type) VALUES('李四','员工类型')")
+        conn4.execute("INSERT OR IGNORE INTO staff_roster(name) VALUES('李四')")
+        conn4.execute("INSERT OR IGNORE INTO staff_type_map(name, type_name, is_primary) VALUES('李四','员工类型',1)")
         conn4.execute("UPDATE staff_type_def SET role_code='employee' WHERE name='员工类型'")
         st.set_settle("员工类型", True, conn=conn4)
         conn4.execute("INSERT INTO invoice(invoice_no, invoice_date, total_amount) "

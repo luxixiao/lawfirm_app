@@ -43,9 +43,7 @@ class _Env:
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
         conn.executescript(SCHEMA)
-        cols = [r[1] for r in conn.execute("PRAGMA table_info(staff)")]
-        if "hire_month" not in cols:
-            conn.execute("ALTER TABLE staff ADD COLUMN hire_month TEXT DEFAULT ''")
+        # 批2：staff 镜像表已移除，staff_roster 在 SCHEMA 中已含 hire_month，无需迁移
         conn.commit()
         conn.close()
         self.snap_root = Path(self.tmp) / "snaps_new"
@@ -149,7 +147,8 @@ def main() -> int:
     env = _Env()
     try:
         c = env._conn()
-        c.execute("INSERT INTO staff (name, staff_type, is_active) VALUES ('v1','聘用',1)")
+        c.execute("INSERT OR IGNORE INTO staff_roster(name) VALUES ('v1')")
+        c.execute("INSERT OR IGNORE INTO staff_type_map(name, type_name, is_primary) VALUES ('v1', '聘用', 1)")
         c.commit()
         c.close()
         sid = snap.save_snapshot("zip1", "手动")
@@ -164,12 +163,13 @@ def main() -> int:
 
         # 修改库 → 从 zip 恢复 → 内容回到 v1
         c = env._conn()
-        c.execute("UPDATE staff SET name='v2'")
+        c.execute("UPDATE staff_roster SET name='v2'")
+        c.execute("UPDATE staff_type_map SET name='v2'")
         c.commit()
         c.close()
         msg = snap.restore_snapshot(sid)
         c = env._conn()
-        name = c.execute("SELECT name FROM staff").fetchone()[0]
+        name = c.execute("SELECT name FROM staff_roster").fetchone()[0]
         c.close()
         check("zip 恢复成功（v2→v1）", name == "v1" and "已恢复" in msg, f"name={name}")
 
@@ -181,12 +181,13 @@ def main() -> int:
         c.execute("INSERT INTO snapshot(name, created_at, db_backup, note) VALUES(?,?,?,?)",
                   ("旧格式", "2025-01-01 00:00:00", str(old_dir / "lawfirm.db"), "手动"))
         old_id = c.execute("SELECT id FROM snapshot WHERE name='旧格式'").fetchone()[0]
-        c.execute("UPDATE staff SET name='v3'")
+        c.execute("UPDATE staff_roster SET name='v3'")
+        c.execute("UPDATE staff_type_map SET name='v3'")
         c.commit()
         c.close()
         msg = snap.restore_snapshot(old_id)
         c = env._conn()
-        name = c.execute("SELECT name FROM staff").fetchone()[0]
+        name = c.execute("SELECT name FROM staff_roster").fetchone()[0]
         c.close()
         check("旧目录快照仍可恢复", name == "v1" and "已恢复" in msg, f"name={name}")
 

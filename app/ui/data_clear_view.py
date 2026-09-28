@@ -20,9 +20,11 @@ from app.db import get_conn
 _CONFIRM_TEXT = "我确认清空数据"
 
 # 保留表（页面口径）：员工管理 + 费用类型 + 快照
-_KEEP_TABLES = ["staff", "staff_type_def", "expense_cat", "expense_category", "snapshot"]
+_KEEP_TABLES = ["staff_roster", "staff_type_map", "staff_type_def", "expense_cat",
+                "expense_category", "snapshot"]
 _KEEP_LABELS = {
-    "staff": "员工管理 · 员工名单",
+    "staff_roster": "员工管理 · 花名册",
+    "staff_type_map": "员工管理 · 人员类型关联",
     "staff_type_def": "员工管理 · 员工类型",
     "expense_cat": "费用类型 · 类型清单",
     "expense_category": "费用类型 · 分类说明",

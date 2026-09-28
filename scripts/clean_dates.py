@@ -35,7 +35,7 @@ DATE_FIELDS = [
     ("prepayment", "received_date", "预收款收到日期"),
     ("prepayment_offset", "offset_date", "核销日期"),
     ("expense_ledger", "exp_date", "费用日期"),
-    ("staff", "hire_month", "入职月份"),
+    ("staff_roster", "hire_month", "入职月份"),
 ]
 
 _NUMS = re.compile(r"\d+")

@@ -23,10 +23,8 @@ def make_conn():
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
     conn.executescript(SCHEMA)
-    # 与 db.init_db 迁移块一致：staff 入职月份 + 员工类型参与结算开关（幂等）
-    cols = [r[1] for r in conn.execute("PRAGMA table_info(staff)")]
-    if "hire_month" not in cols:
-        conn.execute("ALTER TABLE staff ADD COLUMN hire_month TEXT DEFAULT ''")
+    # 批2：staff 镜像表已移除，staff_roster 在 SCHEMA 中已含 hire_month，无需迁移；
+    # 此处仅需补齐员工类型参与结算开关（与 db.init_db 迁移块一致，幂等）
     cols = [r[1] for r in conn.execute("PRAGMA table_info(staff_type_def)")]
     if "is_settle" not in cols:
         conn.execute("ALTER TABLE staff_type_def ADD COLUMN is_settle INTEGER NOT NULL DEFAULT 0")
@@ -84,7 +82,8 @@ def seed_person(conn, name, staff_type, billing, collected):
         conn.execute(
             "INSERT INTO collection(invoice_no, receipt_date, amount, person_name) VALUES(?,?,?,?)",
             (inv, "2025-03-10", collected, name))
-    conn.execute("INSERT INTO staff(name, staff_type) VALUES(?,?)", (name, staff_type))
+    conn.execute("INSERT OR IGNORE INTO staff_roster(name) VALUES(?)", (name,))
+    conn.execute("INSERT OR IGNORE INTO staff_type_map(name, type_name, is_primary) VALUES(?,?,1)", (name, staff_type))
     conn.commit()
 
 
@@ -103,7 +102,8 @@ def seed_red_scenario(conn, name):
                  "VALUES(?,?,?,?)", (red, "2025-02-15", -1000, inv))
     conn.execute("INSERT INTO charge_detail(invoice_no, person_name, billing_amount) VALUES(?,?,?)",
                  (red, name, -1000))
-    conn.execute("INSERT INTO staff(name, staff_type) VALUES(?,?)", (name, "合伙"))
+    conn.execute("INSERT OR IGNORE INTO staff_roster(name) VALUES(?)", (name,))
+    conn.execute("INSERT OR IGNORE INTO staff_type_map(name, type_name, is_primary) VALUES(?,?,1)", (name, "合伙"))
     conn.commit()
 
 
@@ -126,7 +126,8 @@ def seed_refund_scenario(conn, name):
     # 退款（退本年④）：refund_date 在 3月
     conn.execute("INSERT INTO refund(red_invoice_no, refund_amount, refund_date) VALUES(?,?,?)",
                  (red, 1000, "2025-03-05"))
-    conn.execute("INSERT INTO staff(name, staff_type) VALUES(?,?)", (name, "合伙"))
+    conn.execute("INSERT OR IGNORE INTO staff_roster(name) VALUES(?)", (name,))
+    conn.execute("INSERT OR IGNORE INTO staff_type_map(name, type_name, is_primary) VALUES(?,?,1)", (name, "合伙"))
     conn.commit()
 
 
@@ -282,8 +283,10 @@ def main() -> int:
                   "VALUES('INV_NEG','张三',600)")
     conn3.execute("INSERT INTO charge_detail(invoice_no, person_name, billing_amount) "
                   "VALUES('INV_NEG','李四',400)")
-    conn3.execute("INSERT INTO staff(name, staff_type) VALUES('张三','聘用')")
-    conn3.execute("INSERT INTO staff(name, staff_type) VALUES('李四','聘用')")
+    conn3.execute("INSERT OR IGNORE INTO staff_roster(name) VALUES('张三')")
+    conn3.execute("INSERT OR IGNORE INTO staff_type_map(name, type_name, is_primary) VALUES('张三','聘用',1)")
+    conn3.execute("INSERT OR IGNORE INTO staff_roster(name) VALUES('李四')")
+    conn3.execute("INSERT OR IGNORE INTO staff_type_map(name, type_name, is_primary) VALUES('李四','聘用',1)")
     # 负收款在前（归因张三），其后一笔未归因 +1200 —— 旧缺陷下张三被多分 200
     conn3.execute("INSERT INTO collection(invoice_no, receipt_date, amount, person_name) "
                   "VALUES('INV_NEG','2025-04-10',-200,'张三')")

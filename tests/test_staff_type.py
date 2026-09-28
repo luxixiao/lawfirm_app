@@ -20,7 +20,6 @@ def make_conn():
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
     conn.executescript(SCHEMA)
-    conn.execute("ALTER TABLE staff ADD COLUMN hire_month TEXT DEFAULT ''")   # init_db 迁移列
     # 员工类型参与结算开关迁移（与 db.init_db 迁移块一致，幂等）
     cols = [r[1] for r in conn.execute("PRAGMA table_info(staff_type_def)")]
     if "is_settle" not in cols:
@@ -183,12 +182,13 @@ def main() -> int:
 
     # ===== 4. 删除类型：有人在用禁删（去写死后「内置锁」已放开，仅保留员工引用护栏）=====
     # 注：批次3 已移除「内置三类禁止删除」锁 —— 只要无员工引用，内置类型也能删。
-    conn.execute("INSERT INTO staff(name, staff_type) VALUES('张三','顾问')")
+    conn.execute("INSERT OR IGNORE INTO staff_roster(name) VALUES('张三')")
+    conn.execute("INSERT OR IGNORE INTO staff_type_map(name, type_name, is_primary) VALUES('张三','顾问',1)")
     conn.commit()
     st.add_type("顾问", conn=conn)   # 重新加回（前面改名成了外部专家）
     expect_err("有员工在用禁删", lambda: st.delete_type("顾问", conn=conn))
     # 员工改类型后可删
-    conn.execute("UPDATE staff SET staff_type='聘用' WHERE name='张三'")
+    conn.execute("UPDATE staff_type_map SET type_name='聘用' WHERE name='张三' AND is_primary=1")
     conn.commit()
     st.delete_type("顾问", conn=conn)
     check("无人使用可删", "顾问" not in [t["name"] for t in st.list_types(conn)])
@@ -214,10 +214,11 @@ def main() -> int:
     check("无引用 total=0", refs["total"] == 0, f"got={refs}")
     st.delete_staff("张三", conn)
     check("无引用可删除", conn.execute(
-        "SELECT COUNT(*) AS n FROM staff WHERE name='张三'").fetchone()["n"] == 0)
+        "SELECT COUNT(*) AS n FROM staff_roster WHERE name='张三'").fetchone()["n"] == 0)
 
     # 造引用：发票经办人 + 收款 + 费用 + 工资
-    conn.execute("INSERT INTO staff(name, staff_type) VALUES('李四','合伙')")
+    conn.execute("INSERT OR IGNORE INTO staff_roster(name) VALUES('李四')")
+    conn.execute("INSERT OR IGNORE INTO staff_type_map(name, type_name, is_primary) VALUES('李四','合伙',1)")
     conn.execute("INSERT INTO invoice(invoice_no, invoice_date, total_amount) "
                  "VALUES('INV1','2025-03-01',1000)")
     conn.execute("INSERT INTO charge_detail(invoice_no, person_name, billing_amount) "
@@ -239,7 +240,7 @@ def main() -> int:
         check("有引用拒绝删除并说明后果",
               "业务收入按 0 计" in str(e) and "保留" in str(e), f"msg={e}")
     check("拒绝后员工仍在", conn.execute(
-        "SELECT COUNT(*) AS n FROM staff WHERE name='李四'").fetchone()["n"] == 1)
+        "SELECT COUNT(*) AS n FROM staff_roster WHERE name='李四'").fetchone()["n"] == 1)
 
     # ===== 8. 回归：初始为空 / 不覆盖用户勾选 / 取消勾选清空口径 =====
     # 8a 全新库：建库后员工类型表必须完全空白

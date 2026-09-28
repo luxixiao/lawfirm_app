@@ -77,7 +77,8 @@ def main() -> int:
     conn3.commit()
     # 花名册
     for nm, st in [("张三", "合伙"), ("李四", "聘用"), ("王五", "兼职"), ("赵六", "挂靠"), ("钱七", "其他")]:
-        conn3.execute("INSERT INTO staff(name, staff_type) VALUES(?,?)", (nm, st))
+        conn3.execute("INSERT OR IGNORE INTO staff_roster(name) VALUES(?)", (nm,))
+        conn3.execute("INSERT OR IGNORE INTO staff_type_map(name, type_name, is_primary) VALUES(?,?,1)", (nm, st))
     # 费用类型：公共差旅 归到 公共专属费用；办公费 归到 报销摊销等
     ec.add_type("公共差旅", PUBLIC_EXCLUSIVE_CATEGORY, conn3)
     ec.add_type("办公费", "报销摊销等", conn3)

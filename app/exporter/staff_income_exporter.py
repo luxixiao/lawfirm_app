@@ -39,9 +39,10 @@ def _staff_employees(conn, year: int, month: int) -> list:
     按角色码 employee/parttime 枚举（去写死，不再按类型名子串 '%聘用%'）。"""
     # 离职不影响：不按 is_active 过滤，只要该月有数据/在名单即纳入（hire_month 过滤入职）
     rows = conn.execute(
-        "SELECT s.name, s.hire_month FROM staff s "
-        "JOIN staff_type_def t ON t.name = s.staff_type "
-        "WHERE t.role_code IN ('employee','parttime') ORDER BY s.name"
+        "SELECT DISTINCT r.name, r.hire_month FROM staff_roster r "
+        "JOIN staff_type_map m ON m.name = r.name "
+        "JOIN staff_type_def t ON t.name = m.type_name "
+        "WHERE t.role_code IN ('employee','parttime') ORDER BY r.name"
     ).fetchall()
     cur = f"{year}-{month:02d}"
     out = []

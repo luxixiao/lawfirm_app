@@ -485,7 +485,7 @@ class MainWindow(FramelessWindow):
     def staff_ready(self) -> bool:
         conn = get_conn()
         try:
-            return conn.execute("SELECT COUNT(*) FROM staff").fetchone()[0] > 0
+            return conn.execute("SELECT COUNT(*) FROM staff_roster").fetchone()[0] > 0
         finally:
             conn.close()
 

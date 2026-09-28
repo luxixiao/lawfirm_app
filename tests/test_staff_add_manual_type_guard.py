@@ -1,18 +1,13 @@
-"""手动添加职工：类型未选 / 类型表为空 → 不崩、不写库（连带伤修复）
+"""手动添加职工（新架构：仅填人员 → 写 staff_roster；类型在 Tab2 单独分配）
 
-背景（需求方 2026-09-25「员工类型去写死」）：员工类型表改为**初始为空**之后，
-「手动添加职工」（`add_manual`）就成了一条必踩的崩溃路径 ——
-`staff_view.py:474` `_type_combo()` 不带初值 → 类型表为空时下拉**没有选项** →
-`currentData()` 返回 None → `:498` 直接 INSERT，而 `staff.staff_type` 是
-**NOT NULL**（`app/db.py`），这段又只有 `try/finally` 没有 except →
-`IntegrityError` 会崩出 Qt 槽。
+背景（需求方 2026-09-25「员工类型去写死」）：员工类型表初始为空后，「手动添加职工」
+的对话框（`add_roster` → `_roster_dialog`）只填人员字段（姓名/编号/身份证/...），
+类型在「员工类型」页（人×类型网格）经引擎 API 单独关联，不再在添加弹窗里强制选类型。
 
-修法按「不替用户决定」：`_type_combo()` 无初值时**不再预选第一项**（留空），
-`add_manual` 在 **开连接之前**加守卫，两种情况给不同的提示：
-- 类型表为空 → 「员工类型表还没有任何类型」+ 指向「员工类型」页；
-- 有类型但没选 → 「请为该员工选择一个员工类型后再添加」。
-
-覆盖：C1 类型表为空 / C2 有类型但没选 / C3 正常选中（回归保护）。
+本测试覆盖新架构下的手动添加回归：
+- C1 类型表为空时手动添加填姓名 → 成功写入 staff_roster（不崩、确有该行、暂无类型）；
+- C2 姓名主键唯一 → 重复添加被拦（弹「新增失败」、不写第二条）；
+- C3 新增后经 `set_person_types` 关联类型 → staff_type_map 出现该人主类型（新路径回归）。
 
 运行：python tests/test_staff_add_manual_type_guard.py
 """
@@ -46,14 +41,15 @@ _REAL_MSG = sv.QMessageBox
 _REAL_DLG = sv.QDialog
 
 # 每个用例要往对话框里填什么（由替身 `exec()` 在可接受前写入）
-_FILL = {"name": "", "type": None}
+_FILL = {"name": ""}
 
 
 class _FakeDialog(sv.QDialog):
-    """替身对话框：不进模态循环，按 `_FILL` 把字段填好后直接返回 Accepted。
+    """替身对话框：不进模态循环，按 `_FILL` 把「姓名」字段填好后直接返回 Accepted。
 
-    填字段必须发生在 `exec()` 里 —— 那时 `add_manual` 已经把控件都加进 form 了，
-    而控件本身是局部变量，外面拿不到。
+    填字段必须发生在 `exec()` 里 —— 那时 `add_roster` 已经把控件都加进 form 了，
+    而控件本身是局部变量，外面拿不到。`_roster_dialog` 的字段顺序为
+    编号 / 姓名 / 身份证 / 手机 / 入职 / 离职 / 备注，姓名是第 2 个 QLineEdit。
     """
 
     def __init__(self, parent=None, *a, **k):
@@ -61,18 +57,13 @@ class _FakeDialog(sv.QDialog):
 
     def exec(self):
         edits = self.findChildren(sv.QLineEdit)
-        if edits and _FILL["name"]:
-            edits[0].setText(_FILL["name"])          # form 里第一个是「姓名」
-        combos = self.findChildren(sv.QComboBox)
-        if combos and _FILL["type"] is not None:
-            idx = combos[0].findText(_FILL["type"])
-            if idx >= 0:
-                combos[0].setCurrentIndex(idx)
+        if len(edits) >= 2 and _FILL["name"]:
+            edits[1].setText(_FILL["name"])          # 第 2 个 QLineEdit = 姓名
         return sv.QDialog.DialogCode.Accepted
 
 
 class _MsgSpy:
-    """替身弹窗：只记录调用（含 add_manual 里可能弹的 information/warning）。"""
+    """替身弹窗：只记录调用（含新增失败等 critical/warning）。"""
 
     def __init__(self) -> None:
         self.calls: list[tuple[str, str, str]] = []
@@ -104,31 +95,42 @@ def check(label: str, cond: bool, detail: str = "") -> None:
         FAILS.append(f"{label} {detail}".strip())
 
 
-def staff_rows():
+def roster_names():
     conn = sqlite3.connect(TMP)
     try:
-        return conn.execute(
-            "SELECT name, staff_type FROM staff ORDER BY name").fetchall()
+        return [r[0] for r in conn.execute(
+            "SELECT name FROM staff_roster ORDER BY name").fetchall()]
     finally:
         conn.close()
 
 
-def add_manual(name: str, type_name=None) -> None:
-    """驱动一次「手动添加职工」。type_name=None 表示用户没动下拉。"""
+def staff_rows():
+    """带主类型的 (姓名, 类型) 列表（新架构下类型在 staff_type_map 关联）。"""
+    conn = sqlite3.connect(TMP)
+    try:
+        return conn.execute(
+            "SELECT r.name, m.type_name AS staff_type FROM staff_roster r "
+            "JOIN staff_type_map m ON m.name=r.name AND m.is_primary=1 "
+            "ORDER BY r.name").fetchall()
+    finally:
+        conn.close()
+
+
+def add_one(name: str) -> None:
+    """驱动一次「手动添加职工」（新架构 = add_roster 仅填人员）。"""
     _FILL["name"] = name
-    _FILL["type"] = type_name
     view = sv.StaffView()
     view.resize(900, 600)
     app.processEvents()
     try:
-        view.add_manual()          # ← 过去在类型表为空时会崩 IntegrityError
+        view.add_roster()          # 开连接、弹 _roster_dialog（替身直接 Accepted）
     finally:
         view.close()
     app.processEvents()
 
 
-def warnings_of(title: str):
-    return [c for c in MSG.calls if c[0] == "warning" and c[1] == title]
+def criticals_of(title: str):
+    return [c for c in MSG.calls if c[0] == "critical" and c[1] == title]
 
 
 def main() -> int:
@@ -141,39 +143,28 @@ def main() -> int:
         check("前置：类型表初始为空", len(st.list_types()) == 0,
               f"got={[t['name'] for t in st.list_types()]}")
 
-        # ===== C1）类型表为空 → 不崩、不写库、提示去建类型 =====
+        # ===== C1）类型表为空时手动添加填姓名 → 成功写入 staff_roster（不崩、暂无类型）=====
         MSG.calls.clear()
-        before = staff_rows()
-        add_manual("甲")
-        check("C1：staff 表零写入", staff_rows() == before, f"got={staff_rows()}")
-        w = warnings_of("未选择类型")
-        check("C1：弹「未选择类型」", len(w) == 1, f"got={MSG.calls}")
-        if w:
-            check("C1：提示点明类型表还没有类型",
-                  "员工类型" in w[0][2] and "新建" in w[0][2], f"got={w[0][2]!r}")
+        add_one("甲")
+        check("C1：写入 staff_roster", roster_names() == ["甲"], f"got={roster_names()}")
+        check("C1：暂无类型（类型表为空，不强制选）", staff_rows() == [], f"got={staff_rows()}")
+        check("C1：不弹任何告警", not MSG.calls, f"got={MSG.calls}")
 
-        # ===== C2）类型表有类型，但用户没选 → 不崩、不写库 =====
+        # ===== C2）姓名主键唯一 → 重复添加被拦（弹「新增失败」、不写第二条）=====
+        MSG.calls.clear()
+        add_one("甲")                      # 同名 → 主键冲突
+        check("C2：仍是 1 行（未写第二条）", roster_names() == ["甲"], f"got={roster_names()}")
+        c = criticals_of("新增失败")
+        check("C2：弹「新增失败」", len(c) == 1, f"got={MSG.calls}")
+
+        # ===== C3）新增后经引擎 API 关联类型（Tab2 新路径回归）=====
         st.add_type("合伙", conn=appdb.get_conn())
-        check("C2：前置——类型表已有 1 个类型", len(st.list_types()) == 1,
-              f"got={[t['name'] for t in st.list_types()]}")
-        MSG.calls.clear()
-        before2 = staff_rows()
-        add_manual("乙")                      # 不动下拉 → 守卫应拦下
-        check("C2：staff 表零写入（INSERT 前就 return）", staff_rows() == before2,
-              f"got={staff_rows()}")
-        w2 = warnings_of("未选择类型")
-        check("C2：弹「未选择类型」", len(w2) == 1, f"got={MSG.calls}")
-        if w2:
-            check("C2：提示让用户自己选类型", "选择一个员工类型" in w2[0][2],
-                  f"got={w2[0][2]!r}")
-
-        # ===== C3）正常选中 → 能正常新增（回归保护）=====
-        MSG.calls.clear()
-        add_manual("丙", type_name="合伙")
+        st.set_person_types("甲", ["合伙"], conn=appdb.get_conn())
         rows3 = staff_rows()
-        check("C3：选中类型后成功新增", rows3 and rows3[0] == ("丙", "合伙"),
+        check("C3：关联类型后 staff_rows 出现 (甲, 合伙)", rows3 == [("甲", "合伙")],
               f"got={rows3}")
-        check("C3：不弹任何告警", not MSG.calls, f"got={MSG.calls}")
+        check("C3：主类型 = 合伙", st.primary_type_of("甲") == "合伙",
+              f"got={st.primary_type_of('甲')}")
         return 0
     finally:
         sv.QMessageBox = _REAL_MSG    # type: ignore[assignment]

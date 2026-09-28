@@ -42,7 +42,8 @@ def main() -> int:
         # 2) 模拟崩溃残留：持有一个打开的连接并提交数据（不关）→ wal 有内容
         holder = sqlite3.connect(str(dbmod.DB_PATH))
         holder.execute("PRAGMA journal_mode = WAL")
-        holder.execute("INSERT INTO staff (name, staff_type, is_active) "
+        holder.execute("INSERT OR IGNORE INTO staff_roster(name) VALUES ('探针')")
+        holder.execute("INSERT OR IGNORE INTO staff_type_map(name, type_name, is_primary) "
                        "VALUES ('探针', '聘用', 1)")
         holder.commit()
         check("残留 wal 存在且有内容",
@@ -56,7 +57,7 @@ def main() -> int:
 
         # 4) 数据仍在（wal 合入主库，不是丢数据）
         c = sqlite3.connect(str(dbmod.DB_PATH))
-        n = c.execute("SELECT COUNT(*) FROM staff WHERE name='探针'").fetchone()[0]
+        n = c.execute("SELECT COUNT(*) FROM staff_roster WHERE name='探针'").fetchone()[0]
         c.close()
         check("wal 内容已合入主库", n == 1, f"rows={n}")
     finally:

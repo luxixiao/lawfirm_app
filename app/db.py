@@ -89,19 +89,7 @@ CREATE TABLE IF NOT EXISTS prepayment_offset (
     confirmed     INTEGER NOT NULL DEFAULT 1
 );
 
--- 职工花名册（基础数据：模板导入 + 手动）
-CREATE TABLE IF NOT EXISTS staff (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    name        TEXT NOT NULL UNIQUE,
-    staff_type  TEXT NOT NULL,
-    is_active   INTEGER NOT NULL DEFAULT 1,
-    note        TEXT,
-    source      TEXT NOT NULL DEFAULT 'import',
-    import_batch_id INTEGER,
-    created_at  TEXT DEFAULT (datetime('now','localtime'))
-);
-
--- 花名册（批1基础：人的身份主数据，从 staff 拆出）
+-- 花名册（批2：staff 镜像表已移除，人员身份统一来自 staff_roster + staff_type_map）
 -- 姓名即人员主键；编号/身份证号允许为空，但非空时必须唯一（部分唯一索引承载）。
 CREATE TABLE IF NOT EXISTS staff_roster (
     name        TEXT PRIMARY KEY,
@@ -503,10 +491,11 @@ def init_db(backfill: bool = True) -> None:
     conn = get_conn()
     try:
         conn.executescript(SCHEMA)
-        # 迁移：staff 加入职月份
-        cols = [r[1] for r in conn.execute("PRAGMA table_info(staff)")]
-        if "hire_month" not in cols:
-            conn.execute("ALTER TABLE staff ADD COLUMN hire_month TEXT DEFAULT ''")
+        # 迁移：staff 镜像表若存在，补 hire_month 列（仅历史库需要；新库已无此表，跳过避免报错）
+        if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='staff'").fetchone():
+            cols = [r[1] for r in conn.execute("PRAGMA table_info(staff)")]
+            if "hire_month" not in cols:
+                conn.execute("ALTER TABLE staff ADD COLUMN hire_month TEXT DEFAULT ''")
         # 迁移：数据行身份字段（合伙/聘用/兼职）
         for tbl in ("charge_detail", "expense_ledger"):
             cols = [r[1] for r in conn.execute(f"PRAGMA table_info({tbl})")]
@@ -537,11 +526,10 @@ def init_db(backfill: bool = True) -> None:
             conn.execute(
                 "UPDATE staff_type_def SET role_code=? WHERE role_code<>? AND name LIKE ?",
                 (code, code, f"%{kw}%"))
-        # 迁移：花名册 + 人员类型关联（批1基础）
-        # 把现有 staff（姓名+单类型+入职月份+备注）折入 staff_roster + staff_type_map，
-        # 原 staff_type 标为主类型。幂等：仅当 staff_roster 为空时执行（已用过新结构则跳过）。
-        # staff 表保留为过渡镜像（下游结算/导入仍读 staff），批2 再彻底移除。
-        if conn.execute("SELECT COUNT(*) AS n FROM staff_roster").fetchone()["n"] == 0:
+        # 迁移：花名册 + 人员类型关联（批1基础）—— 仅当历史库仍有 staff 镜像时折入。
+        # 新库（staff 表已移除）或已折入过（staff_roster 非空）均跳过；幂等。
+        if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='staff'").fetchone() \
+                and conn.execute("SELECT COUNT(*) AS n FROM staff_roster").fetchone()["n"] == 0:
             for r in conn.execute("SELECT name, staff_type, hire_month, note FROM staff"):
                 nm = (r["name"] or "").strip()
                 if not nm:
@@ -594,7 +582,9 @@ def init_db(backfill: bool = True) -> None:
         # 迁移：「停用」功能已取消 —— 离职人员仍会发生业务，用全局开关表达"不再参与"
         # 属口径错误（会连带把其所有年份的结算身份判成「其他」→ 业务收入 0）。
         # 历史停用记录统一恢复为在职；is_active 列保留但不再出现 0 值。
-        conn.execute("UPDATE staff SET is_active = 1 WHERE is_active != 1")
+        # 批2：staff 镜像表已无用（数据在批1折叠迁移中迁入 staff_roster + staff_type_map），
+        # 此处一并 DROP 清理（幂等；新库本就无此表）。
+        conn.execute("DROP TABLE IF EXISTS staff")
         # 迁移：费用分类「其他」改名为「报销摊销等」（新增第 6 类「公共专属费用」由 ensure_categories 补齐）
         _migrate_expense_category_rename(conn)
         from app.engine.expense_cat import ensure_categories

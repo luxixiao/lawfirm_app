@@ -101,7 +101,6 @@ def main() -> int:
         "ALTER TABLE collection ADD COLUMN src_row INTEGER DEFAULT 0",
         "ALTER TABLE invoice ADD COLUMN src_sheet TEXT DEFAULT ''",
         "ALTER TABLE invoice ADD COLUMN src_row INTEGER DEFAULT 0",
-        "ALTER TABLE staff ADD COLUMN hire_month TEXT DEFAULT ''",
     ):
         conn.execute(stmt)
     proxy = _ConnProxy(conn)
@@ -114,7 +113,8 @@ def main() -> int:
     imp._archive_file = lambda src, bt, period: ""
 
     for nm, t in (("周立生", "聘用"), ("陈娟", "兼职"), ("胡坚", "合伙")):
-        conn.execute("INSERT INTO staff (name, staff_type, is_active) VALUES (?,?,1)", (nm, t))
+        conn.execute("INSERT OR IGNORE INTO staff_roster(name) VALUES (?)", (nm,))
+        conn.execute("INSERT OR IGNORE INTO staff_type_map(name, type_name, is_primary) VALUES (?,?,1)", (nm, t))
     conn.commit()
 
     def _dims(period):

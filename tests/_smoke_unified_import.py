@@ -499,7 +499,8 @@ try:
     _db.DB_PATH = _tmp
     _db.init_db()
     c = _db.get_conn()
-    c.execute("INSERT INTO staff (name, staff_type, is_active) VALUES (?,?,1)", ("周立生", "聘用"))
+    c.execute("INSERT OR IGNORE INTO staff_roster(name) VALUES (?)", ("周立生",))
+    c.execute("INSERT OR IGNORE INTO staff_type_map(name, type_name, is_primary) VALUES (?,?,1)", ("周立生", "聘用"))
     c.execute("INSERT INTO invoice (invoice_no, invoice_date, total_amount, source) VALUES (?,?,?,?)",
               ("INV-1", "2025-01-15", 6000.0, "import"))
     c.commit()

@@ -65,10 +65,13 @@ def seed_types(conn: sqlite3.Connection) -> None:
 
 def seed(conn: sqlite3.Connection) -> None:
     c = conn
-    # ---- staff ----
-    c.execute("INSERT INTO staff(name, staff_type, is_active) VALUES('周立生','聘用',1)")
-    c.execute("INSERT INTO staff(name, staff_type, is_active) VALUES('王合伙','合伙',1)")
-    c.execute("INSERT INTO staff(name, staff_type, is_active) VALUES('陈娟','兼职',1)")
+    # ---- staff（花名册 + 人员类型关联，批2 已无 staff 镜像表）----
+    c.execute("INSERT OR IGNORE INTO staff_roster(name) VALUES('周立生')")
+    c.execute("INSERT OR IGNORE INTO staff_type_map(name, type_name, is_primary) VALUES('周立生','聘用',1)")
+    c.execute("INSERT OR IGNORE INTO staff_roster(name) VALUES('王合伙')")
+    c.execute("INSERT OR IGNORE INTO staff_type_map(name, type_name, is_primary) VALUES('王合伙','合伙',1)")
+    c.execute("INSERT OR IGNORE INTO staff_roster(name) VALUES('陈娟')")
+    c.execute("INSERT OR IGNORE INTO staff_type_map(name, type_name, is_primary) VALUES('陈娟','兼职',1)")
     # ---- invoice（正数 + 红字 + 上年票）----
     c.execute("INSERT INTO invoice(invoice_no,invoice_date,total_amount,orig_invoice_no) "
               "VALUES('INV001','2025-03-05',10000,NULL)")
@@ -178,18 +181,13 @@ def main() -> int:
     # ===== 4. 别名 / 异常 / 缓存 =====
     check("别名 已收净额=收款净额", cd.get("周立生", "已收净额", 2025, 3),
           cd.get("周立生", "收款净额", 2025, 3))
+    # 批2：花名册 name 即主键，重名在写入层即被唯一约束拦截，
+    # CalcData 不再需要重名防御（is_ambiguous 恒 False）。验证「重名落库即报错」。
     try:
-        # 重名场景：staff.name 有 UNIQUE 约束，正常数据不会重名；
-        # 重建无约束表模拟脏数据，验证 CalcData 的防御逻辑
-        conn.executescript(
-            "CREATE TABLE staff_dup AS SELECT * FROM staff;"
-            "INSERT INTO staff_dup(name, staff_type, is_active) VALUES('陈娟','聘用',1);"
-            "DROP TABLE staff;"
-            "ALTER TABLE staff_dup RENAME TO staff;")
-        cd2 = CalcData(conn)
-        cd2.get("陈娟", "开票金额", 2025, 3)
-        fails.append("重名未报错")
-    except AmbiguousPersonError:
+        conn.execute("INSERT INTO staff_roster(name) VALUES('重名测试')")
+        conn.execute("INSERT INTO staff_roster(name) VALUES('重名测试')")
+        fails.append("重名未被唯一约束拦截")
+    except sqlite3.IntegrityError:
         ok += 1
     try:
         cd.get("周立生", "不存在的指标", 2025, 3)

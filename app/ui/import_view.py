@@ -393,18 +393,14 @@ class ImportView(QWidget):
                     st.ensure_types(conn, [s[1] for s in staff if s[1]])
                     n_new, n_upd = 0, 0
                     for name, stype, note in staff:
-                        r = conn.execute("SELECT id FROM staff WHERE name=?", (name,)).fetchone()
-                        if r:
-                            conn.execute("UPDATE staff SET staff_type=?, note=?, is_active=1 WHERE id=?", (stype, note, r["id"]))
+                        existing = conn.execute(
+                            "SELECT 1 FROM staff_roster WHERE name=?", (name,)).fetchone()
+                        # 批2：直接写花名册 + 人员类型关联（staff 镜像表已移除）
+                        st.sync_imported_staff(conn, name, stype, note)
+                        if existing:
                             n_upd += 1
                         else:
-                            conn.execute(
-                                "INSERT INTO staff (name, staff_type, is_active, note, source, import_batch_id) VALUES (?,?,1,?,?,?)",
-                                (name, stype, note, "import", batch_id),
-                            )
                             n_new += 1
-                        # 批1：同步进花名册 + 人员类型关联（过渡镜像 staff 由引擎维护）
-                        st.sync_imported_staff(conn, name, stype, note)
                     conn.commit()
                     msg = f"✓ 职工花名册: 新增 {n_new}，更新 {n_upd}"
                 finally:
@@ -430,7 +426,7 @@ class ImportView(QWidget):
                     conn = get_conn()
                     try:
                         staff_names = [rr["name"] for rr in
-                                       conn.execute("SELECT name FROM staff ORDER BY name")]
+                                   conn.execute("SELECT name FROM staff_roster ORDER BY name")]
                     finally:
                         conn.close()
                     self.ledger_pending.emit(data, period, staff_names, path)
@@ -482,7 +478,7 @@ class ImportView(QWidget):
         from app.ui.problem_dialog import ProblemDialog
         conn = get_conn()
         try:
-            staff_names = [r["name"] for r in conn.execute("SELECT name FROM staff ORDER BY name")]
+            staff_names = [r["name"] for r in conn.execute("SELECT name FROM staff_roster ORDER BY name")]
         finally:
             conn.close()
         dlg = ProblemDialog(problems, staff_names, period, self)

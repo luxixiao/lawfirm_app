@@ -90,7 +90,7 @@ def snap() -> tuple:
     conn = sqlite3.connect(TMP)
     try:
         n_batch = conn.execute("SELECT COUNT(*) FROM import_batch").fetchone()[0]
-        rows = conn.execute("SELECT name, staff_type FROM staff ORDER BY name").fetchall()
+        rows = conn.execute("SELECT r.name, m.type_name AS staff_type FROM staff_roster r JOIN staff_type_map m ON m.name=r.name AND m.is_primary=1 ORDER BY r.name").fetchall()
         types = conn.execute("SELECT name FROM staff_type_def ORDER BY name").fetchall()
     finally:
         conn.close()

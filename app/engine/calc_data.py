@@ -134,9 +134,8 @@ class CalcData:
         if not person:
             return False
         if person not in self._ambig:
-            row = self.conn.execute(
-                "SELECT COUNT(*) AS n FROM staff WHERE name=?", (person,)).fetchone()
-            self._ambig[person] = bool(row and row["n"] > 1)
+            # 花名册姓名唯一（PRIMARY KEY），不存在同名>1 的歧义；保留接口向后兼容。
+            self._ambig[person] = False
         return self._ambig[person]
 
     # ---------- 结算结果（按 年+职工 缓存）----------

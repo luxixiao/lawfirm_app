@@ -161,7 +161,8 @@ _db.init_db()
 
 _conn = _db.get_conn()
 for _n in STAFF:
-    _conn.execute("INSERT INTO staff (name, staff_type, is_active) VALUES (?,?,1)", (_n, "聘用"))
+    _conn.execute("INSERT OR IGNORE INTO staff_roster(name) VALUES (?)", (_n,))
+    _conn.execute("INSERT OR IGNORE INTO staff_type_map(name, type_name, is_primary) VALUES (?,?,1)", (_n, "聘用"))
 # P6 已在库（sheet3「已入库」态）；P1/P3/P4 建最小发票行（collection 有外键约束）
 for _no, _dt, _amt in (("P6", "2024-12-01", 5000.0), ("P1", "2025-01-10", 10000.0),
                        ("P3", "2025-01-12", 2000.0), ("P4", "2025-01-13", 4000.0)):

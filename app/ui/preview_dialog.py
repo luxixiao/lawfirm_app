@@ -149,7 +149,7 @@ class PreviewDialog(QDialog):
         staff = set()
         conn = get_conn()
         try:
-            staff = {r["name"] for r in conn.execute("SELECT name FROM staff")}
+            staff = {r["name"] for r in conn.execute("SELECT name FROM staff_roster")}
         finally:
             conn.close()
         self._rows: List[Dict] = evaluate(data, staff, None, period)

@@ -137,12 +137,10 @@ def main() -> int:
     # 规则③（真实路径回归）：actual_handler 传「经办人姓名」，需经 staff.staff_type 解析类型
     # 修复前 is_settle_participant 误把姓名当类型名查 staff_type_def，导致 聘用 类经办人(如方国兴)
     # 在详情页保存时被误判「未参与结算」而拦截。
-    conn.execute(
-        "INSERT INTO staff (name, staff_type, is_active, source) VALUES (?,?,1,'manual')",
-        ("方国兴", "聘用"))
-    conn.execute(
-        "INSERT INTO staff (name, staff_type, is_active, source) VALUES (?,?,1,'manual')",
-        ("李挂靠", "挂靠"))
+    conn.execute("INSERT OR IGNORE INTO staff_roster(name) VALUES (?)", ("方国兴",))
+    conn.execute("INSERT OR IGNORE INTO staff_type_map(name, type_name, is_primary) VALUES (?,?,1)", ("方国兴", "聘用"))
+    conn.execute("INSERT OR IGNORE INTO staff_roster(name) VALUES (?)", ("李挂靠",))
+    conn.execute("INSERT OR IGNORE INTO staff_type_map(name, type_name, is_primary) VALUES (?,?,1)", ("李挂靠", "挂靠"))
     conn.commit()
 
     rows_person_settle = [

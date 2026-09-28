@@ -92,14 +92,12 @@ def _staff_type(conn, name: str, override: str | None = None) -> str:
 
 
 def _staff_type_orig(conn, name: str) -> str:
-    # 去写死：返回员工**真实类型名**（不按名称子串坍缩）。
+    # 批2：人员身份来自 staff_type_map（主类型），staff 镜像表已移除。
+    # 去写死：返回员工**真实主类型名**（不按名称子串坍缩）。
     # 结算口径改由真实类型名→role_def 解析（见下方「业务收入口径」分支），
     # 因此改名任意类型都不会断结算口径（F1 根因修复）。
     # 不过滤 is_active：离职人员的历史年份业务仍须按真实身份计（否则身份落成空→收入 0）。
-    r = conn.execute("SELECT staff_type FROM staff WHERE name=?", (name,)).fetchone()
-    if not r:
-        return ""
-    return (r["staff_type"] or "").strip()
+    return (staff_type.primary_type_of(name, conn) or "").strip()
 
 
 def build_settlement(year: int, person: str | None = None, person_type: str | None = None,

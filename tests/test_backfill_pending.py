@@ -91,7 +91,6 @@ def main() -> int:
         "ALTER TABLE collection ADD COLUMN src_row INTEGER DEFAULT 0",
         "ALTER TABLE invoice ADD COLUMN src_sheet TEXT DEFAULT ''",
         "ALTER TABLE invoice ADD COLUMN src_row INTEGER DEFAULT 0",
-        "ALTER TABLE staff ADD COLUMN hire_month TEXT DEFAULT ''",
         # 去写死（Plan A）：角色列（复刻 init_db 迁移）
         "ALTER TABLE staff_type_def ADD COLUMN role_code TEXT NOT NULL DEFAULT 'other'",
     ):
@@ -116,7 +115,8 @@ def main() -> int:
         _st.set_role_code(_n, _c, conn=conn)
 
     for nm, t in (("周立生", "聘用"), ("陈娟", "兼职"), ("胡坚", "合伙")):
-        conn.execute("INSERT INTO staff (name, staff_type, is_active) VALUES (?,?,1)", (nm, t))
+        conn.execute("INSERT OR IGNORE INTO staff_roster(name) VALUES (?)", (nm,))
+        conn.execute("INSERT OR IGNORE INTO staff_type_map(name, type_name, is_primary) VALUES (?,?,1)", (nm, t))
     conn.commit()
 
     def bf_form(no="BF-1", date="2024-03-01", buyer="甲", total=10000.0, handlers=None):

@@ -65,14 +65,14 @@ for stmt in (
     "ALTER TABLE collection ADD COLUMN src_row INTEGER DEFAULT 0",
     "ALTER TABLE invoice ADD COLUMN src_sheet TEXT DEFAULT ''",
     "ALTER TABLE invoice ADD COLUMN src_row INTEGER DEFAULT 0",
-    "ALTER TABLE staff ADD COLUMN hire_month TEXT DEFAULT ''",
 ):
     conn.execute(stmt)
 proxy = _ConnProxy(conn)
 for mod in (bm, rl, MV):
     mod.get_conn = lambda: proxy
 
-conn.execute("INSERT INTO staff (name, staff_type) VALUES ('周立生', '聘用')")
+conn.execute("INSERT OR IGNORE INTO staff_roster(name) VALUES ('周立生')")
+conn.execute("INSERT OR IGNORE INTO staff_type_map(name, type_name, is_primary) VALUES ('周立生', '聘用', 1)")
 conn.execute(
     "INSERT INTO import_batch (id, batch_type, period, file_name, status, imported_at) "
     "VALUES (1, 'ledger', '2025-06', '2025.6台账.xlsx', 'active', datetime('now','localtime'))")

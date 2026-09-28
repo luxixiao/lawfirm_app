@@ -1,13 +1,13 @@
 """数据行身份（person_type）回填与标注
 
-身份默认 = 人员当前类型（staff.staff_type）；少数双身份者可在台账数据页手动改。
+身份默认 = 人员当前主类型（staff_type_map）；少数双身份者可在台账数据页手动改。
 """
 from __future__ import annotations
 
 from typing import Iterable, List
 
 from app.db import get_conn
-from app.engine.staff_type import role_code_of
+from app.engine.staff_type import primary_type_of, role_code_of
 
 # 非员工经办人白名单（公共费用等）。与导入校验共用同一份，避免两处口径漂移。
 HANDLER_WHITELIST = {"公共", "行政"}
@@ -61,7 +61,7 @@ def library_invoice_nos(conn=None) -> set:
 
 def all_staff_names(conn) -> set:
     """花名册全部姓名（**不过滤 is_active**，「停用」功能已取消）。"""
-    return {r["name"] for r in conn.execute("SELECT name FROM staff")}
+    return {r["name"] for r in conn.execute("SELECT name FROM staff_roster")}
 
 
 def missing_handlers(conn, names: Iterable[str]) -> List[str]:
@@ -85,9 +85,10 @@ def staff_type_of(conn, name: str) -> str:
     返回该员工真实类型名对应的角色码（见 role_code_of）。离职人员仍会有历史业务
     数据，一律按花名册取真实类型→角色，避免身份落成「其他」→ 结算业务收入被判 0。
     """
-    r = conn.execute("SELECT staff_type FROM staff WHERE name=?", (name,)).fetchone()
+    # 主类型来自 staff_type_map（批2 起 staff 镜像表已移除）。
+    t = primary_type_of(name, conn)
     # 必须把 conn 透传下去：否则 role_code_of 会回落模块默认连接（读错库）。
-    return role_code_of(r["staff_type"], conn) if r else "other"
+    return role_code_of(t, conn) if t else "other"
 
 
 def backfill_person_types() -> None:

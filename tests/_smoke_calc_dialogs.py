@@ -26,8 +26,10 @@ from app.ui.calc_dialogs import (  # noqa: E402
 _conn = sqlite3.connect(TMP)
 _conn.row_factory = sqlite3.Row
 _conn.executescript(SCHEMA)
-_conn.execute("INSERT INTO staff(name, staff_type, is_active) VALUES('周立生','聘用',1)")
-_conn.execute("INSERT INTO staff(name, staff_type, is_active) VALUES('老李','合伙',0)")
+_conn.execute("INSERT OR IGNORE INTO staff_roster(name) VALUES('周立生')")
+_conn.execute("INSERT OR IGNORE INTO staff_type_map(name, type_name, is_primary) VALUES('周立生','聘用',1)")
+_conn.execute("INSERT OR IGNORE INTO staff_roster(name) VALUES('老李')")
+_conn.execute("INSERT OR IGNORE INTO staff_type_map(name, type_name, is_primary) VALUES('老李','合伙',1)")
 _conn.execute("INSERT INTO import_batch(batch_type,period,file_name,imported_at) "
               "VALUES('ledger','2025-03','t.xls','2025-03-01')")
 _conn.commit()

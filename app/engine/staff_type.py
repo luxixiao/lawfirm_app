@@ -260,7 +260,7 @@ def is_settle_participant(name: str, conn=None) -> bool:
     - 空名 → False；
     - 若 name 直接命中 staff_type_def（类型名调用路径，如 staff_view 的 is_computable）
       → 取该类型 is_settle；
-    - 否则按经办人姓名解析其员工类型（staff.staff_type）→ 再查 staff_type_def.is_settle；
+    - 否则按经办人姓名解析其主类型（staff_type_map）→ 再查 staff_type_def.is_settle；
     - 类型缺失/未参与 → False。
     （修复：详情保存/导入传入的是「经办人姓名」，旧实现误把姓名当类型名查 staff_type_def，
       导致方国兴=聘用这类理应参与结算的经办人被判为「未参与」。）
@@ -274,11 +274,11 @@ def is_settle_participant(name: str, conn=None) -> bool:
         r = c.execute("SELECT is_settle FROM staff_type_def WHERE name=?", (n,)).fetchone()
         if r is not None:
             return bool(r["is_settle"])
-        # 2) 经办人姓名 → 解析其员工类型 → 再查类型表
-        t = c.execute("SELECT staff_type FROM staff WHERE name=?", (n,)).fetchone()
-        if t and (t["staff_type"] or "").strip():
+        # 2) 经办人姓名 → 解析其主类型（staff_type_map）→ 再查类型表
+        t = primary_type_of(n, c)
+        if t:
             r = c.execute("SELECT is_settle FROM staff_type_def WHERE name=?",
-                          (t["staff_type"].strip(),)).fetchone()
+                          (t,)).fetchone()
             return bool(r["is_settle"]) if r else False
         return False
     finally:
@@ -392,7 +392,7 @@ def rename_type(old: str, new: str, conn=None) -> None:
         if dup:
             raise StaffTypeError(f"类型已存在：{new}")
         conn.execute("UPDATE staff_type_def SET name=? WHERE name=?", (new, old))
-        conn.execute("UPDATE staff SET staff_type=? WHERE staff_type=?", (new, old))
+        conn.execute("UPDATE staff_type_map SET type_name=? WHERE type_name=?", (new, old))
         conn.commit()
     finally:
         _close(own, conn)
@@ -434,7 +434,7 @@ def delete_type(name: str, conn=None) -> None:
         row = conn.execute("SELECT 1 FROM staff_type_def WHERE name=?", (name,)).fetchone()
         if not row:
             raise StaffTypeError(f"类型不存在：{name}")
-        n = conn.execute("SELECT COUNT(*) AS n FROM staff WHERE staff_type=?", (name,)).fetchone()["n"]
+        n = conn.execute("SELECT COUNT(*) AS n FROM staff_type_map WHERE type_name=?", (name,)).fetchone()["n"]
         if n:
             raise StaffTypeError(f"还有 {n} 名员工属于该类型，请先把他们改成别的类型再删除")
         conn.execute("DELETE FROM staff_type_def WHERE name=?", (name,))
@@ -509,8 +509,10 @@ def delete_staff(name: str, conn=None) -> None:
                 f"「{name}」在业务数据中有引用（{detail}）。\n"
                 f"直接删除会让结算表查不到其身份、业务收入按 0 计。\n"
                 f"请保留该员工在花名册中（离职人员仍会发生历史业务，无需删除）。")
-        cur = conn.execute("DELETE FROM staff WHERE name=?", (name,))
-        if cur.rowcount == 0:
+        rp = conn.execute("SELECT 1 FROM staff_roster WHERE name=?", (name,)).fetchone()
+        conn.execute("DELETE FROM staff_type_map WHERE name=?", (name,))
+        conn.execute("DELETE FROM staff_roster WHERE name=?", (name,))
+        if not rp:
             raise StaffTypeError(f"员工不存在：{name}")
         conn.commit()
     finally:
@@ -519,7 +521,7 @@ def delete_staff(name: str, conn=None) -> None:
 
 # ---------------------------------------------------------------------------
 # 花名册（staff_roster）+ 人员类型关联（staff_type_map）
-# 批1基础：把「人」与「类型」拆开；staff 表保留为过渡镜像（下游结算/导入仍读 staff）。
+# 批2：staff 镜像表已彻底移除，人员身份统一来自 staff_roster + staff_type_map。
 # ---------------------------------------------------------------------------
 
 def list_roster(conn=None) -> List[Dict]:
@@ -554,30 +556,6 @@ def roster_person_exists(name: str, conn=None) -> bool:
         _close(own, conn)
 
 
-def _ensure_staff_mirror(name: str, conn, hire_month: str = "", note: str = "") -> None:
-    """过渡镜像：保证 staff 表存在该行且 staff_type=主类型（下游结算/导入继续读 staff）。
-
-    - 有主类型 → upsert staff（staff_type=主类型, hire_month/note 取自花名册）；
-    - 无主类型 → 删除 staff 行（保持旧语义"有类型才在 staff"，避免空类型污染下游）。
-    调用方负责 commit。仅用传入 conn，不新开连接。
-    """
-    r = conn.execute(
-        "SELECT type_name FROM staff_type_map WHERE name=? AND is_primary=1", (name,)).fetchone()
-    stype = r["type_name"] if r else ""
-    if not stype:
-        conn.execute("DELETE FROM staff WHERE name=?", (name,))
-        return
-    row = conn.execute("SELECT id FROM staff WHERE name=?", (name,)).fetchone()
-    if row:
-        conn.execute(
-            "UPDATE staff SET staff_type=?, hire_month=?, note=? WHERE id=?",
-            (stype, hire_month, note, row["id"]))
-    else:
-        conn.execute(
-            "INSERT INTO staff(name, staff_type, is_active, hire_month, note, source) "
-            "VALUES(?,?,1,?,?,'roster')", (name, stype, hire_month, note))
-
-
 def add_roster_person(code: str, name: str, id_card: str, phone: str,
                       hire_month: str, leave_month: str, note: str, conn=None) -> None:
     """新增花名册人员（编号/身份证号非空时必须唯一，由部分唯一索引保证）。"""
@@ -610,7 +588,6 @@ def update_roster_person(code: str, name: str, id_card: str, phone: str,
             ((code or "").strip(), (id_card or "").strip(), (phone or "").strip(),
              (hire_month or "").strip(), (leave_month or "").strip(), (note or "").strip(), nm))
         # 同步 staff 镜像的入职月份/备注
-        _ensure_staff_mirror(nm, conn, (hire_month or "").strip(), (note or "").strip())
         conn.commit()
     finally:
         _close(own, conn)
@@ -633,7 +610,6 @@ def delete_roster_person(name: str, conn=None) -> None:
                 f"请保留该员工在花名册中（离职人员仍会发生历史业务，无需删除）。")
         conn.execute("DELETE FROM staff_type_map WHERE name=?", (nm,))
         conn.execute("DELETE FROM staff_roster WHERE name=?", (nm,))
-        conn.execute("DELETE FROM staff WHERE name=?", (nm,))
         conn.commit()
     finally:
         _close(own, conn)
@@ -684,7 +660,6 @@ def set_person_types(name: str, types: List[str], conn=None) -> None:
                 "INSERT OR IGNORE INTO staff_type_map(name, type_name, is_primary, sort_order) "
                 "VALUES(?,?,?,?)", (nm, t, 1 if i == 0 else 0, i))
         rp = conn.execute("SELECT hire_month, note FROM staff_roster WHERE name=?", (nm,)).fetchone()
-        _ensure_staff_mirror(nm, conn, rp["hire_month"] if rp else "", rp["note"] if rp else "")
         conn.commit()
     finally:
         _close(own, conn)
@@ -707,8 +682,7 @@ def add_person_type(name: str, type_name: str, conn=None) -> None:
                 "INSERT INTO staff_type_map(name, type_name, is_primary, sort_order) "
                 "VALUES(?,?,?,?)", (nm, tn, 0 if has_primary else 1, 999))
             rp = conn.execute("SELECT hire_month, note FROM staff_roster WHERE name=?", (nm,)).fetchone()
-            _ensure_staff_mirror(nm, conn, rp["hire_month"] if rp else "", rp["note"] if rp else "")
-        conn.commit()
+            conn.commit()
     finally:
         _close(own, conn)
 
@@ -733,7 +707,6 @@ def remove_person_type(name: str, type_name: str, conn=None) -> None:
                     "UPDATE staff_type_map SET is_primary=1 WHERE name=? AND type_name=?",
                     (nm, first["type_name"]))
         rp = conn.execute("SELECT hire_month, note FROM staff_roster WHERE name=?", (nm,)).fetchone()
-        _ensure_staff_mirror(nm, conn, rp["hire_month"] if rp else "", rp["note"] if rp else "")
         conn.commit()
     finally:
         _close(own, conn)
@@ -760,4 +733,3 @@ def sync_imported_staff(conn, name: str, stype: str, note: str = "") -> None:
                 "INSERT INTO staff_type_map(name, type_name, is_primary, sort_order) "
                 "VALUES(?,?,?,?)", (nm, tn, 0 if has_primary else 1, 0))
         rp = conn.execute("SELECT hire_month, note FROM staff_roster WHERE name=?", (nm,)).fetchone()
-        _ensure_staff_mirror(nm, conn, rp["hire_month"] if rp else "", rp["note"] if rp else "")

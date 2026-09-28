@@ -104,7 +104,9 @@ def rollback_batch(conn, batch_id: int) -> None:
         conn.execute(f"UPDATE invoice SET import_batch_id=NULL WHERE invoice_no IN ({ph})", orphan)
     else:
         conn.execute("DELETE FROM invoice WHERE import_batch_id=?", (batch_id,))
-    conn.execute("DELETE FROM staff WHERE import_batch_id=?", (batch_id,))
+    # 批2：staff 镜像表已移除；人员身份持久化在 staff_roster + staff_type_map，
+    # 导入为「追加/合并」语义（sync_imported_staff 走 INSERT OR IGNORE），
+    # 故回滚台账批次不再清理花名册（花名册是人员主数据，跨批次保留）。
     # 批 3-1 / 3-2b / 3-2c：本批的三类「导入时留痕」随之失效（只清本模块自己的三个 dim，
     # 旧「导入后」页写的人工备注 'merged'/'handler'/'received' **不动**）。
     # 三类同生共死：撤销台账批次后，复核页 post 模式既看不到「已确认」，也不该再看到

@@ -104,7 +104,6 @@ def main() -> int:
         "ALTER TABLE collection ADD COLUMN src_row INTEGER DEFAULT 0",
         "ALTER TABLE invoice ADD COLUMN src_sheet TEXT DEFAULT ''",
         "ALTER TABLE invoice ADD COLUMN src_row INTEGER DEFAULT 0",
-        "ALTER TABLE staff ADD COLUMN hire_month TEXT DEFAULT ''",
         # 去写死（Plan A）：角色列（复刻 init_db 迁移）
         "ALTER TABLE staff_type_def ADD COLUMN role_code TEXT NOT NULL DEFAULT 'other'",
     ):
@@ -217,8 +216,10 @@ def main() -> int:
           f"items={len(items)} probs={probs}")
 
     # ------------------------------------------------------------ 数据准备
-    conn.execute("INSERT INTO staff (name, staff_type) VALUES ('周立生', '聘用')")
-    conn.execute("INSERT INTO staff (name, staff_type) VALUES ('陈娟', '合伙')")
+    conn.execute("INSERT OR IGNORE INTO staff_roster(name) VALUES ('周立生')")
+    conn.execute("INSERT OR IGNORE INTO staff_type_map(name, type_name, is_primary) VALUES ('周立生', '聘用', 1)")
+    conn.execute("INSERT OR IGNORE INTO staff_roster(name) VALUES ('陈娟')")
+    conn.execute("INSERT OR IGNORE INTO staff_type_map(name, type_name, is_primary) VALUES ('陈娟', '合伙', 1)")
     conn.execute(
         "INSERT INTO import_batch (id, batch_type, period, file_name, status, imported_at) "
         "VALUES (1, 'ledger', '2025-06', '2025.6台账.xlsx', 'active', datetime('now','localtime'))")

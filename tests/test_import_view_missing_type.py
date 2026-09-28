@@ -90,12 +90,12 @@ def snap() -> tuple:
     """三张表的快照：用来证明「拦截后一张都没动」。"""
     conn = sqlite3.connect(TMP)
     try:
-        n_staff = conn.execute("SELECT COUNT(*) FROM staff").fetchone()[0]
+        n_staff = conn.execute("SELECT COUNT(*) FROM staff_roster").fetchone()[0]
         n_batch = conn.execute("SELECT COUNT(*) FROM import_batch").fetchone()[0]
         types = conn.execute(
             "SELECT name, is_settle, net_basis FROM staff_type_def ORDER BY name").fetchall()
         staff = conn.execute(
-            "SELECT name, staff_type FROM staff ORDER BY name").fetchall()
+            "SELECT r.name, m.type_name AS staff_type FROM staff_roster r JOIN staff_type_map m ON m.name=r.name AND m.is_primary=1 ORDER BY r.name").fetchall()
     finally:
         conn.close()
     return (n_staff, n_batch, types, staff)

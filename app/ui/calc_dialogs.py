@@ -196,7 +196,7 @@ def list_staff() -> List[str]:
     """花名册全部姓名，按姓名排序。（「停用」已取消，一律可选，按数据年月取数。）"""
     conn = get_conn()
     try:
-        rows = conn.execute("SELECT name FROM staff ORDER BY name").fetchall()
+        rows = conn.execute("SELECT name FROM staff_roster ORDER BY name").fetchall()
         return [r["name"] for r in rows]
     finally:
         conn.close()

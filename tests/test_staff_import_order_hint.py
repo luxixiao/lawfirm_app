@@ -126,7 +126,7 @@ def main() -> int:
             kind, title, text = hints()[0]
             check("提示走 information 弹窗", kind == "information", f"got={kind}")
             check("提示标题", title == "导入顺序提示", f"got={title!r}")
-            check("提示说明先后顺序", "建议先到「员工类型」页建立类型并勾选「参与结算」"
+            check("提示说明先后顺序", "建议先到「类型设置」页建立类型并勾选「参与结算」"
                                   in text and "再导入职工清单" in text, f"got={text}")
             check("提示说明后果", "费用台账" in text and "逐行拒绝" in text, f"got={text}")
         check("空类型表 + 全员填类型 → 导入照常完成（提示不拦人）",
@@ -213,7 +213,8 @@ def main() -> int:
         # ⚠ 导入现在真的会写 staff / staff_type_def（原先停在选文件那步），故整表清空，
         #   否则 `delete_type` 会因「还有 N 名员工属于该类型」拒绝删除。
         c = appdb.get_conn()
-        c.execute("DELETE FROM staff")
+        c.execute("DELETE FROM staff_type_map")
+        c.execute("DELETE FROM staff_roster")
         c.execute("DELETE FROM staff_type_def")
         c.commit()
         c.close()

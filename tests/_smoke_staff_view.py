@@ -21,9 +21,10 @@ from app.engine import staff_type as st  # noqa: E402
 conn = sqlite3.connect(TMP)
 conn.row_factory = sqlite3.Row
 conn.executescript(SCHEMA)
-conn.execute("ALTER TABLE staff ADD COLUMN hire_month TEXT DEFAULT ''")
+# 批2：staff 镜像表已移除，staff_roster 在 SCHEMA 中已含 hire_month，无需 ALTER
 for n, t in (("周立生", "聘用"), ("王合伙", "合伙"), ("老李", "兼职"), ("待删员工", "其他")):
-    conn.execute("INSERT INTO staff(name, staff_type, is_active) VALUES(?,?,1)", (n, t))
+    conn.execute("INSERT OR IGNORE INTO staff_roster(name) VALUES(?)", (n,))
+    conn.execute("INSERT OR IGNORE INTO staff_type_map(name, type_name, is_primary) VALUES(?,?,1)", (n, t))
 # 员工类型表初始为空（改动 1，不再预置）：把花名册里用到的类型先建出来
 for i, t in enumerate(("合伙", "聘用", "兼职", "其他")):
     conn.execute(

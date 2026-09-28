@@ -21,10 +21,7 @@ def make_conn():
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys=ON")
     conn.executescript(db.SCHEMA)
-    # 镜像 init_db 的关键迁移（SCHEMA 不含这些 ALTER 列）：引擎过渡镜像依赖 staff.hire_month
-    cols = [r[1] for r in conn.execute("PRAGMA table_info(staff)")]
-    if "hire_month" not in cols:
-        conn.execute("ALTER TABLE staff ADD COLUMN hire_month TEXT DEFAULT ''")
+    # 批2：staff 镜像表已移除，staff_roster 在 SCHEMA 中已含 hire_month，无需迁移
     return conn
 
 
@@ -95,12 +92,14 @@ def main():
     c = make_conn()
     st.add_roster_person("", "张三", "", "", "2025-01", "", "注", c)
     st.set_person_types("张三", ["合伙", "聘用"], c)
-    row = c.execute("SELECT staff_type, hire_month, note FROM staff WHERE name=?", ("张三",)).fetchone()
-    fails += 0 if check("镜像 staff.staff_type=主类型", row and row["staff_type"] == "合伙") else 1
-    # 去掉所有类型 → staff 行应被删
+    fails += 0 if check("主类型=合伙", st.primary_type_of("张三", c) == "合伙") else 1
+    rp = st.get_roster_person("张三", c)
+    fails += 0 if check("入职月份/备注来自花名册",
+                        rp and rp["hire_month"] == "2025-01" and rp["note"] == "注") else 1
+    # 去掉所有类型 → 关联清空，但花名册人员仍在（roster 为独立主数据）
     st.set_person_types("张三", [], c)
-    row = c.execute("SELECT 1 FROM staff WHERE name=?", ("张三",)).fetchone()
-    fails += 0 if check("无类型时 staff 镜像行被清", row is None) else 1
+    fails += 0 if check("无类型时类型关联被清", st.list_person_types("张三", c) == []) else 1
+    fails += 0 if check("无类型时花名册人员仍在", st.get_roster_person("张三", c) is not None) else 1
 
     # ---- 导入同步 ----
     c = make_conn()
