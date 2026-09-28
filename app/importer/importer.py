@@ -1020,7 +1020,7 @@ def commit_ledger_import(data: Dict, period: str, path: str,
                        source, import_batch_id, orig_invoice_no, src_sheet, src_row)
                        VALUES (?,?,?,?,?,?,?,?,?,?)""",
                     (no, inv["invoice_date"], inv["buyer"], inv["total_amount"],
-                     inv.get("case_no"), "import", batch_id, "",
+                     inv.get("case_no"), "import", batch_id, inv.get("orig_invoice_no") or "",
                      inv.get("sheet_name") or "", inv.get("row_no") or 0),
                 )
             # 经办人拆分（已存在则更新覆盖值，避免重导时丢失确认结果）

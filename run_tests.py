@@ -23,6 +23,7 @@ TESTS = ROOT / "tests"
 EXPECTED_FILES = [
     "tests/test_account_subject.py",
     "tests/test_backfill_pending.py",
+    "tests/test_backfill_synced_exclusion.py",  # ②第3步：list_pending_backfill 源A 加 raw_invoice.synced=0 排除
     "tests/test_book_balance.py",
     "tests/test_book_balance_load.py",     # P1-3：账面情况去线程化（异常显式化 + _fetch seam）
     "tests/test_calc_data.py",

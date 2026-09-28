@@ -112,6 +112,12 @@ def list_pending_backfill(conn=None) -> List[Dict]:
             seen.add(orig)
             if conn.execute("SELECT 1 FROM invoice WHERE invoice_no=?", (orig,)).fetchone():
                 continue  # 已存在，无需补录
+            # ③ 防御：原票已在 raw_invoice 镜表待同步（synced=0，销项导入后尚未 sync to invoice）。
+            # 用户执行「sync to invoice」后即入库，此时误报为待补录会干扰判断 → 排除。
+            if conn.execute(
+                "SELECT 1 FROM raw_invoice WHERE invoice_no=? AND synced=0", (orig,)
+            ).fetchone():
+                continue  # 蓝字原票处于「待同步」，非真正缺失，排除
             reds = [
                 x["invoice_no"] for x in conn.execute(
                     "SELECT invoice_no FROM invoice WHERE orig_invoice_no=? AND total_amount < 0", (orig,)

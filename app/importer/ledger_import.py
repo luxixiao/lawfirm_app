@@ -24,7 +24,7 @@ from app.engine.backfill import is_period_before
 from app.importer.date_utils import normalize_date
 from app.importer.excel_reader import ImportError_, cell_text, col_index, find_header_row, norm_header, read_sheet, sheet_names
 from app.importer.parse_handler import parse_handler_column
-from app.importer.parse_remark import parse_remark
+from app.importer.parse_remark import extract_orig_no, parse_remark
 
 
 def norm_full_date(text: str, default_year: int | None = None) -> str:
@@ -252,6 +252,7 @@ def _parse_invoice_sheet(rows: List[List[str]], sheet_key: str, sheet_name: str,
             "remark_raw": remark_raw,
             "remark": remark,
             "case_no": g(row, idx_case),
+            "orig_invoice_no": extract_orig_no(remark_raw),
             "is_red": total < 0,
         })
     return items, problems
