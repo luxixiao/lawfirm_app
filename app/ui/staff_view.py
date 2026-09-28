@@ -1,15 +1,13 @@
-"""员工管理页：员工名单（增删改/导入）+ 员工类型（自定义增删改查）
+"""员工管理页（批1基础，三 tab）
 
-- Tab1「员工名单」：花名册，导入 / 手动添加 / 修改 / 删除。
-  删除前检查业务数据引用：有引用禁止删除（避免结算口径丢失）。
-  ⚠「停用」功能已取消（2026-09）：离职人员仍会发生业务，用全局开关表达"不再参与"
-  会把其所有年份的结算身份误判为「其他」→ 业务收入 0；分账/校验口径也随之分裂。
-- Tab2「员工类型」：类型可自由增删改名；每个类型归属一个「角色」（合伙/聘用/兼职/其他），
-  角色决定它是否计入收入报表、是否禁止承担公共专属费用、默认净额口径。
-  类型名与角色解耦 —— 改名/删除都不会影响结算口径（按角色解析），故不再有任何改名/删除锁；
-  唯一护栏是「有员工在用则禁止删除」（防止员工身份丢失→结算落 other→收入 0）。
+- Tab1「花名册」：人员身份主数据（编号/姓名/身份证号/手机号/入职月份/离职月份/备注）。
+  编号与身份证号非空时唯一。导入职工清单也落到这里。
+- Tab2「员工类型」：人 × 类型 网格（一人可挂多个类型）；人员只能选自花名册。
+  这是把原「员工名单」改名并拆出"类型"后的新形态——"人"归花名册，"类型"在此关联。
+- Tab3「类型设置」：类型定义（参与结算 / 业务金额方式 / 说明 / 人数 / 角色），原「员工类型」改名。
 - 口径：是否参与结算、净额口径（开票净额/收款净额）仍按类型各自勾选设置；
   角色的 include_in_income_report / forbid_public_exclusive / default_net_basis 作为默认值与批量语义。
+- 过渡镜像：staff 表仍被下游结算/导入读取，引擎函数会同步维护它（批2 再移除）。
 """
 from __future__ import annotations
 
@@ -18,7 +16,7 @@ from datetime import datetime
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout, QHBoxLayout,
-    QInputDialog, QLabel, QLineEdit, QMessageBox, QPushButton, QTabWidget,
+    QLabel, QLineEdit, QMessageBox, QPushButton, QTabWidget,
     QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
@@ -48,59 +46,99 @@ class StaffView(QWidget):
 
         self.tabs = QTabWidget()
         self.tabs.tabBar().setObjectName("pageTitleBar")
-        self.tabs.addTab(self._build_staff_tab(), "员工名单")
-        self.tabs.addTab(self._build_type_tab(), "员工类型")
+        self.tabs.addTab(self._build_roster_tab(), "花名册")
+        self.tabs.addTab(self._build_staff_type_tab(), "员工类型")
+        self.tabs.addTab(self._build_type_settings_tab(), "类型设置")
         self.tabs.currentChanged.connect(self._on_tab_changed)
         self.tabs.setCornerWidget(tab_help_corner(
-            "职工花名册（基础数据）：台账导入时校验经办人是否在此名单中。"
-            "能否参与结算，看该类型在「员工类型」页有没有勾选「参与结算」。"
+            "花名册是人员身份主数据（基础数据）：台账导入时校验经办人是否在此名单中。"
+            "「员工类型」页把人员关联到类型（一人可多类型）；能否参与结算，看该类型在"
+            "「类型设置」页有没有勾选「参与结算」。"
         ), Qt.Corner.TopRightCorner)
         lay.addWidget(self.tabs, 1)
 
         self.refresh()
 
     # ================================================================== #
-    # Tab1：员工名单
+    # Tab1：花名册
     # ================================================================== #
-    def _build_staff_tab(self) -> QWidget:
+    def _build_roster_tab(self) -> QWidget:
         w = QWidget()
         lay = QVBoxLayout(w)
         lay.setSpacing(10)
+        lay.addWidget(CaptionLabel(
+            "人员身份主数据：编号、姓名、身份证号、手机号、入职月份、离职月份、备注。"
+            "编号与身份证号非空时不可重复；离职人员保留在此（离职月份填月份即可）。"))
 
         btns = QHBoxLayout()
         self.btn_import = QPushButton("导入职工清单（模板）")
         self.btn_import.setObjectName("primary")
         self.btn_import.clicked.connect(self.import_staff)
-        self.btn_add = QPushButton("手动添加")
-        self.btn_add.clicked.connect(self.add_manual)
-        self.btn_edit = QPushButton("修改")
-        self.btn_edit.clicked.connect(self.edit_selected)
-        self.btn_delete = QPushButton("删除")
-        self.btn_delete.clicked.connect(self.delete_selected)
-        self.btn_export = QPushButton("导出")
-        self.btn_export.setObjectName("accent")
-        self.btn_export.clicked.connect(self.export_staff)
-        for b in (self.btn_import, self.btn_add, self.btn_edit,
-                  self.btn_delete, self.btn_export):
+        self.btn_r_add = QPushButton("新增")
+        self.btn_r_add.clicked.connect(self.add_roster)
+        self.btn_r_edit = QPushButton("修改")
+        self.btn_r_edit.clicked.connect(self.edit_roster)
+        self.btn_r_del = QPushButton("删除")
+        self.btn_r_del.clicked.connect(self.delete_roster)
+        self.btn_r_export = QPushButton("导出")
+        self.btn_r_export.setObjectName("accent")
+        self.btn_r_export.clicked.connect(self.export_roster)
+        for b in (self.btn_import, self.btn_r_add, self.btn_r_edit,
+                  self.btn_r_del, self.btn_r_export):
             btns.addWidget(b)
         btns.addStretch()
         lay.addLayout(btns)
 
-        self.table = QTableWidget(0, 4)
-        self.table.setHorizontalHeaderLabels(["姓名", "类型", "入职月份", "备注"])
-        self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        self.table.cellDoubleClicked.connect(lambda *_: self.edit_selected())
-        install_common_features(self.table)
-        install_header_filter(self.table)
-        self._col = install_column_layout(self.table, "staff", "main")
-        lay.addWidget(self.table, 1)
+        self.roster_table = QTableWidget(0, 7)
+        self.roster_table.setHorizontalHeaderLabels(
+            ["编号", "姓名", "身份证号", "手机号", "入职月份", "离职月份", "备注"])
+        self.roster_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.roster_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.roster_table.cellDoubleClicked.connect(lambda *_: self.edit_roster())
+        install_common_features(self.roster_table)
+        install_header_filter(self.roster_table)
+        self._roster_col = install_column_layout(self.roster_table, "staff_roster", "main")
+        lay.addWidget(self.roster_table, 1)
         return w
 
     # ================================================================== #
-    # Tab2：员工类型
+    # Tab2：员工类型（人 × 类型）
     # ================================================================== #
-    def _build_type_tab(self) -> QWidget:
+    def _build_staff_type_tab(self) -> QWidget:
+        w = QWidget()
+        lay = QVBoxLayout(w)
+        lay.setSpacing(10)
+        lay.addWidget(CaptionLabel(
+            "把人员关联到类型（一人可挂多个类型）。人员只能选自「花名册」；"
+            "类型来自「类型设置」。每行一个人-类型组合，删除即解除该关联。"))
+
+        btns = QHBoxLayout()
+        self.btn_st_add = QPushButton("新增关联")
+        self.btn_st_add.clicked.connect(self.add_staff_type)
+        self.btn_st_del = QPushButton("删除关联")
+        self.btn_st_del.clicked.connect(self.delete_staff_type)
+        self.btn_st_export = QPushButton("导出")
+        self.btn_st_export.setObjectName("accent")
+        self.btn_st_export.clicked.connect(self.export_staff_types)
+        for b in (self.btn_st_add, self.btn_st_del, self.btn_st_export):
+            btns.addWidget(b)
+        btns.addStretch()
+        lay.addLayout(btns)
+
+        self.staff_type_table = QTableWidget(0, 2)
+        self.staff_type_table.setHorizontalHeaderLabels(["姓名", "类型"])
+        self.staff_type_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.staff_type_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        install_common_features(self.staff_type_table)
+        install_header_filter(self.staff_type_table)
+        self._st_col = install_column_layout(self.staff_type_table, "staff_type_map", "main")
+        lay.addWidget(self.staff_type_table, 1)
+        return w
+
+    # ================================================================== #
+    # Tab3：类型设置（原「员工类型」）
+    # ================================================================== #
+    def _build_type_settings_tab(self) -> QWidget:
         w = QWidget()
         lay = QVBoxLayout(w)
         lay.setSpacing(10)
@@ -154,27 +192,41 @@ class StaffView(QWidget):
         self.refresh()
 
     def refresh(self) -> None:
-        self._refresh_staff()
+        self._refresh_roster()
+        self._refresh_staff_types()
         self._refresh_types()
 
-    # ---- 员工名单 ----
-    def _refresh_staff(self) -> None:
+    # ---- 花名册 ----
+    def _refresh_roster(self) -> None:
+        rows = st.list_roster()
+        self.roster_table.setRowCount(len(rows))
+        for r, row in enumerate(rows):
+            self.roster_table.setItem(r, 0, QTableWidgetItem(row["code"] or ""))
+            self.roster_table.setItem(r, 1, QTableWidgetItem(row["name"]))
+            self.roster_table.setItem(r, 2, QTableWidgetItem(row["id_card"] or ""))
+            self.roster_table.setItem(r, 3, QTableWidgetItem(row["phone"] or ""))
+            self.roster_table.setItem(r, 4, QTableWidgetItem(row["hire_month"] or ""))
+            self.roster_table.setItem(r, 5, QTableWidgetItem(row["leave_month"] or ""))
+            self.roster_table.setItem(r, 6, QTableWidgetItem(row["note"] or ""))
+        self._roster_col.apply()
+
+    # ---- 员工类型（人 × 类型）----
+    def _refresh_staff_types(self) -> None:
         conn = get_conn()
         try:
             rows = conn.execute(
-                "SELECT name, staff_type, hire_month, note FROM staff "
-                "ORDER BY name").fetchall()
+                "SELECT m.name AS name, m.type_name AS type_name FROM staff_type_map m "
+                "JOIN staff_roster r ON r.name = m.name "
+                "ORDER BY m.name, m.is_primary DESC, m.type_name").fetchall()
         finally:
             conn.close()
-        self.table.setRowCount(len(rows))
+        self.staff_type_table.setRowCount(len(rows))
         for r, row in enumerate(rows):
-            self.table.setItem(r, 0, QTableWidgetItem(row["name"]))
-            self.table.setItem(r, 1, QTableWidgetItem(row["staff_type"] or ""))
-            self.table.setItem(r, 2, QTableWidgetItem(row["hire_month"] or ""))
-            self.table.setItem(r, 3, QTableWidgetItem(row["note"] or ""))
-        self._col.apply()
+            self.staff_type_table.setItem(r, 0, QTableWidgetItem(row["name"]))
+            self.staff_type_table.setItem(r, 1, QTableWidgetItem(row["type_name"]))
+        self._st_col.apply()
 
-    # ---- 员工类型 ----
+    # ---- 类型设置 ----
     def _refresh_types(self) -> None:
         rows = st.list_types()
         self._loading = True
@@ -305,7 +357,300 @@ class StaffView(QWidget):
         return item.data(Qt.ItemDataRole.UserRole) if item else None
 
     # ================================================================== #
-    # 类型 CRUD
+    # 花名册 CRUD
+    # ================================================================== #
+    def _roster_dialog(self, person: dict = None) -> bool:
+        """新增/修改共用对话框。person 为已有行（dict）时进入修改模式。"""
+        dlg = QDialog(self)
+        dlg.setWindowTitle("新增人员" if person is None else f"修改人员：{person['name']}")
+        form = QFormLayout(dlg)
+        code_edit = QLineEdit(person["code"] if person else "")
+        code_edit.setPlaceholderText("可空；非空须唯一")
+        name_edit = QLineEdit(person["name"] if person else "")
+        name_edit.setPlaceholderText("姓名即主键")
+        id_edit = QLineEdit(person["id_card"] if person else "")
+        id_edit.setPlaceholderText("身份证号，可空；非空须唯一")
+        phone_edit = QLineEdit(person["phone"] if person else "")
+        hire_edit = QLineEdit(person["hire_month"] if person else "")
+        hire_edit.setPlaceholderText("如 2025-04，留空=始终在名单")
+        leave_edit = QLineEdit(person["leave_month"] if person else "")
+        leave_edit.setPlaceholderText("离职月份，如 2026-03；在职留空")
+        note_edit = QLineEdit(person["note"] if person else "")
+        if person is not None:
+            name_edit.setReadOnly(True)  # 姓名主键不可改，改名走删除重建
+        form.addRow("编号", code_edit)
+        form.addRow("姓名", name_edit)
+        form.addRow("身份证号", id_edit)
+        form.addRow("手机号", phone_edit)
+        form.addRow("入职月份", hire_edit)
+        form.addRow("离职月份", leave_edit)
+        form.addRow("备注", note_edit)
+        btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok
+                                | QDialogButtonBox.StandardButton.Cancel)
+        btns.accepted.connect(dlg.accept)
+        btns.rejected.connect(dlg.reject)
+        form.addRow(btns)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return False
+        name = name_edit.text().strip()
+        if not name:
+            QMessageBox.warning(self, "提示", "姓名不能为空")
+            return False
+        code = code_edit.text().strip()
+        id_card = id_edit.text().strip()
+        # 唯一性预检（部分唯一索引：空值不冲突，非空才唯一）
+        conn = get_conn()
+        try:
+            if code:
+                dup = conn.execute(
+                    "SELECT 1 FROM staff_roster WHERE code=? AND name<>?", (code, name)).fetchone()
+                if dup:
+                    QMessageBox.warning(self, "编号重复", f"编号「{code}」已被他人使用")
+                    return False
+            if id_card:
+                dup = conn.execute(
+                    "SELECT 1 FROM staff_roster WHERE id_card=? AND name<>?",
+                    (id_card, name)).fetchone()
+                if dup:
+                    QMessageBox.warning(self, "身份证号重复",
+                                        f"身份证号「{id_card}」已被他人使用")
+                    return False
+        finally:
+            conn.close()
+        if person is None:
+            try:
+                st.add_roster_person(code, name, id_card, phone_edit.text().strip(),
+                                     hire_edit.text().strip(), leave_edit.text().strip(),
+                                     note_edit.text().strip())
+            except Exception as e:  # noqa: BLE001
+                QMessageBox.critical(self, "新增失败", str(e))
+                return False
+        else:
+            try:
+                st.update_roster_person(code, name, id_card, phone_edit.text().strip(),
+                                        hire_edit.text().strip(), leave_edit.text().strip(),
+                                        note_edit.text().strip())
+            except Exception as e:  # noqa: BLE001
+                QMessageBox.critical(self, "修改失败", str(e))
+                return False
+        return True
+
+    def add_roster(self) -> None:
+        if self._roster_dialog():
+            self.refresh()
+
+    def edit_roster(self) -> None:
+        row = self.roster_table.currentRow()
+        if row < 0:
+            QMessageBox.information(self, "提示", "请先选择一名人员（或双击）")
+            return
+        name = self.roster_table.item(row, 1).text()
+        person = st.get_roster_person(name)
+        if person is None:
+            return
+        if self._roster_dialog(person):
+            self.refresh()
+
+    def delete_roster(self) -> None:
+        row = self.roster_table.currentRow()
+        if row < 0:
+            QMessageBox.information(self, "提示", "请先选择一名人员")
+            return
+        name = self.roster_table.item(row, 1).text()
+        ret = QMessageBox.question(
+            self, "确认删除", f"从花名册中删除「{name}」？\n（有业务数据引用则禁止删除）")
+        if ret != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            st.delete_roster_person(name)
+        except st.StaffInUseError as e:
+            QMessageBox.warning(self, "无法删除", str(e))
+            return
+        except st.StaffTypeError as e:
+            QMessageBox.warning(self, "删除失败", str(e))
+            return
+        self.refresh()
+
+    def import_staff(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self, "选择职工清单", "", "Excel 文件 (*.xls *.xlsx *.xlsm)")
+        if not path:
+            return
+        try:
+            staff, file_hash = parse_staff_file(path)
+        except ImportError_ as e:
+            QMessageBox.warning(self, "导入失败", str(e))
+            return
+
+        # ===== 空类型硬拦（方案 B，需求方 2026-09-25 拍板）=====
+        missing = [name for name, stype, _note in staff if not (stype or "").strip()]
+        if missing:
+            shown = missing[:10]
+            tail = "" if len(missing) <= 10 else f" 等 {len(missing) - 10} 人"
+            QMessageBox.warning(
+                self, "导入被拦下",
+                f"职工清单里有 {len(missing)} 人未填写员工类型：\n"
+                "　" + "、".join(shown) + tail + "\n\n"
+                "未填类型的员工一律判为不参与结算，导入后导入费用台账时也会被逐行"
+                "拒绝；故本次整批未导入（改好清单可重新导入）。\n"
+                "需要的类型请到「类型设置」页新建，或在清单里补齐类型列。")
+            return
+
+        self._maybe_warn_settle_order()
+
+        conn = get_conn()
+        try:
+            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            cur = conn.execute(
+                "INSERT INTO import_batch (batch_type, period, file_name, file_hash, imported_at)"
+                " VALUES (?,?,?,?,?)",
+                ("staff", "0000", path.replace("\\", "/").split("/")[-1], file_hash, now))
+            batch_id = cur.lastrowid
+            st.ensure_types(conn, [s[1] for s in staff if s[1]])
+            n_new, n_dup = 0, 0
+            for name, stype, note in staff:
+                exists = conn.execute(
+                    "SELECT 1 FROM staff_roster WHERE name=?", (name,)).fetchone()
+                st.sync_imported_staff(conn, name, stype, note)
+                if exists:
+                    n_dup += 1
+                else:
+                    n_new += 1
+            conn.commit()
+            QMessageBox.information(self, "导入完成", f"新增 {n_new} 人，更新 {n_dup} 人。")
+        except Exception as e:  # noqa: BLE001
+            conn.rollback()
+            QMessageBox.critical(self, "导入失败", str(e))
+        finally:
+            conn.close()
+        self.refresh()
+
+    def export_roster(self) -> None:
+        """导出花名册为 Excel。"""
+        rows = st.list_roster()
+        if not rows:
+            QMessageBox.information(self, "提示", "当前没有可导出的人员数据")
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "导出花名册", "花名册.xlsx", "Excel 文件 (*.xlsx)")
+        if not path:
+            return
+        if not path.lower().endswith(".xlsx"):
+            path += ".xlsx"
+        try:
+            from openpyxl import Workbook
+            wb = Workbook()
+            ws = wb.active
+            ws.title = "花名册"
+            ws.append(["编号", "姓名", "身份证号", "手机号", "入职月份", "离职月份", "备注"])
+            for r in rows:
+                ws.append([r["code"] or "", r["name"], r["id_card"] or "", r["phone"] or "",
+                           r["hire_month"] or "", r["leave_month"] or "", r["note"] or ""])
+            wb.save(path)
+        except Exception as e:  # noqa: BLE001
+            QMessageBox.critical(self, "导出失败", str(e))
+            return
+        QMessageBox.information(self, "导出完成",
+                                f"已导出 {len(rows)} 名人员到：\n{path}")
+
+    # ================================================================== #
+    # 员工类型（人 × 类型）CRUD
+    # ================================================================== #
+    def _staff_type_dialog(self) -> bool:
+        """新增人-类型关联：人员选自花名册，类型选自类型设置。"""
+        dlg = QDialog(self)
+        dlg.setWindowTitle("新增人员-类型关联")
+        form = QFormLayout(dlg)
+        person_combo = QComboBox()
+        for p in st.list_roster():
+            person_combo.addItem(p["name"], userData=p["name"])
+        if person_combo.count() == 0:
+            QMessageBox.warning(self, "无人员",
+                                 "「花名册」里还没有人员，请先到花名册页添加或导入人员。")
+            return False
+        type_combo = self._type_combo()
+        if type_combo.count() == 0:
+            QMessageBox.warning(self, "无类型",
+                                 "「类型设置」里还没有类型，请先新建类型。")
+            return False
+        form.addRow("人员（来自花名册）", person_combo)
+        form.addRow("类型", type_combo)
+        btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok
+                                | QDialogButtonBox.StandardButton.Cancel)
+        btns.accepted.connect(dlg.accept)
+        btns.rejected.connect(dlg.reject)
+        form.addRow(btns)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return False
+        name = person_combo.currentData()
+        tname = type_combo.currentData()
+        if not name or not tname:
+            QMessageBox.warning(self, "提示", "请选择人员和类型")
+            return False
+        try:
+            st.add_person_type(name, tname)
+        except st.StaffTypeError as e:
+            QMessageBox.warning(self, "添加失败", str(e))
+            return False
+        return True
+
+    def add_staff_type(self) -> None:
+        if self._staff_type_dialog():
+            self.refresh()
+
+    def delete_staff_type(self) -> None:
+        row = self.staff_type_table.currentRow()
+        if row < 0:
+            QMessageBox.information(self, "提示", "请先选择一条人员-类型关联")
+            return
+        name = self.staff_type_table.item(row, 0).text()
+        tname = self.staff_type_table.item(row, 1).text()
+        ret = QMessageBox.question(
+            self, "确认删除", f"解除「{name}」的「{tname}」类型关联？")
+        if ret != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            st.remove_person_type(name, tname)
+        except st.StaffTypeError as e:
+            QMessageBox.warning(self, "删除失败", str(e))
+            return
+        self.refresh()
+
+    def export_staff_types(self) -> None:
+        """导出人-类型关联为 Excel。"""
+        conn = get_conn()
+        try:
+            rows = conn.execute(
+                "SELECT m.name AS name, m.type_name AS type_name FROM staff_type_map m "
+                "JOIN staff_roster r ON r.name = m.name ORDER BY m.name, m.type_name").fetchall()
+        finally:
+            conn.close()
+        if not rows:
+            QMessageBox.information(self, "提示", "当前没有可导出的关联数据")
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "导出员工类型", "员工类型.xlsx", "Excel 文件 (*.xlsx)")
+        if not path:
+            return
+        if not path.lower().endswith(".xlsx"):
+            path += ".xlsx"
+        try:
+            from openpyxl import Workbook
+            wb = Workbook()
+            ws = wb.active
+            ws.title = "员工类型"
+            ws.append(["姓名", "类型"])
+            for r in rows:
+                ws.append([r["name"], r["type_name"]])
+            wb.save(path)
+        except Exception as e:  # noqa: BLE001
+            QMessageBox.critical(self, "导出失败", str(e))
+            return
+        QMessageBox.information(self, "导出完成",
+                                f"已导出 {len(rows)} 条关联到：\n{path}")
+
+    # ================================================================== #
+    # 类型设置 CRUD
     # ================================================================== #
     def type_add(self) -> None:
         name, ok = QInputDialog.getText(self, "新增员工类型", "类型名称（≤20 字符）：")
@@ -383,17 +728,8 @@ class StaffView(QWidget):
                 self.type_table.setCurrentCell(r, 0)
                 return
 
-    # ================================================================== #
-    # 员工 CRUD
-    # ================================================================== #
     def _type_combo(self, current: str = "") -> QComboBox:
-        """员工类型下拉。**不带初值时不预选** —— 让用户显式选，别把「第一项」当决定。
-
-        `staff.staff_type` 是 NOT NULL（`app/db.py`），而类型表现在是**初始为空**的：
-        - 有初值 → 选中它（找不到则退到第一项，行为不变）；
-        - 无初值 → 留空（`setCurrentIndex(-1)`），配合调用方的「未选择类型」守卫，
-          保证写库的一定是**用户自己选的**类型，而不是系统替他挑的默认值。
-        """
+        """员工类型下拉（类型设置里的类型名）。不带初值时不预选。"""
         combo = QComboBox()
         for t in st.list_types():
             combo.addItem(t["name"], userData=t["name"])
@@ -405,18 +741,7 @@ class StaffView(QWidget):
         return combo
 
     def _maybe_warn_settle_order(self) -> None:
-        """导入职工清单前的顺序指引：员工类型表为空时提示一次（**只提醒，不代办**）。
-
-        员工类型表初始为空（见 `app/engine/staff_type.py`），而 `ensure_types()`
-        新建的类型默认 `is_settle=0`；此时若紧接着导入费用台账，
-        `expense_validation` 的「经办人是否参与结算」校验会把每一行都判为
-        「未参与结算」而逐行拒绝。这里的做法是**用流程顺序解决**：在导入前把
-        顺序讲清楚，而**不让系统替用户决定**——不自动建类型、不代勾「参与结算」、
-        也不拦本次导入（用户看完可以直接继续导）。
-
-        每个 StaffView 实例只提示一次（实例属性，不写 QSettings、不写库）。
-        状态查询失败时静默跳过，绝不影响导入本身。
-        """
+        """导入职工清单前的顺序指引：类型表为空时提示一次（只提醒，不代办）。"""
         if self._settle_order_hinted:
             return
         # 先置位再查询：无论本次是否真的弹窗，同一实例都不再重复打扰
@@ -428,256 +753,5 @@ class StaffView(QWidget):
             return
         QMessageBox.information(
             self, "导入顺序提示",
-            "建议先到「员工类型」页建立类型并勾选「参与结算」，再导入职工清单；"
+            "建议先到「类型设置」页建立类型并勾选「参与结算」，再导入职工清单；"
             "否则后续导入费用台账会因经办人未参与结算被逐行拒绝。")
-
-    def import_staff(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(
-            self, "选择职工清单", "", "Excel 文件 (*.xls *.xlsx *.xlsm)")
-        if not path:
-            return
-        try:
-            staff, file_hash = parse_staff_file(path)
-        except ImportError_ as e:
-            QMessageBox.warning(self, "导入失败", str(e))
-            return
-
-        # ===== 空类型硬拦（方案 B，需求方 2026-09-25 拍板）=====
-        # 必须**早于任何写库**：拦下即 return，`import_batch` / `staff` /
-        # `staff_type_def` 一张都不许被碰。整批拒绝（不跳过这几人）—— 用户可以改
-        # 清单重导，跳过会让他在不知情的情况下少了几个人。
-        #
-        # 为什么不能「默认填个类型」继续导：无类型 = 类型表里查不到行，
-        # `settle_flags_of()` 返回 (False, "") → 一律判「不参与结算」，随后导费用
-        # 台账会被 `expense_validation` **逐行拒绝**，而报错文案还会误导用户去
-        # 类型页找。所以宁可不导，也不给一个系统替用户决定的假类型。
-        missing = [name for name, stype, _note in staff if not (stype or "").strip()]
-        if missing:
-            shown = missing[:10]
-            tail = "" if len(missing) <= 10 else f" 等 {len(missing) - 10} 人"
-            QMessageBox.warning(
-                self, "导入被拦下",
-                f"职工清单里有 {len(missing)} 人未填写员工类型：\n"
-                "　" + "、".join(shown) + tail + "\n\n"
-                "未填类型的员工一律判为不参与结算，导入后导入费用台账时也会被逐行"
-                "拒绝；故本次整批未导入（改好清单可重新导入）。\n"
-                "需要的类型请到「员工类型」页新建，或在清单里补齐类型列。")
-            return
-
-        # 顺序指引（类型表为空时只提示一次）：放在空类型硬拦**之后**——
-        # 前面已经拦下了，这里再弹提示只会连着弹两个框（且第一个已说明导不了）
-        self._maybe_warn_settle_order()
-
-        conn = get_conn()
-        try:
-            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            cur = conn.execute(
-                "INSERT INTO import_batch (batch_type, period, file_name, file_hash, imported_at)"
-                " VALUES (?,?,?,?,?)",
-                ("staff", "0000", path.replace("\\", "/").split("/")[-1], file_hash, now))
-            batch_id = cur.lastrowid
-            # 只把清单里**真实出现过**的类型补进类型表（is_builtin=0）。
-            # ⚠ 这里**不预置任何类型**（原先的 `or ["聘用"]` 兜底已去掉，方案 B）：
-            # 类型表初始为空，空类型的员工在上面「空类型硬拦」那一步就已经被拦下，
-            # 走不到这里。保留 `ensure_types()` 而非整段删掉，是因为清单里如实填了
-            # 「合伙」的人需要它把该类型建进行 —— 否则那人会被挂上一个类型表里根本
-            # 没有的类型，查不到行 → 判「不参与结算」→ 导费用台账被逐行拒绝。
-            st.ensure_types(conn, [s[1] for s in staff if s[1]])
-            n_new, n_dup = 0, 0
-            for name, stype, note in staff:
-                r = conn.execute("SELECT id FROM staff WHERE name=?", (name,)).fetchone()
-                if r:
-                    conn.execute(
-                        "UPDATE staff SET staff_type=?, note=?, is_active=1 WHERE id=?",
-                        (stype, note, r["id"]))
-                    n_dup += 1
-                else:
-                    conn.execute(
-                        "INSERT INTO staff (name, staff_type, is_active, note, source,"
-                        " import_batch_id) VALUES (?,?,1,?,?,?)",
-                        (name, stype, note, "import", batch_id))
-                    n_new += 1
-            conn.commit()
-            QMessageBox.information(self, "导入完成", f"新增 {n_new} 人，更新 {n_dup} 人。")
-        except Exception as e:  # noqa: BLE001
-            conn.rollback()
-            QMessageBox.critical(self, "导入失败", str(e))
-        finally:
-            conn.close()
-        self.refresh()
-
-    def add_manual(self) -> None:
-        dlg = QDialog(self)
-        dlg.setWindowTitle("手动添加职工")
-        form = QFormLayout(dlg)
-        name_edit = QLineEdit()
-        type_combo = self._type_combo()
-        hire_edit = QLineEdit()
-        hire_edit.setPlaceholderText("如 2025-04，留空=始终在名单")
-        note_edit = QLineEdit()
-        form.addRow("姓名", name_edit)
-        form.addRow("类型", type_combo)
-        form.addRow("入职月份", hire_edit)
-        form.addRow("备注", note_edit)
-        btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok
-                                | QDialogButtonBox.StandardButton.Cancel)
-        btns.accepted.connect(dlg.accept)
-        btns.rejected.connect(dlg.reject)
-        form.addRow(btns)
-        if dlg.exec() != QDialog.DialogCode.Accepted:
-            return
-        name = name_edit.text().strip()
-        if not name:
-            QMessageBox.warning(self, "提示", "姓名不能为空")
-            return
-        # ===== 类型守卫（与 `edit_selected` 同源）=====
-        # `staff.staff_type` 是 **NOT NULL**，而类型表初始为空时下拉**根本没有选项**
-        # （`currentData()` 为 None）—— 没这道守卫的话 INSERT 会抛 IntegrityError
-        # 并直接崩出 Qt 槽（这段只有 try/finally，没有 except）。
-        # 按「不替用户决定」处理：不退化成默认选某个类型，把真正该做的事讲清楚。
-        new_type = type_combo.currentData()
-        if not new_type:
-            if type_combo.count() == 0:
-                QMessageBox.warning(
-                    self, "未选择类型",
-                    "目前「员工类型」表里还没有任何类型，无法添加职工。\n"
-                    "请先在「员工类型」页新建需要的类型，再回来添加职工。")
-            else:
-                QMessageBox.warning(
-                    self, "未选择类型",
-                    "请为该员工选择一个员工类型后再添加。\n"
-                    "若下拉里没有可用类型，请先到「员工类型」页新建。")
-            return
-        conn = get_conn()
-        try:
-            cur = conn.execute(
-                "INSERT OR IGNORE INTO staff (name, staff_type, is_active, hire_month, note,"
-                " source) VALUES (?,?,1,?,?,?)",
-                (name, new_type, hire_edit.text().strip(),
-                 note_edit.text().strip(), "manual"))
-            conn.commit()
-            if cur.rowcount == 0:
-                QMessageBox.information(self, "提示", f"职工「{name}」已存在，未重复添加")
-        finally:
-            conn.close()
-        self.refresh()
-
-    def edit_selected(self) -> None:
-        """编辑选中员工：类型/入职月份/备注"""
-        row = self.table.currentRow()
-        if row < 0:
-            QMessageBox.information(self, "提示", "请先选择一名职工（或双击）")
-            return
-        name = self.table.item(row, 0).text()
-        conn = get_conn()
-        try:
-            s = conn.execute("SELECT * FROM staff WHERE name=?", (name,)).fetchone()
-        finally:
-            conn.close()
-        if s is None:
-            return
-        dlg = QDialog(self)
-        dlg.setWindowTitle(f"编辑员工：{name}")
-        form = QFormLayout(dlg)
-        # 初值**不再兜底成「聘用」**（员工类型去写死，方案 B）：类型为空就按空走，
-        # 下拉停在第一项让用户显式选 —— 不替用户决定他的类型。
-        type_combo = self._type_combo(s["staff_type"] or "")
-        hire_edit = QLineEdit(s["hire_month"] or "")
-        hire_edit.setPlaceholderText("如 2025-04，留空=始终在名单")
-        note_edit = QLineEdit(s["note"] or "")
-        form.addRow("类型", type_combo)
-        form.addRow("入职月份", hire_edit)
-        form.addRow("备注", note_edit)
-        btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok
-                                | QDialogButtonBox.StandardButton.Cancel)
-        btns.accepted.connect(dlg.accept)
-        btns.rejected.connect(dlg.reject)
-        form.addRow(btns)
-        if dlg.exec() != QDialog.DialogCode.Accepted:
-            return
-        new_type = type_combo.currentData()
-        # 类型表为空时下拉没有可选项，`currentData()` 会是 None —— 而
-        # `staff.staff_type` 是 NOT NULL，写进去直接炸 IntegrityError。
-        # 按「不替用户决定」处理：不退化成默认类型，让用户先去把类型建出来。
-        if not new_type:
-            QMessageBox.warning(
-                self, "未选择类型",
-                "请为该员工选择一个员工类型后再保存。\n"
-                "若下拉里没有可用类型，请先到「员工类型」页新建需要的类型。")
-            return
-        if (s["staff_type"] or "") != new_type:
-            ret = QMessageBox.question(
-                self, "确认修改类型",
-                f"将 {name} 的人员类型从「{s['staff_type']}」改为「{new_type}」？\n"
-                f"注意：能否参与结算看该类型的「参与结算」勾选（勾选后才计入业务收入）；"
-                f"历史数据的身份不受影响。",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
-            if ret != QMessageBox.StandardButton.Yes:
-                return
-        conn = get_conn()
-        try:
-            conn.execute(
-                "UPDATE staff SET staff_type=?, hire_month=?, note=? WHERE name=?",
-                (new_type, hire_edit.text().strip() or "", note_edit.text().strip(), name))
-            conn.commit()
-        finally:
-            conn.close()
-        self.refresh()
-
-    def delete_selected(self) -> None:
-        """删除员工：有业务数据引用时拒绝（避免结算口径丢失）。"""
-        row = self.table.currentRow()
-        if row < 0:
-            QMessageBox.information(self, "提示", "请先选择一名职工")
-            return
-        name = self.table.item(row, 0).text()
-        ret = QMessageBox.question(
-            self, "确认删除", f"确定从花名册中删除「{name}」？\n（该操作不可恢复）")
-        if ret != QMessageBox.StandardButton.Yes:
-            return
-        try:
-            st.delete_staff(name)
-        except st.StaffInUseError as e:
-            QMessageBox.warning(self, "无法删除", str(e))
-            return
-        except st.StaffTypeError as e:
-            QMessageBox.warning(self, "删除失败", str(e))
-            return
-        self.refresh()
-
-    # ================================================================== #
-    # 导出
-    # ================================================================== #
-    def export_staff(self) -> None:
-        """导出当前员工名单为 Excel（姓名/类型/入职月份/备注）。"""
-        conn = get_conn()
-        try:
-            rows = conn.execute(
-                "SELECT name, staff_type, hire_month, note FROM staff "
-                "ORDER BY name").fetchall()
-        finally:
-            conn.close()
-        if not rows:
-            QMessageBox.information(self, "提示", "当前没有可导出的员工数据")
-            return
-        path, _ = QFileDialog.getSaveFileName(
-            self, "导出员工名单", "员工名单.xlsx", "Excel 文件 (*.xlsx)")
-        if not path:
-            return
-        if not path.lower().endswith(".xlsx"):
-            path += ".xlsx"
-        try:
-            from openpyxl import Workbook
-            wb = Workbook()
-            ws = wb.active
-            ws.title = "员工名单"
-            ws.append(["姓名", "类型", "入职月份", "备注"])
-            for r in rows:
-                ws.append([r["name"], r["staff_type"] or "",
-                           r["hire_month"] or "", r["note"] or ""])
-            wb.save(path)
-        except Exception as e:  # noqa: BLE001
-            QMessageBox.critical(self, "导出失败", str(e))
-            return
-        QMessageBox.information(self, "导出完成",
-                                f"已导出 {len(rows)} 名员工到：\n{path}")

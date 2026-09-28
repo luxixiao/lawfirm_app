@@ -403,6 +403,8 @@ class ImportView(QWidget):
                                 (name, stype, note, "import", batch_id),
                             )
                             n_new += 1
+                        # 批1：同步进花名册 + 人员类型关联（过渡镜像 staff 由引擎维护）
+                        st.sync_imported_staff(conn, name, stype, note)
                     conn.commit()
                     msg = f"✓ 职工花名册: 新增 {n_new}，更新 {n_upd}"
                 finally:

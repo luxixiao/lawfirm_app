@@ -70,6 +70,7 @@ EXPECTED_FILES = [
     "tests/test_skin_contract.py",
     "tests/test_staff_type.py",
     "tests/test_role_def.py",               # 去写死（Plan A）：角色口径 + F1 改名安全 + 公共专属按角色 + person_type 过滤
+    "tests/test_staff_roster.py",           # 批1基础：花名册 + 人员类型关联引擎单测（不依赖 Qt）
     "tests/test_staff_view_settle_ui.py",  # 参与结算三处语义修复 + 表头「业务金额方式」（离屏 Qt）
     "tests/test_staff_import_order_hint.py",  # 导入职工清单前的顺序指引（空类型表只提示一次）
     "tests/test_staff_import_missing_type.py",  # 空类型硬拦（方案 B：整批拒绝 + 零写库）

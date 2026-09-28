@@ -101,6 +101,29 @@ CREATE TABLE IF NOT EXISTS staff (
     created_at  TEXT DEFAULT (datetime('now','localtime'))
 );
 
+-- 花名册（批1基础：人的身份主数据，从 staff 拆出）
+-- 姓名即人员主键；编号/身份证号允许为空，但非空时必须唯一（部分唯一索引承载）。
+CREATE TABLE IF NOT EXISTS staff_roster (
+    name        TEXT PRIMARY KEY,
+    code        TEXT NOT NULL DEFAULT '',
+    id_card     TEXT NOT NULL DEFAULT '',
+    phone       TEXT NOT NULL DEFAULT '',
+    hire_month  TEXT NOT NULL DEFAULT '',
+    leave_month TEXT NOT NULL DEFAULT '',
+    note        TEXT NOT NULL DEFAULT ''
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_roster_code   ON staff_roster(code)     WHERE code <> '';
+CREATE UNIQUE INDEX IF NOT EXISTS uq_roster_idcard ON staff_roster(id_card)  WHERE id_card <> '';
+
+-- 人员类型关联（批1基础：人 ↔ 类型，一人可多类型；is_primary 标记结算用主类型）
+CREATE TABLE IF NOT EXISTS staff_type_map (
+    name       TEXT NOT NULL,
+    type_name  TEXT NOT NULL,
+    is_primary INTEGER NOT NULL DEFAULT 0,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (name, type_name)
+);
+
 -- 费用台账（本期仅导入落库，供后续结算表使用）
 CREATE TABLE IF NOT EXISTS expense_ledger (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -514,6 +537,23 @@ def init_db(backfill: bool = True) -> None:
             conn.execute(
                 "UPDATE staff_type_def SET role_code=? WHERE role_code<>? AND name LIKE ?",
                 (code, code, f"%{kw}%"))
+        # 迁移：花名册 + 人员类型关联（批1基础）
+        # 把现有 staff（姓名+单类型+入职月份+备注）折入 staff_roster + staff_type_map，
+        # 原 staff_type 标为主类型。幂等：仅当 staff_roster 为空时执行（已用过新结构则跳过）。
+        # staff 表保留为过渡镜像（下游结算/导入仍读 staff），批2 再彻底移除。
+        if conn.execute("SELECT COUNT(*) AS n FROM staff_roster").fetchone()["n"] == 0:
+            for r in conn.execute("SELECT name, staff_type, hire_month, note FROM staff"):
+                nm = (r["name"] or "").strip()
+                if not nm:
+                    continue
+                conn.execute(
+                    "INSERT OR IGNORE INTO staff_roster(name, hire_month, note) VALUES(?,?,?)",
+                    (nm, r["hire_month"] or "", r["note"] or ""))
+                st = (r["staff_type"] or "").strip()
+                if st:
+                    conn.execute(
+                        "INSERT OR IGNORE INTO staff_type_map(name, type_name, is_primary) "
+                        "VALUES(?,?,1)", (nm, st))
         # 迁移：历史数据行 person_type 旧标签（合伙/聘用/兼职/其他）→ role_code
         for tbl in ("charge_detail", "expense_ledger"):
             conn.execute(f"UPDATE {tbl} SET person_type='partner' WHERE person_type='合伙'")
