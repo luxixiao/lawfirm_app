@@ -163,8 +163,8 @@ def _build_env(initial_items, reimport_items):
     importer._archive_file = lambda *a, **k: "archive/dummy.xlsx"
     saved["ck"] = ec.check_unknown
     ec.check_unknown = lambda c, etypes: set()
-    saved["pe"] = ec.validate_public_exclusive
-    ec.validate_public_exclusive = lambda c, items: []
+    saved["pe"] = ec.validate_exclusive
+    ec.validate_exclusive = lambda c, items: []
     saved["vs"] = asub.validate_ledger_subjects
     asub.validate_ledger_subjects = lambda items, c: set()
 
@@ -179,7 +179,7 @@ def _restore(saved):
     importer._auto_snapshot = saved["snap"]
     importer._archive_file = saved["arch"]
     ec.check_unknown = saved["ck"]
-    ec.validate_public_exclusive = saved["pe"]
+    ec.validate_exclusive = saved["pe"]
     asub.validate_ledger_subjects = saved["vs"]
 
 

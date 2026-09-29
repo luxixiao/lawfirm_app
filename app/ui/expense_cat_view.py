@@ -1,7 +1,8 @@
 """费用类型页：6 张分类卡片 + 类内/跨类拖拽
 
 交互口径（已与需求方确认）：
-- 分类固定 6 类（报酬发放/住房公积金/保险费/汽油费/报销摊销等/公共专属费用），**说明文字可自定义填写**。
+- 分类固定 6 类（报酬发放/住房公积金/保险费/汽油费/报销摊销等/专属费用），**说明文字可自定义填写**。
+- 「专属费用」分类额外可设「专属人员类型」白名单（写 expense_category.exclusive_types）；空=无限制。
 - 每张卡片列出该类下的费用类型，支持：
   · 类内拖动排序、跨卡片拖动搬运（改归类）
   · 上移/下移按钮做精确定位兜底（长列表拖拽不好定位）
@@ -27,6 +28,7 @@ from app.ui.widgets import CaptionLabel, PageHeader, PushButton
 from app.db import get_conn
 from app.engine.change_log import log_change
 from app.engine import expense_cat as ec
+from app.engine import staff_type as st
 
 # 列表项上承载「别名列表」的自定义 role（类型名仍存 DisplayRole，保持纯数据）
 ALIAS_ROLE = int(Qt.ItemDataRole.UserRole) + 1
@@ -340,6 +342,14 @@ class CategoryCard(QFrame):
         btn_note.setMinimumWidth(fm.horizontalAdvance("说明") + 26)
         btn_note.clicked.connect(self._edit_note)
         head.addWidget(btn_note)
+        if name == ec.EXCLUSIVE_CATEGORY:
+            self.b_excl = PushButton("专属人员类型")
+            self.b_excl.setObjectName("cardBtn")
+            self.b_excl.setFixedHeight(24)
+            fm_ex = self.b_excl.fontMetrics()
+            self.b_excl.setMinimumWidth(fm_ex.horizontalAdvance("专属人员类型") + 26)
+            self.b_excl.clicked.connect(self._edit_exclusive)
+            head.addWidget(self.b_excl)
         lay.addLayout(head)
 
         self.note_label = CaptionLabel(note or "（点击「说明」填写本类的口径说明）")
@@ -347,6 +357,11 @@ class CategoryCard(QFrame):
         if note:
             self.note_label.setToolTip(note)
         lay.addWidget(self.note_label)
+        if name == ec.EXCLUSIVE_CATEGORY:
+            self.excl_label = CaptionLabel("")
+            self.excl_label.setWordWrap(True)
+            lay.addWidget(self.excl_label)
+            self.set_exclusive_label(ec.get_exclusive_types(name))
 
         self.list = TypeListWidget(name, view)
         self.list.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
@@ -406,6 +421,20 @@ class CategoryCard(QFrame):
             note = dlg.value()
             ec.set_category_note(self.name, note)
             self.set_note(note)
+
+    def _edit_exclusive(self) -> None:
+        all_types = [t["name"] for t in st.list_types()]
+        dlg = ExclusiveTypesDialog(self.name, all_types, ec.get_exclusive_types(self.name), self)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            names = dlg.value()
+            ec.set_exclusive_types(self.name, names)
+            self.set_exclusive_label(names)
+
+    def set_exclusive_label(self, names: List[str]) -> None:
+        if names:
+            self.excl_label.setText(f"专属人员类型：{', '.join(names)}")
+        else:
+            self.excl_label.setText("专属人员类型：未指定（无限制）")
 
     def _add(self) -> None:
         name, ok = QInputDialog.getText(self, "新增费用类型",
@@ -485,6 +514,42 @@ class AliasAddDialog(QDialog):
 
     def value(self) -> tuple:
         return (self.combo.currentText(), self.edit.text().strip())
+
+
+class ExclusiveTypesDialog(QDialog):
+    """「专属费用」分类的专属人员类型白名单多选。
+
+    勾选的人员类型可承担该分类支出；全不勾 = 无限制（D5）。
+    """
+
+    def __init__(self, category: str, all_types: List[str], selected: List[str], parent=None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle(f"专属人员类型 — {category}")
+        self.resize(360, 440)
+        lay = QVBoxLayout(self)
+        lay.addWidget(CaptionLabel(
+            "仅下列人员类型可承担「专属费用」分类的支出；\n"
+            "不勾选（空）= 无限制，所有类型均可承担。"))
+        self.list = QListWidget()
+        self.list.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        sel = set(selected)
+        for t in all_types:
+            it = QListWidgetItem(t)
+            it.setFlags(it.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            it.setCheckState(Qt.CheckState.Checked if t in sel else Qt.CheckState.Unchecked)
+            self.list.addItem(it)
+        lay.addWidget(self.list, 1)
+        box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok
+                               | QDialogButtonBox.StandardButton.Cancel)
+        box.button(QDialogButtonBox.StandardButton.Ok).setText("确定")
+        box.button(QDialogButtonBox.StandardButton.Cancel).setText("取消")
+        box.accepted.connect(self.accept)
+        box.rejected.connect(self.reject)
+        lay.addWidget(box)
+
+    def value(self) -> List[str]:
+        return [self.list.item(i).text() for i in range(self.list.count())
+                if self.list.item(i).checkState() == Qt.CheckState.Checked]
 
 
 # ---------------------------------------------------------------------------
@@ -571,6 +636,8 @@ class ExpenseCatView(QWidget):
                 continue
             card.set_types(by_cat.get(c["name"], []), aliases_by_canonical)
             card.set_note(c["note"])
+            if c["name"] == ec.EXCLUSIVE_CATEGORY and hasattr(card, "excl_label"):
+                card.set_exclusive_label(ec.get_exclusive_types(c["name"]))
         total = sum(len(v) for v in by_cat.values())
         self.hint.setText(f"共 {total} 个费用类型，{len(cats)} 个分类")
 

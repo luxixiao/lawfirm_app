@@ -4,7 +4,7 @@
 - role_def 种子（4 角色）与 role_code_of / role_attr / identity_roles /
   person_type_combo_items / role_label_map / list_roles；
 - F1 根因修复：把"合伙"改名为任意名，结算/收入（汇总与分身份视图）不受影响；
-- 公共专属费用校验按角色（forbid_public_exclusive）而非类型名；
+- 专属费用按分类级白名单校验（exclusive_types，方案乙）；
 - charge_detail.person_type 存的是角色码，结算按角色码过滤。
 
 运行：python tests/test_role_def.py
@@ -122,18 +122,33 @@ def main() -> int:
     inc_after = m_after["张三"]["months"][1]["income"]
     check("改名后汇总 income 仍=100(F1)", abs(inc_after - 100.0) < 0.01, f"got={inc_after}")
 
-    # ===== 4. 公共专属费用按角色校验（非类型名）=====
+    # ===== 4. 专属费用按分类级白名单校验（方案乙）=====
     c3 = db.get_conn()
     try:
         conn3 = c3
+        # 费用类型「物业费」归入「专属费用」分类
         conn3.execute("INSERT INTO expense_cat(expense_type, category, sort_order) "
-                      "VALUES('物业费','公共专属费用',99)")
+                      "VALUES('物业费','专属费用',99)")
+        # 白名单 = 内置三类（合伙/聘用/兼职）；空 = 无限制（D5）
+        ec.set_exclusive_types('专属费用', ['合伙', '聘用', '兼职'], conn3)
+        # 王五：主类型=合伙（在白名单）→ 放行
+        conn3.execute("INSERT OR IGNORE INTO staff_roster(name) VALUES('王五')")
+        conn3.execute("INSERT OR IGNORE INTO staff_type_map(name, type_name, is_primary) "
+                      "VALUES('王五','合伙',1)")
         conn3.commit()
-        viol = ec.validate_public_exclusive(conn3, [
-            {"expense_type": "物业费", "actual_handler": "张三"},   # partner → 拦
-            {"expense_type": "物业费", "actual_handler": "李四"},   # 无此人 → 落 other → 放行
+        viol = ec.validate_exclusive(conn3, [
+            {"expense_type": "物业费", "actual_handler": "张三"},   # 主类型 啊啊啊 不在白名单 → 拦
+            {"expense_type": "物业费", "actual_handler": "王五"},   # 合伙 在白名单 → 放行
+            {"expense_type": "物业费", "actual_handler": "李四"},   # 非花名册经办人 → 豁免放行
         ])
-        check("公共专属按角色拦张三(合伙)", viol == ["张三(合伙)"], f"got={viol}")
+        check("专属费用白名单拦 张三", "张三(新合伙名)" in viol, f"got={viol}")
+        check("白名单内 王五 放行", "王五" not in " ".join(viol), f"got={viol}")
+        check("非花名册 李四 豁免放行", "李四" not in " ".join(viol), f"got={viol}")
+        # D5：清空白名单 → 无限制，张三也放行
+        ec.set_exclusive_types('专属费用', [], conn3)
+        conn3.commit()
+        viol2 = ec.validate_exclusive(conn3, [{"expense_type": "物业费", "actual_handler": "张三"}])
+        check("D5 未指定=无限制", viol2 == [], f"got={viol2}")
     finally:
         c3.close()
 

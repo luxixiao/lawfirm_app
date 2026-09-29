@@ -390,9 +390,10 @@ CREATE TABLE IF NOT EXISTS staff_type_def (
 
 -- ============ 角色定义（身份大类，去写死：合伙/聘用/兼职/其他）============
 -- 与具体「员工类型」名称解耦：staff_type_def.role_code 指向这里。
--- 角色承载原先按名称硬编码的四类语义：是否禁承担「公共专属费用」/
--- 是否进收入报表 / 对外报送分类 / 新建类型默认净额口径。
--- 改名或删除任意员工类型都不会撼动这些语义（口径按角色，不按名称）。
+-- 注：forbid_public_exclusive / include_in_income_report 两列已退役（列定义保留、停用读取）：
+-- 费用承担闸门现由 staff_type_def.can_expense（费用线）判定；进收入报表由 is_invoice/can_expense 派生；
+-- 专属费用白名单改由 expense_category.exclusive_types（分类级）承担。
+-- 仍保留的语义：report_class（对外报送分类）/ default_net_basis（勾选开票时的便利默认）。
 CREATE TABLE IF NOT EXISTS role_def (
     role_code               TEXT PRIMARY KEY,
     label                   TEXT NOT NULL,
@@ -402,11 +403,12 @@ CREATE TABLE IF NOT EXISTS role_def (
     default_net_basis       TEXT NOT NULL DEFAULT '收款净额'
 );
 
--- 费用分类说明（分类固定 6 类：报酬发放/住房公积金/保险费/汽油费/报销摊销等/公共专属费用；说明可自定义填写，供费用类型页分组展示）
+-- 费用分类说明（分类固定 6 类：报酬发放/住房公积金/保险费/汽油费/报销摊销等/专属费用；说明可自定义填写，供费用类型页分组展示）
 CREATE TABLE IF NOT EXISTS expense_category (
-    name        TEXT PRIMARY KEY,
-    note        TEXT DEFAULT '',
-    sort_order  INTEGER NOT NULL DEFAULT 0
+    name            TEXT PRIMARY KEY,
+    note            TEXT DEFAULT '',
+    sort_order      INTEGER NOT NULL DEFAULT 0,
+    exclusive_types TEXT NOT NULL DEFAULT ''   -- 专属费用白名单（批次3 点3）：逗号分隔的人员类型名；空=无限制
 );
 
 -- ============ 费用类型别名（同义归一）============
@@ -487,6 +489,17 @@ def _migrate_expense_category_rename(conn) -> None:
     """
     conn.execute("UPDATE expense_category SET name='报销摊销等' WHERE name='其他'")
     conn.execute("UPDATE expense_cat SET category='报销摊销等' WHERE category='其他'")
+
+
+def _migrate_exclusive_category_rename(conn) -> None:
+    """迁移：费用分类「公共专属费用」改名为「专属费用」（批次3 点3）。幂等。
+
+    历史库里归到「公共专属费用」的分类名与类型一并改名；新库由 `ensure_categories`
+    直接建出「专属费用」，本迁移无行可改。须在 `ensure_categories` 之前执行，
+    否则新库会同时存在「专属费用」与未改名的「公共专属费用」造成主键冲突。
+    """
+    conn.execute("UPDATE expense_category SET name='专属费用' WHERE name='公共专属费用'")
+    conn.execute("UPDATE expense_cat SET category='专属费用' WHERE category='公共专属费用'")
 
 
 def init_db(backfill: bool = True) -> None:
@@ -604,7 +617,12 @@ def init_db(backfill: bool = True) -> None:
         # 批2：staff 镜像表已无用（数据在批1折叠迁移中迁入 staff_roster + staff_type_map），
         # 此处一并 DROP 清理（幂等；新库本就无此表）。
         conn.execute("DROP TABLE IF EXISTS staff")
-        # 迁移：费用分类「其他」改名为「报销摊销等」（新增第 6 类「公共专属费用」由 ensure_categories 补齐）
+        # 迁移：专属费用（批次3 点3）—— 公共专属费用→专属费用 + 新增 exclusive_types 列
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(expense_category)")]
+        if "exclusive_types" not in cols:
+            conn.execute("ALTER TABLE expense_category ADD COLUMN exclusive_types TEXT NOT NULL DEFAULT ''")
+        _migrate_exclusive_category_rename(conn)
+        # 迁移：费用分类「其他」改名为「报销摊销等」（新增第 6 类「专属费用」由 ensure_categories 补齐）
         _migrate_expense_category_rename(conn)
         from app.engine.expense_cat import ensure_categories
         ensure_categories(conn)

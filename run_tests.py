@@ -43,7 +43,7 @@ EXPECTED_FILES = [
     "tests/test_expense_cat.py",
     "tests/test_expense_alias.py",        # 费用类型别名（同义归一）
     "tests/test_expense_alias_ui.py",     # 别名内联显示 UI（delegate/几何/拖拽保别名）
-    "tests/test_expense_public_exclusive.py",
+    "tests/test_expense_exclusive.py",       # 专属费用改名 + 分类级白名单校验
     "tests/test_expense_reimport.py",      # T2 新增（同账期重导字段级 diff）
     "tests/test_expense_validation.py",   # T1 新增
     "tests/test_expense_edit.py",          # T4 新增（详情页保存内核）

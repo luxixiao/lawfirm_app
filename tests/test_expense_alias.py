@@ -183,8 +183,8 @@ def main() -> int:
         importer._auto_snapshot = lambda *a, **k: None  # P2-3 起新签名 (batch_type, period)
         saved["arch"] = importer._archive_file
         importer._archive_file = lambda *a, **k: "archive/dummy.xlsx"
-        saved["pe"] = ec.validate_public_exclusive
-        ec.validate_public_exclusive = lambda c2, items: []
+        saved["pe"] = ec.validate_exclusive
+        ec.validate_exclusive = lambda c2, items: []
         saved["vs"] = asub.validate_ledger_subjects
         asub.validate_ledger_subjects = lambda items, c2: set()
         return c, saved
@@ -194,7 +194,7 @@ def main() -> int:
         importer._validate_handler_names = saved["vh"]
         importer._auto_snapshot = saved["snap"]
         importer._archive_file = saved["arch"]
-        ec.validate_public_exclusive = saved["pe"]
+        ec.validate_exclusive = saved["pe"]
         asub.validate_ledger_subjects = saved["vs"]
         _db_mod.get_conn = orig_app_get
         importer.get_conn = orig_imp_get

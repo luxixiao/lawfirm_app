@@ -9,7 +9,8 @@
 - `ordered_types()` 供结算/年度聘用结算表取数，因此改动顺序即改导出列序。
 - 分类固定 6 类（`CATEGORIES`），不可增删；说明文字可自定义填写。
 - 「报销摊销等」为兜底分类（原「其他」改名），脏数据（分类不在 CATEGORIES 里）一律并入。
-- 「公共专属费用」为公共专属支出分类：合伙/聘用/兼职 员工不可承担（导入校验，见 `validate_public_exclusive`）。
+- 「专属费用」为专属支出分类：仅白名单内的人员类型可承担（导入校验，见 `validate_exclusive`）；
+  白名单为空 = 无限制（D5）。
 """
 from __future__ import annotations
 
@@ -19,13 +20,13 @@ from app.db import get_conn
 from app.engine import staff_type  # 角色口径（去写死）：forbid_public_exclusive
 
 # 固定 6 类（顺序即展示顺序；不可增删，改动须同步 db.py 迁移与测试）
-CATEGORIES = ["报酬发放", "住房公积金", "保险费", "汽油费", "报销摊销等", "公共专属费用"]
+CATEGORIES = ["报酬发放", "住房公积金", "保险费", "汽油费", "报销摊销等", "专属费用"]
 # 兜底分类：脏数据（分类不在 CATEGORIES 里）一律并入
 FALLBACK_CATEGORY = "报销摊销等"
 
-# 公共专属费用分类：合伙/聘用/兼职 这三类员工不可承担该分类下的支出
-PUBLIC_EXCLUSIVE_CATEGORY = "公共专属费用"
-# 去写死：禁承担「公共专属费用」不再按类型名硬编码，改用 role_def.forbid_public_exclusive。
+# 专属费用分类（方案乙·分类级白名单）：仅白名单内的人员类型可承担该分类下的支出；
+# 白名单为空 = 无限制（D5）。白名单存于 expense_category.exclusive_types（逗号分隔的人员类型名）。
+EXCLUSIVE_CATEGORY = "专属费用"
 
 # 预置默认归类规则（按类型名包含关键词，顺序敏感）
 _DEFAULT_RULE = [
@@ -159,19 +160,61 @@ def check_unknown(conn, types: list) -> list:
     return [t for t in types if t and t not in known]
 
 
-def validate_public_exclusive(conn, items: list) -> list:
-    """导入前校验：落入「公共专属费用」分类的支出，禁止由 合伙/聘用/兼职 员工承担。
+def get_exclusive_types(category: str, conn=None) -> List[str]:
+    """读取某分类的专属人员类型白名单（expense_category.exclusive_types，逗号分隔的人员类型名）。"""
+    own, conn = _own_conn(conn)
+    try:
+        r = conn.execute(
+            "SELECT exclusive_types FROM expense_category WHERE name=?", (category,)).fetchone()
+        raw = (r["exclusive_types"] or "") if r else ""
+        return [x.strip() for x in raw.split(",") if x.strip()] if raw else []
+    finally:
+        _close(own, conn)
+
+
+def set_exclusive_types(category: str, names: List[str], conn=None) -> None:
+    """写回某分类的专属人员类型白名单（人员类型名列表；空列表 = 无限制 D5）。"""
+    own, conn = _own_conn(conn)
+    try:
+        conn.execute("UPDATE expense_category SET exclusive_types=? WHERE name=?",
+                     (",".join(names), category))
+        conn.commit()
+    finally:
+        _close(own, conn)
+
+
+def get_exclusive_map(conn=None) -> Dict[str, List[str]]:
+    """{分类名: 专属人员类型白名单}；仅含 exclusive_types 非空者（空=无限制，不进 map）。"""
+    own, conn = _own_conn(conn)
+    try:
+        out: Dict[str, List[str]] = {}
+        for r in conn.execute("SELECT name, exclusive_types FROM expense_category"):
+            names = [x.strip() for x in (r["exclusive_types"] or "").split(",") if x.strip()]
+            if names:
+                out[r["name"]] = names
+        return out
+    finally:
+        _close(own, conn)
+
+
+def validate_exclusive(conn, items: list) -> list:
+    """导入前校验：「专属费用」分类的支出只允许白名单内人员类型承担（方案乙·分类级）。
 
     items：解析后的费用台账行（需含 `expense_type` / `actual_handler`）。
-    返回违例人员清单（姓名(类型)，已去重升序）；为空表示通过。
+    返回违例人员清单（姓名(主类型)，去重升序）；为空表示通过。
 
     判定口径：
-    - 费用类型本身 == PUBLIC_EXCLUSIVE_CATEGORY，或该类型归类 == PUBLIC_EXCLUSIVE_CATEGORY；
-    - 且承担人（actual_handler）的结算身份 ∈ {合伙, 聘用, 兼职}（取自 staff 花名册）；
-    - 「公共」「行政」等非花名册经办人（白名单）及未登记人员（落为「其他」）一律放行。
+    - 费用类型归类 == EXCLUSIVE_CATEGORY（或类型名本身 == EXCLUSIVE_CATEGORY）→ 触发；
+    - 取该分类 exclusive_types 白名单；空 → D5 无限制，放行；
+    - 经办人不在花名册（外部经办人如公共/行政）→ 豁免放行（专属费用约束只针对员工类型）；
+    - 经办人在花名册 → 取其实全部类型（list_person_types，D1 一人多类型聚合取 OR）；
+      任一类型在白名单即放行，否则违例（姓名(主类型)）。
     """
-    from app.engine.backfill import staff_type_of
     cat_map = get_map(conn)
+    excl = get_exclusive_map(conn)
+    if not excl:
+        return []
+    roster = {r["name"] for r in conn.execute("SELECT name FROM staff_roster")}
     viol = set()
     for it in items:
         et = (it.get("expense_type") or "").strip()
@@ -179,11 +222,18 @@ def validate_public_exclusive(conn, items: list) -> list:
         if not et or not handler:
             continue
         cat = cat_map.get(et, FALLBACK_CATEGORY)
-        if et == PUBLIC_EXCLUSIVE_CATEGORY or cat == PUBLIC_EXCLUSIVE_CATEGORY:
-            # 去写死：按角色判定（role_def.forbid_public_exclusive），不再按类型名
-            code = staff_type_of(conn, handler)  # 角色码
-            if staff_type.role_attr(code, conn).get("forbid_public_exclusive"):
-                viol.add(f"{handler}({staff_type.role_label(code, conn)})")
+        if et == EXCLUSIVE_CATEGORY:
+            cat = EXCLUSIVE_CATEGORY
+        allowed = excl.get(cat)
+        if not allowed:
+            continue
+        # 非花名册经办人豁免（专属费用只约束员工类型，外部经办人不参与白名单判定）
+        if handler not in roster:
+            continue
+        person_types = staff_type.list_person_types(handler, conn)
+        if set(person_types) & set(allowed):
+            continue
+        viol.add(f"{handler}({staff_type.primary_type_of(handler, conn)})")
     return sorted(viol)
 
 

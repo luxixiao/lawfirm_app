@@ -1229,7 +1229,7 @@ def import_expense_file(path: str, period: str, on_reimport_diff=None) -> Dict:
         # 费用类型归一（别名 → 规范名）：导入前先把台账里的别名写法写回规范名，
         # 这样「公积金」与「住房公积金」视为同一类型，不再因「类型不在维护名单」报错。
         from app.engine.expense_cat import (
-            check_unknown, validate_public_exclusive, PUBLIC_EXCLUSIVE_CATEGORY, resolve_type)
+            check_unknown, validate_exclusive, EXCLUSIVE_CATEGORY, resolve_type)
         for it in items:
             raw = it.get("expense_type")
             if raw:
@@ -1244,11 +1244,11 @@ def import_expense_file(path: str, period: str, on_reimport_diff=None) -> Dict:
                 f"或用「别名」归一到已有类型）: {', '.join(sorted(set(unknown)))}"
             )
 
-        # 公共专属费用校验：合伙/聘用/兼职 员工不可承担「公共专属费用」分类的支出
-        viol = validate_public_exclusive(conn, items)
+        # 专属费用校验：分类 exclusive_types 白名单，不在白名单内的员工类型不可承担（方案乙·分类级）
+        viol = validate_exclusive(conn, items)
         if viol:
             raise ImportError_(
-                f"费用分类「{PUBLIC_EXCLUSIVE_CATEGORY}」的支出不应由合伙/聘用/兼职员工承担，"
+                f"费用分类「{EXCLUSIVE_CATEGORY}」仅限白名单内的人员类型承担，"
                 f"请检查经办人：{', '.join(viol)}"
             )
 
