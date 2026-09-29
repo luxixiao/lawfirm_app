@@ -130,6 +130,76 @@ def build_settlement_conn(conn, year: int, person: str | None = None,
     return _compute(conn, year, person, person_type, warnings)
 
 
+def _add_st(a: Dict | None, b: Dict) -> Dict:
+    """合并两个人员结算结构（逐月 + 费用 + 未收），用于「范围内合并」视图。
+
+    每笔业务唯一归属某角色码，故合并=逐角色份额可加求和（严格成立）。
+    a 为 None 时返回 b 的深拷贝。
+    """
+    if a is None:
+        return {
+            "staff_type": b.get("staff_type", ""),
+            "months": {m: dict(b["months"][m]) for m in MONTHS},
+            "uncollected_month": dict(b["uncollected_month"]),
+            "uncollected_total": b["uncollected_total"],
+            "expenses": {t: dict(v) for t, v in b["expenses"].items()},
+        }
+    out = {
+        "staff_type": a.get("staff_type") or b.get("staff_type", ""),
+        "months": {},
+        "uncollected_month": {},
+        "uncollected_total": round(a["uncollected_total"] + b["uncollected_total"], 2),
+        "expenses": {},
+    }
+    for m in MONTHS:
+        out["months"][m] = {k: round(a["months"][m][k] + b["months"][m][k], 2)
+                            for k in a["months"][m]}
+        out["uncollected_month"][m] = round(a["uncollected_month"][m] + b["uncollected_month"][m], 2)
+    for t in set(a["expenses"]) | set(b["expenses"]):
+        va = a["expenses"].get(t, {})
+        vb = b["expenses"].get(t, {})
+        out["expenses"][t] = {m: round(va.get(m, 0.0) + vb.get(m, 0.0), 2) for m in MONTHS}
+    return out
+
+
+def report_entries(year: int, persons: list, split: bool, roles: list,
+                   conn=None) -> list:
+    """报表 合并/拆分 行构造（引擎层，预览与导出共用）。
+
+    roles: [(role_code, label), ...] —— 该报表的角色范围（拆分时按这些角色展开，
+           合并时按这些角色求和）。必须来自报表自身口径（如 identity_roles / 聘用二角色）。
+    split=False: 每行 = 范围内合并 = Σ(roles 各角色份额)，display=person。
+    split=True:  每行 = (person, role) 且 role 有数据，display=f'{person}{label}'（如 张三(合伙)）。
+    返回 [(display_name, st_or_None), ...]（展示顺序：按 persons；拆分时按 roles 顺序）。
+    不变量：Σ split 各数值列 == 合并 对应列（每笔业务唯一归属角色码，严格可加）。
+    """
+    if conn is not None:
+        role_built = {code: build_settlement_conn(conn, year, person_type=code)
+                      for code, _ in roles}
+    else:
+        role_built = {code: build_settlement(year, person_type=code)
+                      for code, _ in roles}
+    codes = [code for code, _ in roles]
+
+    def merged_st(name: str) -> Dict | None:
+        acc = None
+        for code in codes:
+            s = role_built[code].get(name)
+            if s is not None:
+                acc = _add_st(acc, s)
+        return acc
+
+    if not split:
+        return [(name, merged_st(name)) for name in persons]
+    entries = []
+    for name in persons:
+        for code, label in roles:
+            s = role_built[code].get(name)
+            if s is not None:
+                entries.append((f"{name}{label}", s))
+    return entries
+
+
 def _new_st(conn, name: str, override: str | None = None) -> Dict:
     """标准人员结构（override=身份，优先于人员类型）"""
     return {

@@ -537,7 +537,8 @@ class SettlementView(QWidget):
         self.log.clear()
         self.log.appendPlainText(f"正在生成 {year}年{month}月 结算表（{len(selected)} 人）…")
         try:
-            f = export_report(Path(out) / f"{year}年{month}月结算表.xlsx", year, month, selected)
+            f = export_report(Path(out) / f"{year}年{month}月结算表.xlsx", year, month, selected,
+                              self.r_split.currentData())
         except Exception as e:  # noqa: BLE001
             self.log.appendPlainText(f"✗ 生成失败: {e}")
             QMessageBox.critical(self, "生成失败", str(e))
@@ -603,11 +604,24 @@ class SettlementView(QWidget):
         self.btn_report = PushButton("导出月度结算表")
         self.btn_report.clicked.connect(self.gen_report)
         self.r_summary = CaptionLabel("")
+        bbar.addWidget(CaptionLabel("展示"))
+        self.r_split = QComboBox()
+        self.r_split.addItem("合并", userData="merge")
+        self.r_split.addItem("拆分（按角色）", userData="split")
+        self.r_split.addItem("两者", userData="both")
+        _saved = self._load_split("monthly_report", "both")
+        self.r_split.setCurrentIndex({"merge": 0, "split": 1, "both": 2}.get(_saved, 2))
+        self.r_split.currentIndexChanged.connect(self._on_r_split_changed)
+        self.r_split.setStyleSheet(_combo_qss())
+        bbar.addWidget(self.r_split)
         bbar.addWidget(self.btn_report)
         bbar.addStretch()
         bbar.addWidget(self.r_summary)
         v.addLayout(bbar)
         return w
+
+    def _on_r_split_changed(self) -> None:
+        self._save_split("monthly_report", bool(self.r_split.currentData()))
 
     def _sync_r_type_options(self, name: str) -> None:
         """月度结算表 Tab 类型下拉动态化"""
@@ -710,6 +724,14 @@ class SettlementView(QWidget):
         self.si_month.setCurrentIndex(min(datetime.now().month, 12) - 1)
         self.si_month.currentIndexChanged.connect(lambda *_: self.refresh_staff_income())
         bar.addWidget(self.si_month)
+        bar.addWidget(CaptionLabel("展示"))
+        self.si_split = QComboBox()
+        self.si_split.addItem("合并", userData=False)
+        self.si_split.addItem("拆分（按角色）", userData=True)
+        self.si_split.setCurrentIndex(1 if self._load_split("staff_income", False) else 0)
+        self.si_split.currentIndexChanged.connect(self._on_si_split_changed)
+        self.si_split.setStyleSheet(_combo_qss())
+        bar.addWidget(self.si_split)
         bar.addStretch()
         v.addLayout(bar)
         COMBO_QSS = _combo_qss()
@@ -745,6 +767,23 @@ class SettlementView(QWidget):
         v.addLayout(bbar)
         return w
 
+    def _load_split(self, key: str, default=False):
+        """读取报表 合并/拆分/两者 偏好。列表式报表存 bool（合并/拆分），月度报表存 'merge'/'split'/'both'。"""
+        from PySide6.QtCore import QSettings
+        try:
+            v = QSettings("lawfirm_app", "lawfirm_app").value(f"settlement/{key}_split")
+            return v if v is not None else default
+        except Exception:  # noqa: BLE001
+            return default
+
+    def _save_split(self, key: str, val) -> None:
+        from PySide6.QtCore import QSettings
+        QSettings("lawfirm_app", "lawfirm_app").setValue(f"settlement/{key}_split", val)
+
+    def _on_si_split_changed(self) -> None:
+        self._save_split("staff_income", bool(self.si_split.currentData()))
+        self.refresh_staff_income()
+
     def refresh_staff_income(self) -> None:
         """年度聘用结算表预览：选年份+月份 → 表格显示该月完整内容（含合计行）"""
         from app.exporter.staff_income_exporter import build_report_rows
@@ -752,7 +791,8 @@ class SettlementView(QWidget):
             return
         year = self.si_year.currentData() or datetime.now().year
         month = self.si_month.currentData() or 1
-        persons, rows, totals = build_report_rows(year, month)
+        split = bool(self.si_split.currentData()) if hasattr(self, "si_split") else False
+        persons, rows, totals = build_report_rows(year, month, split)
         from PySide6.QtGui import QFont
         bold = QFont()
         bold.setBold(True)
@@ -779,7 +819,8 @@ class SettlementView(QWidget):
             self.si_table.setItem(last, j, it)
         self.si_table._col.apply()
         self.si_summary.setText(
-            f"{year}年{month}月聘用律师业务收入结算表（{len(persons)} 人）· 预览共 {len(rows)} 行+合计，确认后导出")
+            f"{year}年{month}月聘用律师业务收入结算表（{len(persons)} 人"
+            f"{'· 拆分' if split else ''}）· 预览共 {len(rows)} 行+合计，确认后导出")
 
     # ---- 导出年度聘用律师业务收入结算表 ----
     def gen_staff_income(self) -> None:
@@ -795,7 +836,7 @@ class SettlementView(QWidget):
         try:
             f = export_staff_income_month(
                 Path(out) / f"{year}年度业务收入结算表（聘用律师）_{year}{month:02d}.xlsx",
-                year, month)
+                year, month, bool(self.si_split.currentData()))
         except Exception as e:  # noqa: BLE001
             self.log.appendPlainText(f"✗ 生成失败: {e}")
             QMessageBox.critical(self, "生成失败", str(e))
@@ -816,7 +857,8 @@ class SettlementView(QWidget):
         self.log.appendPlainText(f"正在生成 {year}年度聘用律师业务收入结算表模板表（1~{month_to}月，从新到旧）…")
         try:
             f = export_staff_income(
-                Path(out) / f"{year}年度业务收入结算表（聘用律师）.xlsx", year, month_to)
+                Path(out) / f"{year}年度业务收入结算表（聘用律师）.xlsx", year, month_to,
+                bool(self.si_split.currentData()))
         except Exception as e:  # noqa: BLE001
             self.log.appendPlainText(f"✗ 生成失败: {e}")
             QMessageBox.critical(self, "生成失败", str(e))
@@ -851,6 +893,14 @@ class SettlementView(QWidget):
         self.ii_month.setCurrentIndex(min(datetime.now().month, 12) - 1)
         self.ii_month.currentIndexChanged.connect(lambda *_: self.refresh_invoice_income())
         bar.addWidget(self.ii_month)
+        bar.addWidget(CaptionLabel("展示"))
+        self.ii_split = QComboBox()
+        self.ii_split.addItem("合并", userData=False)
+        self.ii_split.addItem("拆分（按角色）", userData=True)
+        self.ii_split.setCurrentIndex(1 if self._load_split("invoice_income", False) else 0)
+        self.ii_split.currentIndexChanged.connect(self._on_ii_split_changed)
+        self.ii_split.setStyleSheet(_combo_qss())
+        bar.addWidget(self.ii_split)
         bar.addStretch()
         v.addLayout(bar)
         COMBO_QSS = _combo_qss()
@@ -883,6 +933,10 @@ class SettlementView(QWidget):
         v.addLayout(bbar)
         return w
 
+    def _on_ii_split_changed(self) -> None:
+        self._save_split("invoice_income", bool(self.ii_split.currentData()))
+        self.refresh_invoice_income()
+
     def refresh_invoice_income(self) -> None:
         """开票收入表预览：主表（选中月，8 列 + 合计行）"""
         from app.exporter.invoice_income_exporter import build_main_preview
@@ -890,7 +944,8 @@ class SettlementView(QWidget):
             return
         year = self.ii_year.currentData() or datetime.now().year
         month = self.ii_month.currentData() or 1
-        persons, rows, totals = build_main_preview(year, month)
+        split = bool(self.ii_split.currentData()) if hasattr(self, "ii_split") else False
+        persons, rows, totals = build_main_preview(year, month, split)
         from PySide6.QtGui import QFont
         bold = QFont()
         bold.setBold(True)
@@ -917,7 +972,8 @@ class SettlementView(QWidget):
             self.ii_table.setItem(last, j, it)
         self.ii_table._col.apply()
         self.ii_summary.setText(
-            f"{year}年{month}月律师收费情况表（开票收入）· {len(persons)} 人 + 合计，确认后导出")
+            f"{year}年{month}月律师收费情况表（开票收入）· {len(persons)} 人"
+            f"{'· 拆分' if split else ''} + 合计，确认后导出")
 
     # ---- 导出开票收入表 ----
     def gen_invoice_income(self) -> None:
@@ -932,7 +988,8 @@ class SettlementView(QWidget):
         self.log.appendPlainText(f"正在生成 {year}年{month}月开票收入表…")
         try:
             f = export_invoice_income_month(
-                Path(out) / f"{year}年度开票收入_{year}{month:02d}.xlsx", year, month)
+                Path(out) / f"{year}年度开票收入_{year}{month:02d}.xlsx", year, month,
+                bool(self.ii_split.currentData()))
         except Exception as e:  # noqa: BLE001
             self.log.appendPlainText(f"✗ 生成失败: {e}")
             QMessageBox.critical(self, "生成失败", str(e))
@@ -952,7 +1009,8 @@ class SettlementView(QWidget):
         self.log.appendPlainText(f"正在生成 {year}年度开票收入表模板表（1~{month_to}月，从新到旧 + 未收款明细）…")
         try:
             f = export_invoice_income(
-                Path(out) / f"{year}年度开票收入.xlsx", year, month_to)
+                Path(out) / f"{year}年度开票收入.xlsx", year, month_to,
+                bool(self.ii_split.currentData()))
         except Exception as e:  # noqa: BLE001
             self.log.appendPlainText(f"✗ 生成失败: {e}")
             QMessageBox.critical(self, "生成失败", str(e))

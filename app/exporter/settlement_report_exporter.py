@@ -252,11 +252,15 @@ def _has_data(st: Dict, month: int) -> bool:
     return False
 
 
-def export_report(out_path: str | Path, year: int, month: int, persons: list[str]) -> Path:
+def export_report(out_path: str | Path, year: int, month: int, persons: list[str],
+                  mode: str = "both") -> Path:
     """生成月度结算表（多 sheet）。
 
     - persons 为姓名列表（含"公共费用"）
-    - 每人按身份拆：X合伙 / X聘用 / X兼职（该身份有数据才出）+ X汇总（合并）
+    - mode="merge"（合并）：每人仅出 汇总 sheet（合并所有身份）
+    - mode="split"（拆分）：每人仅出 各身份 sheet（X合伙 / X聘用 / X兼职，该身份有数据才出）；
+      若该人所有身份都无数据，仍出一个空 汇总 sheet 保持名单完整
+    - mode="both"（两者，旧默认行为）：每人同时出 各身份 sheet + 汇总 sheet
     """
     data_all = build_settlement(year)
     wb = openpyxl.Workbook()
@@ -267,24 +271,41 @@ def export_report(out_path: str | Path, year: int, month: int, persons: list[str
             ws = wb.create_sheet(title="公共费用")
             _write_sheet(ws, "公共费用", st, year, month)
             continue
-        # 各身份 sheet（按角色枚举，去写死）
-        any_data = False
-        for code, label in staff_type.identity_roles():
-            st = build_settlement(year, person=person, person_type=code).get(person)
-            if st is not None and _has_data(st, month):
-                ws = wb.create_sheet(title=f"{person}{label}")
-                _write_sheet(ws, person, st, year, month)
-                any_data = True
-        # 汇总 sheet（合并所有身份）
-        st_all = data_all.get(person)
-        if st_all is not None and _has_data(st_all, month):
-            ws = wb.create_sheet(title=f"{person}汇总")
-            _write_sheet(ws, person, st_all, year, month)
-            any_data = True
-        if not any_data:
-            # 无数据也出一个汇总空表（保持名单完整）
-            ws = wb.create_sheet(title=f"{person}汇总")
-            _write_sheet(ws, person, _empty_st(), year, month)
+        if mode == "split":
+            emitted = False
+            for code, label in staff_type.identity_roles():
+                st = build_settlement(year, person=person, person_type=code).get(person)
+                if st is not None and _has_data(st, month):
+                    ws = wb.create_sheet(title=f"{person}{label}")
+                    _write_sheet(ws, person, st, year, month)
+                    emitted = True
+            if not emitted:
+                ws = wb.create_sheet(title=f"{person}汇总")
+                _write_sheet(ws, person, _empty_st(), year, month)
+        elif mode == "merge":
+            st_all = data_all.get(person)
+            if st_all is not None and _has_data(st_all, month):
+                ws = wb.create_sheet(title=f"{person}汇总")
+                _write_sheet(ws, person, st_all, year, month)
+            else:
+                ws = wb.create_sheet(title=f"{person}汇总")
+                _write_sheet(ws, person, _empty_st(), year, month)
+        else:  # both（旧行为）
+            emitted = False
+            for code, label in staff_type.identity_roles():
+                st = build_settlement(year, person=person, person_type=code).get(person)
+                if st is not None and _has_data(st, month):
+                    ws = wb.create_sheet(title=f"{person}{label}")
+                    _write_sheet(ws, person, st, year, month)
+                    emitted = True
+            st_all = data_all.get(person)
+            if st_all is not None and _has_data(st_all, month):
+                ws = wb.create_sheet(title=f"{person}汇总")
+                _write_sheet(ws, person, st_all, year, month)
+                emitted = True
+            if not emitted:
+                ws = wb.create_sheet(title=f"{person}汇总")
+                _write_sheet(ws, person, _empty_st(), year, month)
     out = Path(out_path)
     out.parent.mkdir(parents=True, exist_ok=True)
     wb.save(out)

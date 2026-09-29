@@ -18,7 +18,7 @@ from openpyxl.worksheet.page import PageMargins
 from openpyxl.worksheet.properties import PageSetupProperties
 
 from app.db import get_conn
-from app.engine.person_settlement import build_settlement
+from app.engine.person_settlement import build_settlement, report_entries
 from app.engine import staff_type
 from app.engine.split import allocate_receipt
 
@@ -53,8 +53,8 @@ def _main_persons(conn, year: int, month: int) -> list:
     return out
 
 
-def _build_main_rows(data: Dict, year: int, month: int):
-    """主表行数据（预览/导出共用）
+def _build_main_rows(entries: list, year: int, month: int):
+    """主表行数据（预览/导出共用）。entries: [(display_name, st_or_None), ...]（合并/拆分统一）。
 
     - F 本月开票本月收回 = 引擎⑥（保持引擎现状；模板对红冲上年扣减无稳定规则，不模拟）
     - G 本月收回以前应收款 = ②+③+退款（含负值，与模板一致）
@@ -63,12 +63,9 @@ def _build_main_rows(data: Dict, year: int, month: int):
     totals: 6 个数值列合计
     """
     rows = []
-    for name in sorted(data.keys()):
-        if name == "公共":
-            continue
-        st = data.get(name)
+    for display, st in entries:
         if st is None:
-            rows.append([name, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+            rows.append([display, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
             continue
         m = st["months"][month]
         inv_cur = m["inv_total"]
@@ -78,24 +75,26 @@ def _build_main_rows(data: Dict, year: int, month: int):
         prev_recv = round(m["rec_cur_year"] + m["rec_prev_year"]
                           + m["rec_refund_cur"] + m["rec_refund_prev"], 2)
         total_recv = round(open_recv + prev_recv, 2)
-        rows.append([name, inv_cur, inv_tot, uncol, open_recv, prev_recv, total_recv])
+        rows.append([display, inv_cur, inv_tot, uncol, open_recv, prev_recv, total_recv])
     totals = [round(sum(r[j] for r in rows), 2) for j in range(1, 7)]
     return rows, totals
 
 
-def build_main_preview(year: int, month: int):
-    """主表预览/导出共用：返回 (persons, rows, totals)"""
-    data = build_settlement(year)
+def build_main_preview(year: int, month: int, split: bool = False):
+    """主表预览/导出共用：返回 (names, rows, totals)。split=True 按角色展开每行。"""
     conn = get_conn()
     try:
         persons = _main_persons(conn, year, month)
+        roles = staff_type.identity_roles(conn)
     finally:
         conn.close()
-    rows, totals = _build_main_rows(data, year, month)
-    return persons, rows, totals
+    entries = report_entries(year, persons, split, roles)
+    rows, totals = _build_main_rows(entries, year, month)
+    names = [d for d, _ in entries]
+    return names, rows, totals
 
 
-def _write_main_sheet(ws, year: int, month: int, data: Dict) -> None:
+def _write_main_sheet(ws, year: int, month: int, entries: list) -> None:
     ws.merge_cells("A1:H1")
     ws["A1"] = "浙江震天律师事务所"
     ws["A1"].font = Font(size=13, bold=True)
@@ -125,7 +124,7 @@ def _write_main_sheet(ws, year: int, month: int, data: Dict) -> None:
             cell.alignment = CENTER
             cell.border = BORDER
 
-    rows, totals = _build_main_rows(data, year, month)
+    rows, totals = _build_main_rows(entries, year, month)
     r = 5
     for i, row in enumerate(rows, 1):
         ws.cell(r, 1, i).alignment = CENTER
@@ -281,14 +280,21 @@ def _detail_sheets(year: int, month_to: int) -> list:
     return out
 
 
-def export_invoice_income(out_path: str | Path, year: int, month_to: int) -> Path:
-    """生成开票收入表模板表：1~month_to 主表（从新到旧）+ 未收款明细（当年 + 历史年度）"""
-    data = build_settlement(year)
+def export_invoice_income(out_path: str | Path, year: int, month_to: int, split: bool = False) -> Path:
+    """生成开票收入表模板表：1~month_to 主表（从新到旧）+ 未收款明细（当年 + 历史年度）。
+    split=True 主表按角色展开每行。"""
     wb = openpyxl.Workbook()
     wb.remove(wb.active)
     for month in range(month_to, 0, -1):
+        conn = get_conn()
+        try:
+            persons = _main_persons(conn, year, month)
+            roles = staff_type.identity_roles(conn)
+        finally:
+            conn.close()
+        entries = report_entries(year, persons, split, roles)
         ws = wb.create_sheet(title=f"{year}{month:02d}")
-        _write_main_sheet(ws, year, month, data)
+        _write_main_sheet(ws, year, month, entries)
     for title, y, mo in _detail_sheets(year, month_to):
         ws = wb.create_sheet(title=title)
         _write_uncollected_sheet(ws, y, mo)
@@ -298,13 +304,19 @@ def export_invoice_income(out_path: str | Path, year: int, month_to: int) -> Pat
     return out
 
 
-def export_invoice_income_month(out_path: str | Path, year: int, month: int) -> Path:
-    """生成单月开票收入表：当月主表 + 未收款明细"""
-    data = build_settlement(year)
+def export_invoice_income_month(out_path: str | Path, year: int, month: int, split: bool = False) -> Path:
+    """生成单月开票收入表：当月主表 + 未收款明细。split=True 主表按角色展开。"""
+    conn = get_conn()
+    try:
+        persons = _main_persons(conn, year, month)
+        roles = staff_type.identity_roles(conn)
+    finally:
+        conn.close()
+    entries = report_entries(year, persons, split, roles)
     wb = openpyxl.Workbook()
     wb.remove(wb.active)
     ws = wb.create_sheet(title=f"{year}{month:02d}")
-    _write_main_sheet(ws, year, month, data)
+    _write_main_sheet(ws, year, month, entries)
     for title, y, mo in _detail_sheets(year, month):
         ws = wb.create_sheet(title=title)
         _write_uncollected_sheet(ws, y, mo)

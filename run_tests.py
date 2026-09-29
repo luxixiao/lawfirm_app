@@ -59,6 +59,7 @@ EXPECTED_FILES = [
     "tests/test_import_delete_scope.py",  # P0-3：导入/撤销 DELETE 作用域（方案 A/B + G2）
     "tests/test_import_fix_log.py",
     "tests/test_person_settlement.py",     # T1 新增
+    "tests/test_report_split.py",          # 合并/拆分开关：Σ拆分==合并 不变量（开票/聘用 两 scope）
     "tests/test_raw_ledger_mirror.py",
     "tests/test_invoice_import_validation.py",  # 销项解析期校验（A5 金额必填 / A6 日期必填 / C3 取消后跨期红字放行）
     "tests/test_red_orig_extract.py",  # 批3a：extract_orig_no 唯一真源（销项+台账两种写法）

@@ -21,7 +21,7 @@ from openpyxl.worksheet.properties import PageSetupProperties
 
 from app.db import get_conn
 from app.engine.expense_cat import get_by_category, get_map
-from app.engine.person_settlement import build_settlement
+from app.engine.person_settlement import build_settlement, report_entries
 from app.engine import staff_type
 
 THIN = Side(style="thin", color="999999")
@@ -54,18 +54,27 @@ def _staff_employees(conn, year: int, month: int) -> list:
     return out
 
 
-def _build_rows(persons: list, data: Dict, cat_map: Dict, year: int, month: int):
-    """某月年度聘用结算表的行数据（预览/导出共用）
+def _staff_income_roles(conn) -> list:
+    """聘用报表角色范围：employee/parttime（去写死，来自 role_def include_in_income_report）。"""
+    codes = ("employee", "parttime")
+    rows = conn.execute(
+        "SELECT role_code, label FROM role_def WHERE role_code IN (%s) ORDER BY role_code"
+        % ",".join("?" * len(codes)), codes).fetchall()
+    return [(r["role_code"], r["label"]) for r in rows]
 
+
+def _build_rows(entries: list, cat_map: Dict, year: int, month: int):
+    """某月年度聘用结算表的行数据（预览/导出共用）。
+
+    entries: [(display_name, st_or_None), ...]（合并/拆分统一，来自 report_entries）。
     rows: [[姓名, 收入本月, 收入累计, 报酬本月, 报酬累计, 公积金本月, 公积金累计,
             保险本月, 保险累计, 汽油本月, 汽油累计], ...]
     totals: 各数值列合计（10 个）
     """
     rows = []
-    for name in persons:
-        st = data.get(name)
+    for display, st in entries:
         if st is None:
-            rows.append([name] + [0.0] * 10)
+            rows.append([display] + [0.0] * 10)
             continue
         m = st["months"]
         income_cur = m[month]["income"]
@@ -76,25 +85,27 @@ def _build_rows(persons: list, data: Dict, cat_map: Dict, year: int, month: int)
             cur = _exp_sum(st, month, types)
             tot = round(sum(_exp_sum(st, mo, types) for mo in range(1, month + 1)), 2)
             fees += [cur, tot]
-        rows.append([name, income_cur, income_tot] + fees)
+        rows.append([display, income_cur, income_tot] + fees)
     totals = [round(sum(r[j] for r in rows), 2) for j in range(1, 11)]
     return rows, totals
 
 
-def build_report_rows(year: int, month: int):
-    """预览/导出共用：返回 (persons, rows, totals)"""
-    data = build_settlement(year)
+def build_report_rows(year: int, month: int, split: bool = False):
+    """预览/导出共用：返回 (names, rows, totals)。split=True 按角色展开每行。"""
     cat_map = get_map()
     conn = get_conn()
     try:
         persons = _staff_employees(conn, year, month)
+        roles = _staff_income_roles(conn)
     finally:
         conn.close()
-    rows, totals = _build_rows(persons, data, cat_map, year, month)
-    return persons, rows, totals
+    entries = report_entries(year, persons, split, roles)
+    rows, totals = _build_rows(entries, cat_map, year, month)
+    names = [d for d, _ in entries]
+    return names, rows, totals
 
 
-def _write_sheet(ws, year: int, month: int, persons: list, data: Dict, cat_map: Dict) -> None:
+def _write_sheet(ws, year: int, month: int, entries: list, cat_map: Dict) -> None:
     ws.merge_cells("A1:L1")
     ws["A1"] = "浙江震天律师事务所"
     ws["A1"].font = Font(size=13, bold=True)
@@ -120,7 +131,7 @@ def _write_sheet(ws, year: int, month: int, persons: list, data: Dict, cat_map: 
         ws.cell(3, j).border = BORDER
         ws.cell(4, j).border = BORDER
 
-    rows, totals = _build_rows(persons, data, cat_map, year, month)
+    rows, totals = _build_rows(entries, cat_map, year, month)
     r = 5
     for i, row in enumerate(rows, 1):
         ws.cell(r, 1, i).alignment = CENTER
@@ -162,9 +173,9 @@ def _exp_sum(st: Dict, month: int, types: list) -> float:
     return round(sum(exp.get(t, {}).get(month, 0.0) for t in types), 2)
 
 
-def export_staff_income(out_path: str | Path, year: int, month_to: int) -> Path:
-    """生成年度聘用律师业务收入结算表模板表（1~month_to 各一个 sheet，从新到旧排序）"""
-    data = build_settlement(year)
+def export_staff_income(out_path: str | Path, year: int, month_to: int, split: bool = False) -> Path:
+    """生成年度聘用律师业务收入结算表模板表（1~month_to 各一个 sheet，从新到旧排序）。
+    split=True 列表按角色展开每行。"""
     cat_map = get_map()
     wb = openpyxl.Workbook()
     wb.remove(wb.active)
@@ -172,29 +183,32 @@ def export_staff_income(out_path: str | Path, year: int, month_to: int) -> Path:
         conn = get_conn()
         try:
             persons = _staff_employees(conn, year, month)
+            roles = _staff_income_roles(conn)
         finally:
             conn.close()
+        entries = report_entries(year, persons, split, roles)
         ws = wb.create_sheet(title=f"{year}{month:02d}")
-        _write_sheet(ws, year, month, persons, data, cat_map)
+        _write_sheet(ws, year, month, entries, cat_map)
     out = Path(out_path)
     out.parent.mkdir(parents=True, exist_ok=True)
     wb.save(out)
     return out
 
 
-def export_staff_income_month(out_path: str | Path, year: int, month: int) -> Path:
-    """生成单月聘用律师业务收入结算表（单个 sheet，与预览一致）"""
-    data = build_settlement(year)
+def export_staff_income_month(out_path: str | Path, year: int, month: int, split: bool = False) -> Path:
+    """生成单月聘用律师业务收入结算表（单个 sheet，与预览一致）。split=True 按角色展开。"""
     cat_map = get_map()
     conn = get_conn()
     try:
         persons = _staff_employees(conn, year, month)
+        roles = _staff_income_roles(conn)
     finally:
         conn.close()
+    entries = report_entries(year, persons, split, roles)
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = f"{year}{month:02d}"
-    _write_sheet(ws, year, month, persons, data, cat_map)
+    _write_sheet(ws, year, month, entries, cat_map)
     out = Path(out_path)
     out.parent.mkdir(parents=True, exist_ok=True)
     wb.save(out)
