@@ -114,8 +114,12 @@ def main() -> int:
             continue
         print(f"\n--- {rel} ---")
         try:
+            # 子进程输出统一 UTF-8：Windows GBK 管道下 ✅/❌ 等 emoji 会
+            # UnicodeEncodeError；父进程读侧同步按 UTF-8 解码（replace 保底不崩）。
+            env = dict(os.environ, PYTHONIOENCODING="utf-8")
             r = subprocess.run([sys.executable, str(path)], cwd=str(ROOT),
-                                capture_output=True, text=True)
+                               capture_output=True, text=True,
+                               encoding="utf-8", errors="replace", env=env)
         except Exception as e:  # noqa: BLE001
             rc = 1
             print(f"  运行异常：{e}")

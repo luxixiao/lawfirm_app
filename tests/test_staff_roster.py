@@ -8,6 +8,10 @@ import os
 import sqlite3
 import sys
 
+# Windows GBK 控制台/管道编不了 ✅/❌ emoji，强制 UTF-8 输出（单跑本文件也安全）
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
 # 把项目根加入 sys.path，使 `app` 包可导入
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)

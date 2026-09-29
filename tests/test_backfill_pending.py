@@ -93,6 +93,11 @@ def main() -> int:
         "ALTER TABLE invoice ADD COLUMN src_row INTEGER DEFAULT 0",
         # 去写死（Plan A）：角色列（复刻 init_db 迁移）
         "ALTER TABLE staff_type_def ADD COLUMN role_code TEXT NOT NULL DEFAULT 'other'",
+        # 两条线模型（批次1）：SCHEMA 不含这三列，add_type INSERT 显式写 net_basis，
+        # 内存库须与 init_db 迁移一致补齐（与 test_staff_type.make_conn 同）。
+        "ALTER TABLE staff_type_def ADD COLUMN is_invoice INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE staff_type_def ADD COLUMN can_expense INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE staff_type_def ADD COLUMN net_basis TEXT NOT NULL DEFAULT '收款净额'",
     ):
         conn.execute(stmt)
     # 去写死（Plan A）：role_def 表 + 种子（内存库手工复刻）
