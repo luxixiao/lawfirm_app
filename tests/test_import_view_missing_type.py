@@ -6,7 +6,7 @@
 
 - 原 `:360` `stype = stype or "聘用"` —— 空类型静默改写成写死的「聘用」；
 - 导入前从不校验该类型是否真存在于 `staff_type_def`（全文件原本 grep 不到
-  `ensure_types`）→ 员工被挂上类型表里没有的行 → `settle_flags_of()` 返回
+  `ensure_types`）→ 员工被挂上类型表里没有的行 → `business_flags_of()` 返回
   `(False, "")` → 判「不参与结算」→ 后续导费用台账被 `expense_validation` 逐行拒绝，
   而报错文案还误导用户去类型页找。
 
@@ -93,7 +93,7 @@ def snap() -> tuple:
         n_staff = conn.execute("SELECT COUNT(*) FROM staff_roster").fetchone()[0]
         n_batch = conn.execute("SELECT COUNT(*) FROM import_batch").fetchone()[0]
         types = conn.execute(
-            "SELECT name, is_settle, net_basis FROM staff_type_def ORDER BY name").fetchall()
+            "SELECT name, is_invoice, net_basis FROM staff_type_def ORDER BY name").fetchall()
         staff = conn.execute(
             "SELECT r.name, m.type_name AS staff_type FROM staff_roster r JOIN staff_type_map m ON m.name=r.name AND m.is_primary=1 ORDER BY r.name").fetchall()
     finally:
@@ -181,20 +181,20 @@ def main() -> int:
             check("B2-b：超出部分写「等 2 人」", "等 2 人" in mtext, f"got={mtext!r}")
         check("B2-b：三张表零变化", snap() == before12)
 
-        # ===== B3）类型表已有该类型 → 不覆盖既有行（is_settle / net_basis 不动）=====
+        # ===== B3）类型表已有该类型 → 不覆盖既有行（is_invoice / net_basis 不动）=====
         conn = appdb.get_conn()
-        conn.execute("UPDATE staff_type_def SET is_settle=1, net_basis='开票净额' "
+        conn.execute("UPDATE staff_type_def SET is_invoice=1, net_basis='开票净额' "
                      "WHERE name='合伙'")
         conn.commit()
         conn.close()
         pre_types = snap()[2]
-        check("B3：前置——合伙已勾选参与 + 口径=开票净额",
+        check("B3：前置——合伙已进业务线 + 口径=开票净额",
               dict((t[0], (t[1], t[2])) for t in pre_types)["合伙"] == (1, "开票净额"),
               f"got={pre_types}")
         MSG.calls.clear()
         do_import([("王五", "合伙", "")])
         post_types = snap()[2]
-        check("B3：既有类型未被覆盖（is_settle / net_basis 保持原值）",
+        check("B3：既有类型未被覆盖（is_invoice / net_basis 保持原值）",
               dict((t[0], (t[1], t[2])) for t in post_types)["合伙"] == (1, "开票净额"),
               f"got={post_types}")
 

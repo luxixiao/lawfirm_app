@@ -6,7 +6,8 @@
   这是把原「员工名单」改名并拆出"类型"后的新形态——"人"归花名册，"类型"在此关联。
 - Tab3「类型设置」：类型定义（参与结算 / 业务金额方式 / 说明 / 人数 / 角色），原「员工类型」改名。
 - 口径：是否参与结算、净额口径（开票净额/收款净额）仍按类型各自勾选设置；
-  角色的 include_in_income_report / forbid_public_exclusive / default_net_basis 作为默认值与批量语义。
+  角色仅作标签/分组 + 默认净额口径（default_net_basis）的便利默认；结算/收入/费用闸门
+  已全部由 staff_type_def 的 is_invoice / can_expense 派生，角色不再持任何闸门。
 - 过渡镜像：staff 表仍被下游结算/导入读取，引擎函数会同步维护它（批2 再移除）。
 """
 from __future__ import annotations
@@ -166,18 +167,19 @@ class StaffView(QWidget):
         btns.addStretch()
         lay.addLayout(btns)
 
-        self.type_table = QTableWidget(0, 6)
+        self.type_table = QTableWidget(0, 7)
         self.type_table.setHorizontalHeaderLabels(
-            ["类型", "参与结算", "业务金额方式", "说明", "人数", "角色"])
+            ["类型", "开票", "报销", "业务金额方式", "说明", "人数", "角色"])
         self.type_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.type_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.type_table.verticalHeader().setVisible(False)
         self.type_table.setColumnWidth(0, scale.px(120))
-        self.type_table.setColumnWidth(1, scale.px(80))
-        self.type_table.setColumnWidth(2, scale.px(100))
-        self.type_table.setColumnWidth(4, scale.px(60))
-        self.type_table.setColumnWidth(5, scale.px(90))
-        self.type_table.itemChanged.connect(self._on_settle_changed)
+        self.type_table.setColumnWidth(1, scale.px(70))
+        self.type_table.setColumnWidth(2, scale.px(70))
+        self.type_table.setColumnWidth(3, scale.px(100))
+        self.type_table.setColumnWidth(5, scale.px(60))
+        self.type_table.setColumnWidth(6, scale.px(90))
+        self.type_table.itemChanged.connect(self._on_line_changed)
         install_common_features(self.type_table)
         self._type_col = install_column_layout(self.type_table, "staff_type", "main")
         lay.addWidget(self.type_table, 1)
@@ -233,45 +235,56 @@ class StaffView(QWidget):
         self.type_table.setRowCount(len(rows))
         for r, row in enumerate(rows):
             name = row["name"]
-            # 参与结算：可点击开关（checkable item，点击即写库）
-            settle = bool(row["is_settle"])
+            invoice = bool(row["is_invoice"])
+            expense = bool(row["can_expense"])
             name_item = QTableWidgetItem(name)
             name_item.setData(Qt.ItemDataRole.UserRole, name)
-            # 内置且已参与 → 类型名加粗；取消参与后刷新即恢复普通字体
-            if row["is_builtin"] and settle:
+            # 内置且进任一业务线 → 类型名加粗；取消后刷新即恢复普通字体
+            if row["is_builtin"] and (invoice or expense):
                 f = name_item.font()
                 f.setBold(True)
                 name_item.setFont(f)
             self.type_table.setItem(r, 0, name_item)
 
-            s_item = QTableWidgetItem()
-            s_item.setFlags(s_item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
-            s_item.setCheckState(Qt.CheckState.Checked if settle
-                                 else Qt.CheckState.Unchecked)
-            s_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter
-                                    | Qt.AlignmentFlag.AlignVCenter)
-            s_item.setData(Qt.ItemDataRole.UserRole, name)
-            self.type_table.setItem(r, 1, s_item)
+            # 开票（业务线）：可点击开关，点击即写库
+            inv_item = QTableWidgetItem()
+            inv_item.setFlags(inv_item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            inv_item.setCheckState(Qt.CheckState.Checked if invoice
+                                   else Qt.CheckState.Unchecked)
+            inv_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter
+                                      | Qt.AlignmentFlag.AlignVCenter)
+            inv_item.setData(Qt.ItemDataRole.UserRole, name)
+            self.type_table.setItem(r, 1, inv_item)
 
-            # 净额口径：参与时可下拉选择，不参与时灰显且留空
+            # 报销（费用线）：可点击开关，点击即写库
+            exp_item = QTableWidgetItem()
+            exp_item.setFlags(exp_item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            exp_item.setCheckState(Qt.CheckState.Checked if expense
+                                   else Qt.CheckState.Unchecked)
+            exp_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter
+                                      | Qt.AlignmentFlag.AlignVCenter)
+            exp_item.setData(Qt.ItemDataRole.UserRole, name)
+            self.type_table.setItem(r, 2, exp_item)
+
+            # 净额口径：开票时可下拉选择，未开票时灰显且留空（设计点2）
             combo = QComboBox()
             combo.addItems(["开票净额", "收款净额"])
-            if settle:
+            if invoice:
                 combo.setCurrentText(row.get("net_basis") or BASIS_FALLBACK)
             else:
-                combo.setCurrentIndex(-1)   # 不参与结算 → 显示空白
-            combo.setEnabled(settle)
+                combo.setCurrentIndex(-1)   # 未开票 → 显示空白
+            combo.setEnabled(invoice)
             combo.currentTextChanged.connect(
                 lambda txt, n=name: self._on_basis_changed(n, txt))
-            self.type_table.setCellWidget(r, 2, combo)
+            self.type_table.setCellWidget(r, 3, combo)
 
-            self.type_table.setItem(r, 3, QTableWidgetItem(row["note"] or ""))
+            self.type_table.setItem(r, 4, QTableWidgetItem(row["note"] or ""))
             n_item = QTableWidgetItem(str(row["staff_count"]))
             n_item.setTextAlignment(Qt.AlignmentFlag.AlignRight
                                     | Qt.AlignmentFlag.AlignVCenter)
-            self.type_table.setItem(r, 4, n_item)
+            self.type_table.setItem(r, 5, n_item)
 
-            # 角色（去写死身份大类）：内联下拉，切换即写库；语义由 role_def 决定
+            # 角色（仅标签/分组 + 默认净额口径便利默认，不再作任何闸门）：内联下拉，切换即写库
             role_cb = QComboBox()
             for label, code in st.list_roles():
                 role_cb.addItem(label, userData=code)
@@ -280,42 +293,47 @@ class StaffView(QWidget):
             role_cb.setCurrentIndex(idx if idx >= 0 else 0)
             role_cb.currentIndexChanged.connect(
                 lambda _i, n=name, cb=role_cb: self._on_role_changed(n, cb.currentData()))
-            self.type_table.setCellWidget(r, 5, role_cb)
+            self.type_table.setCellWidget(r, 6, role_cb)
         self._loading = False
         self._type_col.apply()
 
-    def _on_settle_changed(self, item: QTableWidgetItem) -> None:
-        """参与结算开关被点选 → 写库 + 同步本行业务金额方式下拉与加粗态。"""
-        if self._loading or item.column() != 1:
+    def _on_line_changed(self, item: QTableWidgetItem) -> None:
+        """开票 / 报销 开关被点选 → 写库 + 同步本行业务金额方式下拉与加粗态。"""
+        if self._loading or item.column() not in (1, 2):
             return
         name = item.data(Qt.ItemDataRole.UserRole)
         if not name:
             return
         flag = item.checkState() == Qt.CheckState.Checked
-        # set_settle 只改 is_settle、保留 net_basis：口径原样留在库里
-        st.set_settle(name, flag)
-        combo = self.type_table.cellWidget(item.row(), 2)
-        if isinstance(combo, QComboBox):
-            # 程序化改动下拉会触发 currentTextChanged，这里必须屏蔽：
-            # 否则「取消勾选时清空显示」会被当成一次口径变更写进库里，等于又把口径清掉。
-            combo.blockSignals(True)
-            combo.setEnabled(flag)
-            if flag:
-                # 重新勾选：回填库中保留的口径；罕见脏空值只作显示默认值，不写库
-                combo.setCurrentText((st.get_type(name) or {}).get("net_basis")
-                                     or BASIS_FALLBACK)
-            else:
-                # 取消勾选：仅清空页面显示，库里的口径不动（回来时按原口径恢复）
-                combo.setCurrentIndex(-1)
-            combo.blockSignals(False)
+        # 两开关各自只写自己的列，互不牵连（业务线不碰费用线）
+        if item.column() == 1:
+            st.set_invoice(name, flag)
+        else:
+            st.set_can_expense(name, flag)
+        # 仅「开票」开关变化影响净额口径下拉的可用态（报销不影响）
+        if item.column() == 1:
+            combo = self.type_table.cellWidget(item.row(), 3)
+            if isinstance(combo, QComboBox):
+                # 程序化改动下拉会触发 currentTextChanged，这里必须屏蔽：
+                # 否则「取消勾选时清空显示」会被当成一次口径变更写进库里，等于又把口径清掉。
+                combo.blockSignals(True)
+                combo.setEnabled(flag)
+                if flag:
+                    # 重新勾选：回填库中保留的口径；罕见脏空值只作显示默认值，不写库
+                    combo.setCurrentText((st.get_type(name) or {}).get("net_basis")
+                                         or BASIS_FALLBACK)
+                else:
+                    # 取消勾选：仅清空页面显示，库里的口径不动（回来时按原口径恢复）
+                    combo.setCurrentIndex(-1)
+                combo.blockSignals(False)
         self._apply_builtin_bold(name)
 
     def _apply_builtin_bold(self, name: str) -> None:
-        """内置类型：参与结算时类型名加粗，取消勾选后恢复普通字体（立即生效）。"""
+        """内置类型：进任一业务线时类型名加粗，关掉后恢复普通字体（立即生效）。"""
         t = st.get_type(name)
         if t is None or not t["is_builtin"]:
             return
-        bold = bool(t["is_settle"])
+        bold = bool(t.get("is_invoice") or t.get("can_expense"))
         for r in range(self.type_table.rowCount()):
             it = self.type_table.item(r, 0)
             if it is not None and it.data(Qt.ItemDataRole.UserRole) == name:
@@ -337,8 +355,8 @@ class StaffView(QWidget):
     def _on_role_changed(self, name: str, code) -> None:
         """角色（身份大类）下拉变更 → 写库。
 
-        角色决定 forbid_public_exclusive / include_in_income_report / default_net_basis
-        等语义；改角色即时生效，结算/收入/费用口径随之按新角色解析。
+        角色仅提供标签/分组与默认净额口径（default_net_basis）便利默认，不再作任何闸门；
+        改角色即时生效，但结算/收入/费用口径由该类型的 is_invoice / can_expense 决定。
         """
         if self._loading:
             return

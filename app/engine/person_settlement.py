@@ -462,18 +462,19 @@ def _compute(conn, year: int, person: str | None, person_type: str | None = None
                        + m["rec_refund_cur"] + m["rec_refund_prev"])   # 二小计（净）
             inv_net = (m["inv_open_received"] + m["inv_open_uncollected"]
                        + m["inv_red_cur"] + m["inv_red_prev"])          # 三小计（净）
-            # 业务收入口径（去写死，按角色解析，不再按类型名硬编码）：
-            # st["staff_type"] 可能是真实类型名（汇总视图，沿用 per-type 的 is_settle /
-            # net_basis），也可能是角色码（分身份视图 override=person_type）。两者都按角色
-            # 取净额口径：合伙=开票净额，其余=收款净额；其他类型/未参与的 income=0。
+            # 业务收入口径（两条线模型，D1：一人多类型取 OR）
+            # 分身份视图（override=person_type）：role 为角色码，按「该角色是否进任一业务线」
+            #   （role_in_report）判定是否产生收入；净额口径取角色默认（label 便利默认值）。
+            # 汇总视图：role 为人员主类型名，按该人**全部类型 OR** 判定是否进业务线
+            #   （business_flags_of_person），净额口径取「首位（主类型优先）开票类型的 net_basis」。
             role = st["staff_type"]
             if role in staff_type.ROLE_CODES:
-                ra = staff_type.role_attr(role, conn)
-                is_settle = bool(ra["include_in_income_report"])
-                net_basis = ra["default_net_basis"]
+                in_business = staff_type.role_in_report(role, conn)
+                net_basis = (staff_type.role_attr(role, conn) or {}).get("default_net_basis") or "收款净额"
             else:
-                is_settle, net_basis = staff_type.settle_flags_of(role, conn)
-            if is_settle:
+                is_invoice, net_basis = staff_type.business_flags_of_person(name, conn)
+                in_business = is_invoice
+            if in_business:
                 m["income"] = round(m["inv_total"], 2) if net_basis == "开票净额" else round(rec_net, 2)
             else:
                 m["income"] = 0.0

@@ -43,6 +43,22 @@ def main() -> int:
     db.DB_PATH = tmp
     init_db()   # 建 schema + 跑迁移（role_def 种子 + staff_type_def.role_code + person_type 翻码）
 
+    # 两条线模型下 identity_roles 反映「实际已配置且进线的角色」—— 建库后类型表空，
+    # 故此处按员工类型页自建动作铺出内置三类（合伙/聘用/兼职 业务线开）用于 §2 断言。
+    c0 = db.get_conn()
+    try:
+        for name, role_code, basis in (("合伙", "partner", "开票净额"),
+                                        ("聘用", "employee", "收款净额"),
+                                        ("兼职", "parttime", "收款净额")):
+            if st.get_type(name, c0) is None:
+                st.add_type(name, conn=c0)
+            st.set_role_code(name, role_code, conn=c0)
+            st.set_invoice(name, True, conn=c0)
+            st.set_net_basis(name, basis, conn=c0)
+        c0.commit()
+    finally:
+        c0.close()
+
     # ===== 1. role_def 种子 =====
     roles = {code: label for code, label in st.list_roles()}
     check("role_def 4 种子", set(roles) == {"partner", "employee", "parttime", "other"}, f"got={roles}")
@@ -71,7 +87,7 @@ def main() -> int:
         # 新建一个角色=partner 的自定义类型，并改名（模拟"合伙"→"啊啊啊"）
         st.add_type("啊啊啊", conn=conn)
         conn.execute("UPDATE staff_type_def SET role_code='partner' WHERE name='啊啊啊'")
-        st.set_settle("啊啊啊", True, conn=conn)        # 参与结算
+        st.set_invoice("啊啊啊", True, conn=conn)        # 进业务线（partner 角色）
         st.set_net_basis("啊啊啊", "开票净额", conn=conn)  # 合伙按开票净额计
         conn.execute("INSERT OR IGNORE INTO staff_roster(name) VALUES('张三')")
         conn.execute("INSERT OR IGNORE INTO staff_type_map(name, type_name, is_primary) VALUES('张三','啊啊啊',1)")
@@ -129,7 +145,7 @@ def main() -> int:
         conn4.execute("INSERT OR IGNORE INTO staff_roster(name) VALUES('李四')")
         conn4.execute("INSERT OR IGNORE INTO staff_type_map(name, type_name, is_primary) VALUES('李四','员工类型',1)")
         conn4.execute("UPDATE staff_type_def SET role_code='employee' WHERE name='员工类型'")
-        st.set_settle("员工类型", True, conn=conn4)
+        st.set_invoice("员工类型", True, conn=conn4)
         conn4.execute("INSERT INTO invoice(invoice_no, invoice_date, total_amount) "
                       "VALUES('INV2','2025-02-10',50)")
         conn4.execute("INSERT INTO charge_detail(invoice_no, person_name, billing_amount, person_type) "

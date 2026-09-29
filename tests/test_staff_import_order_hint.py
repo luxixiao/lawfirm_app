@@ -156,8 +156,8 @@ def main() -> int:
         app.processEvents()
         check("同一实例重复调用不再弹", len(hints()) == 1, f"got={hints()}")
 
-        # ⚠ 原这里有一条 `settle_flags_of('聘用') == (False,'')` 的断言，是**空转**的：
-        #   第 141 行已把类型表清空，「聘用」根本不存在，`settle_flags_of` 必然返回
+        # ⚠ 原这里有一条 `business_flags_of('聘用') == (False,'')` 的断言，是**空转**的：
+        #   第 141 行已把类型表清空，「聘用」根本不存在，`business_flags_of` 必然返回
         #   (False,"") —— 无论有没有「代勾」都长一个样，坏实现照样绿。
         #   为什么不能改成「先建个类型再验」：提示本身只在类型表为**空**时才弹
         #   （非空即早退），两者不可兼得。「不代勾」改由下面 2-B 段守：既有类型
@@ -167,19 +167,19 @@ def main() -> int:
         # ===== 2-B：类型表非空 → 提示早退，且不得改动既有类型的勾选 =====
         c = appdb.get_conn()
         c.execute("INSERT OR IGNORE INTO staff_type_def"
-                  "(name, is_builtin, note, sort_order, is_settle, net_basis)"
-                  " VALUES('挂靠',0,'',1,0,'收款净额')")
+                  "(name, is_builtin, note, sort_order, is_invoice, can_expense, net_basis)"
+                  " VALUES('挂靠',0,'',1,0,0,'收款净额')")
         c.commit()
         c.close()
         MSG.calls.clear()
-        before = st.settle_flags_of("挂靠")
-        check("2-B 前置：挂靠类型存在但未参与结算", before == (False, "收款净额"), f"got={before}")
+        before = st.business_flags_of("挂靠")
+        check("2-B 前置：挂靠类型存在但未进业务线", before == (False, "收款净额"), f"got={before}")
         view_b = sv.StaffView()
         view_b.resize(900, 600)
         app.processEvents()
         view_b._maybe_warn_settle_order()
         app.processEvents()
-        after = st.settle_flags_of("挂靠")
+        after = st.business_flags_of("挂靠")
         check("类型非空 → 提示不弹", len(hints()) == 0, f"got={hints()}")
         check("既有类型的勾选未被改动（不代勾）", after == before, f"before={before} after={after}")
         check("既有类型未被删除（不代办）",
@@ -195,7 +195,7 @@ def main() -> int:
         # ===== 3. 已建类型（含未勾选的）→ 不再提示 =====
         st.add_type("聘用", conn=appdb.get_conn())
         c = appdb.get_conn()
-        c.execute("UPDATE staff_type_def SET is_settle=0 WHERE name='聘用'")
+        c.execute("UPDATE staff_type_def SET is_invoice=0 WHERE name='聘用'")
         c.commit()
         c.close()
 

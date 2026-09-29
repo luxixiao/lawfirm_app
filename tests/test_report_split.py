@@ -27,7 +27,8 @@ def make_conn():
     conn.row_factory = sqlite3.Row
     conn.executescript(SCHEMA)
     cols = [r[1] for r in conn.execute("PRAGMA table_info(staff_type_def)")]
-    for c, ddl in (("is_settle", "INTEGER NOT NULL DEFAULT 0"),
+    for c, ddl in (("is_invoice", "INTEGER NOT NULL DEFAULT 0"),
+                   ("can_expense", "INTEGER NOT NULL DEFAULT 0"),
                    ("net_basis", "TEXT NOT NULL DEFAULT '收款净额'"),
                    ("role_code", "TEXT NOT NULL DEFAULT 'other'")):
         if c not in cols:
@@ -43,13 +44,21 @@ def make_conn():
 
 
 def seed_types(conn) -> None:
-    for name, settle, basis in (("合伙", True, "开票净额"), ("聘用", True, "收款净额"),
-                                ("兼职", True, "收款净额"), ("公共", True, "收款净额"),
-                                ("行政", True, "收款净额"), ("挂靠", False, "收款净额"),
-                                ("其他", False, "收款净额")):
+    # (name, is_invoice(业务线), can_expense(费用线), net_basis)
+    # 映射自旧 is_settle 拆分回填：partner/employee/parttime 业务线开；
+    # 原参与结算者（含公共/行政）费用线开。
+    # 复刻 db 迁移：按名称子串设定 role_code（identity_roles 现读 staff_type_def.role_code）。
+    _ROLE_OF = {"合伙": "partner", "聘用": "employee", "兼职": "parttime"}
+    for name, invoice, expense, basis in (
+            ("合伙", True, True, "开票净额"), ("聘用", True, True, "收款净额"),
+            ("兼职", True, True, "收款净额"), ("公共", False, True, "收款净额"),
+            ("行政", False, True, "收款净额"), ("挂靠", False, False, "收款净额"),
+            ("其他", False, False, "收款净额")):
         if st.get_type(name, conn) is None:
             st.add_type(name, conn=conn)
-            st.set_settle(name, settle, conn=conn)
+            st.set_role_code(name, _ROLE_OF.get(name, "other"), conn=conn)
+            st.set_invoice(name, invoice, conn=conn)
+            st.set_can_expense(name, expense, conn=conn)
             st.set_net_basis(name, basis, conn=conn)
 
 

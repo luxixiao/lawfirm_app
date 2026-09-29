@@ -4,14 +4,20 @@
 - **员工类型表初始为空**：建库/首次打开不再预置任何类型（合伙/聘用/… 一律由用户在
   「员工类型」页自己新建，见 `ensure_defaults`）。`ensure_types()` 在导入职工清单时把
   清单里出现的未知类型**按需**补入，因此导入是唯一会自动建类型的路径。
-- **参与结算由 staff_type_def.is_settle 控制**，**净额口径（net_basis）由
-  '开票净额' | '收款净额' 两个枚举值表达**。
-- person_settlement 改用 `settle_flags_of(name)` 读取，不再按类型名硬编码：
-  按类型自己的 is_settle 决定是否计入、按 net_basis 决定按哪个金额计。
+- **两条线模型（2026-09-29 重构）**：类型一级只有两个独立开关 ——
+  `is_invoice`（是否开票 / 业务线，只管结算收入，不碰费用承担）与
+  `can_expense`（是否报销 / 费用线，唯一费用承担闸门）。
+  **进报表 = `is_invoice OR can_expense`**（派生，不新增独立开关，代码不写死类型名，D2）。
+  净额口径 `net_basis` ∈ {'开票净额','收款净额'}，**仅 `is_invoice=1` 时有意义**，否则空。
+- 类型与角色统一：`role_def` 仅剩 `label` / `default_net_basis`（勾选开票时的便利默认）/
+  `report_class`；`include_in_income_report` 与 `forbid_public_exclusive` 已退役（被进报表派生
+  与「专属费用」正向白名单取代）。
+- person_settlement 改用 `business_flags_of(_person)` 读取业务线口径；`can_bear_expense` 读取
+  费用线口径（均按「人员全部类型 OR」解析，D1）。
 - **去写死（Plan A）**：类型名与角色（role_code → role_def）解耦。结算/收入/费用口径
-  一律按角色解析，故**放开改名锁与内置删除锁**——改名/删除类型都不会断结算口径；
+  一律按类型开关解析，故**放开改名锁与内置删除锁**——改名/删除类型都不会断结算口径；
   唯一护栏是「有员工在用则禁止删除」（防止员工身份丢失→落入 other→收入判 0）。
-  类型仍可各自设置 is_settle 与 net_basis（覆盖角色默认值）。
+  类型仍可各自设置 is_invoice / can_expense 与 net_basis（覆盖角色默认值）。
 
 员工删除：有业务数据引用（charge_detail/collection/expense_ledger/raw_salary）时
 禁止删除——硬删会让结算表查不到身份，业务收入被判为 0。
@@ -114,16 +120,37 @@ def role_attr(role_code: str, conn=None) -> Dict:
 
 
 def identity_roles(conn=None):
-    """结算分身份 / 收入报表的身份清单（角色码 → 显示名），按 include_in_income_report=1。
+    """结算分身份 / 收入报表的身份清单（角色码 → 显示名）。
 
-    去写死：不再硬编码 合伙/聘用/兼职，改用 role_def 配置（默认 partner/employee/parttime）。
+    两条线模型（D2，不写死类型名）：进报表 = `is_invoice OR can_expense`。
+    返回「任一类型进业务线或费用线的角色码」列表（按角色码排序）。
+    例如：合伙/聘用/兼职 默认开票 → 必出现；公共/行政 仅报销 → 也出现（进任一线即在所有报表）。
     """
     own, c = _own_conn(conn)
     try:
         rows = c.execute(
-            "SELECT role_code, label FROM role_def WHERE include_in_income_report=1 "
-            "ORDER BY role_code").fetchall()
+            "SELECT DISTINCT t.role_code AS role_code, r.label AS label "
+            "FROM staff_type_def t JOIN role_def r ON r.role_code = t.role_code "
+            "WHERE t.is_invoice = 1 OR t.can_expense = 1 "
+            "ORDER BY t.role_code").fetchall()
         return [(r["role_code"], r["label"]) for r in rows]
+    finally:
+        _close(own, c)
+
+
+def role_in_report(role_code: str, conn=None) -> bool:
+    """某角色码是否「进报表」（分身份视图的进线判定）。
+
+    该角色码下有任一类型 is_invoice=1 或 can_expense=1 即 True。被 person_settlement
+    分身份视图用作「是否产生业务收入」的闸门（取代旧的 include_in_income_report）。
+    """
+    code = (role_code or "").strip() or "other"
+    own, c = _own_conn(conn)
+    try:
+        r = c.execute(
+            "SELECT 1 FROM staff_type_def WHERE role_code=? "
+            "AND (is_invoice=1 OR can_expense=1) LIMIT 1", (code,)).fetchone()
+        return r is not None
     finally:
         _close(own, c)
 
@@ -180,37 +207,35 @@ def _close(own: bool, conn) -> None:
 # ---------------------------------------------------------------------------
 
 def ensure_defaults(conn=None) -> None:
-    """建库/升级后补齐 staff_type_def 的参与结算列（**只补列，绝不预置任何类型**）。
+    """建库/升级后补齐 staff_type_def 的两线列（**只补列，绝不预置任何类型**）。
 
     行为边界（两条口径，勿再扩大）：
     - **不写行**：员工类型表初始为空，类型一律由用户在员工类型页自行新建；
       导入职工清单时的按需建类型走 `ensure_types()`。
-    - **不回写已存在的行**：早期实现在每次调用时无条件
-      `UPDATE ... SET is_settle=1 WHERE name IN (...)`，而 `list_types()` 又会每次
-      调 `ensure_defaults()` —— 结果用户在页面上取消勾选后，下一次打开/刷新就被
-      强行改回「参与结算」，表现为「勾选取消不掉」。修复：这里只做 schema 层面的
-      幂等补列（老库缺 is_settle / net_basis 时补上，存量行落列默认值），
-      对已有行**一个字段都不动**。
+    - **不回填、不回写**：仅做 schema 幂等补列（老库/内存库缺 is_invoice/can_expense/
+      net_basis 时补上，存量行落列默认值）。is_settle 旧列已由 init_db 迁移块拆分后
+      删除，这里不再新增它。老库的两线值由 `db.init_db` 的迁移块一次性回填，避免
+      每次打开都重算（杜绝「勾选取消不掉」式回退）。
     """
     own, conn = _own_conn(conn)
     try:
         cols = [r[1] for r in conn.execute("PRAGMA table_info(staff_type_def)")]
-        if "is_settle" not in cols:
-            conn.execute(
-                "ALTER TABLE staff_type_def ADD COLUMN is_settle INTEGER NOT NULL DEFAULT 0")
-        if "net_basis" not in cols:
-            conn.execute(
-                "ALTER TABLE staff_type_def ADD COLUMN net_basis TEXT NOT NULL DEFAULT '收款净额'")
+        for col, ddl in (("is_invoice", "INTEGER NOT NULL DEFAULT 0"),
+                         ("can_expense", "INTEGER NOT NULL DEFAULT 0"),
+                         ("net_basis", "TEXT NOT NULL DEFAULT '收款净额'")):
+            if col not in cols:
+                conn.execute(f"ALTER TABLE staff_type_def ADD COLUMN {col} {ddl}")
         conn.commit()
     finally:
         _close(own, conn)
 
 
 def ensure_types(conn, names: List[str]) -> None:
-    """导入职工清单时调用：把未知类型自动入库（is_builtin=0）。
+    """导入职工清单时调用：把未知类型自动入库（is_builtin=0, net_basis 留空）。
 
     口径：**初始为空、按需创建**。这里只补「本次导入清单里出现、表里还没有」的类型，
-    不预置任何常见类型、也不改动已有类型的 is_settle / net_basis（用户勾选为准）。
+    不预置任何常见类型、也不改动已有类型的 is_invoice / can_expense / net_basis
+    （用户勾选为准）。net_basis 默认空：未开票则口径空（设计点2）。
     """
     if not names:
         return
@@ -219,24 +244,24 @@ def ensure_types(conn, names: List[str]) -> None:
         if not name:
             continue
         conn.execute(
-            "INSERT OR IGNORE INTO staff_type_def(name, is_builtin, note) VALUES(?,0,'')",
-            (name,))
+            "INSERT OR IGNORE INTO staff_type_def(name, is_builtin, note, net_basis) "
+            "VALUES(?,0,'','')", (name,))
 
 
 def list_types(conn=None) -> List[Dict]:
-    """类型清单：名称/是否内置/说明/排序/引用人数/是否参与计算/业务金额方式。
+    """类型清单：名称/是否内置/说明/排序/引用人数/是否开票/是否报销/业务金额方式/角色。
 
     表初始为空 → 首次打开返回 []，用户新建后才有行。
-    返回行里的 net_basis **原样透出**（未参与结算时为 ''），不做兜底改写，
-    供员工类型页直接显示。
+    返回行里的 net_basis **原样透出**（未开票时为 ''），不做兜底改写，供员工类型页直接显示。
+    进报表 = is_invoice OR can_expense（派生，未单独存列）。
     """
     own, conn = _own_conn(conn)
     try:
         ensure_defaults(conn)
         rows = conn.execute(
             """SELECT t.name AS name, t.is_builtin AS is_builtin, t.note AS note,
-                      t.sort_order AS sort_order, t.is_settle AS is_settle,
-                      t.net_basis AS net_basis, t.role_code AS role_code,
+                      t.sort_order AS sort_order, t.is_invoice AS is_invoice,
+                      t.can_expense AS can_expense, t.net_basis AS net_basis, t.role_code AS role_code,
                       (SELECT COUNT(*) FROM staff_type_map m WHERE m.type_name = t.name) AS staff_count
                FROM staff_type_def t
                ORDER BY t.sort_order, t.name""").fetchall()
@@ -254,16 +279,16 @@ def get_type(name: str, conn=None) -> Optional[Dict]:
         _close(own, conn)
 
 
-def is_settle_participant(name: str, conn=None) -> bool:
-    """经办人是否参与结算（规则③，导入与详情保存共用）。
+def can_bear_expense(name: str, conn=None) -> bool:
+    """经办人是否能承担费用（费用线闸门，规则③，导入与详情保存共用）。
 
     - 空名 → False；
-    - 若 name 直接命中 staff_type_def（类型名调用路径，如 staff_view 的 is_computable）
-      → 取该类型 is_settle；
-    - 否则按经办人姓名解析其主类型（staff_type_map）→ 再查 staff_type_def.is_settle；
-    - 类型缺失/未参与 → False。
+    - 若 name 直接命中 staff_type_def（类型名调用路径）→ 取该类型 can_expense；
+    - 否则按经办人姓名解析其**全部类型**（staff_type_map）→ 任一类型 can_expense=1 即 True
+      （D1：一人多类型聚合取 OR）；
+    - 类型缺失 / 无任何类型可承担 → False。
     （修复：详情保存/导入传入的是「经办人姓名」，旧实现误把姓名当类型名查 staff_type_def，
-      导致方国兴=聘用这类理应参与结算的经办人被判为「未参与」。）
+      导致方国兴=聘用这类理应可承担费用的经办人被判为「未参与」。）
     """
     n = (name or "").strip()
     if not n:
@@ -271,30 +296,30 @@ def is_settle_participant(name: str, conn=None) -> bool:
     own, c = _own_conn(conn)
     try:
         # 1) 类型名直接命中（staff_type_def.name）
-        r = c.execute("SELECT is_settle FROM staff_type_def WHERE name=?", (n,)).fetchone()
+        r = c.execute("SELECT can_expense FROM staff_type_def WHERE name=?", (n,)).fetchone()
         if r is not None:
-            return bool(r["is_settle"])
-        # 2) 经办人姓名 → 解析其主类型（staff_type_map）→ 再查类型表
-        t = primary_type_of(n, c)
-        if t:
-            r = c.execute("SELECT is_settle FROM staff_type_def WHERE name=?",
-                          (t,)).fetchone()
-            return bool(r["is_settle"]) if r else False
+            return bool(r["can_expense"])
+        # 2) 经办人姓名 → 解析其全部类型 → OR（D1）
+        for t in list_person_types(n, c):
+            rr = c.execute("SELECT can_expense FROM staff_type_def WHERE name=?",
+                           (t,)).fetchone()
+            if rr and rr["can_expense"]:
+                return True
         return False
     finally:
         _close(own, c)
 
 
-def settle_flags_of(name: str, conn=None) -> Tuple[bool, str]:
-    """(是否参与结算, 业务金额方式/「净额口径」) 的读数口径。
+def business_flags_of(name: str, conn=None) -> Tuple[bool, str]:
+    """单类型的业务线读数：(是否开票, 净额口径)。
 
     - 名空 / 类型不存在 → (False, "")：无从依据的口径一律返回空，**不做臆造**；
-    - 未参与结算 → (False, 库存的 net_basis 原样)：**不做 `or '收款净额'` 兜底**。
-      否则「取消勾选时清空 net_basis」存下的空值会被悄悄还原成"收款净额"，
+    - 未开票 → (False, 库存的 net_basis 原样)：**不做 `or '收款净额'` 兜底**。
+      否则「取消勾选开票时清空 net_basis」存下的空值会被悄悄还原成"收款净额"，
       用户以为清掉了其实还在，重新勾选就会沿用旧口径。
-    - 参与结算 → (True, net_basis or '收款净额')：既然参与就必须有个口径。
+    - 开票 → (True, net_basis or '收款净额')：既然开票就必须有个口径。
 
-    结算侧（person_settlement）只在 is_settle=True 时读第 2 项，故收窄兜底不影响金额。
+    结算侧（person_settlement）只在 is_invoice=True 时读第 2 项，故收窄兜底不影响金额。
     """
     n = (name or "").strip()
     if not n:
@@ -302,31 +327,67 @@ def settle_flags_of(name: str, conn=None) -> Tuple[bool, str]:
     own, c = _own_conn(conn)
     try:
         r = c.execute(
-            "SELECT is_settle, net_basis FROM staff_type_def WHERE name=?", (n,)).fetchone()
+            "SELECT is_invoice, net_basis FROM staff_type_def WHERE name=?", (n,)).fetchone()
         if not r:
             return (False, "")
-        if not r["is_settle"]:
+        if not r["is_invoice"]:
             return (False, r["net_basis"] or "")
         return (True, r["net_basis"] or "收款净额")
     finally:
         _close(own, c)
 
 
-def set_settle(name: str, flag: bool, conn=None) -> None:
-    """员工类型页开关回调：设置是否参与结算。
+def business_flags_of_person(name: str, conn=None) -> Tuple[bool, str]:
+    """**人员级**业务线读数（汇总视图用，落实 D1 一人多类型取 OR）。
 
-    只写 is_settle，**不碰 net_basis**：净额口径是用户自己选的配置，取消勾选
-    只表达「这次不参与」，不该顺手删掉。清掉后重新勾选只能填默认值（收款净额），
-    原口径被静默改写 → 金额按另一个口径算（合伙开票 100 万只收 60 万 → 少计 40 万）。
-    库里留着原口径、页面显示留空，两者不冲突：is_settle=0 时结算侧根本不读 net_basis，
-    金额完全不受影响。
+    - 返回 (是否任一类型开票, 净额口径)；
+    - 净额口径取「主类型优先」：按 (主类型, sort_order) 顺序，取**第一个开票类型**的
+      net_basis（主类型自身开票则用它；主类型未开票但次要类型开票，则用该次要类型的口径）。
+      这样「主类型优先」且不会出现「主类型未开票却按主类型空口径判 0」的错位。
+    - 无任何类型 / 全未开票 → (False, "")。
+    """
+    n = (name or "").strip()
+    if not n:
+        return (False, "")
+    own, c = _own_conn(conn)
+    try:
+        types = list_person_types(n, c)   # 主类型在前
+        if not types:
+            return (False, "")
+        for t in types:
+            r = c.execute("SELECT is_invoice, net_basis FROM staff_type_def WHERE name=?",
+                          (t,)).fetchone()
+            if not r:
+                continue
+            if r["is_invoice"]:
+                return (True, r["net_basis"] or "收款净额")
+        return (False, "")
+    finally:
+        _close(own, c)
+
+
+def set_invoice(name: str, flag: bool, conn=None) -> None:
+    """员工类型页「开票」开关回调（业务线）。
+
+    只写 is_invoice，**不碰 net_basis**：净额口径是用户自己选的配置，取消勾选
+    只表达「这次不进业务线」，不该顺手删掉。库里留着原口径、页面显示留空，
+    两者不冲突：is_invoice=0 时结算侧根本不读 net_basis，金额完全不受影响。
     """
     own, c = _own_conn(conn)
     try:
-        if flag:
-            c.execute("UPDATE staff_type_def SET is_settle=1 WHERE name=?", (name,))
-        else:
-            c.execute("UPDATE staff_type_def SET is_settle=0 WHERE name=?", (name,))
+        c.execute("UPDATE staff_type_def SET is_invoice=? WHERE name=?",
+                  (1 if flag else 0, name))
+        c.commit()
+    finally:
+        _close(own, c)
+
+
+def set_can_expense(name: str, flag: bool, conn=None) -> None:
+    """员工类型页「报销」开关回调（费用线）。只写 can_expense。"""
+    own, c = _own_conn(conn)
+    try:
+        c.execute("UPDATE staff_type_def SET can_expense=? WHERE name=?",
+                  (1 if flag else 0, name))
         c.commit()
     finally:
         _close(own, c)
@@ -343,12 +404,12 @@ def set_net_basis(name: str, basis: str, conn=None) -> None:
 
 
 def is_computable(name: str, conn=None) -> bool:
-    """该类型是否参与业务收入计算。
+    """该类型是否进业务线（开票）。读取 staff_type_def.is_invoice。
 
-    读取 staff_type_def.is_settle（参与结算是可设置的开关，见需求）：
-    该类型被勾选参与则返回 True，未勾选/类型不存在返回 False。
+    该类型勾选开票则返回 True，未勾选/类型不存在返回 False。仅用于单类型名判定；
+    人员级「是否产生业务收入」请直接用 person_settlement 的汇总口径（已按多类型 OR）。
     """
-    return is_settle_participant(name, conn)
+    return business_flags_of(name, conn)[0]
 
 
 def add_type(name: str, note: str = "", role_code: str = "other", conn=None) -> None:
@@ -366,8 +427,8 @@ def add_type(name: str, note: str = "", role_code: str = "other", conn=None) -> 
         nxt = conn.execute(
             "SELECT COALESCE(MAX(sort_order),0)+1 AS n FROM staff_type_def").fetchone()["n"]
         conn.execute(
-            "INSERT INTO staff_type_def(name, is_builtin, note, sort_order, role_code) VALUES(?,0,?,?,?)",
-            (name, note.strip(), nxt, rc))
+            "INSERT INTO staff_type_def(name, is_builtin, note, sort_order, role_code, net_basis) "
+            "VALUES(?,0,?,?,?,'')", (name, note.strip(), nxt, rc))
         conn.commit()
     finally:
         _close(own, conn)

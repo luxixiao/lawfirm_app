@@ -24,37 +24,47 @@ def make_conn():
     conn.row_factory = sqlite3.Row
     conn.executescript(SCHEMA)
     # 批2：staff 镜像表已移除，staff_roster 在 SCHEMA 中已含 hire_month，无需迁移；
-    # 此处仅需补齐员工类型参与结算开关（与 db.init_db 迁移块一致，幂等）
+    # 此处补齐两条线列（与 db.init_db 迁移块一致，幂等）。SCHEMA 不含这两线列，
+    # 内存库须手动补 is_invoice / can_expense / net_basis / role_code。
     cols = [r[1] for r in conn.execute("PRAGMA table_info(staff_type_def)")]
-    if "is_settle" not in cols:
-        conn.execute("ALTER TABLE staff_type_def ADD COLUMN is_settle INTEGER NOT NULL DEFAULT 0")
-    if "net_basis" not in cols:
-        conn.execute("ALTER TABLE staff_type_def ADD COLUMN net_basis TEXT NOT NULL DEFAULT '收款净额'")
-    # 去写死（Plan A）：角色列 + role_def 种子（复刻 init_db 迁移，幂等）
-    if "role_code" not in cols:
-        conn.execute("ALTER TABLE staff_type_def ADD COLUMN role_code TEXT NOT NULL DEFAULT 'other'")
+    for col, ddl in (("is_invoice", "INTEGER NOT NULL DEFAULT 0"),
+                     ("can_expense", "INTEGER NOT NULL DEFAULT 0"),
+                     ("net_basis", "TEXT NOT NULL DEFAULT '收款净额'"),
+                     ("role_code", "TEXT NOT NULL DEFAULT 'other'")):
+        if col not in cols:
+            conn.execute(f"ALTER TABLE staff_type_def ADD COLUMN {col} {ddl}")
     st.ensure_roles(conn)
     conn.commit()
     return conn
 
 
 def seed_types(conn) -> None:
-    """按「员工类型页自建」铺出结算口径（合伙/聘用/兼职/公共/行政 参与、挂靠/其他 不参与）。
+    """按「员工类型页自建」铺出两线口径（合伙/聘用/兼职 业务线+费用线 均开；
+    公共/行政 仅费用线；挂靠/其他 两线均关）。
 
-    改动 1 后 `ensure_defaults()` 不再预置任何类型（员工类型表初始为空），
+    改动后 `ensure_defaults()` 不再预置任何类型（员工类型表初始为空），
     用例必须自己建类型，否则 build_settlement_conn 会把所有人的业务收入判为 0。
     """
-    for name, settle, basis in (("合伙", True, "开票净额"), ("聘用", True, "收款净额"),
-                                ("兼职", True, "收款净额"), ("公共", True, "收款净额"),
-                                ("行政", True, "收款净额"), ("挂靠", False, "收款净额"),
-                                ("其他", False, "收款净额")):
+    # (name, is_invoice(业务线), can_expense(费用线), net_basis)
+    # 映射自旧 is_settle 拆分回填：partner/employee/parttime 业务线开，
+    # 原参与结算者（含公共/行政）费用线开。
+    # 复刻 db 迁移：按名称子串设定 role_code（identity_roles 现读 staff_type_def.role_code）。
+    _ROLE_OF = {"合伙": "partner", "聘用": "employee", "兼职": "parttime"}
+    for name, invoice, expense, basis in (
+            ("合伙", True, True, "开票净额"), ("聘用", True, True, "收款净额"),
+            ("兼职", True, True, "收款净额"), ("公共", False, True, "收款净额"),
+            ("行政", False, True, "收款净额"), ("挂靠", False, False, "收款净额"),
+            ("其他", False, False, "收款净额")):
         if st.get_type(name, conn) is None:
             st.add_type(name, conn=conn)
             conn.execute("UPDATE staff_type_def SET is_builtin=? WHERE name=?",
                          (1 if name in st.BUILTIN_TYPES or name in ("公共", "行政") else 0,
                           name))
             conn.commit()
-        st.set_settle(name, settle, conn=conn)
+        # 复刻 db 迁移：按名称子串设定 role_code
+        st.set_role_code(name, _ROLE_OF.get(name, "other"), conn=conn)
+        st.set_invoice(name, invoice, conn=conn)
+        st.set_can_expense(name, expense, conn=conn)
         st.set_net_basis(name, basis, conn=conn)
 
 
@@ -135,20 +145,20 @@ def main() -> int:
     conn = make_conn()
     seed_types(conn)   # 不预置类型后由用例自建（见 seed_types 注释）
 
-    # ===== 1. settle_flags_of（G 核心驱动）=====
-    check("合伙=(1,开票净额)", ps.staff_type.settle_flags_of("合伙", conn) == (True, "开票净额"))
-    check("聘用=(1,收款净额)", ps.staff_type.settle_flags_of("聘用", conn) == (True, "收款净额"))
-    check("兼职=(1,收款净额)", ps.staff_type.settle_flags_of("兼职", conn) == (True, "收款净额"))
-    check("挂靠=(0,收款净额)", ps.staff_type.settle_flags_of("挂靠", conn) == (False, "收款净额"))
-    check("其他=(0,收款净额)", ps.staff_type.settle_flags_of("其他", conn) == (False, "收款净额"))
-    check("公共=(1,收款净额)", ps.staff_type.settle_flags_of("公共", conn) == (True, "收款净额"))
-    check("行政=(1,收款净额)", ps.staff_type.settle_flags_of("行政", conn) == (True, "收款净额"))
+    # ===== 1. business_flags_of（G 核心驱动）=====
+    check("合伙=(1,开票净额)", ps.staff_type.business_flags_of("合伙", conn) == (True, "开票净额"))
+    check("聘用=(1,收款净额)", ps.staff_type.business_flags_of("聘用", conn) == (True, "收款净额"))
+    check("兼职=(1,收款净额)", ps.staff_type.business_flags_of("兼职", conn) == (True, "收款净额"))
+    check("挂靠=(0,收款净额)", ps.staff_type.business_flags_of("挂靠", conn) == (False, "收款净额"))
+    check("其他=(0,收款净额)", ps.staff_type.business_flags_of("其他", conn) == (False, "收款净额"))
+    check("公共=(0,收款净额)", ps.staff_type.business_flags_of("公共", conn) == (False, "收款净额"))
+    check("行政=(0,收款净额)", ps.staff_type.business_flags_of("行政", conn) == (False, "收款净额"))
 
-    # 自定义类型开启参与 + 选开票净额
+    # 自定义类型开启业务线 + 选开票净额
     st.add_type("自定义甲", conn=conn)
-    st.set_settle("自定义甲", True, conn=conn)
+    st.set_invoice("自定义甲", True, conn=conn)
     st.set_net_basis("自定义甲", "开票净额", conn=conn)
-    check("自定义甲=(1,开票净额)", ps.staff_type.settle_flags_of("自定义甲", conn) == (True, "开票净额"))
+    check("自定义甲=(1,开票净额)", ps.staff_type.business_flags_of("自定义甲", conn) == (True, "开票净额"))
 
     # ===== 2. build_settlement 集成（逐字节一致 G 核心）=====
     # 合伙：无收款 → rec_net=0，income 必须=inv_total(1000)（开票净额）
@@ -172,7 +182,7 @@ def main() -> int:
     # 去写死（Plan A）：不再按名称把未知类型名归一到 "其他" —— 类型名即身份。
     # 自定义类型只要在类型表里建出来并设好口径，就该按该口径参与结算（不写死任何类型名）。
     st.add_type("自由职业", conn=conn)
-    st.set_settle("自由职业", True, conn=conn)
+    st.set_invoice("自由职业", True, conn=conn)
     st.set_net_basis("自由职业", "开票净额", conn=conn)
     seed_person(conn, "赵自由", "自由职业", 800, 0)
     res2 = ps.build_settlement_conn(conn, 2025)
@@ -312,17 +322,17 @@ def main() -> int:
     # ===== P1 ★核心回归★：取消勾选 → 重新勾选 → 口径与算费金额原样恢复 =====
     # 合伙=开票净额：开票 1000、收 600 → 正确 income=1000；口径若被静默改写成
     # 收款净额会退化成 600（少计 400），这条断言直接锁住金额而不只是锁住读数。
-    st.set_settle("合伙", False, conn=conn)
+    st.set_invoice("合伙", False, conn=conn)
     seed_person(conn, "周恢复", "合伙", 1000, 600)
     r_off = ps.build_settlement_conn(conn, 2025)
     check("取消勾选期间 该类型不参与（income=0）",
           r_off["周恢复"]["months"][3]["income"] == 0.0,
           f"got={r_off['周恢复']['months'][3]['income']}")
-    st.set_settle("合伙", True, conn=conn)
+    st.set_invoice("合伙", True, conn=conn)
     r_on = ps.build_settlement_conn(conn, 2025)
     check("重新勾选后 读数恢复=开票净额",
-          st.settle_flags_of("合伙", conn) == (True, "开票净额"),
-          f"got={st.settle_flags_of('合伙', conn)}")
+          st.business_flags_of("合伙", conn) == (True, "开票净额"),
+          f"got={st.business_flags_of('合伙', conn)}")
     check("重新勾选后 算费 income 回到 inv_total(1000)",
           r_on["周恢复"]["months"][3]["income"] == 1000.0,
           f"got={r_on['周恢复']['months'][3]['income']}")

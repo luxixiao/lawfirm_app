@@ -367,7 +367,7 @@ class ImportView(QWidget):
                 # import_batch / staff / staff_type_def 一张都不许被碰。
                 #
                 # 为什么不能「默认填个类型」继续导：无类型 = 类型表里查不到行 →
-                # `settle_flags_of()` 返回 (False, "") → 一律判「不参与结算」→ 导入
+                # `business_flags_of()` 返回 (False, "") → 一律判「不参与结算」→ 导入
                 # 费用台账时被逐行拒绝。宁可不导，也不给一个系统替用户决定的假类型。
                 missing = [name for name, stype, _note in staff
                            if not (stype or "").strip()]

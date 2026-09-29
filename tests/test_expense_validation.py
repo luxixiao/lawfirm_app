@@ -21,15 +21,15 @@ def make_conn():
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
     conn.executescript(SCHEMA)
-    # 员工类型参与结算开关迁移（与 db.init_db 迁移块一致，幂等）
+    # 两条线列迁移（与 db.init_db 迁移块一致，幂等）：SCHEMA 不含这两列，
+    # 内存库须手动补 is_invoice / can_expense / net_basis / role_code。
     cols = [r[1] for r in conn.execute("PRAGMA table_info(staff_type_def)")]
-    if "is_settle" not in cols:
-        conn.execute("ALTER TABLE staff_type_def ADD COLUMN is_settle INTEGER NOT NULL DEFAULT 0")
-    if "net_basis" not in cols:
-        conn.execute("ALTER TABLE staff_type_def ADD COLUMN net_basis TEXT NOT NULL DEFAULT '收款净额'")
-    # 去写死（Plan A）：角色列 + role_def 种子（复刻 init_db 迁移，幂等）
-    if "role_code" not in cols:
-        conn.execute("ALTER TABLE staff_type_def ADD COLUMN role_code TEXT NOT NULL DEFAULT 'other'")
+    for col, ddl in (("is_invoice", "INTEGER NOT NULL DEFAULT 0"),
+                     ("can_expense", "INTEGER NOT NULL DEFAULT 0"),
+                     ("net_basis", "TEXT NOT NULL DEFAULT '收款净额'"),
+                     ("role_code", "TEXT NOT NULL DEFAULT 'other'")):
+        if col not in cols:
+            conn.execute(f"ALTER TABLE staff_type_def ADD COLUMN {col} {ddl}")
     st.ensure_roles(conn)
     conn.commit()
     return conn
@@ -44,22 +44,30 @@ def check(label, cond, detail=""):
 
 
 def seed_types(conn) -> None:
-    """铺出规则③用到的员工类型（合伙/聘用/公共/行政 参与、挂靠/其他 不参与）。
+    """铺出规则③用到的员工类型（合伙/聘用/兼职/公共/行政 可承担费用、挂靠/其他 不可）。
 
-    改动 1 后 `ensure_defaults()` 不再预置任何类型（员工类型表初始为空），
-    用例必须自己建类型，否则「经办人必须参与结算」规则会全部误判为未参与。
+    两条线模型：规则③「经办人必须参与结算」已改为「费用线闸门」can_bear_expense。
+    改动后 `ensure_defaults()` 不再预置任何类型（员工类型表初始为空），
+    用例必须自己建类型，否则「经办人必须可承担费用」规则会全部误判为不可承担。
     """
-    for name, settle, basis in (("合伙", True, "开票净额"), ("聘用", True, "收款净额"),
-                                ("兼职", True, "收款净额"), ("公共", True, "收款净额"),
-                                ("行政", True, "收款净额"), ("挂靠", False, "收款净额"),
-                                ("其他", False, "收款净额")):
+    # (name, is_invoice(业务线), can_expense(费用线), net_basis)
+    # 映射自旧 is_settle 拆分回填：原参与结算者（含公共/行政）费用线开。
+    # 复刻 db 迁移：按名称子串设定 role_code（与真实库一致）。
+    _ROLE_OF = {"合伙": "partner", "聘用": "employee", "兼职": "parttime"}
+    for name, invoice, expense, basis in (
+            ("合伙", True, True, "开票净额"), ("聘用", True, True, "收款净额"),
+            ("兼职", True, True, "收款净额"), ("公共", False, True, "收款净额"),
+            ("行政", False, True, "收款净额"), ("挂靠", False, False, "收款净额"),
+            ("其他", False, False, "收款净额")):
         if st.get_type(name, conn) is None:
             st.add_type(name, conn=conn)
             conn.execute("UPDATE staff_type_def SET is_builtin=? WHERE name=?",
                          (1 if name in st.BUILTIN_TYPES or name in ("公共", "行政") else 0,
                           name))
             conn.commit()
-        st.set_settle(name, settle, conn=conn)
+        st.set_role_code(name, _ROLE_OF.get(name, "other"), conn=conn)
+        st.set_invoice(name, invoice, conn=conn)
+        st.set_can_expense(name, expense, conn=conn)
         st.set_net_basis(name, basis, conn=conn)
 
 

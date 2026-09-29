@@ -63,7 +63,7 @@ def validate_expense_edit(rows: List[dict], conn=None) -> List[Violation]:
            subject1 / subject2 / actual_handler ...）。
     ① book_amount ≈ expense_amount - tax_amount (±0.01)；
     ② (subject1, subject2) 必须都在会计科目主表（复用 asub.validate_ledger_subjects）；
-    ③ actual_handler 必须是参与结算人员（复用 st.is_settle_participant）。
+    ③ actual_handler 必须可承担费用（费用线闸门，复用 st.can_bear_expense）。
     返回 [] = 通过。
     """
     own, c = _own_conn(conn)
@@ -82,10 +82,11 @@ def validate_expense_edit(rows: List[dict], conn=None) -> List[Violation]:
                     row_id=rid, field="book_amount",
                     message=f"账面费用金额 {book} 与 费用金额−税额 {amt - tax} 不符（±0.01）"))
             handler = (row.get("actual_handler") or "").strip()
-            if handler and not st.is_settle_participant(handler, c):
+            if handler and not st.can_bear_expense(handler, c):
                 violations.append(Violation(
                     row_id=rid, field="actual_handler",
-                    message=f"经办人 {handler} 未参与结算（员工类型页未开启参与结算）"))
+                    message=f"经办人 {handler} 未开启报销（费用线），不能在费用台账承担费用"
+                            f"（员工类型页需勾选「报销」）"))
 
         # ② 科目必须在会计科目主表（复用校验内核，不重写科目树遍历）
         bad = set(asub.validate_ledger_subjects(rows, c))

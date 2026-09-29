@@ -1,5 +1,11 @@
 """staff_type（员工类型维护 + 员工删除引用检查）单元测试 — 内存库。
 
+两条线模型（2026-09-29 重构）下的口径：
+- `is_invoice`（是否开票 / 业务线，只管结算收入，不碰费用承担）
+- `can_expense`（是否报销 / 费用线，唯一费用承担闸门）
+- 进报表 = `is_invoice OR can_expense`（派生，不新增独立开关）
+- `net_basis` ∈ {'开票净额','收款净额'}，仅 `is_invoice=1` 时有意义，否则空。
+
 运行：python tests/test_staff_type.py
 """
 import sqlite3
@@ -20,14 +26,15 @@ def make_conn():
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
     conn.executescript(SCHEMA)
-    # 员工类型参与结算开关迁移（与 db.init_db 迁移块一致，幂等）
+    # 两条线列迁移（与 db.init_db 迁移块一致，幂等）：SCHEMA 不含这两列，
+    # 内存库须手动补 is_invoice / can_expense / net_basis / role_code。
     cols = [r[1] for r in conn.execute("PRAGMA table_info(staff_type_def)")]
-    if "is_settle" not in cols:
-        conn.execute("ALTER TABLE staff_type_def ADD COLUMN is_settle INTEGER NOT NULL DEFAULT 0")
-    if "net_basis" not in cols:
-        conn.execute("ALTER TABLE staff_type_def ADD COLUMN net_basis TEXT NOT NULL DEFAULT '收款净额'")
-    if "role_code" not in [r[1] for r in conn.execute("PRAGMA table_info(staff_type_def)")]:
-        conn.execute("ALTER TABLE staff_type_def ADD COLUMN role_code TEXT NOT NULL DEFAULT 'other'")
+    for col, ddl in (("is_invoice", "INTEGER NOT NULL DEFAULT 0"),
+                     ("can_expense", "INTEGER NOT NULL DEFAULT 0"),
+                     ("net_basis", "TEXT NOT NULL DEFAULT '收款净额'"),
+                     ("role_code", "TEXT NOT NULL DEFAULT 'other'")):
+        if col not in cols:
+            conn.execute(f"ALTER TABLE staff_type_def ADD COLUMN {col} {ddl}")
     conn.commit()
     # role_def 种子（与 db.init_db 迁移块一致；去写死身份大类的语义来源）
     st.ensure_roles(conn)
@@ -51,25 +58,27 @@ def expect_err(label, fn, exc=StaffTypeError):
         OK += 1
 
 
-# (类型名, 是否参与结算, 业务金额方式)：口径沿用历史预置行的取值（列默认值=收款净额）
-_SEED_TYPES = (("合伙", True, "开票净额"), ("聘用", True, "收款净额"),
-               ("兼职", True, "收款净额"), ("公共", True, "收款净额"),
-               ("行政", True, "收款净额"), ("挂靠", False, "收款净额"),
-               ("其他", False, "收款净额"))
+# (类型名, 是否开票(业务线), 是否报销(费用线), 业务金额方式)
+# 列默认值=收款净额；映射自旧 is_settle 拆分回填口径：
+#   partner/employee/parttime → 业务线开；原参与结算者（含公共/行政）→ 费用线开。
+_SEED_TYPES = (("合伙", True, True, "开票净额"), ("聘用", True, True, "收款净额"),
+               ("兼职", True, True, "收款净额"), ("公共", False, True, "收款净额"),
+               ("行政", False, True, "收款净额"), ("挂靠", False, False, "收款净额"),
+               ("其他", False, False, "收款净额"))
 
 
 def seed_types(conn) -> None:
-    """按「用户在员工类型页自建」的等价动作铺出结算口径。
+    """按「用户在员工类型页自建」的等价动作铺出两线口径。
 
-    为什么需要它：改动 1 后 `ensure_defaults()` 不再预置任何类型（员工类型表初始为
+    为什么需要它：改动后 `ensure_defaults()` 不再预置任何类型（员工类型表初始为
     空），所以用例用到的类型必须自己建 —— 否则"合伙/聘用"这类断言会直接 KeyError。
-    这里复刻的是页面动作：add_type 新建 → 勾选参与 → 下拉选口径；
+    这里复刻的是页面动作：add_type 新建 → 勾选开票 / 勾选报销 → 下拉选口径；
     is_builtin=1（合伙/聘用/兼职/公共/行政）与禁删禁改名语义保持一致。
     """
     # 每个种子类型的角色归属（去写死：角色决定 forbid_public_exclusive/
     # include_in_income_report/default_net_basis；类型名与角色解耦）
     _ROLE_OF = {"合伙": "partner", "聘用": "employee", "兼职": "parttime"}
-    for name, settle, basis in _SEED_TYPES:
+    for name, invoice, expense, basis in _SEED_TYPES:
         if st.get_type(name, conn) is None:
             st.add_type(name, conn=conn)
             builtin = name in st.BUILTIN_TYPES or name in ("公共", "行政")
@@ -77,7 +86,8 @@ def seed_types(conn) -> None:
                          (1 if builtin else 0, name))
             conn.commit()
         st.set_role_code(name, _ROLE_OF.get(name, "other"), conn=conn)
-        st.set_settle(name, settle, conn=conn)   # 参与结算开关（不动口径，顺序任意）
+        st.set_invoice(name, invoice, conn=conn)      # 业务线开关
+        st.set_can_expense(name, expense, conn=conn)  # 费用线开关
         st.set_net_basis(name, basis, conn=conn)
 
 
@@ -100,61 +110,80 @@ def main() -> int:
     check("公共是内置", builtin["公共"] == 1)
     check("行政是内置", builtin["行政"] == 1)
     check("挂靠非内置", builtin["挂靠"] == 0)
-    # 内置三类参与结算且净额口径正确（迁移/默认值保证）
-    check("合伙 is_settle=1 且 开票净额",
-          st.get_type("合伙", conn)["is_settle"] == 1 and st.get_type("合伙", conn)["net_basis"] == "开票净额")
-    check("公共 is_settle=1", st.get_type("公共", conn)["is_settle"] == 1)
-    # list_types 现在透出 is_settle / net_basis（T5 UI 直接读，不再派生）
+    # 内置三类开票且净额口径正确（迁移/默认值保证）
+    check("合伙 is_invoice=1 且 开票净额",
+          st.get_type("合伙", conn)["is_invoice"] == 1
+          and st.get_type("合伙", conn)["net_basis"] == "开票净额")
+    check("公共 can_expense=1（仅费用线）", st.get_type("公共", conn)["can_expense"] == 1)
+    # list_types 现在透出两线列 / net_basis（T5 UI 直接读，不再派生）
     lt = {t["name"]: t for t in st.list_types(conn)}
-    check("list_types 透出 is_settle", "is_settle" in lt["合伙"])
+    check("list_types 透出 is_invoice", "is_invoice" in lt["合伙"])
+    check("list_types 透出 can_expense", "can_expense" in lt["合伙"])
     check("list_types 透出 net_basis", "net_basis" in lt["合伙"])
-    check("list_types 合伙 is_settle=1", lt["合伙"]["is_settle"] == 1)
+    check("list_types 合伙 is_invoice=1", lt["合伙"]["is_invoice"] == 1)
+    check("list_types 合伙 can_expense=1", lt["合伙"]["can_expense"] == 1)
 
-    # ===== 2. 参与结算口径（is_computable 改为读 is_settle）=====
-    # 注：单参 is_computable(name) 仅用于生产（staff_view.py:175），其内部走真实库；
+    # ===== 2. 业务线口径（is_computable 改为读 is_invoice）=====
+    # 注：单参 is_computable(name) 仅用于生产（staff_view.py），其内部走真实库；
     # 此处内存库测试须显式传 conn，避免落到未迁移的真实库文件。
-    check("合伙参与计算", st.is_computable("合伙", conn) is True)
-    check("聘用参与计算", st.is_computable("聘用", conn) is True)
-    check("兼职参与计算", st.is_computable("兼职", conn) is True)
-    check("顾问不参与", st.is_computable("顾问", conn) is False)
-    check("其他不参与", st.is_computable("其他", conn) is False)
-    # 旧启发式（含"合伙"字样即参与）已退休：自定义名未开启参与结算 → False
-    check("含'合伙'字样的自定义名不参与（未开启）", st.is_computable("外部合伙", conn) is False)
+    check("合伙进业务线", st.is_computable("合伙", conn) is True)
+    check("聘用进业务线", st.is_computable("聘用", conn) is True)
+    check("兼职进业务线", st.is_computable("兼职", conn) is True)
+    check("公共不进业务线(仅费用线)", st.is_computable("公共", conn) is False)
+    check("行政不进业务线(仅费用线)", st.is_computable("行政", conn) is False)
+    check("顾问不进业务线", st.is_computable("顾问", conn) is False)
+    check("其他不进业务线", st.is_computable("其他", conn) is False)
+    # 旧启发式（含"合伙"字样即参与）已退休：自定义名未开启业务线 → False
+    check("含'合伙'字样的自定义名不进业务线（未开启）", st.is_computable("外部合伙", conn) is False)
 
-    # ===== 2.1 settle_flags_of / is_settle_participant =====
-    check("合伙 settle=(1,开票净额)", st.settle_flags_of("合伙", conn) == (True, "开票净额"))
-    check("聘用 settle=(1,收款净额)", st.settle_flags_of("聘用", conn) == (True, "收款净额"))
-    check("兼职 settle=(1,收款净额)", st.settle_flags_of("兼职", conn) == (True, "收款净额"))
-    check("公共 settle=(1,收款净额)", st.settle_flags_of("公共", conn) == (True, "收款净额"))
-    check("行政 settle=(1,收款净额)", st.settle_flags_of("行政", conn) == (True, "收款净额"))
-    check("挂靠 settle=(0,收款净额)", st.settle_flags_of("挂靠", conn) == (False, "收款净额"))
-    check("其他 settle=(0,收款净额)", st.settle_flags_of("其他", conn) == (False, "收款净额"))
+    # ===== 2.1 business_flags_of（单类型业务线读数）=====
+    check("合伙 flags=(1,开票净额)", st.business_flags_of("合伙", conn) == (True, "开票净额"))
+    check("聘用 flags=(1,收款净额)", st.business_flags_of("聘用", conn) == (True, "收款净额"))
+    check("兼职 flags=(1,收款净额)", st.business_flags_of("兼职", conn) == (True, "收款净额"))
+    check("公共 flags=(0,收款净额)", st.business_flags_of("公共", conn) == (False, "收款净额"))
+    check("行政 flags=(0,收款净额)", st.business_flags_of("行政", conn) == (False, "收款净额"))
+    check("挂靠 flags=(0,收款净额)", st.business_flags_of("挂靠", conn) == (False, "收款净额"))
+    check("其他 flags=(0,收款净额)", st.business_flags_of("其他", conn) == (False, "收款净额"))
     # 类型不存在 → 无口径可依据，返回空串（不再臆造"收款净额"）
-    check("未知类型 settle=(0,'')", st.settle_flags_of("不存在的类型", conn) == (False, ""))
+    check("未知类型 flags=(0,'')", st.business_flags_of("不存在的类型", conn) == (False, ""))
 
-    check("空名非参与", st.is_settle_participant("", conn) is False)
-    check("空名(None)非参与", st.is_settle_participant(None, conn) is False)
-    check("合伙参与", st.is_settle_participant("合伙", conn) is True)
-    check("公共参与", st.is_settle_participant("公共", conn) is True)
-    check("行政参与", st.is_settle_participant("行政", conn) is True)
-    check("挂靠不参与", st.is_settle_participant("挂靠", conn) is False)
+    # ===== 2.2 费用线闸门 can_bear_expense（规则③，D1 一人多类型取 OR）=====
+    check("空名不可承担费用", st.can_bear_expense("", conn) is False)
+    check("空名(None)不可承担费用", st.can_bear_expense(None, conn) is False)
+    check("合伙可承担费用", st.can_bear_expense("合伙", conn) is True)
+    check("公共可承担费用", st.can_bear_expense("公共", conn) is True)
+    check("行政可承担费用", st.can_bear_expense("行政", conn) is True)
+    check("挂靠不可承担费用", st.can_bear_expense("挂靠", conn) is False)
+    check("其他不可承担费用", st.can_bear_expense("其他", conn) is False)
 
-    # ===== 2.2 自定义类型开启参与结算 + 切换净额口径 =====
+    # ===== 2.3 两条线独立开关：开启业务线不影响费用线，反之亦然 =====
     st.add_type("自定义甲", conn=conn)
-    check("自定义甲默认非参与", st.is_settle_participant("自定义甲", conn) is False)
-    st.set_settle("自定义甲", True, conn=conn)
+    check("自定义甲默认两线均关", st.is_computable("自定义甲", conn) is False
+          and st.can_bear_expense("自定义甲", conn) is False)
+    st.set_invoice("自定义甲", True, conn=conn)
     st.set_net_basis("自定义甲", "开票净额", conn=conn)
-    check("自定义甲开启后参与", st.is_settle_participant("自定义甲", conn) is True)
-    check("自定义甲净额口径=开票净额", st.settle_flags_of("自定义甲", conn) == (True, "开票净额"))
-    st.set_settle("自定义甲", False, conn=conn)
-    check("自定义甲关闭后非参与", st.is_settle_participant("自定义甲", conn) is False)
-    st.set_settle("自定义甲", True, conn=conn)
+    check("自定义甲开启业务线", st.is_computable("自定义甲", conn) is True)
+    check("自定义甲开启业务线后 净额口径=开票净额",
+          st.business_flags_of("自定义甲", conn) == (True, "开票净额"))
+    check("自定义甲开业务线 不影响费用线（仍不可承担费用）",
+          st.can_bear_expense("自定义甲", conn) is False)
+    st.set_can_expense("自定义甲", True, conn=conn)
+    check("自定义甲开启费用线后可承担费用", st.can_bear_expense("自定义甲", conn) is True)
+    check("自定义甲开费用线 不影响业务线", st.is_computable("自定义甲", conn) is True)
+    st.set_invoice("自定义甲", False, conn=conn)
+    check("自定义甲关业务线后不进业务线", st.is_computable("自定义甲", conn) is False)
+    check("自定义甲关业务线后 费用线仍在（可承担费用）",
+          st.can_bear_expense("自定义甲", conn) is True)
+    check("自定义甲关业务线后 口径按原样保留",
+          st.business_flags_of("自定义甲", conn) == (False, "开票净额"))
     st.set_net_basis("自定义甲", "收款净额", conn=conn)
-    check("自定义甲切回收款净额", st.settle_flags_of("自定义甲", conn) == (True, "收款净额"))
+    st.set_invoice("自定义甲", True, conn=conn)
+    check("自定义甲重新开业务线 切回收款净额",
+          st.business_flags_of("自定义甲", conn) == (True, "收款净额"))
 
     # ===== 3. 新增 / 改名 / 说明 / 排序 =====
     st.add_type("顾问", "外部顾问律师", conn=conn)
-    # 预置 7 类 + 自定义甲(§2.2 已加) + 顾问(本行) = 9
+    # 预置 7 类 + 自定义甲(§2.3 已加) + 顾问(本行) = 9
     check("新增后 9 类", len(st.list_types(conn)) == 9)
     expect_err("重名拒绝", lambda: st.add_type("顾问", conn=conn))
     expect_err("空名拒绝", lambda: st.add_type("  ", conn=conn))
@@ -251,9 +280,9 @@ def main() -> int:
         "SELECT COUNT(*) AS n FROM staff_type_def").fetchone()["n"] == 0)
     c_new.close()
 
-    # 8b 老库升级：缺 is_settle / net_basis 的列要能补上，且不改写已有行
+    # 8b 老库升级：缺 is_invoice / can_expense / net_basis 的列要能补上，且不改写已有行
     c_old = make_conn()
-    # 退回"未迁移"形态（仅 4 列），再由 ensure_defaults 补列
+    # 退回"未迁移"形态（仅 4 基础列），再由 ensure_defaults 补列
     c_old.executescript(
         "ALTER TABLE staff_type_def RENAME TO staff_type_def_tmp;"
         "CREATE TABLE staff_type_def(name TEXT PRIMARY KEY, is_builtin INTEGER DEFAULT 0,"
@@ -261,71 +290,76 @@ def main() -> int:
         " INSERT INTO staff_type_def(name, is_builtin, note, sort_order)"
         "  SELECT name, is_builtin, note, sort_order FROM staff_type_def_tmp;"
         " DROP TABLE staff_type_def_tmp;")
-    # 造一行"升级前就在"的历史数据（未参与结算，也不该在补列时被改写）
+    # 造一行"升级前就在"的历史数据（未开票、未报销，也不该在补列时被改写）
     c_old.execute("INSERT INTO staff_type_def(name, is_builtin, note, sort_order)"
                   " VALUES('合伙',1,'',1)")
     c_old.commit()
     st.ensure_defaults(c_old)
     cols = [r[1] for r in c_old.execute("PRAGMA table_info(staff_type_def)")]
-    check("老库补出 is_settle 列", "is_settle" in cols, f"cols={cols}")
+    check("老库补出 is_invoice 列", "is_invoice" in cols, f"cols={cols}")
+    check("老库补出 can_expense 列", "can_expense" in cols, f"cols={cols}")
     check("老库补出 net_basis 列", "net_basis" in cols, f"cols={cols}")
-    # 存量行落在列默认值上（与 db.init_db 迁移块同一口径），不因补列被改写 is_settle
-    check("老库补列后 存量行按列默认值", st.settle_flags_of("合伙", c_old) == (False, "收款净额"),
-          f"got={st.settle_flags_of('合伙', c_old)}")
+    # 存量行落在列默认值上（与 db.init_db 迁移块同一口径），不因补列被改写
+    check("老库补列后 存量行按列默认值", st.business_flags_of("合伙", c_old) == (False, "收款净额"),
+          f"got={st.business_flags_of('合伙', c_old)}")
     c_old.close()
 
     # 8c ★核心回归★：取消勾选后，反复 list_types（=刷新页面）不得写回
     c_r = make_conn()
     st.add_type("外部顾问", conn=c_r)
-    st.set_settle("外部顾问", True, conn=c_r)
+    st.set_invoice("外部顾问", True, conn=c_r)
     st.set_net_basis("外部顾问", "开票净额", conn=c_r)
-    check("开启参与", st.is_settle_participant("外部顾问", c_r) is True)
-    st.set_settle("外部顾问", False, conn=c_r)
+    check("开启业务线", st.is_computable("外部顾问", c_r) is True)
+    st.set_invoice("外部顾问", False, conn=c_r)
     for _ in range(3):            # 模拟"打开页面 → refresh → list_types"反复调用
         st.list_types(c_r)
     row = st.get_type("外部顾问", c_r)
     check("取消勾选不被 list_types 写回",
-          row["is_settle"] == 0 and st.is_settle_participant("外部顾问", c_r) is False,
+          row["is_invoice"] == 0 and st.is_computable("外部顾问", c_r) is False,
           f"got={dict(row)}")
     # 取消勾选只关开关：口径按原样留在库里，且不被 "or 收款净额" 兜底悄悄还原。
-    # 结算侧（person_settlement）只在 is_settle=True 时读第 2 项，故金额完全不受影响。
+    # 结算侧（person_settlement）只在 is_invoice=True 时读第 2 项，故金额完全不受影响。
     check("取消勾选后 口径按原样保留", row["net_basis"] == "开票净额", f"got={row['net_basis']!r}")
-    check("取消勾选后 读数不参与结算且口径原样",
-          st.settle_flags_of("外部顾问", c_r) == (False, "开票净额"),
-          f"got={st.settle_flags_of('外部顾问', c_r)}")
+    check("取消勾选后 读数不进业务线且口径原样",
+          st.business_flags_of("外部顾问", c_r) == (False, "开票净额"),
+          f"got={st.business_flags_of('外部顾问', c_r)}")
 
     # ★核心回归★：取消勾选 → 重新勾选 → 口径原样恢复，不得退化成默认口径（收款净额）。
     # 退化会让「合伙」这类按开票净额计的类型少算收入（开票 100 万/收 60 万 → 只计 60 万）。
-    st.set_settle("外部顾问", True, conn=c_r)
+    st.set_invoice("外部顾问", True, conn=c_r)
     check("重新勾选后 口径未退化成默认",
-          st.settle_flags_of("外部顾问", c_r) == (True, "开票净额"),
-          f"got={st.settle_flags_of('外部顾问', c_r)}")
+          st.business_flags_of("外部顾问", c_r) == (True, "开票净额"),
+          f"got={st.business_flags_of('外部顾问', c_r)}")
 
-    # 内置类型同口径：公共 关掉后刷新仍保持关闭，重新勾选可再参与
+    # 内置类型同口径：公共 开启业务线→关掉→刷新仍保持关闭，重新勾选可再进业务线
     seed_types(c_r)
-    st.set_settle("公共", False, conn=c_r)
+    st.set_invoice("公共", True, conn=c_r)
     st.list_types(c_r)
-    check("内置类型取消勾选不被写回", st.get_type("公共", c_r)["is_settle"] == 0)
-    st.set_settle("公共", True, conn=c_r)
-    check("内置类型可重新勾选参与", st.is_settle_participant("公共", c_r) is True)
+    check("内置类型开启业务线后 is_invoice=1", st.get_type("公共", c_r)["is_invoice"] == 1)
+    st.set_invoice("公共", False, conn=c_r)
+    st.list_types(c_r)
+    check("内置类型取消勾选不被写回", st.get_type("公共", c_r)["is_invoice"] == 0)
+    st.set_invoice("公共", True, conn=c_r)
+    check("内置类型可重新勾选进业务线", st.is_computable("公共", c_r) is True)
 
     # 内置「合伙」最小复现（QA 场景）：开票 1000 未收，口径=开票净额
-    check("内置 合伙 初始读数", st.settle_flags_of("合伙", c_r) == (True, "开票净额"),
-          f"got={st.settle_flags_of('合伙', c_r)}")
-    st.set_settle("合伙", False, conn=c_r)
-    check("内置 合伙 取消勾选后 不参与且口径保留",
-          st.settle_flags_of("合伙", c_r) == (False, "开票净额"),
-          f"got={st.settle_flags_of('合伙', c_r)}")
-    st.set_settle("合伙", True, conn=c_r)
+    check("内置 合伙 初始读数", st.business_flags_of("合伙", c_r) == (True, "开票净额"),
+          f"got={st.business_flags_of('合伙', c_r)}")
+    st.set_invoice("合伙", False, conn=c_r)
+    check("内置 合伙 取消勾选后 不进业务线且口径保留",
+          st.business_flags_of("合伙", c_r) == (False, "开票净额"),
+          f"got={st.business_flags_of('合伙', c_r)}")
+    st.set_invoice("合伙", True, conn=c_r)
     check("内置 合伙 重新勾选后 口径恢复（不退化为收款净额）",
-          st.settle_flags_of("合伙", c_r) == (True, "开票净额"),
-          f"got={st.settle_flags_of('合伙', c_r)}")
+          st.business_flags_of("合伙", c_r) == (True, "开票净额"),
+          f"got={st.business_flags_of('合伙', c_r)}")
 
-    # 8d 导入按需建类型：默认不参与，且不动已有类型的勾选
+    # 8d 导入按需建类型：默认两线均关，且不动已有类型的勾选
     st.ensure_types(c_r, ["返聘"])
     check("导入按需补类型", "返聘" in [t["name"] for t in st.list_types(c_r)])
-    check("按需补的类型默认不参与", st.is_settle_participant("返聘", c_r) is False)
-    check("按需补类型不覆盖已设勾选", st.get_type("公共", c_r)["is_settle"] == 1)
+    check("按需补的类型默认不进业务线", st.is_computable("返聘", c_r) is False)
+    check("按需补的类型默认不可承担费用", st.can_bear_expense("返聘", c_r) is False)
+    check("按需补类型不覆盖已设勾选", st.get_type("公共", c_r)["can_expense"] == 1)
     c_r.close()
 
     conn.close()

@@ -372,11 +372,14 @@ CREATE TABLE IF NOT EXISTS anomaly_note (
 CREATE INDEX IF NOT EXISTS idx_anomaly_note_period ON anomaly_note(period, dim);
 
 -- ============ 员工类型定义（可自定义，员工管理页「员工类型」Tab 维护）============
--- 参与结算由 staff_type_def.is_settle 控制（内置三类 + 公共/行政 默认参与），
--- 净额口径由 net_basis 控制（'开票净额' | '收款净额'）；person_settlement 改用
--- staff_type.settle_flags_of 读取，不再按类型名硬编码。
+-- 两条线模型（2026-09-29）：类型一级只有两个独立开关 ——
+--   is_invoice（是否开票 / 业务线，只管结算收入，不碰费用承担）
+--   can_expense（是否报销 / 费用线，唯一费用承担闸门）
+-- 进报表 = is_invoice OR can_expense（派生，不新增独立开关）。
+-- 净额口径 net_basis ∈ {'开票净额','收款净额'}，仅 is_invoice=1 时有意义，否则空。
+-- 旧 is_settle 已由 init_db 迁移块拆分回填后删除（见下方迁移），不再存在。
 -- 内置三类 is_builtin=1：禁止删除与改名（改名会断结算口径），说明可改。
--- 自定义类型（如"顾问""实习"）默认不参与，可在员工类型页自行开启参与结算。
+-- 自定义类型（如"顾问""实习"）默认两线均关，可在员工类型页自行开启。
 CREATE TABLE IF NOT EXISTS staff_type_def (
     name        TEXT PRIMARY KEY,
     is_builtin  INTEGER NOT NULL DEFAULT 0,
@@ -526,6 +529,22 @@ def init_db(backfill: bool = True) -> None:
             conn.execute(
                 "UPDATE staff_type_def SET role_code=? WHERE role_code<>? AND name LIKE ?",
                 (code, code, f"%{kw}%"))
+        # 迁移：两条线模型（批次1 点1）—— 拆旧 is_settle → is_invoice + can_expense
+        # 业务角色（合伙/聘用/兼职）才进业务线；原参与结算的（含公共/行政）都能扛费用。
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(staff_type_def)")]
+        if "is_invoice" not in cols:
+            conn.execute("ALTER TABLE staff_type_def ADD COLUMN is_invoice INTEGER NOT NULL DEFAULT 0")
+        if "can_expense" not in cols:
+            conn.execute("ALTER TABLE staff_type_def ADD COLUMN can_expense INTEGER NOT NULL DEFAULT 0")
+        if "is_settle" in cols:
+            # 回填（一次性）+ 立即删旧列：删列后无任何「冻结源」可重算，杜绝
+            # 「勾选取消不掉」式回退（旧 is_settle 被当作凭据反复覆盖用户新勾选）。
+            conn.execute(
+                "UPDATE staff_type_def SET "
+                "is_invoice = CASE WHEN is_settle = 1 AND role_code IN ('partner','employee','parttime') "
+                "THEN 1 ELSE 0 END, "
+                "can_expense = is_settle")
+            conn.execute("ALTER TABLE staff_type_def DROP COLUMN is_settle")
         # 迁移：花名册 + 人员类型关联（批1基础）—— 仅当历史库仍有 staff 镜像时折入。
         # 新库（staff 表已移除）或已折入过（staff_roster 非空）均跳过；幂等。
         if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='staff'").fetchone() \
