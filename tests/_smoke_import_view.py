@@ -24,7 +24,7 @@ from app.ui.import_view import ImportView  # noqa: E402
 from app.importer import importer as _imp  # noqa: E402
 
 
-# ---- 打桩：避免碰真实文件 / 数据库（Seafile 同步库在沙箱会被锁）----
+# ---- 打桩：避免碰真实文件 / 数据库（防沙箱文件锁）----
 class _FakeCursor:
     def __iter__(self):
         return iter([])

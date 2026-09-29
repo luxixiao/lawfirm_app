@@ -234,7 +234,7 @@ CREATE UNIQUE INDEX idx_calc_ind_name ON calc_indicator(name);
 
 ### 11.6 工程
 - DATA 请求级缓存：同 职工+指标+账期 会话内只查一次，重开表自然刷新。
-- **DB 在 Seafile 同步范围内（已确认）**：跨机同时编辑=后写覆盖。`calc_sheet` 加 `updated_by`/`updated_at` 并在列表与打开时展示"最后编辑人/时间"，降低覆盖风险。
+- **记录最后编辑人/时间**：`calc_sheet` 加 `updated_by`/`updated_at` 并在列表与打开时展示"最后编辑人/时间"，便于审计追踪。
 - 自定义指标管理对话框：增删改 + definition 解析校验 + 删除前被引用检测。
 
 ### 11.7 澄清（2026-08-30 第三轮）

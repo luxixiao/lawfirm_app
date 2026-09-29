@@ -8,7 +8,7 @@
      "params":{"名称":值},                        # A 层命名参数
      "col_headers":[...], "row_headers":[...]}
 - 命名校验（spec §11.3）：禁单元格模式(A1~ZZZ99999)/空格/!；唯一约束由 DB 兜底。
-- updated_by/updated_at：DB 在 Seafile 同步范围，展示"最后编辑人/时间"提示覆盖风险。
+- updated_by/updated_at：记录"最后编辑人/时间"便于审计追踪。
 - 只读不回写：本层只读写 calc_sheet 自身，绝不触碰业务主表。
 """
 from __future__ import annotations
@@ -286,10 +286,10 @@ def list_sheets(conn=None) -> List[Dict]:
 
 
 def _broken_backup_dir() -> Path:
-    """损坏 content 的库外备份目录 —— **必须在 Seafile 同步范围之外**。
+    """损坏 content 的库外备份目录 —— **必须在数据目录之外**。
 
-    DB 本身随 Seafile 跨 3 台 PC 同步（有覆盖写风险），把备份写回 data/ 会被同步
-    再覆盖/再损坏，所以放本机库外：
+    DB 写入若半途损坏，把备份写回 data/ 会被后续正常保存覆盖/再损坏，
+    所以放本机库外：
     `LAWFIRM_ANCHOR_ROOT` ＞ `%LOCALAPPDATA%\\lawfirm_app` ＞ `~/.lawfirm_app`。
     """
     root = (os.environ.get("LAWFIRM_ANCHOR_ROOT") or "").strip()
@@ -469,7 +469,7 @@ def rename_sheet(sheet_id: int, new_name: str, updated_by: str = "", conn=None) 
         此时**一个字节都没写**（杜绝"名已改、引用只改了一半"的不一致）；
       - 改名 UPDATE 与各表 content UPDATE 同处**一个事务**，最后一次性 commit；
         中途任何异常 → rollback。
-      - 只 UPDATE 内容**真的变了**的表，其余不动（不刷 updated_at，缩小 Seafile 同步面）。
+      - 只 UPDATE 内容**真的变了**的表，其余不动（不刷 updated_at，减少无谓写入）。
     """
     own = conn is None
     conn = conn or get_conn()

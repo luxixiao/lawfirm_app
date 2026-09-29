@@ -2,7 +2,7 @@
 
 > 作者：高见远（架构师）　|　输入：产品经理《计算表对标 Excel 可用性差距分析》
 > 目标：在不破坏现有公式内核 / 存储 / 视觉契约的前提下，按"低成本高体感优先"顺序补齐交互层差距。
-> 约束基线：存储 = `calc_sheet.content` 单 JSON 字段（version 1，整表）；cell-key `"r,c"`（0 基），`{raw,kind}`；公式原文存、引用 A1 字符串、计算值不存；编辑即存（`_recalc_fill → cs.save_content`）；DB 在 Seafile 同步范围（后写覆盖）；视觉沿用 D-Notion clean；网格 = QTableWidget。
+> 约束基线：存储 = `calc_sheet.content` 单 JSON 字段（version 1，整表）；cell-key `"r,c"`（0 基），`{raw,kind}`；公式原文存、引用 A1 字符串、计算值不存；编辑即存（`_recalc_fill → cs.save_content`）；视觉沿用 D-Notion clean；网格 = QTableWidget。
 
 ---
 
@@ -11,7 +11,7 @@
 1. **交互层四件事是真痛点**：无撤销(G1)、不能插行列(G2)、不能复制公式/拖填充(G4)、键盘导航不全(G3)。其中 **G3 键盘导航** 与 **G9 表头标签 / G10 重命名表** 成本最低、体感最强，优先顺手做。
 2. **共同底座（阶段 0，必须先排期）**：G2 与 G4 都依赖两件事 —— ① `calc_formula.py` 缺 **AST→文本反向序列化器**；② 缺 **绝对引用 `$`** 支持（含 `$A$1 / A$1 / $A1`）。这两项做一次性成本，单列一次排期。
 3. **P2 暂缓**（本期不做）：多 sheet 标签页(G5)、查找/替换(G6)、每格独立格式(G7)、冻结窗格(G8)。**每格 `fmt` 字段不入本期 content schema**（保持 version 1 不变）。
-4. **撤销(G1) 范围**：仅做**会话内命令栈**（本机内存，不写库、不跨机），复用同一写回路径（`content` 逆操作 → `save_content`）。不引入跨保存/跨机版本合并。
+4. **撤销(G1) 范围**：仅做**会话内命令栈**（本机内存，不写库），复用同一写回路径（`content` 逆操作 → `save_content`）。不引入跨保存版本合并。
 5. **G10 `rename_sheet` 引擎已就绪**；**G9 的 `col_headers/row_headers` schema 已留、`_fill` 硬编码未渲染** —— 均"已留能力未接线"，低成本高体感。
 
 ### 0.1 content JSON 本次不改 schema
@@ -268,7 +268,7 @@ class CommandStack:
 - 栈存活于 `CalcSheetView`（按表隔离）；`_load_sheet` 时 `stack.clear()`（会话内、不跨表）。
 - 每个写操作 = 构造 command → `content = cmd.apply(content)` → `_recalc_fill()`（含 `save_content`）→ `stack.push(cmd)`。
 - 撤销：`cmd = stack.undo()` → `content = cmd.revert(content)` → `_recalc_fill()`（复用同一写回路径，符合 PM"逆操作写回 content 再 save_content"）。
-- **不写库、不跨机**：undo 元数据仅在此栈内（内存）。
+- **不写库**：undo 元数据仅在此栈内（内存）。
 
 ### 2.7 与现有 `classify_cell` / `_fmt` / `CalcEvaluator` 的衔接点
 
@@ -372,7 +372,7 @@ graph TD
 3. **绝对引用语义**：`$A$1` 行列皆固定；`A$1` 行固定列相对；`$A1` 列固定行相对。`translate_refs`/`shift_refs` 对任一轴仅当**非绝对**时平移。
 4. **`shift_refs`（插/删）vs `translate_refs`（复制/填充）**：前者带"插入点扩张 / 删除点收缩 / 命中删除区间→#REF!"语义；后者纯位移、无扩张。
 5. **跨表引用不随本表行列变动而平移**（`sheet is not None` 的引用原样保留）。
-6. **所有写操作统一走 `_recalc_fill → cs.save_content`**（含撤销逆操作），保证"编辑即存"契约不变；撤销仅本机会话内存栈，不写库、不跨机。
+6. **所有写操作统一走 `_recalc_fill → cs.save_content`**（含撤销逆操作），保证"编辑即存"契约不变；撤销仅本机会话内存栈，不写库。
 7. **应用内公式块剪贴板协议**：自定义 MIME `application/x-lawfirm-calc-cells` = `{"origin":[r0,c0],"w","h","cells":{key:{raw,kind}}}`；标准 `text/plain` TSV 同步写入以兼容外部粘贴。
 8. **新增测试必须登记 `run_tests.py` 的 `EXPECTED_FILES`**（否则门禁判未登记）；门禁＝各测试文件用 venv python 子进程 + `QT_QPA_PLATFORM=offscreen` 跑。
 9. **改动一律 git commit 到 `dev2` 分支**（revert 优先于 reset）。
@@ -388,7 +388,7 @@ graph TD
 | R1 | **序列化器与 parser 互逆边界**：`1.0`→`1` 规范；字符串含 `"` 当前 tokenizer 不支持（`"[^"]*"` 不识转义）——`render` 虽转义 `""`，但回 parse 会被截断 | 定义 `canonical` 规范形并单测回归；含引号字符串明确**本期不支持**（与现有 tokenizer 一致，不扩大范围）；若确需，单独扩 tokenizer 的 str 规则 |
 | R2 | **插入点恰在 RangeRef 近端（at==r1）**：易歧义"扩张还是平移" | 按 §2.4 规则：近端 `row0<at` 才"不平移"，`at==r1` 视为"≥at"→平移（不扩张）。在单测显式覆盖 `=SUM(A2:A10)` 在第 2 行插入→`=SUM(A3:A11)` |
 | R3 | **删除精确命中的引用行**：Excel→`#REF!`；局部 `#REF!` 需 tokenizer/parser 新增伪引用 | 已在阶段 0 新增 `ErrRef`+`#REF!` token，求值返回 `#REF!`；整格引用失效统一标 `#REF!` |
-| R4 | **Seafile 与撤销共存**：本机撤销无法感知另一台机器并发编辑 | 不做跨机合并；在撤销 tooltip/帮助明示"仅回滚本机会话操作"；与现有"后保存者覆盖"提示口径一致 |
+| R4 | **撤销范围**：本机撤销无法感知其它进程/会话并发编辑 | 不做跨会话合并；在撤销 tooltip/帮助明示"仅回滚本机会话操作" |
 | R5 | **填充柄序列识别**（1,2,3 / 1月,2月） | 本期**只做复制式填充**，序列识别列为 P2；UI 手柄拖拽仅复制式 |
 | R6 | **`AnyKeyPressed` 与 F2 冲突** | 阶段 1 移除 `AnyKeyPressed` 强制歧义，改用 `EditKeyPressed|F2|DoubleClicked`；F2 单独接线（进编辑、光标末、不清除）；Esc 由编辑器默认取消（不触发 `itemChanged`） |
 | R7 | **重命名表未重写跨表引用** → 其他表 `=Old!A1` 变 `#REF!` | 阶段 5 在 `rename_sheet` 后调 `rewrite_cross_sheet_refs`（全库 content 纯文本替换 `Old!`→`New!`），低成本防断链 |
@@ -400,7 +400,7 @@ graph TD
 
 | # | 问题 | **推荐默认** | 理由 |
 |---|------|------------|------|
-| Q1 | 撤销是否只做"会话内"？ | **是，会话内命令栈，不持久化、不跨机** | 避免放大 Seafile 覆盖风险；落库即存，"保存/未保存"边界本不存在 |
+| Q1 | 撤销是否只做"会话内"？ | **是，会话内命令栈，不持久化、不跨进程** | 落库即存，"保存/未保存"边界本不存在 |
 | Q2 | 插/删行列做 (a) 真重写？ | **是 (a)**，排期阶段 0 底座后做 | 真重写才是"对标 Excel"；(b) 标红兜底仅作临时过渡、不建议长期 |
 | Q3 | 多 sheet 标签页本期做？ | **否，P2 暂缓** | 本应用各核算表相对独立；做 tab 牵动左侧导航重构，成本中~高；出现真实"汇总表引用分表"场景再定 |
 | Q4 | 相对/绝对引用 `$` 本期实现？ | **是**（G2/G4 共同前置，必须先做） | 无 `$` 则插入会把应固定的 `$A$1` 也平移，反而错 |

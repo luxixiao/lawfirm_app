@@ -547,7 +547,7 @@ def _insert_raw_ledger(conn, item: dict, batch_id: int, kind: str) -> None:
 def _auto_snapshot(batch_type: str, period: str) -> None:
     """导入前自动快照（防呆）—— P2-3：仅当同 batch_type+period 已有 active 批次
     （即本次导入真的会覆盖/回滚旧数据）时才做；首导不产生快照，避免每次导入
-    都复制整库进同步目录。"""
+    都复制整库做冗余备份。"""
     try:
         conn = get_conn()
         try:

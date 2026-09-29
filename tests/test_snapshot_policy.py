@@ -4,7 +4,7 @@
 1. `_auto_snapshot`：无 active 批次（首导）不产生快照；同 type+period 有 active
    批次（真会覆盖）才快照；
 2. `save_snapshot` auto 裁剪：auto 行超 20 后裁到 20；
-3. `sweep_orphans`：表未引用的孤儿目录被删；被引用的旧同步目录（LEGACY_ROOT）
+3. `sweep_orphans`：表未引用的孤儿目录被删；被引用的旧快照目录（LEGACY_ROOT）
    迁移到新根并更新 db_backup 指向。
 
 运行：python tests/test_snapshot_policy.py

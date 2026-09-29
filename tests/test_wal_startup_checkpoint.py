@@ -1,8 +1,8 @@
 """启动时 WAL checkpoint（P3-1）单元测试 — 临时库。
 
 场景：崩溃/强杀后 -wal 残留（模拟 = 持有一个已提交但未关闭的连接），
-下次启动 init_db() 应把 wal 合入主库并截断（TRUNCATE），否则 Seafile 同步的
-只是主库本体，另一台 PC 打开的是未合入 WAL 的旧库。
+下次启动 init_db() 应把 wal 合入主库并截断（TRUNCATE），否则未合入 WAL 的
+已提交改动会丢失，另一进程打开的是未合入 WAL 的旧库。
 
 运行：python tests/test_wal_startup_checkpoint.py
 """

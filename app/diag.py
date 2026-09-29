@@ -35,7 +35,7 @@ def enabled() -> bool:
 
 
 def _default_log_path() -> str:
-    """日志落 %LOCALAPPDATA%/lawfirm_app/logs/（P2-1：移出 Seafile 同步目录）。"""
+    """日志落 %LOCALAPPDATA%/lawfirm_app/logs/（P2-1：移出数据目录，独立存放便于排查）。"""
     base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
     d = os.path.join(base, "lawfirm_app", "logs")
     try:

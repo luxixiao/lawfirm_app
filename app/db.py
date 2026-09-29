@@ -5,7 +5,7 @@ import json
 import sqlite3
 from pathlib import Path
 
-# 数据库文件固定放 data/lawfirm.db（整个 lawfirm_app 目录随 Seafile/坚果云同步）
+# 数据库文件固定放 data/lawfirm.db（单机使用，整机备份此目录即可）
 DB_PATH = Path(__file__).resolve().parent.parent / "data" / "lawfirm.db"
 
 SCHEMA = """
@@ -437,7 +437,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_subject_l2 ON account_subject(parent_id, n
 -- 表格主表：content 为 JSON 整表（方案甲）
 -- {"version":1,"rows":..,"cols":..,"cells":{"r,c":{"raw":..,"kind":..}},"params":{..},"col_headers":[..]}
 -- workbook_id 预埋工作簿层（本期恒为 1，日后加 calc_workbook 表无需迁数据）。
--- updated_by/updated_at：DB 在 Seafile 同步范围内，展示"最后编辑人/时间"提示后写覆盖风险。
+-- updated_by/updated_at：记录"最后编辑人/时间"便于审计追踪。
 CREATE TABLE IF NOT EXISTS calc_sheet (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     workbook_id INTEGER NOT NULL DEFAULT 1,
@@ -597,7 +597,7 @@ def init_db(backfill: bool = True) -> None:
             _backfill_received_snapshot(conn)
         conn.commit()
         # P3-1：崩溃/强杀/断电后残留的 -wal 在下次启动时合入主库并截断。
-        # 否则 Seafile 同步的只是主库本体，另一台 PC 打开的是未合入 WAL 的旧库。
+        # 否则未合入 WAL 的已提交改动会丢失（先 checkpoint 把 wal 合并回主库，保证单文件 db 自洽）。
         # 失败不阻断启动（wal 会在正常退出时随最后一个连接关闭再次合入）。
         try:
             conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")

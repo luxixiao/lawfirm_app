@@ -228,7 +228,7 @@ class ImportReviewView(QWidget):
           库已清空 → 账期列表为空 → `load_period("")` 自动载入空骨架清空表格。
         - P2-4 短路：库脏签名与当前账期都没变 → 数据面不可能变，跳过全量重建
           （保住 2026-09-17「清空后残留」修复的前提：清空必删批次 → 签名必变；
-          跨 PC Seafile 同步来的改动同样会变签名）。
+          其它来源的改动同样会变签名）。
         """
         if self._queue_active:
             self._refresh_queue_label()

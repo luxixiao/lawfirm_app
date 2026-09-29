@@ -112,7 +112,7 @@ def main() -> int:
         good = cs.get_sheet(id4, conn)["content"]
         good["cells"]["0,0"] = {"raw": "重要数据", "kind": "text"}
         cs.save_content(id4, good, conn=conn)
-        # 模拟 Seafile 同步截断 / 半写入：把 content 写坏
+        # 模拟写入中断 / 半写入：把 content 写坏
         bad = '{"version":1,"cells":{"0,0":{"raw":"重要数据"'
         conn.execute("UPDATE calc_sheet SET content=? WHERE id=?", (bad, id4))
         conn.commit()

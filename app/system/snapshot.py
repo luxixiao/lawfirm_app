@@ -18,13 +18,13 @@ from app.db import DB_PATH, checkpoint, get_conn
 
 def _snap_root() -> Path:
     """P2-3：快照根迁到 %LOCALAPPDATA%/lawfirm_app/snapshots（本机防呆用途，
-    无跨机价值，不再进 Seafile 同步目录制造同步风暴）。"""
+    与数据目录分离，避免误删/误备份）。"""
     base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
     return Path(base) / "lawfirm_app" / "snapshots"
 
 
 SNAP_ROOT = _snap_root()
-# 旧位置（项目 data/ 内，Seafile 同步目录）——sweep_orphans 时迁移/清理
+# 旧位置（项目 data/ 内）——sweep_orphans 时迁移/清理
 LEGACY_ROOT = Path(__file__).resolve().parent.parent.parent / "data" / "snapshots"
 MAX_AUTO = 20  # 自动快照最多保留数量
 
@@ -130,8 +130,8 @@ def delete_snapshot(snap_id: int) -> None:
 def sweep_orphans() -> int:
     """P2-3：清理「snapshot 表未引用」的快照目录（表/盘失同步的孤儿）。
 
-    - 新旧两个根都扫：新根（LOCALAPPDATA）中未引用目录直接删；旧根（data/snapshots，
-      Seafile 同步目录）中未引用目录直接删；
+    - 新旧两个根都扫：新根（LOCALAPPDATA）中未引用目录直接删；旧根（data/snapshots）
+      中未引用目录直接删；
     - 旧根中**被引用**的目录迁移到新根，并 UPDATE snapshot.db_backup 指向新位置
       （restore_snapshot 仍可用）；
     - 返回删除的目录数。任一目录删除/移动失败只跳过不抛错（下次启动再试）。

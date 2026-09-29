@@ -3,7 +3,7 @@
 设计要点（见 docs/calc_sheet_ux_implementation_plan.md §2.6 与 G0/G1 审核修订）：
 - 命令 = 「content 逆操作」单元：apply/revert 都**返回新 content，绝不就地改输入**（B1）。
 - 所有快照（before/after）构造时即 `deepcopy`，避免与实时 content 共享内层引用（B1/B4/B5）。
-- 会话内内存栈：不写库、不跨机（复用同一写回路径 `_recalc_fill→save_content`）。
+- 会话内内存栈：不写库（复用同一写回路径 `_recalc_fill→save_content`）。
 - 单格编辑=EditCellCommand；参数=ParamCommand；粘贴/清空/生长行列=BulkCommand（整 content 深拷贝快照，
   天然覆盖 rows/cols 计数与多格，避免差量漏还原，见 B2/B4）。
 - StructuralCommand（插/删行列）按 B6 拆到阶段3 再做（依赖 calc_sheet.insert/delete_* 纯函数）。

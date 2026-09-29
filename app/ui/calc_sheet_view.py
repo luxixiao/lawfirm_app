@@ -1,7 +1,7 @@
 """分成计算页（内嵌类 Excel 网格，挂在「分成计算」大类下）
 
 布局（spec: calc_engine_spec.md §5/§8）：
-- 左：表格列表（新建 / 复制 / 删除），显示最后编辑人/时间（Seafile 多机同步提示）。
+- 左：表格列表（新建 / 复制 / 删除），显示最后编辑人/时间（便于审计）。
 - 右：网格 + 公式栏 + 编辑/查看双模式（默认查看）+ 尾部加行/列。
 - 编辑即存：每次单元格改动立即 save_content（updated_by/updated_at 同步刷新）。
 - 显示：数值千分位（整数不带小数）；错误值 #REF! 等红色显示；查看模式只读。
@@ -742,7 +742,7 @@ class CalcSheetView(QWidget):
             return
         self.content = rec["content"] or {}
         self.cur_name = rec.get("name") or ""
-        # P0-4：库内 content 无法解析（Seafile 半写入 / 手工改动 / 跨版本结构）时，
+        # P0-4：库内 content 无法解析（写入中断 / 手工改动 / 跨版本结构）时，
         # get_sheet 已把原始串备份到库外并打 content_corrupt 标记。此处必须**锁只读** ——
         # 否则用户看到的是空表，若以为"打开错了表"随手改一格，空表就会被"编辑即存"写回，
         # 原内容永久丢失（改前连痕迹都不留）。
@@ -763,8 +763,7 @@ class CalcSheetView(QWidget):
                 "请勿在恢复前强行保存，否则会覆盖原始数据。")
         else:
             self.lbl_hint.setText(
-                f"最后编辑：{rec.get('updated_by') or '—'}  {rec.get('updated_at') or ''}"
-                "　（数据库经 Seafile 多机同步：编辑前请确认其他电脑未同时编辑本表，后保存者会覆盖）")
+                f"最后编辑：{rec.get('updated_by') or '—'}  {rec.get('updated_at') or ''}")
         # 缩放按表记忆（仅本机 prefs，不写库）：先套字号/行高再填，
         # 列宽自适应用缩放后的字体测量，宽度自然带缩放
         self._zoom = 1.0

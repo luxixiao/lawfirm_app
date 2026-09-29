@@ -52,7 +52,7 @@ def main() -> int:
     check("默认 install_window_filter 无看门狗", win.property("_diag_watchdog") is None)
     win.close()
 
-    # 文件日志：默认仍会挂 handler，但必须带轮转（RotatingFileHandler）且不在同步目录
+    # 文件日志：默认仍会挂 handler，但必须带轮转（RotatingFileHandler）且不放在数据目录
     diag.setup_logging()
     import logging
     from logging.handlers import RotatingFileHandler
@@ -63,7 +63,7 @@ def main() -> int:
     if rfh:
         check("轮转参数 1MB x 3", rfh[0].maxBytes == 1024 * 1024 and rfh[0].backupCount == 3,
               f"maxBytes={rfh[0].maxBytes} backupCount={rfh[0].backupCount}")
-        check("日志不在同步目录 data/ 下", "data" not in os.path.normpath(rfh[0].baseFilename)
+        check("日志不在数据目录 data/ 下", "data" not in os.path.normpath(rfh[0].baseFilename)
               .split(os.sep)[-2:-1], rfh[0].baseFilename)
 
     print(f"PASS {OK} checks" if not FAILS else "FAILED:\n" + "\n".join(FAILS))
