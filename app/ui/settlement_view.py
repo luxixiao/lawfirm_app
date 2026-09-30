@@ -108,7 +108,7 @@ class SettlementView(QWidget):
         bar.addWidget(CaptionLabel("类型"))
         self.person_type = QComboBox()
         self.person_type.addItem("汇总", userData=None)
-        for code, label in staff_type.identity_roles():
+        for code, label in staff_type.active_types():
             self.person_type.addItem(label, userData=code)
         self.person_type.currentIndexChanged.connect(lambda *_: self.refresh())
         bar.addWidget(self.person_type)
@@ -173,7 +173,7 @@ class SettlementView(QWidget):
         # ---- 外层 Tab：个人结算总表 / 月度结算表 ----
         self.tabs.addTab(self.tab_personal, "个人结算总表")
         self.tabs.addTab(self._build_report_tab(), "月度结算表")
-        self.tabs.addTab(self._build_staff_income_tab(), "年度聘用结算表")
+        self.tabs.addTab(self._build_staff_income_tab(), "年度结算表")
         self.tabs.addTab(self._build_invoice_income_tab(), "开票收入表")
         self.tabs.currentChanged.connect(self._on_tab_changed)
         self.tabs.setCornerWidget(tab_help_corner(
@@ -239,7 +239,7 @@ class SettlementView(QWidget):
         """类型下拉只显示该人实际拥有的身份；单身份自动选中"""
         year = self.year.currentData() or datetime.now().year
         available = []
-        for code, label in staff_type.identity_roles():
+        for code, label in staff_type.active_types():
             st = build_settlement(year, person=name, person_type=code).get(name)
             if self._has_any(st):
                 available.append((code, label))
@@ -627,7 +627,7 @@ class SettlementView(QWidget):
         """月度结算表 Tab 类型下拉动态化"""
         year = self.r_year.currentData() or datetime.now().year
         available = []
-        for code, label in staff_type.identity_roles():
+        for code, label in staff_type.active_types():
             st = build_settlement(year, person=name, person_type=code).get(name)
             if self._has_any(st):
                 available.append((code, label))
@@ -697,7 +697,7 @@ class SettlementView(QWidget):
         self.r_table._col.apply()
         self.r_summary.setText(f"{name}（{self.r_type.currentText()}）· {year}年{month}月结算表预览（共{len(rows)}行，确认后导出）")
 
-    # ---- 年度聘用结算表 Tab（预览 + 导出）----
+    # ---- 年度结算表 Tab（预览 + 导出）----
     def _build_staff_income_tab(self) -> QWidget:
         w = QWidget()
         v = QVBoxLayout()
@@ -727,7 +727,7 @@ class SettlementView(QWidget):
         bar.addWidget(CaptionLabel("展示"))
         self.si_split = QComboBox()
         self.si_split.addItem("合并", userData=False)
-        self.si_split.addItem("拆分（按角色）", userData=True)
+        self.si_split.addItem("拆分（按类型）", userData=True)
         self.si_split.setCurrentIndex(1 if self._load_split("staff_income", False) else 0)
         self.si_split.currentIndexChanged.connect(self._on_si_split_changed)
         self.si_split.setStyleSheet(_combo_qss())
@@ -785,7 +785,7 @@ class SettlementView(QWidget):
         self.refresh_staff_income()
 
     def refresh_staff_income(self) -> None:
-        """年度聘用结算表预览：选年份+月份 → 表格显示该月完整内容（含合计行）"""
+        """年度结算表预览：选年份+月份 → 表格显示该月完整内容（含合计行）"""
         from app.exporter.staff_income_exporter import build_report_rows
         if not hasattr(self, "si_table"):
             return
@@ -819,10 +819,10 @@ class SettlementView(QWidget):
             self.si_table.setItem(last, j, it)
         self.si_table._col.apply()
         self.si_summary.setText(
-            f"{year}年{month}月聘用律师业务收入结算表（{len(persons)} 人"
+            f"{year}年{month}月业务收入结算表（{len(persons)} 人"
             f"{'· 拆分' if split else ''}）· 预览共 {len(rows)} 行+合计，确认后导出")
 
-    # ---- 导出年度聘用律师业务收入结算表 ----
+    # ---- 导出年度结算表 ----
     def gen_staff_income(self) -> None:
         from pathlib import Path
         year = self.si_year.currentData() or datetime.now().year
@@ -832,10 +832,10 @@ class SettlementView(QWidget):
             return
         from app.exporter.staff_income_exporter import export_staff_income_month
         self.log.clear()
-        self.log.appendPlainText(f"正在生成 {year}年{month}月聘用律师业务收入结算表…")
+        self.log.appendPlainText(f"正在生成 {year}年{month}月业务收入结算表…")
         try:
             f = export_staff_income_month(
-                Path(out) / f"{year}年度业务收入结算表（聘用律师）_{year}{month:02d}.xlsx",
+                Path(out) / f"{year}年度结算表_{year}{month:02d}.xlsx",
                 year, month, bool(self.si_split.currentData()))
         except Exception as e:  # noqa: BLE001
             self.log.appendPlainText(f"✗ 生成失败: {e}")
@@ -854,10 +854,10 @@ class SettlementView(QWidget):
             return
         from app.exporter.staff_income_exporter import export_staff_income
         self.log.clear()
-        self.log.appendPlainText(f"正在生成 {year}年度聘用律师业务收入结算表模板表（1~{month_to}月，从新到旧）…")
+        self.log.appendPlainText(f"正在生成 {year}年度结算表模板表（1~{month_to}月，从新到旧）…")
         try:
             f = export_staff_income(
-                Path(out) / f"{year}年度业务收入结算表（聘用律师）.xlsx", year, month_to,
+                Path(out) / f"{year}年度结算表.xlsx", year, month_to,
                 bool(self.si_split.currentData()))
         except Exception as e:  # noqa: BLE001
             self.log.appendPlainText(f"✗ 生成失败: {e}")

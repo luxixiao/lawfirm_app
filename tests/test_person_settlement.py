@@ -48,7 +48,7 @@ def seed_types(conn) -> None:
     # (name, is_invoice(业务线), can_expense(费用线), net_basis)
     # 映射自旧 is_settle 拆分回填：partner/employee/parttime 业务线开，
     # 原参与结算者（含公共/行政）费用线开。
-    # 复刻 db 迁移：按名称子串设定 role_code（identity_roles 现读 staff_type_def.role_code）。
+    # 复刻 db 迁移：按名称子串设定 role_code（仅 fixture 造数；运行期已不再读 role_code）。
     _ROLE_OF = {"合伙": "partner", "聘用": "employee", "兼职": "parttime"}
     for name, invoice, expense, basis in (
             ("合伙", True, True, "开票净额"), ("聘用", True, True, "收款净额"),

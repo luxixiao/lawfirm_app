@@ -162,29 +162,30 @@ def _add_st(a: Dict | None, b: Dict) -> Dict:
     return out
 
 
-def report_entries(year: int, persons: list, split: bool, roles: list,
+def report_entries(year: int, persons: list, split: bool, types: list,
                    conn=None) -> list:
     """报表 合并/拆分 行构造（引擎层，预览与导出共用）。
 
-    roles: [(role_code, label), ...] —— 该报表的角色范围（拆分时按这些角色展开，
-           合并时按这些角色求和）。必须来自报表自身口径（如 identity_roles / 聘用二角色）。
-    split=False: 每行 = 范围内合并 = Σ(roles 各角色份额)，display=person。
-    split=True:  每行 = (person, role) 且 role 有数据，display=f'{person}{label}'（如 张三(合伙)）。
-    返回 [(display_name, st_or_None), ...]（展示顺序：按 persons；拆分时按 roles 顺序）。
-    不变量：Σ split 各数值列 == 合并 对应列（每笔业务唯一归属角色码，严格可加）。
+    types: [(分组键, 显示名), ...] —— 该报表的类型范围（去身份：分组键=类型名快照，
+           与数据行 person_type 存储值一致；拆分时按这些类型展开，合并时求和）。
+           必须来自报表自身口径（如 active_types）。
+    split=False: 每行 = 范围内合并 = Σ(各类型份额)，display=person。
+    split=True:  每行 = (person, type) 且该类型有数据，display=f'{person}{类型名}'。
+    返回 [(display_name, st_or_None), ...]（展示顺序：按 persons；拆分时按 types 顺序）。
+    不变量：Σ split 各数值列 == 合并 对应列（每笔业务唯一归属类型快照，严格可加）。
     """
     if conn is not None:
-        role_built = {code: build_settlement_conn(conn, year, person_type=code)
-                      for code, _ in roles}
+        type_built = {code: build_settlement_conn(conn, year, person_type=code)
+                      for code, _ in types}
     else:
-        role_built = {code: build_settlement(year, person_type=code)
-                      for code, _ in roles}
-    codes = [code for code, _ in roles]
+        type_built = {code: build_settlement(year, person_type=code)
+                      for code, _ in types}
+    codes = [code for code, _ in types]
 
     def merged_st(name: str) -> Dict | None:
         acc = None
         for code in codes:
-            s = role_built[code].get(name)
+            s = type_built[code].get(name)
             if s is not None:
                 acc = _add_st(acc, s)
         return acc
@@ -193,15 +194,15 @@ def report_entries(year: int, persons: list, split: bool, roles: list,
         return [(name, merged_st(name)) for name in persons]
     entries = []
     for name in persons:
-        for code, label in roles:
-            s = role_built[code].get(name)
+        for code, label in types:
+            s = type_built[code].get(name)
             if s is not None:
                 entries.append((f"{name}{label}", s))
     return entries
 
 
 def _new_st(conn, name: str, override: str | None = None) -> Dict:
-    """标准人员结构（override=身份，优先于人员类型）"""
+    """标准人员结构（override=类型名快照，优先于人员主类型）"""
     return {
         "staff_type": _staff_type(conn, name, override),
         "months": {m: _empty_month() for m in MONTHS},
@@ -462,15 +463,13 @@ def _compute(conn, year: int, person: str | None, person_type: str | None = None
                        + m["rec_refund_cur"] + m["rec_refund_prev"])   # 二小计（净）
             inv_net = (m["inv_open_received"] + m["inv_open_uncollected"]
                        + m["inv_red_cur"] + m["inv_red_prev"])          # 三小计（净）
-            # 业务收入口径（两条线模型，D1：一人多类型取 OR）
-            # 分身份视图（override=person_type）：role 为角色码，按「该角色是否进任一业务线」
-            #   （role_in_report）判定是否产生收入；净额口径取角色默认（label 便利默认值）。
-            # 汇总视图：role 为人员主类型名，按该人**全部类型 OR** 判定是否进业务线
-            #   （business_flags_of_person），净额口径取「首位（主类型优先）开票类型的 net_basis」。
-            role = st["staff_type"]
-            if role in staff_type.ROLE_CODES:
-                in_business = staff_type.role_in_report(role, conn)
-                net_basis = (staff_type.role_attr(role, conn) or {}).get("default_net_basis") or "收款净额"
+            # 业务收入口径（去身份，按类型配置）：
+            # 分类型视图（override=类型名）：按该类型自身 is_invoice 与 net_basis 判定；
+            # 汇总视图：按该人**全部类型 OR** 判定是否进业务线（business_flags_of_person），
+            # 净额口径取「首位（主类型优先）开票类型的 net_basis」。
+            if person_type:
+                in_invoice, net_basis = staff_type.business_flags_of(person_type, conn)
+                in_business = in_invoice
             else:
                 is_invoice, net_basis = staff_type.business_flags_of_person(name, conn)
                 in_business = is_invoice

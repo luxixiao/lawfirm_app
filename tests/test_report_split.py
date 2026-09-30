@@ -1,10 +1,10 @@
 """合并/拆分开关（报表加合并/拆分）引擎层单元测试 — 内存库。
 
 核心不变量：对任一列表式报表，Σ(拆分各行数值) == 合并行数值（收款/开票/未收/业务收入/费用）。
-证明每笔业务唯一归属角色码 → 严格可加。覆盖：
-- 一人多角色（合伙+聘用）开票份额 + 收款 + 费用按角色归因；
-- 开票报表 scope（identity_roles）与 聘用报表 scope（employee/parttime）两种范围内合并；
-- 范围内合并排除了非 scope 角色份额（如 聘用报表不含合伙份额）。
+证明每笔业务唯一归属类型快照 → 严格可加。覆盖：
+- 一人多类型（合伙+聘用）开票份额 + 收款 + 费用按类型归因；
+- 开票报表 scope（active_types 全部勾线类型）与 聘用 scope（单类型）两种范围内合并；
+- 范围内合并排除了非 scope 类型份额（如 聘用 scope 不含合伙份额）。
 
 运行：python tests/test_report_split.py
 """
@@ -47,7 +47,7 @@ def seed_types(conn) -> None:
     # (name, is_invoice(业务线), can_expense(费用线), net_basis)
     # 映射自旧 is_settle 拆分回填：partner/employee/parttime 业务线开；
     # 原参与结算者（含公共/行政）费用线开。
-    # 复刻 db 迁移：按名称子串设定 role_code（identity_roles 现读 staff_type_def.role_code）。
+    # 复刻 db 迁移：按名称子串设定 role_code（仅 fixture 造数；运行期已不再读 role_code）。
     _ROLE_OF = {"合伙": "partner", "聘用": "employee", "兼职": "parttime"}
     for name, invoice, expense, basis in (
             ("合伙", True, True, "开票净额"), ("聘用", True, True, "收款净额"),
@@ -78,13 +78,13 @@ def seed_multi_role(conn, name):
     conn.execute("INSERT INTO invoice(invoice_no, invoice_date, total_amount) VALUES(?,?,?)",
                  (inv_a, "2025-03-01", 1000))
     conn.execute("INSERT INTO charge_detail(invoice_no, person_name, billing_amount, person_type) "
-                 "VALUES(?,?,?,?)", (inv_a, name, 1000, "partner"))
+                 "VALUES(?,?,?,?)", (inv_a, name, 1000, "合伙"))
     conn.execute("INSERT INTO collection(invoice_no, receipt_date, amount, person_name) "
                  "VALUES(?,?,?,?)", (inv_a, "2025-03-10", 1000, name))
     conn.execute("INSERT INTO invoice(invoice_no, invoice_date, total_amount) VALUES(?,?,?)",
                  (inv_b, "2025-03-01", 400))
     conn.execute("INSERT INTO charge_detail(invoice_no, person_name, billing_amount, person_type) "
-                 "VALUES(?,?,?,?)", (inv_b, name, 400, "employee"))
+                 "VALUES(?,?,?,?)", (inv_b, name, 400, "聘用"))
     conn.execute("INSERT INTO collection(invoice_no, receipt_date, amount, person_name) "
                  "VALUES(?,?,?,?)", (inv_b, "2025-03-10", 400, name))
     conn.execute("INSERT OR IGNORE INTO staff_roster(name) VALUES(?)", (name,))
@@ -95,11 +95,11 @@ def seed_multi_role(conn, name):
     conn.execute(
         "INSERT INTO expense_ledger(period, exp_date, name, actual_handler, expense_amount, "
         "tax_amount, book_amount, expense_type, source, person_type) "
-        "VALUES('2025-03','2025-03-05','交通','张三',100,0,100,'交通费','manual','partner')")
+        "VALUES('2025-03','2025-03-05','交通','张三',100,0,100,'交通费','manual','合伙')")
     conn.execute(
         "INSERT INTO expense_ledger(period, exp_date, name, actual_handler, expense_amount, "
         "tax_amount, book_amount, expense_type, source, person_type) "
-        "VALUES('2025-03','2025-03-06','交通','张三',50,0,50,'交通费','manual','employee')")
+        "VALUES('2025-03','2025-03-06','交通','张三',50,0,50,'交通费','manual','聘用')")
     conn.commit()
 
 
@@ -121,15 +121,15 @@ def main() -> int:
     seed_types(conn)
     seed_multi_role(conn, "张三")
 
-    roles_inv = st.identity_roles(conn)            # [(partner,合伙),(employee,聘用),(parttime,兼职)]
-    roles_staff = [("employee", "聘用"), ("parttime", "兼职")]
+    types_inv = st.active_types(conn)              # 全部勾线类型 [(合伙,合伙),...]
+    types_staff = [("聘用", "聘用")]
 
-    # ===== 开票报表 scope（identity_roles）=====
-    merged = ps.report_entries(2025, ["张三"], False, roles_inv, conn=conn)
-    split = ps.report_entries(2025, ["张三"], True, roles_inv, conn=conn)
+    # ===== 开票报表 scope（active_types）=====
+    merged = ps.report_entries(2025, ["张三"], False, types_inv, conn=conn)
+    split = ps.report_entries(2025, ["张三"], True, types_inv, conn=conn)
     check("开票scope 合并行数=1", len(merged) == 1, f"got={len(merged)}")
-    check("开票scope 拆分行数=2（合伙+聘用）", len(split) == 2, f"got={len(split)}")
-    check("开票scope 拆分标签=张三合伙/张三聘用（顺序按 role_code）",
+    check("开票scope 拆分行数=2（合伙+聘用两类型有数据）", len(split) == 2, f"got={len(split)}")
+    check("开票scope 拆分标签=张三合伙/张三聘用（顺序按类型 sort_order）",
           set(d for d, _ in split) == {"张三合伙", "张三聘用"}, f"got={[d for d, _ in split]}")
 
     # Σ拆分 == 合并（全部数值列）
@@ -149,9 +149,9 @@ def main() -> int:
     check("开票scope 合并 inv_total=1400", _sum(merged, None, "months", 3, "inv_total") == 1400.0,
           f"got={_sum(merged, None, 'months', 3, 'inv_total')}")
 
-    # ===== 聘用报表 scope（employee/parttime）=====
-    merged_s = ps.report_entries(2025, ["张三"], False, roles_staff, conn=conn)
-    split_s = ps.report_entries(2025, ["张三"], True, roles_staff, conn=conn)
+    # ===== 聘用 scope（仅聘用类型）=====
+    merged_s = ps.report_entries(2025, ["张三"], False, types_staff, conn=conn)
+    split_s = ps.report_entries(2025, ["张三"], True, types_staff, conn=conn)
     check("聘用scope 拆分行数=1（仅聘用，合伙不在 scope）", len(split_s) == 1,
           f"got={len(split_s)}")
     check("聘用scope 拆分标签=张三聘用",

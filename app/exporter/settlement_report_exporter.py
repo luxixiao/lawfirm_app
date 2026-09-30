@@ -273,7 +273,7 @@ def export_report(out_path: str | Path, year: int, month: int, persons: list[str
             continue
         if mode == "split":
             emitted = False
-            for code, label in staff_type.identity_roles():
+            for code, label in staff_type.active_types():
                 st = build_settlement(year, person=person, person_type=code).get(person)
                 if st is not None and _has_data(st, month):
                     ws = wb.create_sheet(title=f"{person}{label}")
@@ -292,7 +292,7 @@ def export_report(out_path: str | Path, year: int, month: int, persons: list[str
                 _write_sheet(ws, person, _empty_st(), year, month)
         else:  # both（旧行为）
             emitted = False
-            for code, label in staff_type.identity_roles():
+            for code, label in staff_type.active_types():
                 st = build_settlement(year, person=person, person_type=code).get(person)
                 if st is not None and _has_data(st, month):
                     ws = wb.create_sheet(title=f"{person}{label}")

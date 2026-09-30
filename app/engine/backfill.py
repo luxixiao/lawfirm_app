@@ -7,7 +7,7 @@ from __future__ import annotations
 from typing import Iterable, List
 
 from app.db import get_conn
-from app.engine.staff_type import primary_type_of, role_code_of
+from app.engine.staff_type import primary_type_of
 
 # 非员工经办人白名单（公共费用等）。与导入校验共用同一份，避免两处口径漂移。
 HANDLER_WHITELIST = {"公共", "行政"}
@@ -80,15 +80,13 @@ def missing_handlers(conn, names: Iterable[str]) -> List[str]:
 
 
 def staff_type_of(conn, name: str) -> str:
-    """姓名 → 结算身份（角色码：partner/employee/parttime/other）。**不过滤 is_active**。
+    """姓名 → 数据行身份标签（**类型名快照**，打标时主类型名）。**不过滤 is_active**。
 
-    返回该员工真实类型名对应的角色码（见 role_code_of）。离职人员仍会有历史业务
-    数据，一律按花名册取真实类型→角色，避免身份落成「其他」→ 结算业务收入被判 0。
+    去身份：person_type 存打标那一刻经办人的主类型**类型名**（不再是角色码），
+    报表分桶按类型展开；类型后改名时历史行保留旧名快照（与旧身份码同样的稳定性语义）。
+    无主类型（花名册外经办人）返回 ''（= 未标）。
     """
-    # 主类型来自 staff_type_map（批2 起 staff 镜像表已移除）。
-    t = primary_type_of(name, conn)
-    # 必须把 conn 透传下去：否则 role_code_of 会回落模块默认连接（读错库）。
-    return role_code_of(t, conn) if t else "other"
+    return primary_type_of(name, conn)
 
 
 def backfill_person_types() -> None:

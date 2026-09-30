@@ -4,10 +4,9 @@
   编号与身份证号非空时唯一。导入职工清单也落到这里。
 - Tab2「员工类型」：人 × 类型 网格（一人可挂多个类型）；人员只能选自花名册。
   这是把原「员工名单」改名并拆出"类型"后的新形态——"人"归花名册，"类型"在此关联。
-- Tab3「类型设置」：类型定义（参与结算 / 业务金额方式 / 说明 / 人数 / 角色），原「员工类型」改名。
-- 口径：是否参与结算、净额口径（开票净额/收款净额）仍按类型各自勾选设置；
-  角色仅作标签/分组 + 默认净额口径（default_net_basis）的便利默认；结算/收入/费用闸门
-  已全部由 staff_type_def 的 is_invoice / can_expense 派生，角色不再持任何闸门。
+- Tab3「类型设置」：类型定义（开票 / 报销 / 业务金额方式 / 说明 / 人数），原「员工类型」改名。
+- 口径（去身份）：是否进报表/能否承担费用由 staff_type_def 的 is_invoice / can_expense 决定；
+  报表分组键=类型名本身（person_type 快照），不再使用身份/角色（角色列已移除）。
 - 过渡镜像：staff 表仍被下游结算/导入读取，引擎函数会同步维护它（批2 再移除）。
 """
 from __future__ import annotations
@@ -144,9 +143,9 @@ class StaffView(QWidget):
         lay = QVBoxLayout(w)
         lay.setSpacing(10)
         lay.addWidget(CaptionLabel(
-            "自定义员工类型，可自由增删改名，并归属一个「角色」（合伙/聘用/兼职/其他）。"
-            "类型（开票/报销）决定它是否计入收入报表、能否承担费用、默认净额口径；"
-            "类型名与角色解耦，改名/删除不影响结算口径。开票/报销与净额口径仍按类型各自设置。"))
+            "自定义员工类型，可自由增删改名。"
+            "类型（开票/报销）决定它是否计入收入报表、能否承担费用；"
+            "业务金额方式按类型各自设置；报表分组键=类型名本身，不再使用身份/角色。"))
 
         btns = QHBoxLayout()
         self.btn_t_add = QPushButton("新增类型")
@@ -169,7 +168,7 @@ class StaffView(QWidget):
 
         self.type_table = QTableWidget(0, 7)
         self.type_table.setHorizontalHeaderLabels(
-            ["类型", "开票", "报销", "业务金额方式", "说明", "人数", "角色"])
+            ["类型", "开票", "报销", "业务金额方式", "说明", "人数"])
         self.type_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.type_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.type_table.verticalHeader().setVisible(False)
@@ -284,16 +283,7 @@ class StaffView(QWidget):
                                     | Qt.AlignmentFlag.AlignVCenter)
             self.type_table.setItem(r, 5, n_item)
 
-            # 角色（仅标签/分组 + 默认净额口径便利默认，不再作任何闸门）：内联下拉，切换即写库
-            role_cb = QComboBox()
-            for label, code in st.list_roles():
-                role_cb.addItem(label, userData=code)
-            cur_role = row.get("role_code") or "other"
-            idx = role_cb.findData(cur_role)
-            role_cb.setCurrentIndex(idx if idx >= 0 else 0)
-            role_cb.currentIndexChanged.connect(
-                lambda _i, n=name, cb=role_cb: self._on_role_changed(n, cb.currentData()))
-            self.type_table.setCellWidget(r, 6, role_cb)
+            # 去身份：角色列已移除 —— 报表分组键=类型名本身，分类由开票/报销勾选决定
         self._loading = False
         self._type_col.apply()
 
@@ -351,21 +341,6 @@ class StaffView(QWidget):
         if self._loading or not basis:
             return
         st.set_net_basis(name, basis)
-
-    def _on_role_changed(self, name: str, code) -> None:
-        """角色（身份大类）下拉变更 → 写库。
-
-        角色仅提供标签/分组与默认净额口径（default_net_basis）便利默认，不再作任何闸门；
-        改角色即时生效，但结算/收入/费用口径由该类型的 is_invoice / can_expense 决定。
-        """
-        if self._loading:
-            return
-        code = code or "other"
-        try:
-            st.set_role_code(name, code)
-        except st.StaffTypeError as e:
-            QMessageBox.warning(self, "设置角色失败", str(e))
-            self._refresh_types()
 
     def _current_type(self):
         r = self.type_table.currentRow()

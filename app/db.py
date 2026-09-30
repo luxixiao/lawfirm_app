@@ -580,6 +580,16 @@ def init_db(backfill: bool = True) -> None:
             conn.execute(f"UPDATE {tbl} SET person_type='employee' WHERE person_type='聘用'")
             conn.execute(f"UPDATE {tbl} SET person_type='parttime' WHERE person_type='兼职'")
             conn.execute(f"UPDATE {tbl} SET person_type='other' WHERE person_type='其他'")
+        # 迁移：去身份（角色码 → 类型名快照）——报表分组键改为类型本身。
+        # 有主类型的行按经办人当前主类型重写（12 期台账导入期间类型身份未变，无损）；
+        # 无主类型（花名册外）的行保留旧码作历史标签，报表中不出桶（与未标同权）。
+        # 幂等：重写后的值为类型名，不再命中旧码集合。
+        for tbl, col in (("charge_detail", "person_name"), ("expense_ledger", "actual_handler")):
+            conn.execute(
+                f"UPDATE {tbl} SET person_type=COALESCE("
+                f"(SELECT m.type_name FROM staff_type_map m "
+                f"WHERE m.name={tbl}.{col} AND m.is_primary=1 LIMIT 1), person_type) "
+                f"WHERE person_type IN ('partner','employee','parttime','other')")
         # 迁移：费用类型维护顺序
         cols = [r[1] for r in conn.execute("PRAGMA table_info(expense_cat)")]
         if "sort_order" not in cols:

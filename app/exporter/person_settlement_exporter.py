@@ -141,7 +141,7 @@ def export_one(person: str, path: str | Path, year: int) -> Path:
     wb.remove(wb.active)
     st_all = build_settlement(year, person=person).get(person)
     # 各身份 sheet（有数据才出）—— 按角色枚举（去写死，不再硬编码 合伙/聘用/兼职）
-    for code, label in staff_type.identity_roles():
+    for code, label in staff_type.active_types():
         st = build_settlement(year, person=person, person_type=code).get(person)
         if _has_data(st):
             ws = wb.create_sheet(title=f"{person}{label}")

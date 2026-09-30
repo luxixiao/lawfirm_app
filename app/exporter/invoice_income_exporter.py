@@ -31,17 +31,13 @@ LEFT = Alignment(horizontal="left", vertical="center")
 
 
 def _main_persons(conn, year: int, month: int) -> list:
-    """主表名单：按角色（合伙/聘用/兼职，role_def.include_in_income_report=1）去写死枚举；
+    """主表名单：按类型设置（is_invoice=1 OR can_expense=1，去身份）筛选，不再写死角色枚举；
     不过滤 is_active（见「停用」功能已取消）；入职月份晚于当前月排除"""
-    codes = tuple(c for c, _ in staff_type.identity_roles(conn))
-    if not codes:
-        return []
     rows = conn.execute(
-        f"SELECT DISTINCT r.name, r.hire_month FROM staff_roster r "
-        f"JOIN staff_type_map m ON m.name = r.name "
-        f"JOIN staff_type_def t ON t.name = m.type_name "
-        f"WHERE t.role_code IN ({','.join('?' * len(codes))}) ORDER BY r.name",
-        codes,
+        "SELECT DISTINCT r.name, r.hire_month FROM staff_roster r "
+        "JOIN staff_type_map m ON m.name = r.name "
+        "JOIN staff_type_def t ON t.name = m.type_name "
+        "WHERE t.is_invoice = 1 OR t.can_expense = 1 ORDER BY r.name",
     ).fetchall()
     cur = f"{year}-{month:02d}"
     out = []
@@ -85,7 +81,7 @@ def build_main_preview(year: int, month: int, split: bool = False):
     conn = get_conn()
     try:
         persons = _main_persons(conn, year, month)
-        roles = staff_type.identity_roles(conn)
+        roles = staff_type.active_types(conn)
     finally:
         conn.close()
     entries = report_entries(year, persons, split, roles)
@@ -289,7 +285,7 @@ def export_invoice_income(out_path: str | Path, year: int, month_to: int, split:
         conn = get_conn()
         try:
             persons = _main_persons(conn, year, month)
-            roles = staff_type.identity_roles(conn)
+            roles = staff_type.active_types(conn)
         finally:
             conn.close()
         entries = report_entries(year, persons, split, roles)
@@ -309,7 +305,7 @@ def export_invoice_income_month(out_path: str | Path, year: int, month: int, spl
     conn = get_conn()
     try:
         persons = _main_persons(conn, year, month)
-        roles = staff_type.identity_roles(conn)
+        roles = staff_type.active_types(conn)
     finally:
         conn.close()
     entries = report_entries(year, persons, split, roles)

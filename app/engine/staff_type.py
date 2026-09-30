@@ -119,21 +119,19 @@ def role_attr(role_code: str, conn=None) -> Dict:
         _close(own, c)
 
 
-def identity_roles(conn=None):
-    """结算分身份 / 收入报表的身份清单（角色码 → 显示名）。
+def active_types(conn=None):
+    """进业务/费用线的类型列表 [(类型名, 类型名)]（去身份：报表分组键=类型名本身）。
 
-    两条线模型（D2，不写死类型名）：进报表 = `is_invoice OR can_expense`。
-    返回「任一类型进业务线或费用线的角色码」列表（按角色码排序）。
-    例如：合伙/聘用/兼职 默认开票 → 必出现；公共/行政 仅报销 → 也出现（进任一线即在所有报表）。
+    「任一类型勾了开票或报销」即进报表；返回值同时充当分组键与显示名。
+    按类型设置页的 sort_order、名称排序。
     """
     own, c = _own_conn(conn)
     try:
         rows = c.execute(
-            "SELECT DISTINCT t.role_code AS role_code, r.label AS label "
-            "FROM staff_type_def t JOIN role_def r ON r.role_code = t.role_code "
-            "WHERE t.is_invoice = 1 OR t.can_expense = 1 "
-            "ORDER BY t.role_code").fetchall()
-        return [(r["role_code"], r["label"]) for r in rows]
+            "SELECT name FROM staff_type_def "
+            "WHERE is_invoice = 1 OR can_expense = 1 "
+            "ORDER BY sort_order, name").fetchall()
+        return [(r["name"], r["name"]) for r in rows]
     finally:
         _close(own, c)
 
@@ -166,13 +164,18 @@ def list_roles(conn=None):
 
 
 def person_type_combo_items(conn=None):
-    """身份下拉项（显示名, 角色码），含「未标」(空码)。供各 UI 编辑/筛选下拉共用。
+    """数据行身份下拉项（显示名, 存储值），含「未标」(空值)。供各 UI 编辑/筛选下拉共用。
 
-    去写死：下拉不再硬编码 合伙/聘用/兼职，角色来自 role_def；存储值恒为角色码。
+    去身份：person_type 存**类型名快照**（打标时经办人主类型），下拉列全部类型。
     """
     items = [("未标", "")]
-    for code, label in list_roles(conn):
-        items.append((label, code))
+    own, c = _own_conn(conn)
+    try:
+        rows = c.execute("SELECT name FROM staff_type_def ORDER BY sort_order, name").fetchall()
+    finally:
+        _close(own, c)
+    for r in rows:
+        items.append((r["name"], r["name"]))
     return items
 
 

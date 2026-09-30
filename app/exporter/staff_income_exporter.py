@@ -1,12 +1,12 @@
-"""年度业务收入结算表（聘用律师）导出器
+"""年度结算表导出器（原「年度业务收入结算表（聘用律师）」，去身份后不再区分人员类型）
 
-仿模板「2025年度业务收入结算表（聘用律师）.xls」：
 - 每个月份一个 sheet（202501~YYYYMM，截至当前月）
 - 列：序号 | 姓名 | 本年收入(本月/累计) | 报酬发放(本月/累计) | 住房公积金(本月/累计)
      | 保险费(本月/累计) | 汽油费(本月/累计) | 合计行
-- 本年收入 = 业务收入（聘用 = 收款净额）
+- 本年收入 = 业务收入（按各人类型的「业务金额方式」net_basis）
 - 报酬发放/住房公积金/保险费/汽油费 = 按「费用归类」维护映射汇总费用类型
-- 名单 = 员工清单「聘用」类型且在职
+- 名单 = 任一类型勾了「开票」或「报销」的人员（与进报表口径一致，勾线即进）
+- 合并/拆分：拆分按**类型**展开（同一人多类型分别显示），不再使用身份/角色
 """
 from __future__ import annotations
 
@@ -35,14 +35,13 @@ COLS = [("报酬发放", "报酬发放"), ("住房公积金", "住房公积金")
 
 
 def _staff_employees(conn, year: int, month: int) -> list:
-    """聘用/兼职（视同聘用）且在职的员工；入职月份晚于当前月则排除（按姓名）。
-    按角色码 employee/parttime 枚举（去写死，不再按类型名子串 '%聘用%'）。"""
-    # 离职不影响：不按 is_active 过滤，只要该月有数据/在名单即纳入（hire_month 过滤入职）
+    """名单：任一类型勾了「开票」或「报销」的人员（勾线即进，不区分身份）。
+    离职不影响：不按 is_active 过滤；入职月份晚于当前月则排除（按姓名）。"""
     rows = conn.execute(
         "SELECT DISTINCT r.name, r.hire_month FROM staff_roster r "
         "JOIN staff_type_map m ON m.name = r.name "
         "JOIN staff_type_def t ON t.name = m.type_name "
-        "WHERE t.role_code IN ('employee','parttime') ORDER BY r.name"
+        "WHERE t.is_invoice = 1 OR t.can_expense = 1 ORDER BY r.name"
     ).fetchall()
     cur = f"{year}-{month:02d}"
     out = []
@@ -54,17 +53,8 @@ def _staff_employees(conn, year: int, month: int) -> list:
     return out
 
 
-def _staff_income_roles(conn) -> list:
-    """聘用报表角色范围：employee/parttime（去写死，来自 role_def include_in_income_report）。"""
-    codes = ("employee", "parttime")
-    rows = conn.execute(
-        "SELECT role_code, label FROM role_def WHERE role_code IN (%s) ORDER BY role_code"
-        % ",".join("?" * len(codes)), codes).fetchall()
-    return [(r["role_code"], r["label"]) for r in rows]
-
-
 def _build_rows(entries: list, cat_map: Dict, year: int, month: int):
-    """某月年度聘用结算表的行数据（预览/导出共用）。
+    """某月年度结算表的行数据（预览/导出共用）。
 
     entries: [(display_name, st_or_None), ...]（合并/拆分统一，来自 report_entries）。
     rows: [[姓名, 收入本月, 收入累计, 报酬本月, 报酬累计, 公积金本月, 公积金累计,
@@ -91,15 +81,15 @@ def _build_rows(entries: list, cat_map: Dict, year: int, month: int):
 
 
 def build_report_rows(year: int, month: int, split: bool = False):
-    """预览/导出共用：返回 (names, rows, totals)。split=True 按角色展开每行。"""
+    """预览/导出共用：返回 (names, rows, totals)。split=True 按类型展开每行。"""
     cat_map = get_map()
     conn = get_conn()
     try:
         persons = _staff_employees(conn, year, month)
-        roles = _staff_income_roles(conn)
+        types = staff_type.active_types(conn)
     finally:
         conn.close()
-    entries = report_entries(year, persons, split, roles)
+    entries = report_entries(year, persons, split, types)
     rows, totals = _build_rows(entries, cat_map, year, month)
     names = [d for d, _ in entries]
     return names, rows, totals
@@ -111,7 +101,7 @@ def _write_sheet(ws, year: int, month: int, entries: list, cat_map: Dict) -> Non
     ws["A1"].font = Font(size=13, bold=True)
     ws["A1"].alignment = CENTER
     ws.merge_cells("A2:L2")
-    ws["A2"] = f"聘用律师{year}年{month:02d}月业务收入结算表"
+    ws["A2"] = f"{year}年{month:02d}月业务收入结算表"
     ws["A2"].alignment = CENTER
 
     # 表头（合并：A 序号 B 姓名 C:D 本年收入 E:F 报酬发放 G:H 住房公积金 I:J 保险费 K:L 汽油费）
@@ -174,8 +164,8 @@ def _exp_sum(st: Dict, month: int, types: list) -> float:
 
 
 def export_staff_income(out_path: str | Path, year: int, month_to: int, split: bool = False) -> Path:
-    """生成年度聘用律师业务收入结算表模板表（1~month_to 各一个 sheet，从新到旧排序）。
-    split=True 列表按角色展开每行。"""
+    """生成年度结算表模板表（1~month_to 各一个 sheet，从新到旧排序）。
+    split=True 列表按类型展开每行。"""
     cat_map = get_map()
     wb = openpyxl.Workbook()
     wb.remove(wb.active)
@@ -183,10 +173,10 @@ def export_staff_income(out_path: str | Path, year: int, month_to: int, split: b
         conn = get_conn()
         try:
             persons = _staff_employees(conn, year, month)
-            roles = _staff_income_roles(conn)
+            types = staff_type.active_types(conn)
         finally:
             conn.close()
-        entries = report_entries(year, persons, split, roles)
+        entries = report_entries(year, persons, split, types)
         ws = wb.create_sheet(title=f"{year}{month:02d}")
         _write_sheet(ws, year, month, entries, cat_map)
     out = Path(out_path)
@@ -196,15 +186,15 @@ def export_staff_income(out_path: str | Path, year: int, month_to: int, split: b
 
 
 def export_staff_income_month(out_path: str | Path, year: int, month: int, split: bool = False) -> Path:
-    """生成单月聘用律师业务收入结算表（单个 sheet，与预览一致）。split=True 按角色展开。"""
+    """生成单月年度结算表（单个 sheet，与预览一致）。split=True 按类型展开。"""
     cat_map = get_map()
     conn = get_conn()
     try:
         persons = _staff_employees(conn, year, month)
-        roles = _staff_income_roles(conn)
+        types = staff_type.active_types(conn)
     finally:
         conn.close()
-    entries = report_entries(year, persons, split, roles)
+    entries = report_entries(year, persons, split, types)
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = f"{year}{month:02d}"

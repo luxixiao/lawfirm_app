@@ -164,9 +164,9 @@ def main() -> int:
           err is not None and "超过价税合计" in err, str(err))
 
     payload = bm.build_backfill(proxy, bf_form())
-    # 去写死（Plan A）：person_type 存**角色码**（显示层才翻中文），不再是中文标签
-    check("A6 build：返回规范化 payload（charge 按人聚合 + person_type=角色码）",
-          payload["charge"] == [("周立生", 6000.0, "employee"), ("陈娟", 4000.0, "parttime")],
+    # 去身份：person_type 存**类型名快照**（打标时主类型名），不再是角色码
+    check("A6 build：返回规范化 payload（charge 按人聚合 + person_type=类型名）",
+          payload["charge"] == [("周立生", 6000.0, "聘用"), ("陈娟", 4000.0, "兼职")],
           str(payload["charge"]))
     check("A7 build：collections 只含已收>0 且有日期的行",
           payload["collections"] == [("周立生", 3000.0, "2024-06-01")],
@@ -228,8 +228,8 @@ def main() -> int:
           str(_inv_sql("BF-9")["import_batch_id"]))
     cds = {r0["person_name"]: (r0["billing_amount"], r0["person_type"]) for r0 in conn.execute(
         "SELECT person_name, billing_amount, person_type FROM charge_detail WHERE invoice_no='BF-9'")}
-    check("D4 commit：charge_detail 分摊 + person_type=角色码",
-          cds == {"周立生": (6000.0, "employee"), "陈娟": (4000.0, "parttime")}, str(cds))
+    check("D4 commit：charge_detail 分摊 + person_type=类型名",
+          cds == {"周立生": (6000.0, "聘用"), "陈娟": (4000.0, "兼职")}, str(cds))
     cols = _coll("BF-9")
     check("D5 commit：collection 一笔 manual/补录",
           len(cols) == 1 and cols[0]["source"] == "manual" and cols[0]["note"] == "补录",
