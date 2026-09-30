@@ -29,8 +29,7 @@ def make_conn():
     cols = [r[1] for r in conn.execute("PRAGMA table_info(staff_type_def)")]
     for c, ddl in (("is_invoice", "INTEGER NOT NULL DEFAULT 0"),
                    ("can_expense", "INTEGER NOT NULL DEFAULT 0"),
-                   ("net_basis", "TEXT NOT NULL DEFAULT '收款净额'"),
-                   ("role_code", "TEXT NOT NULL DEFAULT 'other'")):
+                   ("net_basis", "TEXT NOT NULL DEFAULT '收款净额'")):
         if c not in cols:
             conn.execute(f"ALTER TABLE staff_type_def ADD COLUMN {c} {ddl}")
     # 复刻 db 迁移：charge_detail / expense_ledger 的 person_type 身份列（不在 SCHEMA 内）
@@ -38,7 +37,6 @@ def make_conn():
         tcols = [r[1] for r in conn.execute(f"PRAGMA table_info({tbl})")]
         if "person_type" not in tcols:
             conn.execute(f"ALTER TABLE {tbl} ADD COLUMN person_type TEXT DEFAULT ''")
-    st.ensure_roles(conn)
     conn.commit()
     return conn
 
@@ -46,9 +44,7 @@ def make_conn():
 def seed_types(conn) -> None:
     # (name, is_invoice(业务线), can_expense(费用线), net_basis)
     # 映射自旧 is_settle 拆分回填：partner/employee/parttime 业务线开；
-    # 原参与结算者（含公共/行政）费用线开。
-    # 复刻 db 迁移：按名称子串设定 role_code（仅 fixture 造数；运行期已不再读 role_code）。
-    _ROLE_OF = {"合伙": "partner", "聘用": "employee", "兼职": "parttime"}
+    # 原参与结算者（含公共/行政）费用线开。口径按「类型开关」直接设定。
     for name, invoice, expense, basis in (
             ("合伙", True, True, "开票净额"), ("聘用", True, True, "收款净额"),
             ("兼职", True, True, "收款净额"), ("公共", False, True, "收款净额"),
@@ -56,7 +52,6 @@ def seed_types(conn) -> None:
             ("其他", False, False, "收款净额")):
         if st.get_type(name, conn) is None:
             st.add_type(name, conn=conn)
-            st.set_role_code(name, _ROLE_OF.get(name, "other"), conn=conn)
             st.set_invoice(name, invoice, conn=conn)
             st.set_can_expense(name, expense, conn=conn)
             st.set_net_basis(name, basis, conn=conn)

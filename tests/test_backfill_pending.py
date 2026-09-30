@@ -91,8 +91,6 @@ def main() -> int:
         "ALTER TABLE collection ADD COLUMN src_row INTEGER DEFAULT 0",
         "ALTER TABLE invoice ADD COLUMN src_sheet TEXT DEFAULT ''",
         "ALTER TABLE invoice ADD COLUMN src_row INTEGER DEFAULT 0",
-        # 去写死（Plan A）：角色列（复刻 init_db 迁移）
-        "ALTER TABLE staff_type_def ADD COLUMN role_code TEXT NOT NULL DEFAULT 'other'",
         # 两条线模型（批次1）：SCHEMA 不含这三列，add_type INSERT 显式写 net_basis，
         # 内存库须与 init_db 迁移一致补齐（与 test_staff_type.make_conn 同）。
         "ALTER TABLE staff_type_def ADD COLUMN is_invoice INTEGER NOT NULL DEFAULT 0",
@@ -100,9 +98,6 @@ def main() -> int:
         "ALTER TABLE staff_type_def ADD COLUMN net_basis TEXT NOT NULL DEFAULT '收款净额'",
     ):
         conn.execute(stmt)
-    # 去写死（Plan A）：role_def 表 + 种子（内存库手工复刻）
-    from app.engine import staff_type as _st
-    _st.ensure_roles(conn)
     proxy = _ConnProxy(conn)
 
     # 四个模块的连接统一换成代理：library_invoice_nos() 也走 proxy（不传 conn 时）
@@ -112,12 +107,11 @@ def main() -> int:
     imp._auto_snapshot = lambda *a, **k: None  # P2-3 起新签名 (batch_type, period)
     imp._archive_file = lambda src, bt, period: ""
 
-    # 去写死（Plan A）：建员工类型 + 角色映射（复刻 init_db 的按名迁移，仅 fixture）
+    # 建员工类型（复刻 init_db 的按名迁移，仅 fixture；口径按类型开关直接设定）
     from app.engine import staff_type as _st
-    for _n, _c in (("合伙", "partner"), ("聘用", "employee"), ("兼职", "parttime")):
+    for _n in ("合伙", "聘用", "兼职"):
         if _st.get_type(_n, conn) is None:
             _st.add_type(_n, conn=conn)
-        _st.set_role_code(_n, _c, conn=conn)
 
     for nm, t in (("周立生", "聘用"), ("陈娟", "兼职"), ("胡坚", "合伙")):
         conn.execute("INSERT OR IGNORE INTO staff_roster(name) VALUES (?)", (nm,))

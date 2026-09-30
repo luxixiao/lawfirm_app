@@ -9,14 +9,12 @@
   `can_expense`（是否报销 / 费用线，唯一费用承担闸门）。
   **进报表 = `is_invoice OR can_expense`**（派生，不新增独立开关，代码不写死类型名，D2）。
   净额口径 `net_basis` ∈ {'开票净额','收款净额'}，**仅 `is_invoice=1` 时有意义**，否则空。
-- 类型与角色统一：`role_def` 仅剩 `label` / `default_net_basis`（勾选开票时的便利默认）/
-  `report_class`；`include_in_income_report` 与 `forbid_public_exclusive` 已退役（被进报表派生
-  与「专属费用」正向白名单取代）。
+- 结算/收入/费用口径一律按「类型开关」（`is_invoice` / `can_expense` / `net_basis`）解析，
+  **不引入角色码 / 角色表**（批 C 已彻底移除 `role_def` 表与 `staff_type_def.role_code` 列）。
+  改名/删除类型都不会断结算口径；唯一护栏是「有员工在用则禁止删除」（防止员工身份丢失
+  →落入 other→收入判 0）。
 - person_settlement 改用 `business_flags_of(_person)` 读取业务线口径；`can_bear_expense` 读取
   费用线口径（均按「人员全部类型 OR」解析，D1）。
-- **去写死（Plan A）**：类型名与角色（role_code → role_def）解耦。结算/收入/费用口径
-  一律按类型开关解析，故**放开改名锁与内置删除锁**——改名/删除类型都不会断结算口径；
-  唯一护栏是「有员工在用则禁止删除」（防止员工身份丢失→落入 other→收入判 0）。
   类型仍可各自设置 is_invoice / can_expense 与 net_basis（覆盖角色默认值）。
 
 员工删除：有业务数据引用（charge_detail/collection/expense_ledger/raw_salary）时
@@ -36,87 +34,8 @@ from app.db import get_conn
 # （expense_cat.py 通过本常量做费用类型的人员白/黑名单判断，勿删。）
 BUILTIN_TYPES = ["合伙", "聘用", "兼职"]
 
-# ---------------------------------------------------------------------------
-# 角色（去写死身份大类）：staff_type_def.role_code → role_def
-# 运行期一切「身份口径」都走 role_code，绝不再按类型名子串坍缩。
-# ---------------------------------------------------------------------------
-ROLE_CODES = ("partner", "employee", "parttime", "other")
-
-
-def ensure_roles(conn=None) -> None:
-    """幂等建 role_def 表 + 填充种子（建库/升级兜底；init_db 已种，这里再保险一次）。
-
-    手工复刻 schema 的内存库（大量测试用 :memory: 自己建表）并没有 role_def 表，
-    故先 CREATE IF NOT EXISTS，否则下面的 INSERT OR IGNORE 会报 no such table。
-    """
-    own, c = _own_conn(conn)
-    try:
-        c.execute("CREATE TABLE IF NOT EXISTS role_def ("
-                  "role_code TEXT PRIMARY KEY, label TEXT NOT NULL, "
-                  "forbid_public_exclusive INTEGER NOT NULL DEFAULT 0, "
-                  "include_in_income_report INTEGER NOT NULL DEFAULT 0, "
-                  "report_class TEXT NOT NULL DEFAULT '其他', "
-                  "default_net_basis TEXT NOT NULL DEFAULT '收款净额')")
-        for code, label, fpe, iir, rc, dnb in (
-            ("partner", "合伙", 1, 1, "合伙", "开票净额"),
-            ("employee", "聘用", 1, 1, "聘用", "收款净额"),
-            ("parttime", "兼职", 1, 1, "兼职", "收款净额"),
-            ("other", "其他", 0, 0, "其他", "收款净额"),
-        ):
-            c.execute(
-                "INSERT OR IGNORE INTO role_def(role_code,label,forbid_public_exclusive,"
-                "include_in_income_report,report_class,default_net_basis) VALUES(?,?,?,?,?,?)",
-                (code, label, fpe, iir, rc, dnb))
-        c.commit()
-    finally:
-        _close(own, c)
-
-
-def role_code_of(name: str, conn=None) -> str:
-    """真实员工类型名 → 角色码（唯一运行期取身份口径入口，不再子串坍缩）。
-
-    - 空名 / 类型不存在 → 'other'；
-    - 否则取该类型 staff_type_def.role_code。
-    改名任意类型都不会影响结果（口径按角色，不按名称）。
-    """
-    n = (name or "").strip()
-    if not n:
-        return "other"
-    own, c = _own_conn(conn)
-    try:
-        r = c.execute("SELECT role_code FROM staff_type_def WHERE name=?", (n,)).fetchone()
-        return (r["role_code"] or "other") if r else "other"
-    finally:
-        _close(own, c)
-
-
-def role_label(role_code: str, conn=None) -> str:
-    """角色码 → 显示名（对外展示用，不当 key）。"""
-    code = (role_code or "").strip() or "other"
-    own, c = _own_conn(conn)
-    try:
-        r = c.execute("SELECT label FROM role_def WHERE role_code=?", (code,)).fetchone()
-        return r["label"] if r else code
-    finally:
-        _close(own, c)
-
-
-def role_attr(role_code: str, conn=None) -> Dict:
-    """角色全部属性（forbid_public_exclusive / include_in_income_report / report_class / default_net_basis）。
-
-    缺码 → 返回 'other' 语义的兜底字典，绝不抛错（展示/校验可安全下行）。
-    """
-    code = (role_code or "").strip() or "other"
-    own, c = _own_conn(conn)
-    try:
-        r = c.execute("SELECT * FROM role_def WHERE role_code=?", (code,)).fetchone()
-        if not r:
-            return {"role_code": code, "label": code, "forbid_public_exclusive": 0,
-                    "include_in_income_report": 0, "report_class": "其他",
-                    "default_net_basis": "收款净额"}
-        return dict(r)
-    finally:
-        _close(own, c)
+# 身份口径（批 C 去写死）：role_def 表与 staff_type_def.role_code 列已彻底移除；
+# 结算/收入/费用口径一律按「类型开关」(is_invoice / can_expense / net_basis) 解析，无角色码概念。
 
 
 def active_types(conn=None):
@@ -136,33 +55,6 @@ def active_types(conn=None):
         _close(own, c)
 
 
-def role_in_report(role_code: str, conn=None) -> bool:
-    """某角色码是否「进报表」（分身份视图的进线判定）。
-
-    该角色码下有任一类型 is_invoice=1 或 can_expense=1 即 True。被 person_settlement
-    分身份视图用作「是否产生业务收入」的闸门（取代旧的 include_in_income_report）。
-    """
-    code = (role_code or "").strip() or "other"
-    own, c = _own_conn(conn)
-    try:
-        r = c.execute(
-            "SELECT 1 FROM staff_type_def WHERE role_code=? "
-            "AND (is_invoice=1 OR can_expense=1) LIMIT 1", (code,)).fetchone()
-        return r is not None
-    finally:
-        _close(own, c)
-
-
-def list_roles(conn=None):
-    """全部角色（角色码 → 显示名），用于下拉填充。"""
-    own, c = _own_conn(conn)
-    try:
-        rows = c.execute("SELECT role_code, label FROM role_def ORDER BY role_code").fetchall()
-        return [(r["role_code"], r["label"]) for r in rows]
-    finally:
-        _close(own, c)
-
-
 def person_type_combo_items(conn=None):
     """数据行身份下拉项（显示名, 存储值），含「未标」(空值)。供各 UI 编辑/筛选下拉共用。
 
@@ -177,11 +69,6 @@ def person_type_combo_items(conn=None):
     for r in rows:
         items.append((r["name"], r["name"]))
     return items
-
-
-def role_label_map(conn=None):
-    """角色码 → 显示名 字典（供只读表格把 person_type 翻成中文）。"""
-    return {code: label for code, label in list_roles(conn)}
 
 
 class StaffTypeError(Exception):
@@ -264,7 +151,7 @@ def list_types(conn=None) -> List[Dict]:
         rows = conn.execute(
             """SELECT t.name AS name, t.is_builtin AS is_builtin, t.note AS note,
                       t.sort_order AS sort_order, t.is_invoice AS is_invoice,
-                      t.can_expense AS can_expense, t.net_basis AS net_basis, t.role_code AS role_code,
+                      t.can_expense AS can_expense, t.net_basis AS net_basis,
                       (SELECT COUNT(*) FROM staff_type_map m WHERE m.type_name = t.name) AS staff_count
                FROM staff_type_def t
                ORDER BY t.sort_order, t.name""").fetchall()
@@ -415,13 +302,12 @@ def is_computable(name: str, conn=None) -> bool:
     return business_flags_of(name, conn)[0]
 
 
-def add_type(name: str, note: str = "", role_code: str = "other", conn=None) -> None:
+def add_type(name: str, note: str = "", conn=None) -> None:
     name = (name or "").strip()
     if not name:
         raise StaffTypeError("类型名不能为空")
     if len(name) > 20:
         raise StaffTypeError("类型名过长（≤20 字符）")
-    rc = (role_code or "other") if role_code in ROLE_CODES else "other"
     own, conn = _own_conn(conn)
     try:
         dup = conn.execute("SELECT 1 FROM staff_type_def WHERE name=?", (name,)).fetchone()
@@ -430,19 +316,18 @@ def add_type(name: str, note: str = "", role_code: str = "other", conn=None) -> 
         nxt = conn.execute(
             "SELECT COALESCE(MAX(sort_order),0)+1 AS n FROM staff_type_def").fetchone()["n"]
         conn.execute(
-            "INSERT INTO staff_type_def(name, is_builtin, note, sort_order, role_code, net_basis) "
-            "VALUES(?,0,?,?,?,'')", (name, note.strip(), nxt, rc))
+            "INSERT INTO staff_type_def(name, is_builtin, note, sort_order, net_basis) "
+            "VALUES(?,0,?,?, '')", (name, note.strip(), nxt))
         conn.commit()
     finally:
         _close(own, conn)
 
 
 def rename_type(old: str, new: str, conn=None) -> None:
-    """改名：新名重复则报错；同步更新 staff 表的类型。
+    """改名：新名重复则报错；同步更新 staff_type_map 的类型名。
 
-    去写死（Plan A）：不再按类型名硬编码结算口径 —— 类型名与角色码（role_code）解耦，
-    改名后 role_code 不变、结算/收入/费用口径全部按角色解析，故**放开改名锁**
-    （含原「内置三类禁止改名」），改名不会再断结算口径。
+    口径按「类型开关」解析（不写死类型名），改名不会再断结算口径，故**放开改名锁**
+    （含原「内置三类禁止改名」）。
     """
     new = (new or "").strip()
     if not new:
@@ -462,22 +347,6 @@ def rename_type(old: str, new: str, conn=None) -> None:
         _close(own, conn)
 
 
-def set_role_code(name: str, code: str, conn=None) -> None:
-    """改某员工类型的角色归属（partner/employee/parttime/other）。
-
-    角色决定 forbid_public_exclusive / include_in_income_report / default_net_basis
-    等语义；改名不影响角色，但用户可在此主动切换角色（如把一个自定义类型归为「合伙」）。
-    非法码兜底为 'other'。
-    """
-    rc = (code or "other") if code in ROLE_CODES else "other"
-    own, conn = _own_conn(conn)
-    try:
-        conn.execute("UPDATE staff_type_def SET role_code=? WHERE name=?", (rc, name))
-        conn.commit()
-    finally:
-        _close(own, conn)
-
-
 def set_note(name: str, note: str, conn=None) -> None:
     own, conn = _own_conn(conn)
     try:
@@ -490,7 +359,7 @@ def set_note(name: str, note: str, conn=None) -> None:
 def delete_type(name: str, conn=None) -> None:
     """删除类型：有员工在用则禁止（避免员工身份丢失）；其余自由删除。
 
-    去写死（Plan A）：类型名与角色解耦，故**放开原「内置三类禁止删除」锁**；
+    口径按「类型开关」解析、不写死类型名，故**放开原「内置三类禁止删除」锁**；
     仅保留「有员工引用则禁删」这一真正的安全护栏（防止员工身份被改成空→结算落 other→收入 0）。
     """
     own, conn = _own_conn(conn)

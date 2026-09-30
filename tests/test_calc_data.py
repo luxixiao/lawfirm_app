@@ -32,16 +32,14 @@ def make_conn() -> sqlite3.Connection:
     for tbl in ("charge_detail", "expense_ledger"):
         conn.execute(f"ALTER TABLE {tbl} ADD COLUMN person_type TEXT DEFAULT ''")
     conn.execute("ALTER TABLE charge_detail ADD COLUMN received_override REAL DEFAULT NULL")
-    # 两条线模型（批次1 点1）：补 is_invoice / can_expense / net_basis / role_code
+    # 两条线模型（批次1 点1）：补 is_invoice / can_expense / net_basis
     # （与 db.init_db 迁移块一致，幂等；SCHEMA 不含这两列，内存库手动补）
     cols = [r[1] for r in conn.execute("PRAGMA table_info(staff_type_def)")]
     for col, ddl in (("is_invoice", "INTEGER NOT NULL DEFAULT 0"),
                      ("can_expense", "INTEGER NOT NULL DEFAULT 0"),
-                     ("net_basis", "TEXT NOT NULL DEFAULT '收款净额'"),
-                     ("role_code", "TEXT NOT NULL DEFAULT 'other'")):
+                     ("net_basis", "TEXT NOT NULL DEFAULT '收款净额'")):
         if col not in cols:
             conn.execute(f"ALTER TABLE staff_type_def ADD COLUMN {col} {ddl}")
-    st.ensure_roles(conn)
     # 注入员工类型（合伙/聘用/兼职/公共/行政…）：改动 1 后 ensure_defaults 不再预置，
     # 改由 seed_types 显式自建，使结算口径与真实库一致
     seed_types(conn)
@@ -56,15 +54,13 @@ def seed_types(conn: sqlite3.Connection) -> None:
     """
     # (name, is_invoice(业务线), can_expense(费用线), net_basis)
     # 映射自旧 is_settle 拆分回填：partner/employee/parttime 业务线开；
-    # 原参与结算者（含公共/行政）费用线开。
-    _ROLE_OF = {"合伙": "partner", "聘用": "employee", "兼职": "parttime"}
+    # 原参与结算者（含公共/行政）费用线开。口径按「类型开关」直接设定。
     for name, invoice, expense, basis in (
             ("合伙", True, True, "开票净额"), ("聘用", True, True, "收款净额"),
             ("兼职", True, True, "收款净额"), ("公共", False, True, "收款净额"),
             ("行政", False, True, "收款净额")):
         if st.get_type(name, conn) is None:
             st.add_type(name, conn=conn)
-        st.set_role_code(name, _ROLE_OF.get(name, "other"), conn=conn)
         st.set_invoice(name, invoice, conn=conn)
         st.set_can_expense(name, expense, conn=conn)
         st.set_net_basis(name, basis, conn=conn)

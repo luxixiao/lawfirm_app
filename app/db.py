@@ -388,21 +388,6 @@ CREATE TABLE IF NOT EXISTS staff_type_def (
     created_at  TEXT DEFAULT (datetime('now','localtime'))
 );
 
--- ============ 角色定义（身份大类，去写死：合伙/聘用/兼职/其他）============
--- 与具体「员工类型」名称解耦：staff_type_def.role_code 指向这里。
--- 注：forbid_public_exclusive / include_in_income_report 两列已退役（列定义保留、停用读取）：
--- 费用承担闸门现由 staff_type_def.can_expense（费用线）判定；进收入报表由 is_invoice/can_expense 派生；
--- 专属费用白名单改由 expense_category.exclusive_types（分类级）承担。
--- 仍保留的语义：report_class（对外报送分类）/ default_net_basis（勾选开票时的便利默认）。
-CREATE TABLE IF NOT EXISTS role_def (
-    role_code               TEXT PRIMARY KEY,
-    label                   TEXT NOT NULL,
-    forbid_public_exclusive INTEGER NOT NULL DEFAULT 0,
-    include_in_income_report  INTEGER NOT NULL DEFAULT 0,
-    report_class            TEXT NOT NULL DEFAULT '其他',
-    default_net_basis       TEXT NOT NULL DEFAULT '收款净额'
-);
-
 -- 费用分类说明（分类固定 6 类：报酬发放/住房公积金/保险费/汽油费/报销摊销等/专属费用；说明可自定义填写，供费用类型页分组展示）
 CREATE TABLE IF NOT EXISTS expense_category (
     name            TEXT PRIMARY KEY,
@@ -523,17 +508,6 @@ def init_db(backfill: bool = True) -> None:
             conn.execute("ALTER TABLE staff_type_def ADD COLUMN is_settle INTEGER NOT NULL DEFAULT 0")
         if "net_basis" not in cols:
             conn.execute("ALTER TABLE staff_type_def ADD COLUMN net_basis TEXT NOT NULL DEFAULT '收款净额'")
-        # 迁移：角色定义（去写死身份大类）—— 仅填充，不依赖任何类型名
-        for code, label, fpe, iir, rc, dnb in (
-            ("partner", "合伙", 1, 1, "合伙", "开票净额"),
-            ("employee", "聘用", 1, 1, "聘用", "收款净额"),
-            ("parttime", "兼职", 1, 1, "兼职", "收款净额"),
-            ("other", "其他", 0, 0, "其他", "收款净额"),
-        ):
-            conn.execute(
-                "INSERT OR IGNORE INTO role_def(role_code,label,forbid_public_exclusive,"
-                "include_in_income_report,report_class,default_net_basis) VALUES(?,?,?,?,?,?)",
-                (code, label, fpe, iir, rc, dnb))
         # 迁移：staff_type_def 关联角色（一次性，仅此处允许按名称子串判定；运行期不再坍缩）
         cols = [r[1] for r in conn.execute("PRAGMA table_info(staff_type_def)")]
         if "role_code" not in cols:
@@ -558,6 +532,12 @@ def init_db(backfill: bool = True) -> None:
                 "THEN 1 ELSE 0 END, "
                 "can_expense = is_settle")
             conn.execute("ALTER TABLE staff_type_def DROP COLUMN is_settle")
+        # 迁移：去身份收尾 —— role_code 列与 role_def 表已无运行期引用（口径一律按类型开关解析），
+        # 派生完 is_invoice / can_expense 后清理，避免遗留死列 / 死表。
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(staff_type_def)")]
+        if "role_code" in cols:
+            conn.execute("ALTER TABLE staff_type_def DROP COLUMN role_code")
+        conn.execute("DROP TABLE IF EXISTS role_def")
         # 迁移：花名册 + 人员类型关联（批1基础）—— 仅当历史库仍有 staff 镜像时折入。
         # 新库（staff 表已移除）或已折入过（staff_roster 非空）均跳过；幂等。
         if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='staff'").fetchone() \

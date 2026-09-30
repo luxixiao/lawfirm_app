@@ -17,7 +17,7 @@ from __future__ import annotations
 from typing import Dict, List, Optional
 
 from app.db import get_conn
-from app.engine import staff_type  # 角色口径（去写死）：forbid_public_exclusive
+from app.engine import staff_type  # 人员类型解析（主类型 / 人员类型列表）
 
 # 固定 6 类（顺序即展示顺序；不可增删，改动须同步 db.py 迁移与测试）
 CATEGORIES = ["报酬发放", "住房公积金", "保险费", "汽油费", "报销摊销等", "专属费用"]

@@ -27,17 +27,14 @@ def make_conn():
     conn.row_factory = sqlite3.Row
     conn.executescript(SCHEMA)
     # 两条线列迁移（与 db.init_db 迁移块一致，幂等）：SCHEMA 不含这两列，
-    # 内存库须手动补 is_invoice / can_expense / net_basis / role_code。
+    # 内存库须手动补 is_invoice / can_expense / net_basis。
     cols = [r[1] for r in conn.execute("PRAGMA table_info(staff_type_def)")]
     for col, ddl in (("is_invoice", "INTEGER NOT NULL DEFAULT 0"),
                      ("can_expense", "INTEGER NOT NULL DEFAULT 0"),
-                     ("net_basis", "TEXT NOT NULL DEFAULT '收款净额'"),
-                     ("role_code", "TEXT NOT NULL DEFAULT 'other'")):
+                     ("net_basis", "TEXT NOT NULL DEFAULT '收款净额'")):
         if col not in cols:
             conn.execute(f"ALTER TABLE staff_type_def ADD COLUMN {col} {ddl}")
     conn.commit()
-    # role_def 种子（与 db.init_db 迁移块一致；去写死身份大类的语义来源）
-    st.ensure_roles(conn)
     return conn
 
 
@@ -75,9 +72,6 @@ def seed_types(conn) -> None:
     这里复刻的是页面动作：add_type 新建 → 勾选开票 / 勾选报销 → 下拉选口径；
     is_builtin=1（合伙/聘用/兼职/公共/行政）与禁删禁改名语义保持一致。
     """
-    # 每个种子类型的角色归属（去写死：角色决定 forbid_public_exclusive/
-    # include_in_income_report/default_net_basis；类型名与角色解耦）
-    _ROLE_OF = {"合伙": "partner", "聘用": "employee", "兼职": "parttime"}
     for name, invoice, expense, basis in _SEED_TYPES:
         if st.get_type(name, conn) is None:
             st.add_type(name, conn=conn)
@@ -85,7 +79,6 @@ def seed_types(conn) -> None:
             conn.execute("UPDATE staff_type_def SET is_builtin=? WHERE name=?",
                          (1 if builtin else 0, name))
             conn.commit()
-        st.set_role_code(name, _ROLE_OF.get(name, "other"), conn=conn)
         st.set_invoice(name, invoice, conn=conn)      # 业务线开关
         st.set_can_expense(name, expense, conn=conn)  # 费用线开关
         st.set_net_basis(name, basis, conn=conn)
@@ -190,14 +183,14 @@ def main() -> int:
 
     st.rename_type("顾问", "外部专家", conn=conn)
     check("改名生效", "外部专家" in [t["name"] for t in st.list_types(conn)])
-    # 去写死（批次3）：改名锁已放开，内置类型也可改名，且角色（语义）保留
+    # 去写死（批次3）：改名锁已放开，内置类型也可改名，且业务配置（is_invoice 等）保留
     st.add_type("临时内置", conn=conn)
     conn.execute("UPDATE staff_type_def SET is_builtin=1 WHERE name='临时内置'")
-    st.set_role_code("临时内置", "partner", conn=conn)
+    st.set_invoice("临时内置", True, conn=conn)   # 业务配置直接由开关设定（不再经角色）
     conn.commit()
     st.rename_type("临时内置", "临时改名", conn=conn)
     check("内置类型可改名(去写死)", st.get_type("临时改名", conn) is not None)
-    check("改名后角色保留 partner", st.role_code_of("临时改名", conn) == "partner")
+    check("改名后业务配置保留", st.business_flags_of("临时改名", conn)[0] is True)
 
     st.set_note("合伙", "按开票净额计业务收入", conn=conn)
     check("内置可改说明", st.get_type("合伙", conn)["note"] == "按开票净额计业务收入")

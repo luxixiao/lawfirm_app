@@ -37,8 +37,6 @@ def make_conn():
     conn.executescript(SCHEMA)
     # 两条线模型后 staff_type_def 列由迁移补齐；内存库单测手动补（与生产 init_db 一致）
     cols = [r[1] for r in conn.execute("PRAGMA table_info(staff_type_def)")]
-    if "role_code" not in cols:
-        conn.execute("ALTER TABLE staff_type_def ADD COLUMN role_code TEXT NOT NULL DEFAULT 'other'")
     # 专属费用白名单列（生产由 SCHEMA 已含；此处兜底，防止旧 SCHEMA 副本缺列）
     ccols = [r[1] for r in conn.execute("PRAGMA table_info(expense_category)")]
     if "exclusive_types" not in ccols:
@@ -53,7 +51,6 @@ def make_conn():
         conn.execute("ALTER TABLE staff_type_def ADD COLUMN can_expense INTEGER NOT NULL DEFAULT 0")
     if "net_basis" not in tcols:
         conn.execute("ALTER TABLE staff_type_def ADD COLUMN net_basis TEXT NOT NULL DEFAULT '收款净额'")
-    _st.ensure_roles(conn)
     return conn
 
 

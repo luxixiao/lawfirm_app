@@ -1,6 +1,6 @@
 # 设计文档：员工类型「两条线」模型 + 类型/角色统一
 
-日期：2026-09-29 ｜ 分支：dev2 ｜ 状态：设计已定，待分批实现
+日期：2026-09-29 ｜ 分支：dev2 ｜ 状态：设计已定，分批实现中（批 A+B 已合；**批 C 已物理删除 `role_def` 表与 `staff_type_def.role_code` 列**）
 
 ## 1. 目标与原则
 
@@ -23,21 +23,16 @@
 | `is_invoice` | INTEGER 0/1 | 是否开票（业务线） | **新增**，替换旧 `is_settle` 的"业务"语义 |
 | `can_expense` | INTEGER 0/1 | 是否报销（费用线） | **新增**，旧 `is_settle` 的"费用"语义拆出 |
 | `net_basis` | TEXT | 净额口径 | 保留；**仅 `is_invoice=1` 时有意义**，否则空 |
-| `role_code` | TEXT | 角色（仅标签/分组 + `default_net_basis` 便利默认） | 保留，但**不再作任何闸门** |
+| `role_code` | — | 角色码 | **已移除（批 C）**：口径不再经角色码，统一按「类型开关」解析 |
 | `is_settle` | — | 旧字段 | **退役**（迁移后删列） |
 | 其余 | — | note/sort_order/is_builtin/created_at | 不变 |
 
 派生：`in_report = (is_invoice = 1) OR (can_expense = 1)`。
 
-### 2.2 `role_def`（角色降级为标签）
+### 2.2 `role_def`（已删除，批 C）
 
-| 字段 | 去留 | 说明 |
-|---|---|---|
-| `label` | 保留 | 仅显示/分组 |
-| `default_net_basis` | 保留 | 勾选 `is_invoice` 时的便利默认值（非强制） |
-| `report_class` | 保留（当前无功能消费） | 对外报送分类，独立第 4 轴，本期不动 |
-| `include_in_income_report` | **退役** | 不再作闸门（被 `in_report` 派生取代） |
-| `forbid_public_exclusive` | **退役** | 被「专属费用」正向白名单取代 |
+> 批 C 已物理删除 `role_def` 表及其全部列（`label`/`default_net_basis`/`report_class`/`include_in_income_report`/`forbid_public_exclusive`）。
+> 原「勾选 `is_invoice` 便利默认」语义由用户在员工类型页直接选 `net_basis` 承担；对外报送分类（`report_class`）本期无功能消费，随表一并移除。
 
 ### 2.3 费用分类 / 类型（`expense_category` / `expense_cat`）
 
@@ -142,7 +137,7 @@ UPDATE expense_cat SET category = '专属费用' WHERE category = '公共专属�
 
 ## 8. 迁移与兼容
 
-- 老库 `is_settle` 按 §4.1 规则拆分；`role_def` 两列保留列定义但停用（避免删列风险可暂留，下个清理批次删）。
+- 老库 `is_settle` 按 §4.1 规则拆分；`role_def` 表与 `staff_type_def.role_code` 列已在**批 C 物理删除**（迁移中先派生 `is_invoice/can_expense` 再 DROP）。
 - 「公共专属费用」→「专属费用」数据 `UPDATE`（§4.2）。
 - 所有改动经真实 venv `run_tests.py` 门禁（QT_QPA_PLATFORM=offscreen）验证后 commit + API 推送。
 
@@ -160,5 +155,5 @@ UPDATE expense_cat SET category = '专属费用' WHERE category = '公共专属�
 
 - **D6**（§6.3）：聘用结算表去写死后的范围，需用户裁定（推荐 B）。
 - 一人多类型时「主类型」取 `primary_type_of`，费用校验/净额均按主类型（与现有取数路径一致）。
-- `role_def` 两退役列本期保留列定义、停用读取，下个清理批次物理删列（降风险）。
+- `role_def` 两退役列已在**批 C 物理删除**（详见 §2.2）。
 - 净额口径统一取「主类型 net_basis」后，原按角色 `default_net_basis` 的口径差异被消除（前期 gap 一并修复）。
