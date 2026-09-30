@@ -30,7 +30,7 @@ from app.engine.expense_edit import (
 from app.engine.expense_validation import validate_expense_edit
 from app.ui import scale, style
 from app.ui.audit_view import AuditView
-from app.engine.staff_type import person_type_combo_items, role_label_map
+from app.engine.staff_type import person_type_combo_items
 from app.ui.expense_ledger_view import (
     _HEADERS as _LEDGER_HEADERS, _KEYS as _LEDGER_KEYS,
 )
@@ -101,7 +101,8 @@ class _PersonTypeDelegate(QStyledItemDelegate):
     def setModelData(self, editor, model, index):  # noqa: N802
         code = editor.currentData() or ""
         model.setData(index, code, Qt.ItemDataRole.EditRole)
-        model.setData(index, role_label_map().get(code, code), Qt.ItemDataRole.DisplayRole)
+        # 去身份：存储值=类型名，直接以类型名展示（不再经角色码→中文翻译）
+        model.setData(index, code, Qt.ItemDataRole.DisplayRole)
 
 
 class ExpenseDetailView(QWidget):
@@ -206,9 +207,9 @@ class ExpenseDetailView(QWidget):
                     item.setData(Qt.ItemDataRole.EditRole,
                                  float(v) if v is not None else 0.0)
                 elif key == "person_type":
-                    # 存储值恒为角色码，展示翻成中文（与费用台账页一致）
+                    # 去身份：存储值=类型名，直接展示（与费用台账页一致）
                     code = (v or "").strip()
-                    item = QTableWidgetItem(role_label_map().get(code, code) if code else "")
+                    item = QTableWidgetItem(code if code else "")
                     item.setData(Qt.ItemDataRole.EditRole, code)
                 else:
                     item = QTableWidgetItem(_cell_text(v, False))

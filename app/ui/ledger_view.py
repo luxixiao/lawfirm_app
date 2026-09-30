@@ -17,7 +17,7 @@ from PySide6.QtWidgets import (
 from app.ui.widgets import (CaptionLabel, PageHeader, PushButton)
 from app.db import get_conn
 from app.engine.change_log import log_change
-from app.engine.staff_type import person_type_combo_items, role_label_map
+from app.engine.staff_type import person_type_combo_items
 from app.ui.column_layout import install_column_layout
 
 
@@ -93,11 +93,11 @@ class LedgerView(QWidget):
             ).fetchall()
         finally:
             conn.close()
-        labels = role_label_map()
+        # 去身份：person_type=类型名，直接展示（不再经角色码→中文翻译）
         exp_display = []
         for r in exps:
             pt = r["person_type"]
-            disp_pt = labels.get(pt, pt) if pt else "未标"
+            disp_pt = pt if pt else "未标"
             exp_display.append([r["period"], r["actual_handler"], r["expense_type"], r["expense_amount"],
                                 r["ticket_no"], disp_pt, r["key"]])
         self._fill(self.tab_expense, exp_display, "expense")
