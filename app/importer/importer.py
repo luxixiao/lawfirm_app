@@ -511,8 +511,13 @@ def _insert_raw_ledger(conn, item: dict, batch_id: int, kind: str) -> None:
             handler = item.get("handler_text") or ""
             buyer = item.get("buyer") or ""
             case_no = item.get("case_no") or ""
-        remark_raw = item.get("remark_raw")
-        remark = remark_raw if remark_raw is not None else (item.get("remark") or "")
+        # remark_raw 恒为 str（解析期从台账备注列取）；极端缺失时回退 remark，
+        # 但 remark 可能是 parse_remark 的 dict —— 必须保证最终入库的是字符串，
+        # 否则 dict 绑进 raw_ledger.remark(TEXT) 会抛 sqlite3.ProgrammingError。
+        r = item.get("remark_raw")
+        if not isinstance(r, str):
+            r = item.get("remark")
+        remark = r if isinstance(r, str) else ""
     else:  # prepayment (sheet4)
         date_raw = ""
         recv_raw = _raw_cell(item.get("raw_row"), item.get("header"), "收到日期")

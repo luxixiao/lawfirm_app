@@ -146,7 +146,16 @@ def assert_ledger_red_orig(conn, invoices) -> None:
         if not inv.get("is_red"):
             continue
         no = inv.get("invoice_no")
-        ledger_orig = (extract_orig_no(inv.get("remark") or "") or "").strip()
+        # 真实流：发票台账行的 remark 是 parse_remark 的 dict，原始文本在 remark_raw；
+        # 测试 fixture 只给 remark（字符串）。两者都可能是非 str，必须显式降级，
+        # 否则 `dict or ""` 仍返回 dict，喂进 extract_orig_no 的 re.search 会抛
+        # TypeError: expected string or bytes-like object, got 'dict'（用户 2026-09-30 报的崩点）。
+        src = inv.get("remark_raw")
+        if not isinstance(src, str):
+            src = inv.get("remark")
+        if not isinstance(src, str):
+            src = ""
+        ledger_orig = (extract_orig_no(src) or "").strip()
         if not ledger_orig:
             raise ValueError(
                 f"红字发票 {no} 的发票台账备注未写明原蓝字发票号，无法导入；"

@@ -458,6 +458,38 @@ def main() -> int:
     except ValueError:
         ok_h6 = False
     check("H6：非红字 → 跳过不拦", ok_h6)
+
+    # H7：真实流形态——台账红字行 remark 是 parse_remark 的 dict，原票号在 remark_raw。
+    #     旧代码 inv.get("remark") or "" 因 dict 为真值仍返回 dict → extract_orig_no 内
+    #     re.search(dict) 抛 TypeError: expected string or bytes-like object, got 'dict'
+    #     （用户 2026-09-30 报的崩点）。修复后应放行。
+    ok_h7 = True
+    try:
+        assert_ledger_red_orig(c5, [
+            {"invoice_no": "836840", "is_red": True,
+             "remark_raw": "冲24.11.4发票24332000000398937755",
+             "remark": {"receipts": [], "remaining": None, "pure_date": None,
+                        "is_red_remark": True, "is_red_off": False}},
+        ])
+    except (ValueError, TypeError):
+        ok_h7 = False
+    check("H7：台账红字 remark=dict + remark_raw=str → 放行（不抛 TypeError）", ok_h7)
+
+    # H8：remark_raw 缺失且 remark 是 dict 的极端情形 → 安全降级为空（不抛 TypeError），
+    #     按业务原逻辑：红字未写原票号 → 拦 ValueError（而非崩溃）。
+    blocked_h8 = False
+    try:
+        assert_ledger_red_orig(c5, [
+            {"invoice_no": "836840", "is_red": True,
+             "remark": {"receipts": [], "remaining": None, "pure_date": None,
+                        "is_red_remark": True, "is_red_off": False}},
+        ])
+    except TypeError:
+        blocked_h8 = False  # 回归失败：仍抛 TypeError
+    except ValueError:
+        blocked_h8 = True   # 期望：拦但用 ValueError 文案，不崩
+    check("H8：remark_raw 缺失 + remark=dict → 不抛 TypeError（安全降级）", blocked_h8, "抛了 TypeError")
+
     c5.close()
 
     # ==================================================================== #
