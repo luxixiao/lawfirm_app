@@ -166,7 +166,7 @@ class StaffView(QWidget):
         btns.addStretch()
         lay.addLayout(btns)
 
-        self.type_table = QTableWidget(0, 7)
+        self.type_table = QTableWidget(0, 6)
         self.type_table.setHorizontalHeaderLabels(
             ["类型", "开票", "报销", "业务金额方式", "说明", "人数"])
         self.type_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
@@ -176,8 +176,7 @@ class StaffView(QWidget):
         self.type_table.setColumnWidth(1, scale.px(70))
         self.type_table.setColumnWidth(2, scale.px(70))
         self.type_table.setColumnWidth(3, scale.px(100))
-        self.type_table.setColumnWidth(5, scale.px(60))
-        self.type_table.setColumnWidth(6, scale.px(90))
+        self.type_table.setColumnWidth(5, scale.px(90))
         self.type_table.itemChanged.connect(self._on_line_changed)
         install_common_features(self.type_table)
         self._type_col = install_column_layout(self.type_table, "staff_type", "main")
