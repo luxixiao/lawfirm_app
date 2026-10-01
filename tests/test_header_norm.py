@@ -182,8 +182,9 @@ def main() -> int:
     # 7d 职工清单
     check("staff _find_header_row 容忍空格",
           stf._find_header_row([["花名册"], ["姓 名", "类 型", "备注"]]) == 1)
-    check("staff _find_header_row 无表头返回 -1",
-          stf._find_header_row([["姓 名"], ["类 型"]]) == -1)
+    # 新语义：表头只需含「姓名」列；完全不含「姓名」才返回 -1（不再强制要求「类型」列）
+    check("staff _find_header_row 无姓名表头返回 -1",
+          stf._find_header_row([["类 型"], ["备 注"]]) == -1)
 
     # ---------- 8) 端到端：真表头 xlsx → parse_ledger_file ----------
     tmp = Path(tempfile.mkdtemp(prefix="hdrnorm_")) / "2025.1台账.xlsx"

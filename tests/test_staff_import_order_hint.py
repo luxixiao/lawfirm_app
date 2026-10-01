@@ -33,6 +33,7 @@ from PySide6.QtWidgets import QApplication, QFileDialog, QMessageBox  # noqa: E4
 app = QApplication.instance() or QApplication([])
 
 from app.engine import staff_type as st  # noqa: E402
+from app.importer.staff_import import RosterRow  # noqa: E402
 import app.ui.staff_view as sv  # noqa: E402
 
 OK, FAILS = 0, []
@@ -63,9 +64,9 @@ class _MsgSpy:
         return QMessageBox.StandardButton.Cancel
 
 
-# 清单里**全员填了类型**的职工行 —— 顺序指引属于「能导、但顺序不对」的场景；
-# 有空类型的场景由 test_staff_import_missing_type.py（方案 B 硬拦）覆盖。
-ALL_TYPED = [("张三", "合伙", ""), ("李四", "聘用", "")]
+# 清单里**全员填了类型**的职工行 —— 顺序指引属于「能导、但顺序不对」的场景。
+ALL_TYPED = [RosterRow(name="张三", staff_type="合伙"),
+             RosterRow(name="李四", staff_type="聘用")]
 
 
 class _FileSpy:

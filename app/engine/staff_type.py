@@ -777,17 +777,26 @@ def remove_person_type(name: str, type_name: str, conn=None) -> None:
         _close(own, conn)
 
 
-def sync_imported_staff(conn, name: str, stype: str, note: str = "") -> None:
-    """导入职工清单时复用：保证花名册有此人、关联表有该类型（首类型即主类型），并同步 staff 镜像。
+def sync_imported_staff(conn, name: str, stype: str = "", note: str = "", *,
+                       code: str = "", id_card: str = "", phone: str = "",
+                       hire_month: str = "", leave_month: str = "") -> None:
+    """导入花名册时复用：保证花名册有此人（写入全部字段），并关联其员工类型（首类型即主类型）。
 
-    仅用传入 conn（调用方负责 commit），不新开连接。姓名/类型为空则跳过。
+    仅用传入 conn（调用方负责 commit），不新开连接。姓名为空则跳过。
+    花名册为「追加/合并」语义：人员不存在则整行 INSERT（含编号/身份证/手机/入职/离职/
+    备注）；已存在则不动（不覆盖既有数据）。staff_type 为空时只确保花名册人员存在、
+    不建类型关联。
     """
     nm = (name or "").strip()
     tn = (stype or "").strip()
     if not nm:
         return
-    conn.execute("INSERT OR IGNORE INTO staff_roster(name, note) VALUES(?,?)",
-                 (nm, (note or "").strip()))
+    conn.execute(
+        "INSERT OR IGNORE INTO staff_roster"
+        "(name, code, id_card, phone, hire_month, leave_month, note) "
+        "VALUES(?,?,?,?,?,?,?)",
+        (nm, (code or "").strip(), (id_card or "").strip(), (phone or "").strip(),
+         (hire_month or "").strip(), (leave_month or "").strip(), (note or "").strip()))
     if tn:
         exists = conn.execute(
             "SELECT 1 FROM staff_type_map WHERE name=? AND type_name=?", (nm, tn)).fetchone()
@@ -797,4 +806,3 @@ def sync_imported_staff(conn, name: str, stype: str, note: str = "") -> None:
             conn.execute(
                 "INSERT INTO staff_type_map(name, type_name, is_primary, sort_order) "
                 "VALUES(?,?,?,?)", (nm, tn, 0 if has_primary else 1, 0))
-        rp = conn.execute("SELECT hire_month, note FROM staff_roster WHERE name=?", (nm,)).fetchone()

@@ -476,7 +476,7 @@ class StaffView(QWidget):
 
     def import_staff(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
-            self, "选择职工清单", "", "Excel 文件 (*.xls *.xlsx *.xlsm)")
+            self, "选择花名册", "", "Excel 文件 (*.xls *.xlsx *.xlsm)")
         if not path:
             return
         try:
@@ -485,36 +485,26 @@ class StaffView(QWidget):
             QMessageBox.warning(self, "导入失败", str(e))
             return
 
-        # ===== 空类型硬拦（方案 B，需求方 2026-09-25 拍板）=====
-        missing = [name for name, stype, _note in staff if not (stype or "").strip()]
-        if missing:
-            shown = missing[:10]
-            tail = "" if len(missing) <= 10 else f" 等 {len(missing) - 10} 人"
-            QMessageBox.warning(
-                self, "导入被拦下",
-                f"职工清单里有 {len(missing)} 人未填写员工类型：\n"
-                "　" + "、".join(shown) + tail + "\n\n"
-                "未填类型的员工一律判为不参与结算，导入后导入费用台账时也会被逐行"
-                "拒绝；故本次整批未导入（改好清单可重新导入）。\n"
-                "需要的类型请到「类型设置」页新建，或在清单里补齐类型列。")
-            return
-
+        # 花名册本就不含「类型」列（与导出对称），无类型可校验 —— 直接导入；
+        # 仅当文件确实带「类型」列时，才把出现过的类型补进类型表。
         self._maybe_warn_settle_order()
 
         conn = get_conn()
         try:
             now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            cur = conn.execute(
+            conn.execute(
                 "INSERT INTO import_batch (batch_type, period, file_name, file_hash, imported_at)"
                 " VALUES (?,?,?,?,?)",
                 ("staff", "0000", path.replace("\\", "/").split("/")[-1], file_hash, now))
-            batch_id = cur.lastrowid
-            st.ensure_types(conn, [s[1] for s in staff if s[1]])
+            st.ensure_types(conn, [r.staff_type for r in staff if r.staff_type])
             n_new, n_dup = 0, 0
-            for name, stype, note in staff:
+            for r in staff:
                 exists = conn.execute(
-                    "SELECT 1 FROM staff_roster WHERE name=?", (name,)).fetchone()
-                st.sync_imported_staff(conn, name, stype, note)
+                    "SELECT 1 FROM staff_roster WHERE name=?", (r.name,)).fetchone()
+                st.sync_imported_staff(
+                    conn, r.name, r.staff_type, r.note,
+                    code=r.code, id_card=r.id_card, phone=r.phone,
+                    hire_month=r.hire_month, leave_month=r.leave_month)
                 if exists:
                     n_dup += 1
                 else:

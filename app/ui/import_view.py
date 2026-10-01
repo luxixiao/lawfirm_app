@@ -44,19 +44,6 @@ from app.diag import get_logger
 from app.engine import staff_type as st
 
 
-class MissingStaffTypeError(Exception):
-    """职工清单里有员工**未填员工类型** → 整批拒绝（方案 B）。
-
-    员工类型不能替用户决定：空类型会让该员工被判「不参与结算」，随后导入费用台账
-    时被 `expense_validation` 逐行拒绝，而报错还会误导他去类型页找（与 `a0b108b`
-    在 `staff_view.import_staff` 治掉的缺陷同源）。
-
-    单独建一个异常类而非直接用 `Exception`，是为了让 `_do_import` 把它与**其它**
-    导入失败区分开 —— **批量模式必须把它抛回调用方**，否则调用方会把被拦下的
-    文件算成「导入成功」（批量循环只特殊处理 `"ledger"`，其余一律计成功）。
-    """
-
-
 def guess_period(filename: str) -> str | None:
     """从文件名解析账期：2025.1 / 2025-01 / 202501 / 2025年1月 → 2025-01
 
@@ -362,41 +349,26 @@ class ImportView(QWidget):
         try:
             if ftype == "staff":
                 staff, _ = parse_staff_file(path)
-                # ===== 空类型硬拦（方案 B，需求方 2026-09-25；与 staff_view.import_staff 同一套语义）=====
-                # 必须**早于任何写库**（连 import_batch 都还没 INSERT）：整批拒绝，
-                # import_batch / staff / staff_type_def 一张都不许被碰。
-                #
-                # 为什么不能「默认填个类型」继续导：无类型 = 类型表里查不到行 →
-                # `business_flags_of()` 返回 (False, "") → 一律判「不参与结算」→ 导入
-                # 费用台账时被逐行拒绝。宁可不导，也不给一个系统替用户决定的假类型。
-                missing = [name for name, stype, _note in staff
-                           if not (stype or "").strip()]
-                if missing:
-                    shown = missing[:10]
-                    tail = "" if len(missing) <= 10 else f" 等 {len(missing) - 10} 人"
-                    raise MissingStaffTypeError(
-                        f"职工清单里有 {len(missing)} 人未填写员工类型：\n"
-                        "　" + "、".join(shown) + tail + "\n\n"
-                        "未填类型的员工一律判为不参与结算，导入后导入费用台账时也会被逐行"
-                        "拒绝；故本次整批未导入（改好清单可重新导入）。\n"
-                        "需要的类型请到「员工类型」页新建，或在清单里补齐类型列。")
+                # 花名册本就不含「类型」列（与导出对称），无类型可校验 —— 直接导入；
+                # 仅当文件确实带「类型」列时，才把出现过的类型补进类型表。
                 conn = get_conn()
                 try:
-                    cur = conn.execute(
+                    conn.execute(
                         "INSERT INTO import_batch (batch_type, period, file_name, imported_at) VALUES (?,?,?,?)",
                         ("staff", "0000", fname, datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
                     )
-                    batch_id = cur.lastrowid
-                    # 只把清单里**真实出现过**的类型补进类型表（**不加任何默认兜底**）。
-                    # 与 staff_view 同一口径：`ensure_types()` 要保留，但绝不预置
-                    # 「聘用」—— 类型表初始为空，没有的类型用户自己在类型页新建。
-                    st.ensure_types(conn, [s[1] for s in staff if s[1]])
+                    # 只把清单里**真实出现过**的类型补进类型表（**不加任何默认兜底**）：
+                    # 类型表初始为空，没有的类型用户自己在类型页新建。
+                    st.ensure_types(conn, [r.staff_type for r in staff if r.staff_type])
                     n_new, n_upd = 0, 0
-                    for name, stype, note in staff:
+                    for r in staff:
                         existing = conn.execute(
-                            "SELECT 1 FROM staff_roster WHERE name=?", (name,)).fetchone()
+                            "SELECT 1 FROM staff_roster WHERE name=?", (r.name,)).fetchone()
                         # 批2：直接写花名册 + 人员类型关联（staff 镜像表已移除）
-                        st.sync_imported_staff(conn, name, stype, note)
+                        st.sync_imported_staff(
+                            conn, r.name, r.staff_type, r.note,
+                            code=r.code, id_card=r.id_card, phone=r.phone,
+                            hire_month=r.hire_month, leave_month=r.leave_month)
                         if existing:
                             n_upd += 1
                         else:
@@ -443,17 +415,6 @@ class ImportView(QWidget):
                     # P1-4：无/坏序号行已按无序号处理，显式告知（不静默）
                     for w in r.get("warnings") or []:
                         msg += f"\n⚠ {w}"
-        except MissingStaffTypeError as e:
-            # 同样记一笔失败日志（与其他导入失败同规格），但**弹框文案与标题用
-            # staff_view 那一套**，两个入口同一个毛病、用户看到的提示要一致。
-            # ⚠ **批量模式（quiet=True）必须继续抛回去**：调用方只看返回值，
-            #   被拦下的文件若平平返回会被算成「导入成功」。单个文件模式在此收口。
-            self._log(f"✗ {fname}: {e}", ok=False, file_name=fname,
-                      batch_type=ftype, period=period or "")
-            if not quiet:
-                QMessageBox.warning(self, "导入被拦下", str(e))
-                return
-            raise
         except Exception as e:  # noqa: BLE001
             self._log(f"✗ {fname}: {e}", ok=False, file_name=fname,
                       batch_type=ftype, period=period or "")
