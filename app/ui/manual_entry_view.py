@@ -255,12 +255,41 @@ class ManualEntryView(QWidget):
         )
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
+        data = dlg.data()
         try:
-            save_backfill(dlg.data(), editing=edit)
+            save_backfill(data, editing=edit)
         except Exception as e:  # noqa: BLE001
             QMessageBox.critical(self, "保存失败", str(e))
             return
-        self.refresh()
+        # 局部刷新（性能）：本次只把刚入库的那一张从「待补录」移除。
+        # 整表 refresh() 会重扫全部红字引用 + 应收账款，并重建数千个行内按钮，
+        # 在 12 期数据下约 1~2 秒卡顿；而补录一张只影响这一行，无需重算整表。
+        # 「已补录」表通常仅数十条，整体重载开销可忽略。
+        self._apply_backfill_result((data or {}).get("invoice_no"))
+
+    def _apply_backfill_result(self, invoice_no: str) -> None:
+        """补录/编辑保存成功后局部刷新（避免整表重建卡顿）。
+
+        - 待补录：仅移除刚入库的那一行（它已不在 pending 集合，无需重扫全库重建）；
+        - 已补录：整体重载（该表通常很小，开销可忽略）。
+        整表 `refresh()` 仍保留给删除 / 切页 / 初始加载等场景。
+        """
+        self._remove_pending_row(invoice_no)
+        self._load_done()
+
+    def _remove_pending_row(self, invoice_no: str) -> None:
+        """从待补录表移除指定票号的那一行（若有）。"""
+        if not invoice_no:
+            self._load_pending()
+            return
+        tbl = self.tab_pending
+        for r in range(tbl.rowCount()):
+            item = tbl.item(r, 2)  # 第 2 列 = 发票号码
+            if item is not None and item.text() == invoice_no:
+                tbl.removeRow(r)
+                tbl._col.apply()
+                return
+        # 未命中（如编辑的是已补录项，本就不在待补录）→ 不动待补录表
 
     # ---- 已补录：编辑 / 删除 ----
     def edit_selected(self) -> None:
