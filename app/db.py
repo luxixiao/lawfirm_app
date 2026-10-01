@@ -466,6 +466,38 @@ def get_conn() -> sqlite3.Connection:
     return conn
 
 
+# ============ 长驻哑连接（性能）：避免每次业务连接 close 都触发 WAL 收尾 ============
+# 现象（2026-10-02 本机实测）：WAL 模式下**最后一个**连接 close 时，SQLite 要做
+# checkpoint + 删除 -wal/-shm 文件；本机（Defender 实时防护）该收尾稳定 ~130ms/次。
+# 而本应用「自开自关短连接」遍地都是 ⇒ 任何一次交互（补录确认/刷新/校验）都要
+# 交 2~6 次 × 130ms 的隐藏税（实测补录确认路径 >0.5s，用户感知"点确定后过 2 秒才更新"）。
+# 解法：应用启动时保底长驻一个空闲连接（不执行任何语句、不持事务），此后所有业务
+# 连接 close 时都不是"最后一个连接" ⇒ 跳过 checkpoint/删文件，实测 close 0.2ms（约 500 倍）。
+# 语义不变：WAL 读写可见性、checkpoint(TRUNCATE)（快照/备份前调用）均已验证正常。
+_keepalive_conn: sqlite3.Connection | None = None
+
+
+def ensure_keepalive_conn() -> None:
+    """确保长驻哑连接存在（幂等）。在应用启动早期调用一次即可。"""
+    global _keepalive_conn
+    if _keepalive_conn is None:
+        DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+        c = sqlite3.connect(str(DB_PATH), check_same_thread=False)
+        c.execute("PRAGMA journal_mode = WAL")
+        _keepalive_conn = c
+
+
+def close_keepalive_conn() -> None:
+    """关闭长驻哑连接（恢复快照等需要独占 DB 文件的场景调用；可再 ensure 重开）。"""
+    global _keepalive_conn
+    if _keepalive_conn is not None:
+        try:
+            _keepalive_conn.close()
+        except sqlite3.Error:
+            pass
+        _keepalive_conn = None
+
+
 def _migrate_expense_category_rename(conn) -> None:
     """迁移：费用分类「其他」改名为「报销摊销等」（报销/摊销等兜底分类）。幂等。
 

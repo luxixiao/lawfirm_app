@@ -13,7 +13,7 @@ import zipfile
 from datetime import datetime
 from pathlib import Path
 
-from app.db import DB_PATH, checkpoint, get_conn
+from app.db import DB_PATH, checkpoint, get_conn, ensure_keepalive_conn, close_keepalive_conn
 
 
 def _snap_root() -> Path:
@@ -93,6 +93,9 @@ def restore_snapshot(snap_id: int) -> str:
             raise FileNotFoundError(f"快照文件缺失: {src}")
         # 关闭所有连接（SQLite 短连接已关闭，此处确保 checkpoint 后无写事务）
         conn.close()
+        # 长驻哑连接（app/db.py）握着 -wal/-shm 句柄，不释放则下面 unlink 会
+        # PermissionError（Windows 打开中的文件不可删）→ 先关，恢复完成后重开。
+        close_keepalive_conn()
         # P3-3：先删 -wal/-shm 再覆盖主库。此刻 wal 已被 TRUNCATE 为空文件（内容
         # 已并入主库），先删无副作用；若文件被占用（PermissionError）→ 主库尚未
         # 被覆盖，不会留下「新主库 + 旧 wal」的半程状态，直接走占用提示。
@@ -108,8 +111,10 @@ def restore_snapshot(snap_id: int) -> str:
                 shutil.copy2(Path(td) / "lawfirm.db", DB_PATH)
         else:
             shutil.copy2(src, DB_PATH)
+        ensure_keepalive_conn()  # 恢复完成 → 重开哑连接，后续连接 close 仍免收尾
         return f"已恢复到快照「{row['name']}」。\n请在导入记录页确认数据，建议重启应用。"
     except PermissionError:
+        ensure_keepalive_conn()  # 失败路径同样恢复哑连接（后续操作性能不受影响）
         return "恢复失败：数据库文件被占用。请关闭应用后重新打开，再执行恢复。"
     finally:
         try:

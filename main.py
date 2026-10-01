@@ -12,7 +12,7 @@ from PySide6.QtGui import QIcon  # noqa: E402
 from PySide6.QtCore import QTimer  # noqa: E402
 
 from app import __version__  # noqa: E402
-from app.db import init_db, run_received_snapshot_backfill  # noqa: E402
+from app.db import init_db, run_received_snapshot_backfill, ensure_keepalive_conn  # noqa: E402
 from app.ui import i18n, style  # noqa: E402
 from app.ui.main_window import MainWindow  # noqa: E402
 from app.diag import (  # noqa: E402
@@ -63,6 +63,9 @@ def main() -> int:
 
     # backfill=False：收款认定快照补齐延后到首屏渲染之后，避免阻塞双击启动
     init_db(backfill=False)
+    # 长驻哑连接（性能）：保底占住"最后一个连接"，此后所有业务连接 close 不再触发
+    # WAL checkpoint+删文件收尾（本机实测每次 ~130ms，详见 app/db.py 注释）。
+    ensure_keepalive_conn()
     # P2-3：快照孤儿目录清扫 + 旧快照目录迁移（失败绝不影响启动）
     try:
         from app.system.snapshot import sweep_orphans
