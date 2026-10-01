@@ -323,6 +323,88 @@ def add_type(name: str, note: str = "", conn=None) -> None:
         _close(own, conn)
 
 
+def import_type_defs(conn, rows):
+    """批量导入 类型设置（类型定义），由 UI 层调用。
+
+    rows: 可迭代的 (name, invoice_raw, expense_raw, net_basis, note) 五元组；
+          invoice_raw / expense_raw 为原始单元格文本（"是/否/1/0/true/false/开/关"）。
+    返回统计 dict：{"added": 新增数, "skipped_existing": 已存在跳过数,
+                   "skipped_empty": 空行数, "skipped_dup": 文件内重名跳过数}；
+    **不提交**，由调用方统一 commit/rollback。
+
+    业务规则（用户 2026-09-30 修订）：
+    - **已存在类型名 → 跳过、保留库里原值**：无论文件里的同名行与库是否一致，都**不覆盖/不改写**
+      既有配置（内置类型同样受保护，永不因导入被改写）；计入 skipped_existing。
+    - 类型名为空 → 跳过、计入 skipped_empty（不阻断整批）。
+    - 仅当某「新类型」行的 开票/报销值无法识别 或 业务金额方式非法枚举 → 整批阻断并报具体行
+      （这是新数据本身的脏数据，不能入库）。
+    - 仅当全部新类型行通过校验才插入：新类型 is_builtin=0，net_basis 仅在开票时生效
+      （未开票一律存 ''；开票且留空按引擎默认 '收款净额'）。
+    """
+    def _parse_flag(v) -> bool:
+        s = (v or "").strip().lower()
+        if s in ("是", "1", "true", "y", "yes", "开"):
+            return True
+        if s in ("否", "0", "false", "n", "no", "关", ""):
+            return False
+        raise ValueError(s)
+
+    existing = {
+        r["name"]: bool(r["is_builtin"])
+        for r in conn.execute("SELECT name, is_builtin FROM staff_type_def").fetchall()
+    }
+    skipped_existing = 0
+    skipped_empty = 0
+    skipped_dup = 0
+    problems = []
+    parsed = []
+    seen_new = set()
+    for i, row in enumerate(rows, 1):
+        name = (row[0] or "").strip()
+        if not name:
+            skipped_empty += 1
+            continue
+        if name in existing:
+            # 已存在 → 跳过、保留库里原值（不覆盖既有配置，内置类型同样受保护）
+            skipped_existing += 1
+            continue
+        inv_raw, exp_raw = row[1], row[2]
+        basis = (row[3] or "").strip()
+        note = (row[4] or "").strip()
+        if name in seen_new:
+            # 同一文件内出现重名新类型 → 只建一次，多余行跳过
+            skipped_dup += 1
+            continue
+        try:
+            inv = _parse_flag(inv_raw)
+        except ValueError:
+            problems.append(f"第{i}行：开票值无法识别「{inv_raw}」（须为 是/否）")
+            continue
+        try:
+            exp = _parse_flag(exp_raw)
+        except ValueError:
+            problems.append(f"第{i}行：报销值无法识别「{exp_raw}」（须为 是/否）")
+            continue
+        if inv and basis not in ("开票净额", "收款净额", ""):
+            problems.append(f"第{i}行：业务金额方式非法「{basis}」（须为 开票净额/收款净额）")
+            continue
+        seen_new.add(name)
+        parsed.append((name, inv, exp, basis, note))
+    if problems:
+        raise StaffTypeError("导入被整批阻止（以下新类型数据有误）：\n" + "\n".join(problems))
+    nxt = conn.execute(
+        "SELECT COALESCE(MAX(sort_order),0)+1 AS n FROM staff_type_def").fetchone()["n"]
+    for name, inv, exp, basis, note in parsed:
+        net = basis if basis in ("开票净额", "收款净额") else ("收款净额" if inv else "")
+        conn.execute(
+            "INSERT INTO staff_type_def(name, is_builtin, note, sort_order, is_invoice, can_expense, net_basis) "
+            "VALUES(?,0,?,?,?,?,?)",
+            (name, note, nxt, 1 if inv else 0, 1 if exp else 0, net))
+        nxt += 1
+    return {"added": len(parsed), "skipped_existing": skipped_existing,
+            "skipped_empty": skipped_empty, "skipped_dup": skipped_dup}
+
+
 def rename_type(old: str, new: str, conn=None) -> None:
     """改名：新名重复则报错；同步更新 staff_type_map 的类型名。
 
@@ -614,10 +696,60 @@ def add_person_type(name: str, type_name: str, conn=None) -> None:
             conn.execute(
                 "INSERT INTO staff_type_map(name, type_name, is_primary, sort_order) "
                 "VALUES(?,?,?,?)", (nm, tn, 0 if has_primary else 1, 999))
-            rp = conn.execute("SELECT hire_month, note FROM staff_roster WHERE name=?", (nm,)).fetchone()
-            conn.commit()
+        rp = conn.execute("SELECT hire_month, note FROM staff_roster WHERE name=?", (nm,)).fetchone()
+        conn.commit()
     finally:
         _close(own, conn)
+
+
+def import_person_type_assignments(conn, rows):
+    """批量导入 人-类型 关联（来自 Excel 导入），由 UI 层调用。
+
+    rows: 可迭代的 (name, type_name) 二元组。
+    返回统计 dict：{added, skipped_empty, skipped_unknown_person,
+                   skipped_unknown_type, skipped_dup}。
+    **不提交**，由调用方统一 commit/rollback（与 import_staff 用 sync_imported_staff 的约定一致）。
+
+    业务规则（与「类型设置」预定义、UI 新增关联对话框保持一致）：
+    - 姓名须在花名册（staff_roster）中存在，否则跳过并计入 skipped_unknown_person；
+    - 类型须在 staff_type_def 中已定义，否则跳过并计入 skipped_unknown_type；
+    - 已存在的 (姓名, 类型) 关联跳过，计入 skipped_dup；
+    - 姓名为空或类型为空跳过，计入 skipped_empty。
+    本函数不触碰内置类型保护（员工类型是人 × 类型关联，与类型定义的保护属性无关）。
+    """
+    existing_types = {r["name"] for r in conn.execute("SELECT name FROM staff_type_def").fetchall()}
+    roster = {r["name"] for r in conn.execute("SELECT name FROM staff_roster").fetchall()}
+    stats = {
+        "added": 0,
+        "skipped_empty": 0,
+        "skipped_unknown_person": 0,
+        "skipped_unknown_type": 0,
+        "skipped_dup": 0,
+    }
+    for name, tname in rows:
+        name = (name or "").strip()
+        tname = (tname or "").strip()
+        if not name or not tname:
+            stats["skipped_empty"] += 1
+            continue
+        if name not in roster:
+            stats["skipped_unknown_person"] += 1
+            continue
+        if tname not in existing_types:
+            stats["skipped_unknown_type"] += 1
+            continue
+        exists = conn.execute(
+            "SELECT 1 FROM staff_type_map WHERE name=? AND type_name=?", (name, tname)).fetchone()
+        if exists:
+            stats["skipped_dup"] += 1
+            continue
+        has_primary = conn.execute(
+            "SELECT 1 FROM staff_type_map WHERE name=? AND is_primary=1", (name,)).fetchone()
+        conn.execute(
+            "INSERT INTO staff_type_map(name, type_name, is_primary, sort_order) "
+            "VALUES(?,?,?,?)", (name, tname, 0 if has_primary else 1, 999))
+        stats["added"] += 1
+    return stats
 
 
 def remove_person_type(name: str, type_name: str, conn=None) -> None:

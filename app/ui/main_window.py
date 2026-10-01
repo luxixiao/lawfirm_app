@@ -350,6 +350,13 @@ class MainWindow(FramelessWindow):
         self.font_combo.currentIndexChanged.connect(self._on_font_changed)
         lay.addWidget(font_label)
         lay.addWidget(self.font_combo)
+
+        # 侧栏底部常驻版本号：复用 prefLabel 淡灰小字样式（跟随皮肤，单一来源 __version__）
+        lay.addSpacing(6)
+        ver = QLabel(f"v{__version__}")
+        ver.setObjectName("prefLabel")
+        ver.setToolTip(f"律所开票收款统计 v{__version__}")
+        lay.addWidget(ver)
         return box
 
     def _on_motion_toggled(self, enabled: bool) -> None:

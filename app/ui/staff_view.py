@@ -16,13 +16,14 @@ from datetime import datetime
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout, QHBoxLayout,
-    QLabel, QLineEdit, QMessageBox, QPushButton, QTabWidget,
+    QInputDialog, QLabel, QLineEdit, QMessageBox, QPushButton, QTabWidget,
     QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
 from app.db import get_conn
 from app.engine import staff_type as st
 from app.importer.staff_import import ImportError_, parse_staff_file
+from app.importer.excel_reader import ImportError_ as ExcelError, col_index, find_header_row, read_sheet
 from app.ui import scale
 from app.ui.column_layout import install_column_layout
 from app.ui.table_features import install_common_features, install_header_filter
@@ -117,10 +118,13 @@ class StaffView(QWidget):
         self.btn_st_add.clicked.connect(self.add_staff_type)
         self.btn_st_del = QPushButton("删除关联")
         self.btn_st_del.clicked.connect(self.delete_staff_type)
+        self.btn_st_import = QPushButton("导入")
+        self.btn_st_import.setObjectName("accent")
+        self.btn_st_import.clicked.connect(self.import_staff_types)
         self.btn_st_export = QPushButton("导出")
         self.btn_st_export.setObjectName("accent")
         self.btn_st_export.clicked.connect(self.export_staff_types)
-        for b in (self.btn_st_add, self.btn_st_del, self.btn_st_export):
+        for b in (self.btn_st_add, self.btn_st_del, self.btn_st_import, self.btn_st_export):
             btns.addWidget(b)
         btns.addStretch()
         lay.addLayout(btns)
@@ -160,8 +164,15 @@ class StaffView(QWidget):
         self.btn_t_del.clicked.connect(self.type_delete)
         self.btn_t_up.clicked.connect(lambda: self.type_move(-1))
         self.btn_t_down.clicked.connect(lambda: self.type_move(1))
+        self.btn_t_export = QPushButton("导出")
+        self.btn_t_export.setObjectName("accent")
+        self.btn_t_export.clicked.connect(self.export_type_defs)
+        self.btn_t_import = QPushButton("导入")
+        self.btn_t_import.setObjectName("accent")
+        self.btn_t_import.clicked.connect(self.import_type_defs)
         for b in (self.btn_t_add, self.btn_t_rename, self.btn_t_note,
-                  self.btn_t_del, self.btn_t_up, self.btn_t_down):
+                  self.btn_t_del, self.btn_t_up, self.btn_t_down,
+                  self.btn_t_export, self.btn_t_import):
             btns.addWidget(b)
         btns.addStretch()
         lay.addLayout(btns)
@@ -641,6 +652,67 @@ class StaffView(QWidget):
         QMessageBox.information(self, "导出完成",
                                 f"已导出 {len(rows)} 条关联到：\n{path}")
 
+    def import_staff_types(self) -> None:
+        """员工类型（人 × 类型）批量导入：读 Excel → 校验 → 入库。
+
+        列：姓名、类型（与 export_staff_types 导出同构）。
+        规则（安全优先）：姓名须已在花名册；类型须已在「类型设置」定义；
+        已存在的(姓名,类型)跳过；空值/未知人员/未定义类型跳过并计入汇总提示，不阻断整批。
+        """
+        path, _ = QFileDialog.getOpenFileName(
+            self, "选择员工类型文件", "", "Excel 文件 (*.xls *.xlsx *.xlsm)")
+        if not path:
+            return
+        try:
+            grid = read_sheet(path)
+        except ExcelError as e:
+            QMessageBox.warning(self, "导入失败", str(e))
+            return
+        if not grid:
+            QMessageBox.warning(self, "导入失败", "文件为空")
+            return
+        hdr = find_header_row(grid, ["姓名", "类型"])
+        if hdr < 0:
+            QMessageBox.warning(self, "导入失败", "未找到表头（需包含「姓名」「类型」列）")
+            return
+        header = grid[hdr]
+        ci_name = col_index(header, "姓名")
+        ci_type = col_index(header, "类型")
+        if ci_name < 0 or ci_type < 0:
+            QMessageBox.warning(self, "导入失败", "缺少「姓名」或「类型」列")
+            return
+        data = []
+        for r in grid[hdr + 1:]:
+            if not any((c or "").strip() for c in r):
+                continue
+            name = r[ci_name] if ci_name < len(r) else ""
+            tname = r[ci_type] if ci_type < len(r) else ""
+            data.append((name, tname))
+        if not data:
+            QMessageBox.information(self, "提示", "没有可导入的数据行")
+            return
+        conn = get_conn()
+        try:
+            stats = st.import_person_type_assignments(conn, data)
+            conn.commit()
+        except Exception as e:  # noqa: BLE001
+            conn.rollback()
+            QMessageBox.critical(self, "导入失败", str(e))
+            return
+        finally:
+            conn.close()
+        self.refresh()
+        parts = [f"新增 {stats['added']} 条关联"]
+        if stats["skipped_dup"]:
+            parts.append(f"跳过重复 {stats['skipped_dup']}")
+        if stats["skipped_unknown_person"]:
+            parts.append(f"未知人员 {stats['skipped_unknown_person']}")
+        if stats["skipped_unknown_type"]:
+            parts.append(f"未定义类型 {stats['skipped_unknown_type']}")
+        if stats["skipped_empty"]:
+            parts.append(f"空值 {stats['skipped_empty']}")
+        QMessageBox.information(self, "导入完成", "；".join(parts) + "。")
+
     # ================================================================== #
     # 类型设置 CRUD
     # ================================================================== #
@@ -710,6 +782,104 @@ class StaffView(QWidget):
         st.move_type(name, direction)
         self._refresh_types()
         self._reselect_type(name)
+
+    def export_type_defs(self) -> None:
+        """导出类型设置为 Excel（定义导入标准 schema：类型/开票/报销/业务金额方式/说明）。"""
+        rows = st.list_types()
+        if not rows:
+            QMessageBox.information(self, "提示", "当前没有可导出的类型数据")
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "导出类型设置", "类型设置.xlsx", "Excel 文件 (*.xlsx)")
+        if not path:
+            return
+        if not path.lower().endswith(".xlsx"):
+            path += ".xlsx"
+        try:
+            from openpyxl import Workbook
+            wb = Workbook()
+            ws = wb.active
+            ws.title = "类型设置"
+            ws.append(["类型", "开票", "报销", "业务金额方式", "说明"])
+            for r in rows:
+                ws.append([
+                    r["name"],
+                    "是" if r["is_invoice"] else "否",
+                    "是" if r["can_expense"] else "否",
+                    r["net_basis"] or "",
+                    r["note"] or "",
+                ])
+            wb.save(path)
+        except Exception as e:  # noqa: BLE001
+            QMessageBox.critical(self, "导出失败", str(e))
+            return
+        QMessageBox.information(self, "导出完成",
+                                f"已导出 {len(rows)} 个类型到：\n{path}")
+
+    def import_type_defs(self) -> None:
+        """批量导入类型设置（全字段）：读 Excel → 校验新行 → 跳过已存在 → 入库。
+
+        列：类型、开票、报销、业务金额方式、说明（与 export_type_defs 导出同构）。
+        规则（用户 2026-09-30 修订）：已存在类型名 → 跳过并保留库里原值（不覆盖既有配置，
+        内置类型同样受保护）；类型名为空 → 跳过；仅当某「新类型」行的开票/报销值无法识别
+        或业务金额方式非法枚举 → 整批阻止并报具体行。
+        """
+        path, _ = QFileDialog.getOpenFileName(
+            self, "选择类型设置文件", "", "Excel 文件 (*.xls *.xlsx *.xlsm)")
+        if not path:
+            return
+        try:
+            grid = read_sheet(path)
+        except ExcelError as e:
+            QMessageBox.warning(self, "导入失败", str(e))
+            return
+        if not grid:
+            QMessageBox.warning(self, "导入失败", "文件为空")
+            return
+        hdr = find_header_row(grid, ["类型", "开票", "报销", "业务金额方式", "说明"])
+        if hdr < 0:
+            QMessageBox.warning(self, "导入失败",
+                                "未找到表头（需包含「类型/开票/报销/业务金额方式/说明」列）")
+            return
+        header = grid[hdr]
+        ci = {k: col_index(header, k) for k in ("类型", "开票", "报销", "业务金额方式", "说明")}
+        if any(v < 0 for v in ci.values()):
+            missing = [k for k, v in ci.items() if v < 0]
+            QMessageBox.warning(self, "导入失败", "缺少列：" + "、".join(missing))
+            return
+        data = []
+        for r in grid[hdr + 1:]:
+            if not any((c or "").strip() for c in r):
+                continue
+            get = lambda k: (r[ci[k]] if ci[k] < len(r) else "") or ""
+            data.append((get("类型"), get("开票"), get("报销"),
+                         get("业务金额方式"), get("说明")))
+        if not data:
+            QMessageBox.information(self, "提示", "没有可导入的数据行")
+            return
+        conn = get_conn()
+        try:
+            stats = st.import_type_defs(conn, data)
+            conn.commit()
+        except st.StaffTypeError as e:
+            conn.rollback()
+            QMessageBox.warning(self, "导入被阻止", str(e))
+            return
+        except Exception as e:  # noqa: BLE001
+            conn.rollback()
+            QMessageBox.critical(self, "导入失败", str(e))
+            return
+        finally:
+            conn.close()
+        self._refresh_types()
+        parts = [f"新增 {stats['added']} 个类型"]
+        if stats["skipped_existing"]:
+            parts.append(f"跳过已存在 {stats['skipped_existing']}")
+        if stats["skipped_empty"]:
+            parts.append(f"空行 {stats['skipped_empty']}")
+        if stats["skipped_dup"]:
+            parts.append(f"文件内重复 {stats['skipped_dup']}")
+        QMessageBox.information(self, "导入完成", "；".join(parts) + "。")
 
     def _reselect_type(self, name: str) -> None:
         """移动后让选中行跟随该类型（按类型名定位新行）。"""

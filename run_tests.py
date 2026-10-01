@@ -76,6 +76,7 @@ EXPECTED_FILES = [
     "tests/test_staff_import_missing_type.py",  # 空类型硬拦（方案 B：整批拒绝 + 零写库）
     "tests/test_import_view_missing_type.py",  # 导入页职工清单同一套硬拦 + 去写死「聘用」
     "tests/test_staff_add_manual_type_guard.py",  # 手动添加职工：类型未选/类型表空 → 不崩不写库
+    "tests/test_staff_import_type.py",     # 批次3：员工类型导入(人×类型) + 类型设置导入 引擎单测
     "tests/test_sidebar_fold_all.py",      # 侧边栏「全部折叠」按钮（离屏 Qt）
 ]
 
