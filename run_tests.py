@@ -63,6 +63,7 @@ EXPECTED_FILES = [
     "tests/test_raw_ledger_mirror.py",
     "tests/test_invoice_import_validation.py",  # 销项解析期校验（A5 金额必填 / A6 日期必填 / C3 取消后跨期红字放行）
     "tests/test_red_orig_extract.py",  # 批3a：extract_orig_no 唯一真源（销项+台账两种写法）
+    "tests/test_import_folder_temp_lock.py",  # 批量导入跳过 Excel/LibreOffice 锁文件(~$/.~lock.)，不误判重复
     "tests/test_red_consistency.py",
     "tests/test_over_collection_guard.py",  # 超收守卫落点（_write_collection_for_invoice / apply_backfill）
     "tests/test_review_compare.py",

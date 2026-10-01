@@ -85,6 +85,36 @@ _TYPE_LABEL = {
 }
 
 
+def _is_temp_lock_file(name: str) -> bool:
+    """Excel/LibreOffice 临时锁文件不应参与导入。
+
+    Excel 打开文件时会生成 ``~$`` 前缀的隐藏锁文件（如 ``~$销项导出2025.05.xlsx``），
+    ``glob('*.xls*')`` 会一并匹配到；若不过滤，会被误判为「同账期同类型第二份文件」
+    而中止整批导入。LibreOffice 则用 ``.~lock.`` 前缀。
+    """
+    return name.startswith("~$") or ".~lock." in name
+
+
+def _batch_period_type_conflicts(file_paths) -> dict:
+    """返回同账期同类型的多份文件冲突（批量导入前拦截用）。
+
+    - 跳过 Excel/LibreOffice 临时锁文件（~$ / .~lock.）；
+    - 跳过职工清单（无账期语义）与无法识别账期的文件；
+    - key = (ftype, period)，value = 同组内文件名列表；只保留 len>1 的冲突组。
+    """
+    groups: dict = {}
+    for f in file_paths:
+        n = os.path.basename(f)
+        if _is_temp_lock_file(n):
+            continue
+        ftype = guess_type(n)
+        period = guess_period(n)
+        if ftype == "staff" or not period:
+            continue
+        groups.setdefault((ftype, period), []).append(n)
+    return {k: v for k, v in groups.items() if len(v) > 1}
+
+
 class ImportView(QWidget):
     # 发票台账解析完成 → 交导入复核页确认（data, period, staff_names, path）
     ledger_pending = Signal(object, str, object, str)
@@ -252,6 +282,9 @@ class ImportView(QWidget):
             return (guess_period(name) or "9999-99", name)
 
         files = sorted(glob.glob(os.path.join(folder, "*.xls*")), key=_key)
+        # 跳过 Excel/LibreOffice 临时锁文件（~$ 前缀 / .~lock.），否则会被误判为
+        # 「同账期同类型第二份」而中止整批导入（见 _is_temp_lock_file）。
+        files = [f for f in files if not _is_temp_lock_file(os.path.basename(f))]
         if not files:
             QMessageBox.information(self, "提示", "该文件夹没有 Excel 文件")
             return
@@ -271,15 +304,8 @@ class ImportView(QWidget):
         # 同类型同账期多份文件 → 直接中止整批导入（在写库/入队之前拦下，避免留下
         # 「一半已导入」的半成品）：覆盖式导入会让同账期文件互相覆盖，属数据风险。
         # 职工清单无账期语义（批次账期固定 0000，按姓名 upsert），不参与判定。
-        groups: dict = {}
-        for f in files:
-            n = os.path.basename(f)
-            ftype = guess_type(n)
-            period = guess_period(n)
-            if ftype == "staff" or not period:
-                continue
-            groups.setdefault((ftype, period), []).append(n)
-        conflicts = {k: v for k, v in groups.items() if len(v) > 1}
+        # 已过滤 Excel/LibreOffice 临时锁文件，不会把 ~$ 锁文件误判为第二份。
+        conflicts = _batch_period_type_conflicts(files)
         if conflicts:
             lines = [
                 f"　· {period}（{_TYPE_LABEL.get(ftype, ftype)}）："
