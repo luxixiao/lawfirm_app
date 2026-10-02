@@ -66,6 +66,7 @@ EXPECTED_FILES = [
     "tests/test_import_folder_temp_lock.py",  # 批量导入跳过 Excel/LibreOffice 锁文件(~$/.~lock.)，不误判重复
     "tests/test_manual_entry_refresh.py",  # 补录 confirm 后局部刷新（只移除待补录刚入库那行，不整表重建）
     "tests/test_db_keepalive.py",  # 长驻哑连接：免 WAL close 收尾 ~130ms/次（点确定卡 2 秒的根因）
+    "tests/test_ledger_doc_identity.py",  # 发票台账页「身份」列：identity_map 聚合 + set_invoice_identity 留痕
     "tests/test_red_consistency.py",
     "tests/test_over_collection_guard.py",  # 超收守卫落点（_write_collection_for_invoice / apply_backfill）
     "tests/test_review_compare.py",

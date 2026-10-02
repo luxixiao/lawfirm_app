@@ -12,12 +12,14 @@ from __future__ import annotations
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QComboBox, QDialog, QDialogButtonBox,
-    QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMenu, QTableWidget,
-    QTableWidgetItem, QVBoxLayout, QWidget,
+    QFormLayout, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMenu,
+    QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
+from app.db import get_conn
 from app.engine import raw_ledger as rl
 from app.engine.raw_ledger import sheet_label
+from app.engine.staff_type import person_type_combo_items
 from app.ui import style
 from app.ui.audit_view import AuditView
 from app.ui.column_layout import install_column_layout
@@ -31,7 +33,8 @@ def _date_of(r: dict) -> str:
         return r.get("recv_date_raw") or ""
     return r.get("invoice_date_raw") or ""
 
-_HEADERS = ["序号", "工作表", "日期", "发票号码", "对方", "金额", "经办人", "备注", "案号"]
+_HEADERS = ["序号", "工作表", "日期", "发票号码", "对方", "金额", "经办人", "身份", "备注", "案号"]
+_IDENTITY_COL = _HEADERS.index("身份")  # 双击/右键「设置身份」的目标列
 _GETTERS = [
     lambda r: r.get("seq") or "",
     lambda r: ((r.get("period") or "") + sheet_label(r.get("sheet_key"))),
@@ -40,6 +43,7 @@ _GETTERS = [
     lambda r: r.get("buyer") or "",
     lambda r: r.get("amount_raw") or "",
     lambda r: r.get("handler_text") or "",
+    lambda r: r.get("_identity") or "",   # 身份：refresh() 时批量预取（charge_detail 聚合）
     lambda r: r.get("remark") or "",
     lambda r: r.get("case_no") or "",
 ]
@@ -60,8 +64,9 @@ class InvoiceLedgerDocView(QWidget):
 
         lay.addWidget(PageHeader(
             "发票台账",
-            "数据来源：发票台账文档（最新一次导入），逐 sheet 逐行镜像；只读查看，可搜索/排序/筛选。"
-            "如需修改数据请前往「数据导入 → 导入复核」页（导入前确认 / 导入后回写，全程留痕）；"
+            "数据来源：发票台账文档（最新一次导入），逐 sheet 逐行镜像；可搜索/排序/筛选。"
+            "「身份」列双击（或右击→设置身份）可为该发票各经办人设置身份，全程留痕；"
+            "其余数据修改请前往「数据导入 → 导入复核」页（导入前确认 / 导入后回写，全程留痕）；"
             "右击可查看修改记录。",
         ))
 
@@ -118,8 +123,11 @@ class InvoiceLedgerDocView(QWidget):
 
         self._all_rows: list[dict] = []
         self._meta: dict[int, int] = {}      # 显示行 -> raw_ledger.id
+        self._rows_by_id: dict[int, dict] = {}  # raw_ledger.id -> 行 dict（身份编辑后局部回写）
         self._sort_col = -1
         self._sort_order = Qt.SortOrder.AscendingOrder
+
+        self.table.cellDoubleClicked.connect(self._on_cell_double_clicked)
 
         self.f_sheet.currentIndexChanged.connect(self._apply)
         self.f_status.currentIndexChanged.connect(self._apply)
@@ -134,6 +142,11 @@ class InvoiceLedgerDocView(QWidget):
     def refresh(self) -> None:
         # 一次性取全部镜像行，后续筛选（年月/工作表/状态/搜索）均内存过滤，不重查 DB
         self._all_rows = rl.list_raw()
+        # 身份一次性预取（charge_detail 聚合，一次查询），写入行 dict 供 _GETTERS 取值
+        idmap = rl.identity_map()
+        for row in self._all_rows:
+            no = (row.get("invoice_no") or "").strip()
+            row["_identity"] = idmap.get(no, "") if no else ""
         self._refresh_year_combo()
         self._refresh_month_combo()
         self._refresh_sheet_combo()
@@ -226,6 +239,7 @@ class InvoiceLedgerDocView(QWidget):
 
         self.table.setRowCount(len(rows))
         self._meta.clear()
+        self._rows_by_id = {row["id"]: row for row in rows}
         total = 0.0
         for r, row in enumerate(rows):
             self._meta[r] = row["id"]
@@ -270,15 +284,94 @@ class InvoiceLedgerDocView(QWidget):
             return
         rid = self._meta[row]
         menu = QMenu(self)
+        act_id = menu.addAction("设置身份")
+        menu.addSeparator()
         act_edit = menu.addAction("编辑此行（已移至导入复核）")
         act_log = menu.addAction("查看修改记录")
         chosen = menu.exec(self.table.viewport().mapToGlobal(pos))
         if chosen is None:
             return
-        if chosen == act_edit:
+        if chosen == act_id:
+            self._open_identity_dialog(rid)
+        elif chosen == act_edit:
             self._guide_to_review()
         elif chosen == act_log:
             self._show_log(rid)
+
+    def _on_cell_double_clicked(self, row: int, col: int) -> None:
+        if col != _IDENTITY_COL:
+            return
+        rid = self._meta.get(row)
+        if rid is not None:
+            self._open_identity_dialog(rid)
+
+    # ------------------------------------------------------------------ #
+    # 设置身份（charge_detail.person_type，与经办人总表页同一存储、同一口径）
+    # ------------------------------------------------------------------ #
+    @staticmethod
+    def _info(msg: str) -> None:
+        from qfluentwidgets import InfoBar, InfoBarPosition
+        parent = QApplication.activeWindow()
+        InfoBar.warning("", msg, parent=parent,
+                        position=InfoBarPosition.TOP_RIGHT, duration=4000)
+
+    def _open_identity_dialog(self, rid: int) -> None:
+        row = self._rows_by_id.get(rid)
+        if row is None:
+            return
+        no = (row.get("invoice_no") or "").strip()
+        if not no:
+            self._info("该行无发票号码，无法设置身份")
+            return
+        conn = get_conn()
+        try:
+            persons = conn.execute(
+                "SELECT person_name, person_type FROM charge_detail "
+                "WHERE invoice_no=? ORDER BY id", (no,)).fetchall()
+        finally:
+            conn.close()
+        if not persons:
+            self._info("该发票无经办人拆分记录，无法设置身份")
+            return
+        dlg = QDialog(self)
+        dlg.setWindowTitle(f"设置身份 · {no}")
+        form = QFormLayout(dlg)
+        combos: dict[str, QComboBox] = {}
+        for p in persons:
+            name = p["person_name"]
+            combo = QComboBox()
+            for label, code in person_type_combo_items():
+                combo.addItem(label, userData=code)
+            idx = combo.findData(p["person_type"] or "")
+            combo.setCurrentIndex(idx if idx >= 0 else 0)
+            form.addRow(name, combo)
+            combos[name] = combo
+        box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok
+                               | QDialogButtonBox.StandardButton.Cancel)
+        box.accepted.connect(dlg.accept)
+        box.rejected.connect(dlg.reject)
+        form.addRow(box)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        changed = False
+        for name, combo in combos.items():
+            if rl.set_invoice_identity(no, name, combo.currentData()):
+                changed = True
+        if changed:
+            self._update_identity_cell(rid, no)
+
+    def _update_identity_cell(self, rid: int, invoice_no: str) -> None:
+        """编辑后局部刷新：只重取该票身份并更新对应单元格（不整表重建）。"""
+        txt = rl.identity_map([invoice_no]).get(invoice_no, "")
+        row = self._rows_by_id.get(rid)
+        if row is not None:
+            row["_identity"] = txt
+        for r, r_id in self._meta.items():
+            if r_id == rid:
+                item = self.table.item(r, _IDENTITY_COL)
+                if item is not None:
+                    item.setText(txt)
+                break
 
     @staticmethod
     def _guide_to_review() -> None:
