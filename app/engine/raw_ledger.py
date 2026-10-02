@@ -138,6 +138,11 @@ def deferred_sheet3_invoices(period: Optional[str] = None,
             params.append(batch_id)
         sql += " ORDER BY b.period, l.id"
         rows = conn.execute(sql, params).fetchall()
+        # 「票号在库」判定：一次全量取号（唯一口径 library_invoice_nos）+ set 判断，
+        # 取代原先**每行一次** `SELECT 1 FROM invoice WHERE invoice_no=?` 的 N+1
+        # （12 期 sheet3 累计 200+ 行时每次刷新省 200+ 次查询）。口径不变。
+        from app.engine.backfill import library_invoice_nos
+        lib_nos = library_invoice_nos(conn=conn)
         out: Dict[str, Dict] = {}
         order: List[str] = []
         for r in rows:
@@ -146,7 +151,7 @@ def deferred_sheet3_invoices(period: Optional[str] = None,
                 continue
             year = _period_year(r["period"])
             date_str = _norm_date_text(r["invoice_date_raw"], year)
-            if conn.execute("SELECT 1 FROM invoice WHERE invoice_no=?", (no,)).fetchone():
+            if no in lib_nos:
                 continue  # 已入库（销项已建 / 已补录）→ 不再待补录（唯一判据，不看日期）
             if no not in out:
                 order.append(no)

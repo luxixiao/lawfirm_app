@@ -24,7 +24,9 @@ from __future__ import annotations
 from typing import Dict, Iterable, List
 
 from app.db import get_conn
-from app.engine.backfill import HANDLER_WHITELIST, missing_handlers, staff_type_of
+from app.engine.backfill import (
+    HANDLER_WHITELIST, library_invoice_nos, missing_handlers, staff_type_of,
+)
 from app.engine.collection import over_collection_message, red_shortage_message
 from app.engine.raw_ledger import deferred_sheet3_invoices
 
@@ -98,6 +100,32 @@ def list_pending_backfill(conn=None) -> List[Dict]:
     try:
         rows: List[Dict] = []
         seen = set()
+        # ---- 批量取号（N+1 消除，2026-10-02）----
+        # 原实现每个红字引用做 4~6 次独立 SELECT（在库 EXISTS / 待同步 EXISTS /
+        # 红字反查 / refund 反查 / prefill 2 次）；12 期台账（sheet3 累计 200+ 行、
+        # 红字引用几十张）下每次刷新 700+ 次查询。改为各一次全量集合 + 内存 set 判断，
+        # 判定口径逐字不变：
+        # ① 库中全部票号 —— 「在库」判定唯一口径，与 library_invoice_nos 同源；
+        lib_nos = library_invoice_nos(conn=conn)
+        # ② raw_invoice 待同步票号（synced=0）
+        pending_sync = {
+            r[0] for r in conn.execute(
+                "SELECT DISTINCT invoice_no FROM raw_invoice "
+                "WHERE synced=0 AND invoice_no IS NOT NULL")
+        } - {""}
+        # ③ 红字映射：orig → [红字票号...]（total_amount<0，rowid 自然序与原逐票查询一致）
+        reds_map: Dict[str, List[str]] = {}
+        for r in conn.execute(
+            "SELECT orig_invoice_no, invoice_no FROM invoice "
+            "WHERE orig_invoice_no IS NOT NULL AND orig_invoice_no <> '' AND total_amount < 0"
+        ):
+            reds_map.setdefault(r[0], []).append(r[1])
+        # ④ refund 引用的原票号集合
+        refund_refs = {
+            r[0] for r in conn.execute(
+                "SELECT DISTINCT orig_invoice_no FROM refund "
+                "WHERE orig_invoice_no IS NOT NULL AND orig_invoice_no <> ''")
+        }
         # ---- 源 A：红字 / 退款引用但 invoice 缺号 ----
         for r in conn.execute(
             "SELECT DISTINCT orig_invoice_no FROM ("
@@ -110,22 +138,14 @@ def list_pending_backfill(conn=None) -> List[Dict]:
             if orig in seen:
                 continue
             seen.add(orig)
-            if conn.execute("SELECT 1 FROM invoice WHERE invoice_no=?", (orig,)).fetchone():
+            if orig in lib_nos:
                 continue  # 已存在，无需补录
             # ③ 防御：原票已在 raw_invoice 镜表待同步（synced=0，销项导入后尚未 sync to invoice）。
             # 用户执行「sync to invoice」后即入库，此时误报为待补录会干扰判断 → 排除。
-            if conn.execute(
-                "SELECT 1 FROM raw_invoice WHERE invoice_no=? AND synced=0", (orig,)
-            ).fetchone():
+            if orig in pending_sync:
                 continue  # 蓝字原票处于「待同步」，非真正缺失，排除
-            reds = [
-                x["invoice_no"] for x in conn.execute(
-                    "SELECT invoice_no FROM invoice WHERE orig_invoice_no=? AND total_amount < 0", (orig,)
-                )
-            ]
-            is_red = bool(reds) or conn.execute(
-                "SELECT 1 FROM refund WHERE orig_invoice_no=?", (orig,)
-            ).fetchone() is not None
+            reds = reds_map.get(orig, [])
+            is_red = bool(reds) or orig in refund_refs
             pre = prefill_red_original(conn, orig)
             rows.append({
                 "invoice_no": orig,
