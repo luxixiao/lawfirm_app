@@ -21,6 +21,7 @@ from app.db import get_conn
 from app.engine.person_settlement import build_settlement, report_entries
 from app.engine import staff_type
 from app.engine.split import allocate_receipt
+from app.exporter.report_persons import apply_person_filter, list_report_persons
 
 THIN = Side(style="thin", color="999999")
 BORDER = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
@@ -32,21 +33,12 @@ LEFT = Alignment(horizontal="left", vertical="center")
 
 def _main_persons(conn, year: int, month: int) -> list:
     """主表名单：按类型设置（is_invoice=1 OR can_expense=1，去身份）筛选，不再写死角色枚举；
-    不过滤 is_active（见「停用」功能已取消）；入职月份晚于当前月排除"""
-    rows = conn.execute(
-        "SELECT DISTINCT r.name, r.hire_month FROM staff_roster r "
-        "JOIN staff_type_map m ON m.name = r.name "
-        "JOIN staff_type_def t ON t.name = m.type_name "
-        "WHERE t.is_invoice = 1 OR t.can_expense = 1 ORDER BY r.name",
-    ).fetchall()
-    cur = f"{year}-{month:02d}"
-    out = []
-    for r in rows:
-        hm = (r["hire_month"] or "").strip()
-        if hm and hm > cur:
-            continue
-        out.append(r["name"])
-    return out
+    不过滤 is_active（见「停用」功能已取消）；入职月份晚于当前月排除。
+
+    薄包装：实际口径已收敛到 report_persons.list_report_persons（两张列表式报表共用）。
+    保留本函数名与签名，6 处内部调用点零改动。
+    """
+    return list_report_persons(conn, year, month)
 
 
 def _build_main_rows(entries: list, year: int, month: int):
@@ -76,15 +68,16 @@ def _build_main_rows(entries: list, year: int, month: int):
     return rows, totals
 
 
-def build_main_preview(year: int, month: int, split: bool = False):
-    """主表预览/导出共用：返回 (names, rows, totals)。split=True 按角色展开每行。"""
+def build_main_preview(year: int, month: int, split: "bool | str" = False, persons=None):
+    """主表预览/导出共用：返回 (names, rows, totals)。split 传三态字符串或 bool。"""
     conn = get_conn()
     try:
-        persons = _main_persons(conn, year, month)
-        roles = staff_type.active_types(conn)
+        roster = _main_persons(conn, year, month)
+        types = staff_type.active_types(conn)
     finally:
         conn.close()
-    entries = report_entries(year, persons, split, roles)
+    selected = apply_person_filter(roster, persons)
+    entries = report_entries(year, selected, split, types)
     rows, totals = _build_main_rows(entries, year, month)
     names = [d for d, _ in entries]
     return names, rows, totals
@@ -152,14 +145,24 @@ def _write_main_sheet(ws, year: int, month: int, entries: list) -> None:
     ws.page_margins = PageMargins(left=0.25, right=0.25, top=0.3, bottom=0.3)
 
 
-def _uncollected_rows(conn, year: int, month: int):
+def _uncollected_rows(conn, year: int, month: int, persons=None):
     """某年度开票的未收明细（发票级，按经办人份额；红冲原票剔除）
+
+    persons: 工具栏勾选的人员。**None = 未筛选（不过滤）**；**[] = 勾选 0 人 → 空明细**
+    （语义必须与 report_persons.apply_person_filter 完全一致，否则 0 人勾选时本sheet
+    会泄露全量明细）。**过滤必须发生在 total / person_tot 累加之前**——否则表内「合计」
+    与明细行会对不上（同一笔钱的两个视角）。历史年度 sheet（往年 12 月）用同一个
+    persons 集合过滤；往年人员若已从花名册删除就勾不到 → 该历史 sheet 变空，
+    但**仍保留空sheet**（sheet 数量只由年月决定）。
 
     Returns: (rows, total, person_tot)
     rows: [[name, 'X月', buyer, uncol], ...]
     total: 该年未收合计
     person_tot: {name: 该人未收合计}
     """
+    # ⚠️ 用`is not None` 而非真值判断：[] 表示「勾选 0 人」必须产出空明细，
+    # 若按真值判断会退回「不过滤」→ 0 人勾选时这张 sheet 泄露全量欠款明细。
+    keep = set(persons) if persons is not None else None
     # 红冲映射（原票 → {经办人: 份额}）
     red_by_orig: Dict[str, Dict[str, float]] = {}
     reds = conn.execute(
@@ -186,6 +189,14 @@ def _uncollected_rows(conn, year: int, month: int):
         if not cds:
             continue
         rem = {c["person_name"]: c["billing_amount"] for c in cds}
+        # ⚠️ allocate_receipt 会**原地扣减**传入的 rem（见 split.py docstring「会被原地更新」），
+        # 循环结束后 rem = 开票额 − 已收。若继续遍历 rem 计算未收，会把同一笔收款扣两次：
+        #   未收 = (开票 − 已收) − 已收 = 开票 − 2×已收
+        # 后果：5000 收 1000 报3000（应 4000）；3000 收 2000 报 0（应 1000，判空后整行消失）；
+        #       两人各 5000 共用一票只收 5000 → 各报 0，两行一起消失。
+        # 故留一份**只读的开票额副本**：rem 继续供分摊用（分摊必须拿到实时余额），
+        # 读数一律走billing_of。修复前后的差异见 tests/test_uncollected_balance.py。
+        billing_of = dict(rem)
         got: Dict[str, float] = {}
         for rec in conn.execute("SELECT amount FROM collection WHERE invoice_no=? ORDER BY id",
                                 (inv["invoice_no"],)).fetchall():
@@ -193,7 +204,10 @@ def _uncollected_rows(conn, year: int, month: int):
             for name, val in g.items():
                 got[name] = got.get(name, 0.0) + val
         mon = f"{int(inv['invoice_date'].split('-')[1])}月"
-        for name, billing in rem.items():
+        for name, billing in billing_of.items():
+            #人员勾选过滤：在累加 total / person_tot 之前丢行（否则合计与明细行对不上）
+            if keep is not None and name not in keep:
+                continue
             eff = max(billing - red_by_orig.get(inv["invoice_no"], {}).get(name, 0.0), 0.0)
             uncol = round(eff - got.get(name, 0.0), 2)
             if uncol > 0.01:
@@ -203,10 +217,10 @@ def _uncollected_rows(conn, year: int, month: int):
     return rows, round(total, 2), person_tot
 
 
-def _write_uncollected_sheet(ws, year: int, month: int) -> None:
+def _write_uncollected_sheet(ws, year: int, month: int, persons=None) -> None:
     conn = get_conn()
     try:
-        rows, total, person_tot = _uncollected_rows(conn, year, month)
+        rows, total, person_tot = _uncollected_rows(conn, year, month, persons)
     finally:
         conn.close()
 
@@ -276,46 +290,55 @@ def _detail_sheets(year: int, month_to: int) -> list:
     return out
 
 
-def export_invoice_income(out_path: str | Path, year: int, month_to: int, split: bool = False) -> Path:
+def export_invoice_income(out_path: str | Path, year: int, month_to: int,
+                          split: "bool | str" = False, persons=None) -> Path:
     """生成开票收入表模板表：1~month_to 主表（从新到旧）+ 未收款明细（当年 + 历史年度）。
-    split=True 主表按角色展开每行。"""
+    split 传三态字符串或 bool。persons 为勾选人员，None=不过滤。
+
+    ⚠️ 主表逐月取交集（hire_month 过滤随月变），未收款明细跟随同一个 persons 集合
+    （主表「期末未收」与明细「合计」是同一笔钱的两个视角，不跟随则表内自相矛盾；
+    且明细含对方抬头 + 欠款，勾 3 人导出却带 30 人信息属泄露）。
+    """
     wb = openpyxl.Workbook()
     wb.remove(wb.active)
     for month in range(month_to, 0, -1):
         conn = get_conn()
         try:
-            persons = _main_persons(conn, year, month)
-            roles = staff_type.active_types(conn)
+            roster_m = _main_persons(conn, year, month)
+            types = staff_type.active_types(conn)
         finally:
             conn.close()
-        entries = report_entries(year, persons, split, roles)
+        selected_m = apply_person_filter(roster_m, persons)
+        entries = report_entries(year, selected_m, split, types)
         ws = wb.create_sheet(title=f"{year}{month:02d}")
         _write_main_sheet(ws, year, month, entries)
     for title, y, mo in _detail_sheets(year, month_to):
         ws = wb.create_sheet(title=title)
-        _write_uncollected_sheet(ws, y, mo)
+        _write_uncollected_sheet(ws, y, mo, persons)
     out = Path(out_path)
     out.parent.mkdir(parents=True, exist_ok=True)
     wb.save(out)
     return out
 
 
-def export_invoice_income_month(out_path: str | Path, year: int, month: int, split: bool = False) -> Path:
-    """生成单月开票收入表：当月主表 + 未收款明细。split=True 主表按角色展开。"""
+def export_invoice_income_month(out_path: str | Path, year: int, month: int,
+                                split: "bool | str" = False, persons=None) -> Path:
+    """生成单月开票收入表：当月主表 + 未收款明细。split 传三态字符串或 bool。"""
     conn = get_conn()
     try:
-        persons = _main_persons(conn, year, month)
-        roles = staff_type.active_types(conn)
+        roster = _main_persons(conn, year, month)
+        types = staff_type.active_types(conn)
     finally:
         conn.close()
-    entries = report_entries(year, persons, split, roles)
+    selected = apply_person_filter(roster, persons)
+    entries = report_entries(year, selected, split, types)
     wb = openpyxl.Workbook()
     wb.remove(wb.active)
     ws = wb.create_sheet(title=f"{year}{month:02d}")
     _write_main_sheet(ws, year, month, entries)
     for title, y, mo in _detail_sheets(year, month):
         ws = wb.create_sheet(title=title)
-        _write_uncollected_sheet(ws, y, mo)
+        _write_uncollected_sheet(ws, y, mo, persons)
     out = Path(out_path)
     out.parent.mkdir(parents=True, exist_ok=True)
     wb.save(out)

@@ -59,7 +59,10 @@ EXPECTED_FILES = [
     "tests/test_import_delete_scope.py",  # P0-3：导入/撤销 DELETE 作用域（方案 A/B + G2）
     "tests/test_import_fix_log.py",
     "tests/test_person_settlement.py",     # T1 新增
-    "tests/test_report_split.py",          # 合并/拆分开关：Σ拆分==合并 不变量（开票/聘用 两 scope）
+    "tests/test_report_split.py",          # 拆分三态（合并/仅多类型/全拆分）：Σ拆分==合并 +按数据判n +旧 bool 迁移
+    "tests/test_report_person_filter.py",   # 列表式报表人员勾选筛选（纯函数/预览/导出/模板表逐月取交集/未收明细跟随）
+    "tests/test_uncollected_balance.py",   # 未收款明细「同一笔收款被扣两次」修复回归（既有 bug：读数误遍历被原地扣减的 rem）
+    "tests/test_settlement_split_mode_ui.py",  # 离屏 UI：三态下拉 + 旧 QSettings 迁移 + 勾选筛选 + 防递归 + 0 人导出置灰
     "tests/test_raw_ledger_mirror.py",
     "tests/test_invoice_import_validation.py",  # 销项解析期校验（A5 金额必填 / A6 日期必填 / C3 取消后跨期红字放行）
     "tests/test_red_orig_extract.py",  # 批3a：extract_orig_no 唯一真源（销项+台账两种写法）
