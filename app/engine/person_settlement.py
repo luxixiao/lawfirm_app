@@ -20,13 +20,76 @@
 """
 from __future__ import annotations
 
-from typing import Dict, List
+from typing import Dict, List, Tuple
 
 from app.db import get_conn
 from app.engine import staff_type
 from app.engine.split import allocate_receipt
 
 MONTHS = list(range(1, 13))
+
+# ---------------------------------------------------------------------------
+# 报表「按类型拆分」三态（字符串常量，刻意不用 Enum）
+# ---------------------------------------------------------------------------
+# 用字符串而非 Enum 的理由有二：
+#   1. QComboBox.addItem(text, userData=...) 的 userData 天然存字符串，落盘到
+#      QSettings 零转换（bool 落盘会变成字符串 'true'/'false'，见 normalize_split_mode）；
+#   2. 与既有 settlement_report_exporter 的 mode="merge"/"split"/"both" 先例一致。
+# 语义（粒度递增）：
+#   merge      每人一行 = 该报表类型范围内 Σ 各类型份额
+#   split_multi 仅「实际有数据的类型数 >= 2」的人按类型逐行拆；单类型的人保持一行
+#   split_all  所有有数据的人都按类型逐行拆（单类型也拆，加全角括号）
+SPLIT_MERGE = "merge"
+SPLIT_ALL = "split_all"
+SPLIT_MULTI = "split_multi"
+DEFAULT_SPLIT_MODE = SPLIT_MERGE
+
+# 合法三态集合（供下拉/归一/测试共用，避免字面量散落）
+SPLIT_MODES = (SPLIT_MERGE, SPLIT_ALL, SPLIT_MULTI)
+
+
+def normalize_split_mode(v) -> str:
+    """把任意来源的拆分设置归一成三态字符串常量（fail-safe：认不出 → 合并）。
+
+    背景（QSettings 实测坑）：`QSettings.setValue(k, True/False)` 读回**必然是字符串**
+    `'true'` / `'false'`，而 `bool('false') is True`——旧代码用 `bool()` 兜底会把用户
+    存下的「合并」误读成「拆分」。故此处**显式归一字符串，禁止 bool() 兜底**。
+
+    迁移规则（旧值不丢，原样恢复用户上一次的选择）：
+      - bool True / 字符串 'true'（大小写不敏感）→ split_all（旧 True = 拆分）
+      - bool False / 字符串 'false'                → split_merge
+      - 已是三态常量                              → 原样返回（去掉首尾空白）
+      - None / 空串 / 未知值                      → split_merge（宁合并也不静默出空表）
+    """
+    if v is None:
+        return DEFAULT_SPLIT_MODE
+    if isinstance(v, bool):
+        return SPLIT_ALL if v else SPLIT_MERGE
+    s = str(v).strip()
+    if not s:
+        return DEFAULT_SPLIT_MODE
+    low = s.lower()
+    if low == "true":
+        return SPLIT_ALL
+    if low == "false":
+        return SPLIT_MERGE
+    if s in SPLIT_MODES:
+        return s
+    return DEFAULT_SPLIT_MODE
+
+
+def split_mode_label(mode) -> str:
+    """三态 → 界面下拉文案（与 UI 下拉项一一对应）。"""
+    return {
+        SPLIT_MERGE: "合并",
+        SPLIT_MULTI: "仅多类型拆分",
+        SPLIT_ALL: "全拆分（按类型）",
+    }.get(normalize_split_mode(mode), "合并")
+
+
+def _split_display(name: str, label: str) -> str:
+    """拆分行首列展示名：全角括号包住类型显示名（`张三（合伙）`）。"""
+    return f"{name}（{label}）"
 
 
 def _ym(year: int, month: int) -> str:
@@ -162,18 +225,32 @@ def _add_st(a: Dict | None, b: Dict) -> Dict:
     return out
 
 
-def report_entries(year: int, persons: list, split: bool, types: list,
+def report_entries(year: int, persons: list, split: "bool | str", types: list,
                    conn=None) -> list:
-    """报表 合并/拆分 行构造（引擎层，预览与导出共用）。
+    """报表 合并/多类型拆分/全拆分 行构造（引擎层，预览与导出共用）。
 
     types: [(分组键, 显示名), ...] —— 该报表的类型范围（去身份：分组键=类型名快照，
            与数据行 person_type 存储值一致；拆分时按这些类型展开，合并时求和）。
            必须来自报表自身口径（如 active_types）。
-    split=False: 每行 = 范围内合并 = Σ(各类型份额)，display=person。
-    split=True:  每行 = (person, type) 且该类型有数据，display=f'{person}{类型名}'。
+    split: bool | str —— 兼容三种传参：
+           - bool（历史调用点零改动）：True=全拆分、False=合并
+           - 三态字符串常量：SPLIT_MERGE / SPLIT_MULTI / SPLIT_ALL
+           统一经 normalize_split_mode 归一（bool 与 'true'/'false' 字符串都能识别）。
+    三态精确行为（n = 该人在本报表 types 范围内**实际有数据的类型数**，
+    判据即引擎内部谓词 type_built[code].get(p) is not None，与旧 split=True 判
+    「该类型是否出行」是同一个谓词；不查名册配置、不碰数据库）：
+
+           n>=2          n==1                     n==0
+    merge   一行 p(Σ)     一行 p                    一行 p（全 0）
+    split_all p（label）  p（label）——单类型也加括号   不出行
+    split_multi p（label）一行 p（无括号、不拆）        一行 p（全 0）
+
+    ⚠️ 禁止用 staff_type.list_person_types(name)（名册配置）判定 n —— 那是配置不是数据：
+    配了「兼职」但今年无兼职业务的人 n 仍是 1，必须按数据判定不拆。
     返回 [(display_name, st_or_None), ...]（展示顺序：按 persons；拆分时按 types 顺序）。
-    不变量：Σ split 各数值列 == 合并 对应列（每笔业务唯一归属类型快照，严格可加）。
+    不变量：Σ 拆分各数值列 == 合并对应列（每笔业务唯一归属类型快照，严格可加）。
     """
+    mode = normalize_split_mode(split)
     if conn is not None:
         type_built = {code: build_settlement_conn(conn, year, person_type=code)
                       for code, _ in types}
@@ -190,14 +267,28 @@ def report_entries(year: int, persons: list, split: bool, types: list,
                 acc = _add_st(acc, s)
         return acc
 
-    if not split:
+    def typed_entries(name: str) -> list:
+        """该人在范围内的 (p,type) 展开行（只含有数据的类型）。
+
+        display 统一走 _split_display（单一真源，别在这里另写 f-string，
+        否则改括号样式时容易漏改一处）。
+        """
+        return [(_split_display(name, label), type_built[code][name])
+                for code, label in types if type_built[code].get(name) is not None]
+
+    if mode == SPLIT_MERGE:
         return [(name, merged_st(name)) for name in persons]
+
     entries = []
     for name in persons:
-        for code, label in types:
-            s = type_built[code].get(name)
-            if s is not None:
-                entries.append((f"{name}{label}", s))
+        typed = typed_entries(name)
+        if mode == SPLIT_ALL:
+            entries.extend(typed)
+        elif len(typed) >= 2:
+            entries.extend(typed)
+        else:
+            # split_multi 且 n <= 1：不拆（n==1 保持一行无括号；n==0 全 0 行）
+            entries.append((name, merged_st(name)))
     return entries
 
 

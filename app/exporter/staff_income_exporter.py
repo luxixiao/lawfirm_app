@@ -6,7 +6,9 @@
 - 本年收入 = 业务收入（按各人类型的「业务金额方式」net_basis）
 - 报酬发放/住房公积金/保险费/汽油费 = 按「费用归类」维护映射汇总费用类型
 - 名单 = 任一类型勾了「开票」或「报销」的人员（与进报表口径一致，勾线即进）
-- 合并/拆分：拆分按**类型**展开（同一人多类型分别显示），不再使用身份/角色
+- 展示三态：合并 / 仅多类型拆分 / 全拆分（按类型展开，同一人多类型分别显示），
+  语义见 app/engine/person_settlement.report_entries
+- persons 参数 = 工具栏勾选的人员（None=不过滤）；逐月按当月名单取交集
 """
 from __future__ import annotations
 
@@ -23,6 +25,7 @@ from app.db import get_conn
 from app.engine.expense_cat import get_by_category, get_map
 from app.engine.person_settlement import build_settlement, report_entries
 from app.engine import staff_type
+from app.exporter.report_persons import apply_person_filter, list_report_persons
 
 THIN = Side(style="thin", color="999999")
 BORDER = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
@@ -36,21 +39,11 @@ COLS = [("报酬发放", "报酬发放"), ("住房公积金", "住房公积金")
 
 def _staff_employees(conn, year: int, month: int) -> list:
     """名单：任一类型勾了「开票」或「报销」的人员（勾线即进，不区分身份）。
-    离职不影响：不按 is_active 过滤；入职月份晚于当前月则排除（按姓名）。"""
-    rows = conn.execute(
-        "SELECT DISTINCT r.name, r.hire_month FROM staff_roster r "
-        "JOIN staff_type_map m ON m.name = r.name "
-        "JOIN staff_type_def t ON t.name = m.type_name "
-        "WHERE t.is_invoice = 1 OR t.can_expense = 1 ORDER BY r.name"
-    ).fetchall()
-    cur = f"{year}-{month:02d}"
-    out = []
-    for r in rows:
-        hm = (r["hire_month"] or "").strip()
-        if hm and hm > cur:
-            continue  # 尚未入职
-        out.append(r["name"])
-    return out
+
+    薄包装：实际口径已收敛到 report_persons.list_report_persons（两张列表式报表共用）。
+    保留本函数名与签名，6 处内部调用点零改动。
+    """
+    return list_report_persons(conn, year, month)
 
 
 def _build_rows(entries: list, cat_map: Dict, year: int, month: int):
@@ -80,16 +73,17 @@ def _build_rows(entries: list, cat_map: Dict, year: int, month: int):
     return rows, totals
 
 
-def build_report_rows(year: int, month: int, split: bool = False):
-    """预览/导出共用：返回 (names, rows, totals)。split=True 按类型展开每行。"""
+def build_report_rows(year: int, month: int, split: "bool | str" = False, persons=None):
+    """预览/导出共用：返回 (names, rows, totals)。split 传三态字符串或 bool（兼容旧调用）。"""
     cat_map = get_map()
     conn = get_conn()
     try:
-        persons = _staff_employees(conn, year, month)
+        roster = _staff_employees(conn, year, month)
         types = staff_type.active_types(conn)
     finally:
         conn.close()
-    entries = report_entries(year, persons, split, types)
+    selected = apply_person_filter(roster, persons)
+    entries = report_entries(year, selected, split, types)
     rows, totals = _build_rows(entries, cat_map, year, month)
     names = [d for d, _ in entries]
     return names, rows, totals
@@ -163,20 +157,27 @@ def _exp_sum(st: Dict, month: int, types: list) -> float:
     return round(sum(exp.get(t, {}).get(month, 0.0) for t in types), 2)
 
 
-def export_staff_income(out_path: str | Path, year: int, month_to: int, split: bool = False) -> Path:
+def export_staff_income(out_path: str | Path, year: int, month_to: int,
+                         split: "bool | str" = False, persons=None) -> Path:
     """生成年度结算表模板表（1~month_to 各一个 sheet，从新到旧排序）。
-    split=True 列表按类型展开每行。"""
+    split 传三态字符串或 bool（兼容旧调用）。persons 为勾选人员，None=不过滤。
+
+    ⚠️逐月取交集、不复用同一列表：hire_month 过滤随月份变化（张三 3 月入职 →
+    1/2 月名单里天然没有他）。空交集的 sheet 仍照常生成（只剩表头 + 合计 0），
+    sheet 名与数量只由年月决定，保证模板形态可跨次对比。
+    """
     cat_map = get_map()
     wb = openpyxl.Workbook()
     wb.remove(wb.active)
     for month in range(month_to, 0, -1):
         conn = get_conn()
         try:
-            persons = _staff_employees(conn, year, month)
+            roster_m = _staff_employees(conn, year, month)
             types = staff_type.active_types(conn)
         finally:
             conn.close()
-        entries = report_entries(year, persons, split, types)
+        selected_m = apply_person_filter(roster_m, persons)
+        entries = report_entries(year, selected_m, split, types)
         ws = wb.create_sheet(title=f"{year}{month:02d}")
         _write_sheet(ws, year, month, entries, cat_map)
     out = Path(out_path)
@@ -185,16 +186,18 @@ def export_staff_income(out_path: str | Path, year: int, month_to: int, split: b
     return out
 
 
-def export_staff_income_month(out_path: str | Path, year: int, month: int, split: bool = False) -> Path:
-    """生成单月年度结算表（单个 sheet，与预览一致）。split=True 按类型展开。"""
+def export_staff_income_month(out_path: str | Path, year: int, month: int,
+                              split: "bool | str" = False, persons=None) -> Path:
+    """生成单月年度结算表（单个 sheet，与预览一致）。split 传三态字符串或 bool。"""
     cat_map = get_map()
     conn = get_conn()
     try:
-        persons = _staff_employees(conn, year, month)
+        roster = _staff_employees(conn, year, month)
         types = staff_type.active_types(conn)
     finally:
         conn.close()
-    entries = report_entries(year, persons, split, types)
+    selected = apply_person_filter(roster, persons)
+    entries = report_entries(year, selected, split, types)
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = f"{year}{month:02d}"

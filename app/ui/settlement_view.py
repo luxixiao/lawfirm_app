@@ -18,9 +18,15 @@ from app.ui.widgets import (
     CaptionLabel, FrozenTableWidget, PrimaryPushButton, PushButton, tab_help_corner,
 )
 
-from app.engine.person_settlement import build_settlement, cumulative_uncollected
+from app.db import get_conn
+from app.engine.person_settlement import (
+    DEFAULT_SPLIT_MODE, SPLIT_ALL, SPLIT_MERGE, SPLIT_MULTI,
+    build_settlement, cumulative_uncollected, normalize_split_mode, split_mode_label,
+)
 from app.engine import staff_type
 from app.exporter.person_settlement_exporter import export_all, export_one
+from app.exporter.report_persons import list_report_persons
+from app.ui.person_filter import PersonFilterWidget
 
 MONTH_LABELS = ["1月", "2月", "3月", "4月", "5月", "6月",
                 "7月", "8月", "9月", "10月", "11月", "12月"]
@@ -48,6 +54,43 @@ def _combo_qss(full: bool = False) -> str:
                 "QComboBox QAbstractItemView::item { padding: 6px 10px; min-height: 22px; }")
     return css % {"bg": p["btn_bg"], "bd": p["border_2"],
                   "tx": p["text"], "sel": p["border"]}
+
+
+def _split_index(mode) -> int:
+    """三态 → 列表式报表下拉的行号（粒度递增：合并/ 仅多类型拆分 / 全拆分）。
+
+    下拉顺序即粒度递增顺序，index 0 保持旧默认（合并）。userData 存字符串常量，
+    落盘顺序以后可调整而不影响已存的用户选择。
+    """
+    return {SPLIT_MERGE: 0, SPLIT_MULTI: 1, SPLIT_ALL: 2}.get(
+        normalize_split_mode(mode), 0)
+
+
+def _person_summary_suffix(filt) -> str:
+    """summary 里的「人数」片段。
+
+    ⚠️ 人数口径必须用**筛选器人数**，不能用 len(names) —— 拆分态下 len(names) 是**行数**
+    （一人多类型出多行）≠ 人数，两者混用会误导。行数由调用方用 len(rows) 单独表达。
+    未筛选：`· 12 人`；筛选中：`· 已筛选 3/12 人`；0 人勾选再追加 `· 未选择人员`。
+    """
+    if filt is None:
+        return ""
+    total, n = filt.total_count(), filt.checked_count()
+    if not filt.is_filtering():
+        return f" · {total} 人"
+    text = f" · 已筛选 {n}/{total} 人"
+    if n == 0:
+        text += " · 未选择人员"
+    return text
+
+
+def _set_export_enabled(buttons, filt) -> None:
+    """0 人勾选 → 导出按钮置灰（防出空表）。筛选器缺失（未构建）时不动按钮。"""
+    if filt is None:
+        return
+    enabled = filt.checked_count() > 0
+    for b in buttons:
+        b.setEnabled(enabled)
 
 
 def _merge_seq_name(seq, name) -> str:
@@ -726,12 +769,17 @@ class SettlementView(QWidget):
         bar.addWidget(self.si_month)
         bar.addWidget(CaptionLabel("展示"))
         self.si_split = QComboBox()
-        self.si_split.addItem("合并", userData=False)
-        self.si_split.addItem("拆分（按类型）", userData=True)
-        self.si_split.setCurrentIndex(1 if self._load_split("staff_income", False) else 0)
+        self.si_split.addItem("合并", userData=SPLIT_MERGE)
+        self.si_split.addItem("仅多类型拆分", userData=SPLIT_MULTI)
+        self.si_split.addItem("全拆分（按类型）", userData=SPLIT_ALL)
+        self.si_split.setCurrentIndex(_split_index(self._load_split_mode("staff_income")))
         self.si_split.currentIndexChanged.connect(self._on_si_split_changed)
         self.si_split.setStyleSheet(_combo_qss())
         bar.addWidget(self.si_split)
+        # 人员筛选常驻工具栏（非弹窗）：勾选后预览与两个导出按钮同时按勾选生效
+        self.si_person_filter = PersonFilterWidget("settlement/staff_income_persons")
+        self.si_person_filter.selection_changed.connect(self._on_si_persons_changed)
+        bar.addWidget(self.si_person_filter)
         bar.addStretch()
         v.addLayout(bar)
         COMBO_QSS = _combo_qss()
@@ -767,8 +815,12 @@ class SettlementView(QWidget):
         v.addLayout(bbar)
         return w
 
-    def _load_split(self, key: str, default=False):
-        """读取报表 合并/拆分/两者 偏好。列表式报表存 bool（合并/拆分），月度报表存 'merge'/'split'/'both'。"""
+    def _load_split(self, key: str, default="both"):
+        """读取报表偏好原始值。列表式报表请改用 _load_split_mode（三态归一）。
+
+        ⚠️ QSettings 坑：setValue(k, True/False) 读回**必然是字符串** 'true'/'false'，
+        而 bool('false') is True —— 所以**禁止**用 bool() 兜底判断拆分态。
+        """
         from PySide6.QtCore import QSettings
         try:
             v = QSettings("lawfirm_app", "lawfirm_app").value(f"settlement/{key}_split")
@@ -776,13 +828,44 @@ class SettlementView(QWidget):
         except Exception:  # noqa: BLE001
             return default
 
+    def _load_split_mode(self, key: str) -> str:
+        """读取列表式报表的拆分三态（merge / split_multi / split_all）。
+
+        显式归一（旧值迁移）：旧 bool True→全拆分、False→合并；QSettings 读回的
+        'true'/'false' 字符串同样识别；认不出的值一律降级为「合并」（fail-safe）。
+        """
+        return normalize_split_mode(self._load_split(key, DEFAULT_SPLIT_MODE))
+
     def _save_split(self, key: str, val) -> None:
         from PySide6.QtCore import QSettings
         QSettings("lawfirm_app", "lawfirm_app").setValue(f"settlement/{key}_split", val)
 
     def _on_si_split_changed(self) -> None:
-        self._save_split("staff_income", bool(self.si_split.currentData()))
+        self._save_split("staff_income", normalize_split_mode(self.si_split.currentData()))
         self.refresh_staff_income()
+
+    def _on_ii_split_changed(self) -> None:
+        self._save_split("invoice_income", normalize_split_mode(self.ii_split.currentData()))
+        self.refresh_invoice_income()
+
+    def _on_si_persons_changed(self, _selected) -> None:
+        """工具栏人员勾选变化 → 立即刷新预览（导出按钮读同一个控件，无需另传参）。"""
+        if getattr(self, "_si_filter_syncing", False):
+            return  # 正在刷新名单：防递归（刷名单 → selection_changed → 又刷新 → 又刷名单）
+        self.refresh_staff_income()
+
+    def _sync_si_persons(self, year: int, month: int) -> None:
+        """把当年当月的报表口径名单灌进筛选控件（尽量保留已有勾选）。"""
+        conn = get_conn()
+        try:
+            roster = list_report_persons(conn, year, month)
+        finally:
+            conn.close()
+        self._si_filter_syncing = True
+        try:
+            self.si_person_filter.set_persons(roster)
+        finally:
+            self._si_filter_syncing = False
 
     def refresh_staff_income(self) -> None:
         """年度结算表预览：选年份+月份 → 表格显示该月完整内容（含合计行）"""
@@ -791,8 +874,12 @@ class SettlementView(QWidget):
             return
         year = self.si_year.currentData() or datetime.now().year
         month = self.si_month.currentData() or 1
-        split = bool(self.si_split.currentData()) if hasattr(self, "si_split") else False
-        persons, rows, totals = build_report_rows(year, month, split)
+        mode = normalize_split_mode(self.si_split.currentData()) if hasattr(self, "si_split") \
+            else DEFAULT_SPLIT_MODE
+        if hasattr(self, "si_person_filter"):
+            self._sync_si_persons(year, month)
+        sel = self.si_person_filter.selected_persons() if hasattr(self, "si_person_filter") else None
+        names, rows, totals = build_report_rows(year, month, mode, sel)
         from PySide6.QtGui import QFont
         bold = QFont()
         bold.setBold(True)
@@ -819,8 +906,12 @@ class SettlementView(QWidget):
             self.si_table.setItem(last, j, it)
         self.si_table._col.apply()
         self.si_summary.setText(
-            f"{year}年{month}月业务收入结算表（{len(persons)} 人"
-            f"{'· 拆分' if split else ''}）· 预览共 {len(rows)} 行+合计，确认后导出")
+            f"{year}年{month}月业务收入结算表 · 展示：{split_mode_label(mode)}"
+            f"{_person_summary_suffix(self.si_person_filter)}"
+            f" · 预览共 {len(rows)} 行+合计，确认后导出")
+        # 0 人勾选 → 导出按钮置灰（防出空表）
+        _set_export_enabled((self.btn_staff_income, self.btn_staff_income_full),
+                            self.si_person_filter)
 
     # ---- 导出年度结算表 ----
     def gen_staff_income(self) -> None:
@@ -832,17 +923,19 @@ class SettlementView(QWidget):
             return
         from app.exporter.staff_income_exporter import export_staff_income_month
         self.log.clear()
-        self.log.appendPlainText(f"正在生成 {year}年{month}月业务收入结算表…")
+        note = self.si_person_filter.export_note()
+        self.log.appendPlainText(f"正在生成 {year}年{month}月业务收入结算表{note}…")
         try:
             f = export_staff_income_month(
                 Path(out) / f"{year}年度结算表_{year}{month:02d}.xlsx",
-                year, month, bool(self.si_split.currentData()))
+                year, month, normalize_split_mode(self.si_split.currentData()),
+                self.si_person_filter.selected_persons())
         except Exception as e:  # noqa: BLE001
             self.log.appendPlainText(f"✗ 生成失败: {e}")
             QMessageBox.critical(self, "生成失败", str(e))
             return
-        self.log.appendPlainText(f"✓ {f}")
-        QMessageBox.information(self, "生成完成", f"已生成：{f}")
+        self.log.appendPlainText(f"✓ {f}{note}")
+        QMessageBox.information(self, "生成完成", f"已生成：{f}{note}")
 
     # ---- 导出模板表（1~选中月全部 sheet，从新到旧）----
     def gen_staff_income_full(self) -> None:
@@ -854,17 +947,20 @@ class SettlementView(QWidget):
             return
         from app.exporter.staff_income_exporter import export_staff_income
         self.log.clear()
-        self.log.appendPlainText(f"正在生成 {year}年度结算表模板表（1~{month_to}月，从新到旧）…")
+        note = self.si_person_filter.export_note()
+        self.log.appendPlainText(
+            f"正在生成 {year}年度结算表模板表（1~{month_to}月，从新到旧）{note}…")
         try:
             f = export_staff_income(
                 Path(out) / f"{year}年度结算表.xlsx", year, month_to,
-                bool(self.si_split.currentData()))
+                normalize_split_mode(self.si_split.currentData()),
+                self.si_person_filter.selected_persons())
         except Exception as e:  # noqa: BLE001
             self.log.appendPlainText(f"✗ 生成失败: {e}")
             QMessageBox.critical(self, "生成失败", str(e))
             return
-        self.log.appendPlainText(f"✓ {f}")
-        QMessageBox.information(self, "生成完成", f"已生成：{f}")
+        self.log.appendPlainText(f"✓ {f}{note}")
+        QMessageBox.information(self, "生成完成", f"已生成：{f}{note}")
 
     # ---- 开票收入表 Tab（预览 + 导出）----
     def _build_invoice_income_tab(self) -> QWidget:
@@ -895,12 +991,17 @@ class SettlementView(QWidget):
         bar.addWidget(self.ii_month)
         bar.addWidget(CaptionLabel("展示"))
         self.ii_split = QComboBox()
-        self.ii_split.addItem("合并", userData=False)
-        self.ii_split.addItem("拆分（按角色）", userData=True)
-        self.ii_split.setCurrentIndex(1 if self._load_split("invoice_income", False) else 0)
+        self.ii_split.addItem("合并", userData=SPLIT_MERGE)
+        self.ii_split.addItem("仅多类型拆分", userData=SPLIT_MULTI)
+        self.ii_split.addItem("全拆分（按类型）", userData=SPLIT_ALL)
+        self.ii_split.setCurrentIndex(_split_index(self._load_split_mode("invoice_income")))
         self.ii_split.currentIndexChanged.connect(self._on_ii_split_changed)
         self.ii_split.setStyleSheet(_combo_qss())
         bar.addWidget(self.ii_split)
+        # 人员筛选常驻工具栏（与年度结算表同一控件实现，名单来源同为 list_report_persons）
+        self.ii_person_filter = PersonFilterWidget("settlement/invoice_income_persons")
+        self.ii_person_filter.selection_changed.connect(self._on_ii_persons_changed)
+        bar.addWidget(self.ii_person_filter)
         bar.addStretch()
         v.addLayout(bar)
         COMBO_QSS = _combo_qss()
@@ -933,9 +1034,23 @@ class SettlementView(QWidget):
         v.addLayout(bbar)
         return w
 
-    def _on_ii_split_changed(self) -> None:
-        self._save_split("invoice_income", bool(self.ii_split.currentData()))
+    def _on_ii_persons_changed(self, _selected) -> None:
+        """工具栏人员勾选变化 → 立即刷新预览。"""
+        if getattr(self, "_ii_filter_syncing", False):
+            return  # 防递归：正在刷新名单
         self.refresh_invoice_income()
+
+    def _sync_ii_persons(self, year: int, month: int) -> None:
+        conn = get_conn()
+        try:
+            roster = list_report_persons(conn, year, month)
+        finally:
+            conn.close()
+        self._ii_filter_syncing = True
+        try:
+            self.ii_person_filter.set_persons(roster)
+        finally:
+            self._ii_filter_syncing = False
 
     def refresh_invoice_income(self) -> None:
         """开票收入表预览：主表（选中月，8 列 + 合计行）"""
@@ -944,8 +1059,12 @@ class SettlementView(QWidget):
             return
         year = self.ii_year.currentData() or datetime.now().year
         month = self.ii_month.currentData() or 1
-        split = bool(self.ii_split.currentData()) if hasattr(self, "ii_split") else False
-        persons, rows, totals = build_main_preview(year, month, split)
+        mode = normalize_split_mode(self.ii_split.currentData()) if hasattr(self, "ii_split") \
+            else DEFAULT_SPLIT_MODE
+        if hasattr(self, "ii_person_filter"):
+            self._sync_ii_persons(year, month)
+        sel = self.ii_person_filter.selected_persons() if hasattr(self, "ii_person_filter") else None
+        names, rows, totals = build_main_preview(year, month, mode, sel)
         from PySide6.QtGui import QFont
         bold = QFont()
         bold.setBold(True)
@@ -972,8 +1091,11 @@ class SettlementView(QWidget):
             self.ii_table.setItem(last, j, it)
         self.ii_table._col.apply()
         self.ii_summary.setText(
-            f"{year}年{month}月律师收费情况表（开票收入）· {len(persons)} 人"
-            f"{'· 拆分' if split else ''} + 合计，确认后导出")
+            f"{year}年{month}月律师收费情况表（开票收入）· 展示：{split_mode_label(mode)}"
+            f"{_person_summary_suffix(self.ii_person_filter)}"
+            f" · 预览共 {len(rows)} 行+合计，确认后导出")
+        _set_export_enabled((self.btn_ii_month, self.btn_ii_full),
+                            self.ii_person_filter)
 
     # ---- 导出开票收入表 ----
     def gen_invoice_income(self) -> None:
@@ -985,17 +1107,19 @@ class SettlementView(QWidget):
             return
         from app.exporter.invoice_income_exporter import export_invoice_income_month
         self.log.clear()
-        self.log.appendPlainText(f"正在生成 {year}年{month}月开票收入表…")
+        note = self.ii_person_filter.export_note()
+        self.log.appendPlainText(f"正在生成 {year}年{month}月开票收入表{note}…")
         try:
             f = export_invoice_income_month(
                 Path(out) / f"{year}年度开票收入_{year}{month:02d}.xlsx", year, month,
-                bool(self.ii_split.currentData()))
+                normalize_split_mode(self.ii_split.currentData()),
+                self.ii_person_filter.selected_persons())
         except Exception as e:  # noqa: BLE001
             self.log.appendPlainText(f"✗ 生成失败: {e}")
             QMessageBox.critical(self, "生成失败", str(e))
             return
-        self.log.appendPlainText(f"✓ {f}")
-        QMessageBox.information(self, "生成完成", f"已生成：{f}")
+        self.log.appendPlainText(f"✓ {f}{note}")
+        QMessageBox.information(self, "生成完成", f"已生成：{f}{note}")
 
     def gen_invoice_income_full(self) -> None:
         from pathlib import Path
@@ -1006,14 +1130,17 @@ class SettlementView(QWidget):
             return
         from app.exporter.invoice_income_exporter import export_invoice_income
         self.log.clear()
-        self.log.appendPlainText(f"正在生成 {year}年度开票收入表模板表（1~{month_to}月，从新到旧 + 未收款明细）…")
+        note = self.ii_person_filter.export_note()
+        self.log.appendPlainText(
+            f"正在生成 {year}年度开票收入表模板表（1~{month_to}月，从新到旧 + 未收款明细）{note}…")
         try:
             f = export_invoice_income(
                 Path(out) / f"{year}年度开票收入.xlsx", year, month_to,
-                bool(self.ii_split.currentData()))
+                normalize_split_mode(self.ii_split.currentData()),
+                self.ii_person_filter.selected_persons())
         except Exception as e:  # noqa: BLE001
             self.log.appendPlainText(f"✗ 生成失败: {e}")
             QMessageBox.critical(self, "生成失败", str(e))
             return
-        self.log.appendPlainText(f"✓ {f}")
-        QMessageBox.information(self, "生成完成", f"已生成：{f}")
+        self.log.appendPlainText(f"✓ {f}{note}")
+        QMessageBox.information(self, "生成完成", f"已生成：{f}{note}")
